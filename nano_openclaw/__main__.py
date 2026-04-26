@@ -46,6 +46,15 @@ def main() -> None:
     parser.add_argument("--no-tools", action="store_true", help="Run as a plain chatbot, no tools registered.")
     parser.add_argument("--max-iterations", type=int, default=12, help="Max tool-use rounds per user turn.")
     parser.add_argument("--max-tokens", type=int, default=4096, help="Max tokens per assistant response.")
+    parser.add_argument(
+        "--context-budget", type=int, default=100000, help="Maximum token budget for context window."
+    )
+    parser.add_argument(
+        "--context-threshold", type=float, default=0.8, help="Trigger compaction at this fraction of budget."
+    )
+    parser.add_argument(
+        "--context-recent-turns", type=int, default=3, help="Number of recent turns to preserve during compaction."
+    )
     args = parser.parse_args()
 
     api: str = args.api
@@ -74,6 +83,9 @@ def main() -> None:
         api=api,
         max_iterations=args.max_iterations,
         max_tokens=args.max_tokens,
+        context_budget=args.context_budget,
+        context_threshold=args.context_threshold,
+        context_recent_turns=args.context_recent_turns,
     )
 
     repl(registry, client=client, cfg=cfg)

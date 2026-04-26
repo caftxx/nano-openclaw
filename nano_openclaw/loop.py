@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from nano_openclaw.compact import compact_if_needed
 from nano_openclaw.prompt import build_system_prompt
 from nano_openclaw.provider import (
     MessageEnd,
@@ -45,6 +46,10 @@ class LoopConfig:
     api: str = "anthropic"   # mirrors OpenClaw's model.api field
     max_iterations: int = 12
     max_tokens: int = 4096
+    # Context compaction settings (mirrors OpenClaw's compaction config)
+    context_budget: int = 100000  # Maximum token budget for context
+    context_threshold: float = 0.8  # Trigger compaction at 80% of budget
+    context_recent_turns: int = 3  # Number of recent turns to preserve
 
 
 def agent_loop(
@@ -69,6 +74,18 @@ def agent_loop(
     tools_schema = registry.schemas()
 
     for _ in range(cfg.max_iterations):
+        # Check context budget and compact if needed (mirrors OpenClaw's compaction)
+        _, summary = compact_if_needed(
+            history,
+            budget=cfg.context_budget,
+            client=client,
+            model=cfg.model,
+            api=cfg.api,
+            threshold_ratio=cfg.context_threshold,
+            recent_turns=cfg.context_recent_turns,
+        )
+        if summary:
+            on_event(("Compaction", summary))
         wire_messages = [{"role": m.role, "content": m.content} for m in history]
 
         assistant_blocks, stop_reason = _consume_one_assistant_turn(

@@ -5,7 +5,7 @@ and `src/tui/components/tool-execution.ts:55-137` (tool panels).
 Production OpenClaw uses pi-tui — a custom React-like terminal lib.
 nano uses ``rich``: simpler, less to learn, same visual idea.
 
-Two slash commands only: ``/quit``, ``/clear``. No multiline editor.
+Slash commands: ``/quit``, ``/clear``, ``/help``, ``/context``, ``/compact``. No multiline editor.
 """
 
 from __future__ import annotations
@@ -14,10 +14,12 @@ import json
 from typing import Any, Callable
 
 from anthropic import Anthropic
+from rich import markup
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from nano_openclaw.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.loop import LoopConfig, Message, agent_loop
 from nano_openclaw.provider import (
     MessageEnd,
@@ -55,8 +57,14 @@ def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
             continue
         if user_input == "/help":
             console.print(
-                "[dim]commands: /quit, /clear, /help — anything else is sent to the model[/]"
+                "[dim]commands: /quit, /clear, /help, /context, /compact — anything else is sent to the model[/]"
             )
+            continue
+        if user_input == "/context":
+            _show_context(console, history, cfg)
+            continue
+        if user_input == "/compact":
+            _manual_compact(console, history, cfg, client)
             continue
 
         on_event = _make_event_handler(console)
@@ -70,7 +78,7 @@ def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
                 cfg=cfg,
             )
         except Exception as exc:  # noqa: BLE001 — surface model/network errors to user
-            console.print(f"\n[red]error:[/] {type(exc).__name__}: {exc}")
+            console.print(f"\n[red]error:[/] {type(exc).__name__}: {markup.escape(str(exc))}")
             continue
         console.print()  # blank line between turns
 
@@ -81,11 +89,75 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry) -> None:
         Panel.fit(
             Text.from_markup(
                 f"[bold]nano-openclaw[/]\n"
-                f"model:  [cyan]{model}[/]\n"
-                f"tools:  {tools}\n"
-                f"commands: /quit  /clear  /help"
+                f"model:  [cyan]{markup.escape(model)}[/]\n"
+                f"tools:  {markup.escape(tools)}\n"
+                f"commands: /quit  /clear  /help  /context  /compact"
             ),
             border_style="cyan",
+        )
+    )
+
+
+def _manual_compact(
+    console: Console,
+    history: list[Message],
+    cfg: LoopConfig,
+    client: Any,
+) -> None:
+    """Manually trigger context compaction."""
+    if len(history) < cfg.context_recent_turns * 2:
+        console.print("[dim](not enough history to compact)[/]")
+        return
+
+    console.print("[dim]compacting context...[/]")
+
+    try:
+        _, summary = compact_if_needed(
+            history,
+            budget=1,  # Force compaction by setting very low budget
+            client=client,
+            model=cfg.model,
+            api=cfg.api,
+            threshold_ratio=1.0,  # Trigger immediately
+            recent_turns=cfg.context_recent_turns,
+        )
+
+        if summary:
+            _render_compaction(console, summary=summary)
+            # Show updated context stats
+            current_tokens = estimate_tokens(history)
+            console.print(f"[dim]context reduced to {current_tokens:,} tokens ({len(history)} messages)[/]")
+        else:
+            console.print("[dim](compaction not needed — history too short)[/]")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]error:[/] {type(exc).__name__}: {markup.escape(str(exc))}")
+
+
+def _show_context(console: Console, history: list[Message], cfg: LoopConfig) -> None:
+    """Display current context window usage."""
+    current_tokens = estimate_tokens(history)
+    budget = cfg.context_budget
+    threshold = int(budget * cfg.context_threshold)
+    usage_pct = (current_tokens / budget) * 100 if budget > 0 else 0
+
+    # Color based on usage level
+    if usage_pct < 50:
+        color = "green"
+    elif usage_pct < cfg.context_threshold * 100:
+        color = "yellow"
+    else:
+        color = "red"
+
+    console.print(
+        Panel.fit(
+            Text.from_markup(
+                f"context usage: [{color}]{current_tokens:,}[/] / {budget:,} tokens\n"
+                f"usage: [{color}]{usage_pct:.1f}%[/]\n"
+                f"threshold: {threshold:,} tokens ({cfg.context_threshold * 100:.0f}%)\n"
+                f"messages: {len(history)}"
+            ),
+            title="Context Status",
+            border_style=color,
         )
     )
 
@@ -111,7 +183,7 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             if state["text_in_flight"]:
                 console.print()  # finish text line
                 state["text_in_flight"] = False
-            console.print(f"\n[bold yellow]>> {event.name}[/]", end="")
+            console.print(f"\n[bold yellow]>> {markup.escape(event.name)}[/]", end="")
 
         elif isinstance(event, ToolUseEnd):
             console.print()  # newline after tool_use header
@@ -125,7 +197,31 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             _, name, args, result = event
             _render_tool_result(console, name=name, args=args, result=result)
 
+        elif isinstance(event, tuple) and event and event[0] == "Compaction":
+            _, summary = event
+            _render_compaction(console, summary=summary)
+
     return handle
+
+
+def _render_compaction(console: Console, *, summary: str) -> None:
+    """Render a compaction notification showing the conversation was summarized."""
+    # Truncate summary for display
+    lines = summary.splitlines() or [""]
+    if len(lines) > _PREVIEW_LINES:
+        escaped_content = markup.escape("\n".join(lines[:_PREVIEW_LINES]))
+        body = escaped_content + f"\n[dim](... +{len(lines) - _PREVIEW_LINES} more lines)[/]"
+    else:
+        body = markup.escape("\n".join(lines))
+
+    console.print(
+        Panel(
+            Text.from_markup(body),
+            title=Text.from_markup("[yellow]Context Compacted[/]"),
+            title_align="left",
+            border_style="yellow",
+        )
+    )
 
 
 def _render_tool_result(
@@ -141,12 +237,14 @@ def _render_tool_result(
 
     lines = text_block.splitlines() or [""]
     if len(lines) > _PREVIEW_LINES:
-        body = "\n".join(lines[:_PREVIEW_LINES]) + f"\n[dim](... +{len(lines) - _PREVIEW_LINES} more lines)[/]"
+        # Escape the content, then add markup for the truncation notice
+        escaped_content = markup.escape("\n".join(lines[:_PREVIEW_LINES]))
+        body = escaped_content + f"\n[dim](... +{len(lines) - _PREVIEW_LINES} more lines)[/]"
     else:
-        body = "\n".join(lines)
+        body = markup.escape("\n".join(lines))
 
     args_repr = _short_args(args)
-    title = f"{name}({args_repr})"
+    title = f"{markup.escape(name)}({markup.escape(args_repr)})"
     if is_error:
         title = f"{title} [red](error)[/]"
 
