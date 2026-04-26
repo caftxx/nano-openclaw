@@ -19,7 +19,7 @@ from nano_openclaw.tools import ToolRegistry
 
 
 _IDENTITY = (
-    "You are nanoOpenclaw, a small coding assistant running in a terminal. "
+    "You are nano-openclaw, a small coding assistant running in a terminal. "
     "Be concise and precise. Use tools when they help; otherwise answer directly."
 )
 

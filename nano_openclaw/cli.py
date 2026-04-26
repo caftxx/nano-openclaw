@@ -80,7 +80,7 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry) -> None:
     console.print(
         Panel.fit(
             Text.from_markup(
-                f"[bold]nanoOpenclaw[/]\n"
+                f"[bold]nano-openclaw[/]\n"
                 f"model:  [cyan]{model}[/]\n"
                 f"tools:  {tools}\n"
                 f"commands: /quit  /clear  /help"

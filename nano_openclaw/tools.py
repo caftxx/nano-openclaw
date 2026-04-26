@@ -1,4 +1,4 @@
-"""Tool registry and built-in tools for nanoOpenclaw.
+"""Tool registry and built-in tools for nano-openclaw.
 
 Mirrors `src/agents/tools/common.ts` (Tool interface) and
 `src/agents/pi-embedded-subscribe.handlers.tools.ts` (dispatch).

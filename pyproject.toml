@@ -2,6 +2,9 @@
 name = "nano-openclaw"
 version = "0.1.0"
 description = "Minimal Python reimplementation of OpenClaw's agent loop, for learning."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "caft", email = "caft0505@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.40",

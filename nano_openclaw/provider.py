@@ -2,9 +2,9 @@
 
 Mirrors `src/agents/anthropic-transport-stream.ts` (around line 742): take
 the SDK's raw SSE events and translate them into our 5 dataclasses so the
-rest of nanoOpenclaw never touches the SDK directly. This is the only
+rest of nano-openclaw never touches the SDK directly. This is the only
 file in the project that knows about Anthropic specifically — swap it
-out and you've ported nanoOpenclaw to a different provider.
+out and you've ported nano-openclaw to a different provider.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""The agent loop — nanoOpenclaw's spine.
+"""The agent loop — nano-openclaw's spine.
 
 Mirrors `src/agents/pi-embedded-runner/run/attempt.ts:566` (`runEmbeddedAttempt`).
 Production OpenClaw drives this loop via a pi-agent-core session subscription;
