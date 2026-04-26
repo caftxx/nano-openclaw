@@ -18,8 +18,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from anthropic import Anthropic
-
 from nano_openclaw.prompt import build_system_prompt
 from nano_openclaw.provider import (
     MessageEnd,
@@ -44,6 +42,7 @@ class Message:
 @dataclass
 class LoopConfig:
     model: str = "claude-sonnet-4-5-20250929"
+    api: str = "anthropic"   # mirrors OpenClaw's model.api field
     max_iterations: int = 12
     max_tokens: int = 4096
 
@@ -54,7 +53,7 @@ def agent_loop(
     registry: ToolRegistry,
     on_event: EventCallback,
     *,
-    client: Anthropic,
+    client: Any,  # anthropic.Anthropic | openai.OpenAI
     cfg: LoopConfig,
 ) -> list[Message]:
     """Drive one user turn to completion (possibly through many tool rounds).
@@ -74,6 +73,7 @@ def agent_loop(
 
         assistant_blocks, stop_reason = _consume_one_assistant_turn(
             client=client,
+            api=cfg.api,
             model=cfg.model,
             system=system,
             messages=wire_messages,
@@ -107,7 +107,8 @@ def agent_loop(
 
 def _consume_one_assistant_turn(
     *,
-    client: Anthropic,
+    client: Any,
+    api: str,
     model: str,
     system: str,
     messages: list[dict[str, Any]],
@@ -128,6 +129,7 @@ def _consume_one_assistant_turn(
             text_buf = ""
 
     for ev in stream_response(
+        api=api,
         client=client,
         model=model,
         system=system,

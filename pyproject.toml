@@ -8,6 +8,7 @@ authors = [{ name = "caft", email = "caft0505@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.40",
+    "openai>=1.0",
     "rich>=13.7",
 ]
 
