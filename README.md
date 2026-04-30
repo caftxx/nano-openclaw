@@ -1,5 +1,7 @@
 # nano-openclaw
 
+[![Tests](https://github.com/caftxx/nano-openclaw/actions/workflows/test.yml/badge.svg)](https://github.com/caftxx/nano-openclaw/actions/workflows/test.yml)
+
 用最少的代码复刻 OpenClaw 的 agent 运行原理。
 精神类比 [nanoGPT](https://github.com/karpathy/nanoGPT) 之于 GPT：**真实可跑，但只保留骨架，删掉一切可选层**。
 
