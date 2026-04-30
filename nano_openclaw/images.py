@@ -225,7 +225,12 @@ def _load_remote(url: str) -> tuple[str, str]:
 
 
 def _assert_safe_url(url: str) -> None:
-    """SSRF guard — mirrors openclaw isBlockedRemoteMediaHostname."""
+    """SSRF guard — mirrors openclaw isBlockedRemoteMediaHostname.
+
+    Uses explicit network ranges instead of addr.is_private to avoid
+    Python 3.11+'s overly broad definition (which incorrectly blocks CDN
+    addresses in 198.18.0.0/15 and 100.64.0.0/10).
+    """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -238,5 +243,32 @@ def _assert_safe_url(url: str) -> None:
     except Exception:
         raise ValueError(f"cannot resolve host: {hostname!r}")
 
-    if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved:
+    if _is_blocked_addr(addr):
         raise ValueError(f"SSRF: blocked address {addr} for host {hostname!r}")
+
+
+# Explicit SSRF blocklist — mirrors openclaw isBlockedRemoteMediaHostname.
+# We do NOT use addr.is_private because Python 3.11 expanded that to include
+# benchmarking (198.18.0.0/15) and shared CGN (100.64.0.0/10) ranges that
+# are legitimately used by CDNs such as Cloudflare and Fastly.
+_BLOCKED_NETWORKS_V4 = [
+    ipaddress.ip_network("0.0.0.0/8"),        # "this" network
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918 private
+    ipaddress.ip_network("127.0.0.0/8"),       # loopback
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local (APIPA)
+    ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918 private
+    ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918 private
+    ipaddress.ip_network("192.0.0.0/29"),      # IETF protocol assignments
+    ipaddress.ip_network("240.0.0.0/4"),       # reserved / future use
+    ipaddress.ip_network("255.255.255.255/32"),# broadcast
+]
+_BLOCKED_NETWORKS_V6 = [
+    ipaddress.ip_network("::1/128"),           # loopback
+    ipaddress.ip_network("fc00::/7"),          # unique local
+    ipaddress.ip_network("fe80::/10"),         # link-local
+]
+
+
+def _is_blocked_addr(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    nets = _BLOCKED_NETWORKS_V4 if addr.version == 4 else _BLOCKED_NETWORKS_V6
+    return any(addr in net for net in nets)
