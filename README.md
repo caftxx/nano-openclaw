@@ -1,6 +1,6 @@
 # nano-openclaw
 
-一个约 600 行的 Python 教学项目，用最少的代码复刻 OpenClaw 的 agent 运行原理。
+用最少的代码复刻 OpenClaw 的 agent 运行原理。
 精神类比 [nanoGPT](https://github.com/karpathy/nanoGPT) 之于 GPT：**真实可跑，但只保留骨架，删掉一切可选层**。
 
 读完这个仓库里的核心 `.py` 文件，你就理解了一个"会用工具的 LLM agent"的全部秘密。
