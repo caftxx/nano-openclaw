@@ -5,7 +5,7 @@ and `src/tui/components/tool-execution.ts:55-137` (tool panels).
 Production OpenClaw uses pi-tui — a custom React-like terminal lib.
 nano uses ``rich``: simpler, less to learn, same visual idea.
 
-Slash commands: ``/quit``, ``/clear``, ``/help``, ``/context``, ``/compact``. No multiline editor.
+Slash commands: ``/quit``, ``/clear``, ``/new`` (alias to /clear), ``/help``, ``/context``, ``/compact``. No multiline editor.
 """
 
 from __future__ import annotations
@@ -51,13 +51,13 @@ def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
         if user_input in {"/quit", "/exit", "/q"}:
             console.print("[dim]bye.[/]")
             return
-        if user_input == "/clear":
+        if user_input in {"/clear", "/new"}:
             history.clear()
             console.print("[dim](history cleared)[/]")
             continue
         if user_input == "/help":
             console.print(
-                "[dim]commands: /quit, /clear, /help, /context, /compact — anything else is sent to the model[/]"
+                "[dim]commands: /quit, /clear (/new), /help, /context, /compact — anything else is sent to the model[/]"
             )
             continue
         if user_input == "/context":
@@ -91,7 +91,7 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry) -> None:
                 f"[bold]nano-openclaw[/]\n"
                 f"model:  [cyan]{markup.escape(model)}[/]\n"
                 f"tools:  {markup.escape(tools)}\n"
-                f"commands: /quit  /clear  /help  /context  /compact"
+                f"commands: /quit  /clear (/new)  /help  /context  /compact"
             ),
             border_style="cyan",
         )
