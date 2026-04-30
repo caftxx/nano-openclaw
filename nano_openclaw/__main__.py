@@ -3,114 +3,159 @@
 Mirrors the chain ``openclaw.mjs`` -> ``src/entry.ts`` -> ``src/run-main.ts``,
 collapsed into one file because nano has no plugin loader, no auth-profile
 resolution, and no telemetry init.
+
+Configuration is loaded from:
+1. Default: ./nano-openclaw.json5 (current directory)
+2. Custom: --config <path>
+
+Model reference format: provider/model-id (e.g., anthropic/claude-sonnet-4-5)
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from nano_openclaw.cli import repl
 from nano_openclaw.loop import LoopConfig
-from nano_openclaw.provider import SUPPORTED_APIS
+from nano_openclaw.config import (
+    DEFAULT_CONFIG_FILENAME,
+    load_config,
+    resolve_model_config,
+)
 from nano_openclaw.tools import ToolRegistry, build_default_registry
-
-_DEFAULT_MODELS = {
-    "anthropic": "claude-sonnet-4-5-20250929",
-    "openai": "gpt-4o",
-}
-
-_ENV_KEYS = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="nano-openclaw",
         description="Minimal educational reimplementation of OpenClaw's agent loop.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+        f"Configuration is loaded from {DEFAULT_CONFIG_FILENAME} in the current directory.\n"
+        "Use --config to specify a custom config file.\n"
+        "\n"
+        "Model reference format: provider/model-id (e.g., anthropic/claude-sonnet-4-5)\n"
+        "Custom providers can be defined in the config file under models.providers.\n"
+        "\n"
+        "Configurable options (with defaults):\n"
+        "  agents.model                           Main model (anthropic/claude-sonnet-4-5-20250929)\n"
+        "  agents.imageModel                      Image understanding model (None = Native Vision)\n"
+        "  models.providers.<id>.baseUrl          Custom API endpoint (None = default)\n"
+        "  models.providers.<id>.apiKey           API key, supports ${ENV_VAR} syntax\n"
+        "  models.providers.<id>.api              API type (anthropic-messages|openai-completions|openai-responses)\n"
+        "  models.providers.<id>.models[]         Model catalog with id, name, input, contextWindow, maxTokens\n"
+        "  models.mode                            Provider catalog mode (merge|replace)\n"
+        "  noTools                                Run as plain chatbot, no tools (false)\n"
+        "  maxIterations                          Max tool-use rounds per user turn (12)\n"
+        "  maxTokens                              Max tokens per assistant response (4096)\n"
+        "  context.budget                         Maximum token budget for context window (100000)\n"
+        "  context.threshold                      Trigger compaction at this fraction (0.8)\n"
+        "  context.recent_turns                   Recent turns to preserve during compaction (3)\n"
+        "\n"
+        'Example config file (JSON5 — supports comments and trailing commas):\n'
+        '  {\n'
+        '    // Main model (provider/model-id format)\n'
+        '    agents: {\n'
+        '      model: "openrouter/anthropic/claude-sonnet-4",\n'
+        '      imageModel: "openai/gpt-4o-mini",  // for Media Understanding path\n'
+        '    },\n'
+        '    models: {\n'
+        '      providers: {\n'
+        '        "openrouter": {\n'
+        '          baseUrl: "https://openrouter.ai/api/v1",\n'
+        '          apiKey: "${OPENROUTER_API_KEY}",  // env var substitution\n'
+        '          models: [\n'
+        '            { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" },\n'
+        '          ],\n'
+        '        },\n'
+        '      },\n'
+        '    },\n'
+        '    // Runtime settings\n'
+        '    maxIterations: 12,\n'
+        '    context: {\n'
+        '      budget: 100000,\n'
+        '      threshold: 0.8,\n'
+        '    },\n'
+        '  }'
+    ),
     )
     parser.add_argument(
-        "--api",
-        choices=list(SUPPORTED_APIS),
-        default="anthropic",
-        help="Provider API to use (default: anthropic).",
-    )
-    parser.add_argument(
-        "--model",
+        "--config",
+        metavar="PATH",
         default=None,
-        help="Model id. Defaults to claude-sonnet-4-5-20250929 (anthropic) or gpt-4o (openai).",
-    )
-    parser.add_argument("--no-tools", action="store_true", help="Run as a plain chatbot, no tools registered.")
-    parser.add_argument("--max-iterations", type=int, default=12, help="Max tool-use rounds per user turn.")
-    parser.add_argument("--max-tokens", type=int, default=4096, help="Max tokens per assistant response.")
-    parser.add_argument(
-        "--context-budget", type=int, default=100000, help="Maximum token budget for context window."
-    )
-    parser.add_argument(
-        "--context-threshold", type=float, default=0.8, help="Trigger compaction at this fraction of budget."
-    )
-    parser.add_argument(
-        "--context-recent-turns", type=int, default=3, help="Number of recent turns to preserve during compaction."
-    )
-    parser.add_argument(
-        "--image-model",
-        default=None,
-        metavar="MODEL_ID",
-        help=(
-            "Image understanding model (mirrors openclaw agents.defaults.imageModel). "
-            "If set, images are described by this model and injected as text into the prompt "
-            "(Media Understanding path). "
-            "If not set, images are sent as base64 blocks directly to the main model "
-            "(Native Vision path — main model must support vision)."
-        ),
+        help=f"Path to config file (default: ./{DEFAULT_CONFIG_FILENAME})",
     )
     args = parser.parse_args()
 
-    api: str = args.api
-    model: str = args.model or _DEFAULT_MODELS[api]
-    env_key = _ENV_KEYS[api]
-
-    api_key = os.environ.get(env_key)
-    if not api_key:
-        if api == "anthropic":
-            hint = "  Get a key at https://console.anthropic.com"
-        else:
-            hint = "  Get a key at https://platform.openai.com/api-keys"
+    config, warnings = load_config(args.config)
+    
+    for var_name, config_path in warnings:
         print(
-            f"error: {env_key} is not set.\n"
-            f"{hint}\n"
-            f"    export {env_key}=...   (Linux/macOS/Git Bash)\n"
-            f"    setx   {env_key} ...   (Windows — open a new terminal after)",
+            f"warning: missing env var \"{var_name}\" at {config_path} - "
+            f"feature using this value will be unavailable",
             file=sys.stderr,
         )
+
+    model_ref = config.resolve_primary_model()
+    
+    try:
+        resolved = resolve_model_config(model_ref, config)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
 
-    client = _build_client(api, api_key)
-    registry = ToolRegistry() if args.no_tools else build_default_registry()
+    api_type = resolved["api_type"]
+    model_id = resolved["model_id"]
+    base_url = resolved["base_url"]
+    api_key = resolved["api_key"]
+    model_input = resolved["model_input"]
+
+    api = "anthropic" if api_type == "anthropic-messages" else "openai"
+
+    client = _build_client(api, api_key, base_url)
+    registry = ToolRegistry() if config.no_tools else build_default_registry()
+    
+    # Resolve image model reference to extract model_id for API calls
+    image_model_ref = config.resolve_image_model()
+    image_model_id: str | None = None
+    if image_model_ref:
+        if "/" in image_model_ref:
+            image_provider_id, image_model_id = image_model_ref.split("/", 1)
+            # If image model uses a different provider, warn and fall back to main provider's model
+            if image_provider_id != resolved["provider_id"]:
+                print(
+                    f"warning: image model provider '{image_provider_id}' differs from main "
+                    f"provider '{resolved['provider_id']}'; using model id '{image_model_id}' "
+                    f"with the main provider endpoint",
+                    file=sys.stderr,
+                )
+        else:
+            image_model_id = image_model_ref
+    
     cfg = LoopConfig(
-        model=model,
+        model=model_id,
         api=api,
-        max_iterations=args.max_iterations,
-        max_tokens=args.max_tokens,
-        context_budget=args.context_budget,
-        context_threshold=args.context_threshold,
-        context_recent_turns=args.context_recent_turns,
-        image_model=args.image_model or None,
+        base_url=base_url,
+        model_input=tuple(model_input),
+        max_iterations=config.max_iterations,
+        max_tokens=config.max_tokens,
+        context_budget=config.context.budget,
+        context_threshold=config.context.threshold,
+        context_recent_turns=config.context.recent_turns,
+        image_model=image_model_id,
     )
 
     repl(registry, client=client, cfg=cfg)
 
 
-def _build_client(api: str, api_key: str):
+def _build_client(api: str, api_key: str, base_url: str | None):
     if api == "anthropic":
         from anthropic import Anthropic
-        return Anthropic(api_key=api_key)
+        return Anthropic(api_key=api_key, base_url=base_url)
     if api == "openai":
         from openai import OpenAI
-        return OpenAI(api_key=api_key)
+        return OpenAI(api_key=api_key, base_url=base_url)
     raise ValueError(f"unsupported api: {api!r}")
 
 
