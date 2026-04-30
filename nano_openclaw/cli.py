@@ -216,6 +216,10 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             _, ref, error = event
             console.print(f"[red]image error:[/] {markup.escape(ref)}: {markup.escape(error)}")
 
+        elif isinstance(event, tuple) and event and event[0] == "ImageSkip":
+            _, ref, reason = event
+            console.print(f"[yellow]image skipped:[/] {markup.escape(ref)}: {markup.escape(reason)}")
+
     return handle
 
 
