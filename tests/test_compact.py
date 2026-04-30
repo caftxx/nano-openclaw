@@ -194,35 +194,78 @@ def test_compact_not_enough_history_to_preserve():
 def test_compact_preserves_recent_turns_count():
     """Compaction should preserve exactly recent_turns * 2 messages."""
     # Create 10 messages (5 turns)
+    # Older messages (6) need enough tokens to trigger compaction (threshold=40)
+    # Recent messages (4) should be short to avoid secondary compaction
     history = []
-    for i in range(5):
-        history.append(make_text_message("user", f"User message {i} with some content"))
-        history.append(make_text_message("assistant", f"Assistant reply {i} with more content"))
-    
-    # Mock LLM to return a summary
+    for i in range(3):  # 3 older turns = 6 messages
+        history.append(make_text_message("user", f"Old user message number {i} with text"))
+        history.append(make_text_message("assistant", f"Old assistant reply number {i} here"))
+    for i in range(2):  # 2 recent turns = 4 messages
+        history.append(make_text_message("user", f"U{i}"))
+        history.append(make_text_message("assistant", f"A{i}"))
+
+    # Mock LLM to return a short summary
     mock_client = MagicMock()
     mock_response = MagicMock()
-    mock_response.content = [MagicMock(type="text", text="Summary of earlier conversation")]
+    mock_response.content = [MagicMock(type="text", text="Summary")]
     mock_client.messages.create.return_value = mock_response
-    
-    original_len = len(history)
+
     result, summary = compact_if_needed(
         history,
-        budget=50,  # Low budget to trigger compaction
+        budget=50,  # threshold = 40, older 6 messages have ~45+ tokens
         client=mock_client,
         model="test-model",
         api="anthropic",
         recent_turns=2,  # Keep 4 messages (2 turns)
     )
-    
+
     assert summary is not None
-    assert summary == "Summary of earlier conversation"
+    assert summary == "Summary"
     # Should have: 1 summary + 4 recent messages = 5
     assert len(result) == 5
     # First message should be the summary
     assert result[0].content[0]["text"].startswith("[Previous conversation summary]")
-    # Recent messages should be preserved (last 4 from original)
-    assert result[1].content[0]["text"] == "User message 3 with some content"
+    # Recent messages should be preserved
+    assert result[1].content[0]["text"] == "U0"
+
+
+def test_compact_triggers_secondary_compaction():
+    """When post-compaction tokens still exceed threshold, aggressive secondary compaction kicks in."""
+    # Create history where recent messages are long enough that
+    # summary + recent_messages still exceeds threshold after first compaction
+    history = []
+    # Older messages to be summarized (6 messages)
+    for i in range(3):
+        history.append(make_text_message("user", f"Old user message {i} with some text"))
+        history.append(make_text_message("assistant", f"Old assistant reply {i} here"))
+    # Recent messages (4 messages) — long enough to push over threshold after compaction
+    # threshold = 50 * 0.8 = 40, each message ~40 chars = 10 tokens
+    # 4 recent + summary prefix ≈ 50+ tokens > 40 → triggers secondary
+    for i in range(2):
+        history.append(make_text_message("user", f"Recent user message {i} with plenty of content here"))
+        history.append(make_text_message("assistant", f"Recent assistant reply {i} with lots of words too"))
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(type="text", text="Old conversation summary")]
+    mock_client.messages.create.return_value = mock_response
+
+    result, summary = compact_if_needed(
+        history,
+        budget=50,  # threshold = 40
+        client=mock_client,
+        model="test-model",
+        api="anthropic",
+        recent_turns=2,  # First compaction keeps 4 messages
+    )
+
+    assert summary is not None
+    # Secondary compaction: summary + last 2 messages (1 turn)
+    assert len(result) == 3
+    assert result[0].content[0]["text"].startswith("[Previous conversation summary]")
+    # Last 2 preserved messages should be the final user+assistant pair
+    assert "Recent user message 1" in result[1].content[0]["text"]
+    assert "Recent assistant reply 1" in result[2].content[0]["text"]
 
 
 def test_compact_modifies_history_in_place():
