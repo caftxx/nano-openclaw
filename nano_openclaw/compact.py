@@ -55,6 +55,12 @@ def estimate_tokens(messages: list[Message]) -> int:
                         for item in content:
                             if isinstance(item, dict) and item.get("type") == "text":
                                 total += len(item.get("text", "")) // CHARS_PER_TOKEN
+                elif block.get("type") == "image":
+                    # Native Vision path: estimate via base64 data length.
+                    # base64_len / 4 ≈ raw bytes, which correlates with token cost
+                    # (e.g. 1200×800 PNG ≈ 6000 base64 chars / 4 ≈ 1500 tokens).
+                    source = block.get("source", {})
+                    total += len(source.get("data", "")) // CHARS_PER_TOKEN
             else:
                 # Fallback for unexpected types
                 total += len(str(block)) // CHARS_PER_TOKEN

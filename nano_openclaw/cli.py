@@ -201,6 +201,17 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             _, summary = event
             _render_compaction(console, summary=summary)
 
+        elif isinstance(event, tuple) and event and event[0] == "ImageAttached":
+            _, refs, via_model = event
+            # "described" = Media Understanding path; "attached" = Native Vision path
+            mode = "described" if via_model else "attached"
+            for ref in refs:
+                console.print(f"[dim]{mode}: {markup.escape(ref)}[/]")
+
+        elif isinstance(event, tuple) and event and event[0] == "ImageError":
+            _, ref, error = event
+            console.print(f"[red]image error:[/] {markup.escape(ref)}: {markup.escape(error)}")
+
     return handle
 
 
@@ -233,7 +244,15 @@ def _render_tool_result(
 ) -> None:
     is_error = bool(result.get("is_error"))
     border = "red" if is_error else "green"
-    text_block = result["content"][0]["text"] if result.get("content") else ""
+    content_blocks: list[dict[str, Any]] = result.get("content") or []
+
+    # Collect text blocks only; image blocks are not displayable as text.
+    image_count = sum(1 for b in content_blocks if b.get("type") == "image")
+    text_block = " ".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
+    if image_count and not text_block:
+        text_block = f"[{image_count} image{'s' if image_count > 1 else ''} returned]"
+    elif image_count:
+        text_block = f"[{image_count} image{'s' if image_count > 1 else ''} + text] " + text_block
 
     lines = text_block.splitlines() or [""]
     if len(lines) > _PREVIEW_LINES:

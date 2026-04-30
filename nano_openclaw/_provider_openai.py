@@ -101,9 +101,22 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         if role == "user":
             text_parts = [c for c in content if c.get("type") == "text"]
+            image_parts = [c for c in content if c.get("type") == "image"]
             tool_results = [c for c in content if c.get("type") == "tool_result"]
 
-            if text_parts:
+            if image_parts:
+                # Native Vision path: convert Anthropic image blocks to OpenAI image_url format.
+                oai_content: list[dict[str, Any]] = []
+                for c in content:
+                    if c.get("type") == "text":
+                        oai_content.append({"type": "text", "text": c["text"]})
+                    elif c.get("type") == "image":
+                        src = c["source"]
+                        data_url = f"data:{src['media_type']};base64,{src['data']}"
+                        oai_content.append({"type": "image_url", "image_url": {"url": data_url}})
+                if oai_content:
+                    result.append({"role": "user", "content": oai_content})
+            elif text_parts:
                 text = " ".join(p["text"] for p in text_parts)
                 result.append({"role": "user", "content": text})
 

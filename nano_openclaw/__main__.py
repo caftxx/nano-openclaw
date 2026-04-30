@@ -55,6 +55,18 @@ def main() -> None:
     parser.add_argument(
         "--context-recent-turns", type=int, default=3, help="Number of recent turns to preserve during compaction."
     )
+    parser.add_argument(
+        "--image-model",
+        default=None,
+        metavar="MODEL_ID",
+        help=(
+            "Image understanding model (mirrors openclaw agents.defaults.imageModel). "
+            "If set, images are described by this model and injected as text into the prompt "
+            "(Media Understanding path). "
+            "If not set, images are sent as base64 blocks directly to the main model "
+            "(Native Vision path — main model must support vision)."
+        ),
+    )
     args = parser.parse_args()
 
     api: str = args.api
@@ -86,6 +98,7 @@ def main() -> None:
         context_budget=args.context_budget,
         context_threshold=args.context_threshold,
         context_recent_turns=args.context_recent_turns,
+        image_model=args.image_model or None,
     )
 
     repl(registry, client=client, cfg=cfg)

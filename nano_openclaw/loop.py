@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from nano_openclaw.compact import compact_if_needed
+from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
 from nano_openclaw.prompt import build_system_prompt
 from nano_openclaw.provider import (
     MessageEnd,
@@ -50,6 +51,10 @@ class LoopConfig:
     context_budget: int = 100000  # Maximum token budget for context
     context_threshold: float = 0.8  # Trigger compaction at 80% of budget
     context_recent_turns: int = 3  # Number of recent turns to preserve
+    # Image model (mirrors openclaw agents.defaults.imageModel)
+    # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
+    # str   → Media Understanding: images described to text by this model (apply.ts)
+    image_model: str | None = None
 
 
 def agent_loop(
@@ -68,7 +73,39 @@ def agent_loop(
     ``on_event`` receives every streaming event and every ``("ToolResult", ...)``
     notification; the CLI uses it for live rendering.
     """
-    history.append(Message("user", [{"type": "text", "text": user_input}]))
+    # Parse image references from user input (mirrors openclaw attempt.ts detectAndLoadPromptImages)
+    cleaned_text, image_refs = parse_image_refs(user_input)
+
+    content: list[dict[str, Any]] = []
+    loaded_refs: list[str] = []
+    for ref in image_refs:
+        try:
+            b64, mime = load_image(ref)
+            if cfg.image_model:
+                # Media Understanding path (openclaw: imageModel configured → apply.ts)
+                # Image model describes the image; main model receives text, not pixels.
+                desc = describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
+                content.append({"type": "text", "text": f"[Image: {desc}]"})
+            else:
+                # Native Vision path (openclaw: main model supports vision → attempt.ts:2648-2654)
+                # Image sent as base64 block directly to the main model.
+                content.append(to_anthropic_image_block(b64, mime))
+            loaded_refs.append(ref)
+        except Exception as exc:
+            on_event(("ImageError", ref, str(exc)))
+
+    if loaded_refs:
+        on_event(("ImageAttached", loaded_refs, bool(cfg.image_model)))
+
+    # Mirror openclaw convertContentBlocks: guarantee at least one text block.
+    if cleaned_text:
+        content.append({"type": "text", "text": cleaned_text})
+    if not content:
+        content.append({"type": "text", "text": user_input})
+    elif not any(b.get("type") == "text" for b in content):
+        content.append({"type": "text", "text": "(see attached image)"})
+
+    history.append(Message("user", content))
 
     system = build_system_prompt(registry)
     tools_schema = registry.schemas()

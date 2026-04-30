@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-ToolHandler = Callable[[dict[str, Any]], str]
+ToolHandler = Callable[[dict[str, Any]], "str | list[dict[str, Any]]"]
 
 
 @dataclass
@@ -56,13 +56,18 @@ class ToolRegistry:
         if tool is None:
             return _error_result(tool_use_id, f"unknown tool: {name!r}")
         try:
-            text = tool.run(args)
+            output = tool.run(args)
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
             return _error_result(tool_use_id, f"{type(exc).__name__}: {exc}")
+        # Handlers may return either a plain string or a list of content blocks
+        # (e.g. read_file on an image returns [image_block, text_block]).
+        content: list[dict[str, Any]] = (
+            output if isinstance(output, list) else [{"type": "text", "text": output or "(no output)"}]
+        )
         return {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
-            "content": [{"type": "text", "text": text or "(no output)"}],
+            "content": content,
         }
 
 
@@ -81,9 +86,36 @@ def _error_result(tool_use_id: str, message: str) -> dict[str, Any]:
 
 _READ_MAX_BYTES = 200_000
 
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+_OTHER_MEDIA_EXTS = frozenset({
+    ".bmp", ".tiff", ".tif", ".heic", ".heif", ".svg", ".ico",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    ".mp3", ".wav", ".ogg", ".flac", ".aac",
+    ".pdf",
+})
 
-def _read_file(args: dict[str, Any]) -> str:
+
+def _read_file(args: dict[str, Any]) -> "str | list[dict[str, Any]]":
     path = Path(args["path"])
+    suffix = path.suffix.lower()
+
+    if suffix in _IMAGE_EXTS:
+        # Return the image as a content block so the model can actually see it,
+        # rather than a stub that triggers a pointless retry.
+        from nano_openclaw.images import load_image, to_anthropic_image_block
+        try:
+            b64, mime = load_image(str(path))
+        except Exception as exc:
+            return f"[image load error: {path}: {exc}]"
+        return [
+            to_anthropic_image_block(b64, mime),
+            {"type": "text", "text": f"Image: {path} ({path.stat().st_size:,} bytes)"},
+        ]
+
+    if suffix in _OTHER_MEDIA_EXTS:
+        size = path.stat().st_size
+        return f"[media file: {path} ({size:,} bytes)] Binary content not shown."
+
     data = path.read_text(encoding="utf-8", errors="replace")
     if len(data) > _READ_MAX_BYTES:
         return data[:_READ_MAX_BYTES] + f"\n[truncated at {_READ_MAX_BYTES} bytes]"
@@ -127,7 +159,7 @@ def _bash(args: dict[str, Any]) -> str:
 BUILTIN_TOOLS: list[Tool] = [
     Tool(
         name="read_file",
-        description="Read a UTF-8 text file from disk and return its contents.",
+        description="Read a UTF-8 text file from disk and return its contents. Binary/media files (images, video, audio, PDF) return a metadata summary only — attach image paths directly in the user message to analyse them.",
         input_schema={
             "type": "object",
             "properties": {"path": {"type": "string", "description": "File path to read."}},
