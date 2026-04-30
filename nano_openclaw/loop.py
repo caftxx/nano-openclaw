@@ -84,6 +84,7 @@ def agent_loop(
             if cfg.image_model:
                 # Media Understanding path (openclaw: imageModel configured → apply.ts)
                 # Image model describes the image; main model receives text, not pixels.
+                on_event(("ImageDescribe", ref))
                 desc = describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
                 content.append({"type": "text", "text": f"[Image: {desc}]"})
             else:

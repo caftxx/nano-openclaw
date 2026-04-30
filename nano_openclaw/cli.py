@@ -201,6 +201,10 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             _, summary = event
             _render_compaction(console, summary=summary)
 
+        elif isinstance(event, tuple) and event and event[0] == "ImageDescribe":
+            _, ref = event
+            console.print(f"[dim]describing: {markup.escape(ref)}[/]")
+
         elif isinstance(event, tuple) and event and event[0] == "ImageAttached":
             _, refs, via_model = event
             # "described" = Media Understanding path; "attached" = Native Vision path
