@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import io
 import os
 import re
 import socket
@@ -21,6 +22,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -36,7 +39,9 @@ _MIME_FROM_EXT: dict[str, str] = {
     ".webp": "image/webp",
 }
 
-_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB — mirrors DEFAULT_INPUT_IMAGE_MAX_BYTES
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — API limit is 6MB, leave margin
+_COMPRESSED_TARGET_BYTES = 4 * 1024 * 1024  # 4 MB target after compression
+_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # 20 MB — max download size before compression
 
 _EXT_GROUP = r"(?:png|jpe?g|gif|webp)"
 
@@ -189,6 +194,67 @@ def describe_image(b64: str, mime: str, *, client: Any, model: str, api: str) ->
 # ---------------------------------------------------------------------------
 
 
+def _compress_image(data: bytes, mime: str) -> tuple[bytes, str]:
+    """Compress image to fit within _COMPRESSED_TARGET_BYTES.
+
+    Strategy:
+    - JPEG/WebP: reduce quality progressively
+    - PNG: convert to JPEG (better compression for photos)
+    - Resize if quality reduction isn't enough
+    """
+    img = Image.open(io.BytesIO(data))
+
+    # Determine output format - convert PNG to JPEG for better compression
+    output_mime = mime
+    if mime == "image/png":
+        output_mime = "image/jpeg"
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+    # Quality levels to try (progressively lower)
+    quality_levels = [85, 70, 55, 40]
+
+    for quality in quality_levels:
+        buffer = io.BytesIO()
+        if output_mime == "image/jpeg":
+            img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        elif output_mime == "image/webp":
+            img.save(buffer, format="WEBP", quality=quality)
+        else:
+            img.save(buffer, format=img.format or "JPEG", quality=quality)
+
+        if buffer.tell() <= _COMPRESSED_TARGET_BYTES:
+            return buffer.getvalue(), output_mime
+
+    # If still too large, resize progressively
+    current_img = img.copy()
+    scale = 0.5
+
+    while scale >= 0.1:
+        new_width = int(img.width * scale)
+        new_height = int(img.height * scale)
+        resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        buffer = io.BytesIO()
+        if output_mime == "image/jpeg":
+            resized.save(buffer, format="JPEG", quality=70, optimize=True)
+        elif output_mime == "image/webp":
+            resized.save(buffer, format="WEBP", quality=70)
+        else:
+            resized.save(buffer, format="JPEG", quality=70, optimize=True)
+            output_mime = "image/jpeg"
+
+        if buffer.tell() <= _COMPRESSED_TARGET_BYTES:
+            return buffer.getvalue(), output_mime
+
+        scale -= 0.1
+
+    raise ValueError(
+        f"无法压缩图片到 {_COMPRESSED_TARGET_BYTES // 1024 // 1024}MB 以内。"
+        f"请手动压缩图片或使用更小的图片。"
+    )
+
+
 def _is_safe_ref(ref: str) -> bool:
     """Reject path-traversal and home-dir prefixes (mirrors openclaw parse.ts)."""
     if ref.startswith("~"):
@@ -203,10 +269,17 @@ def _is_safe_ref(ref: str) -> bool:
 def _load_local(path_str: str) -> tuple[str, str]:
     path = Path(path_str)
     size = path.stat().st_size
-    if size > _MAX_IMAGE_BYTES:
-        raise ValueError(f"image too large ({size:,} bytes > {_MAX_IMAGE_BYTES:,})")
     data = path.read_bytes()
     mime = _MIME_FROM_EXT.get(path.suffix.lower(), "image/jpeg")
+
+    if size > _MAX_IMAGE_BYTES:
+        try:
+            data, mime = _compress_image(data, mime)
+        except Exception as e:
+            raise ValueError(
+                f"图片过大 ({size // 1024 // 1024}MB > {_MAX_IMAGE_BYTES // 1024 // 1024}MB) 且自动压缩失败: {e}"
+            ) from e
+
     return base64.standard_b64encode(data).decode(), mime
 
 
@@ -215,12 +288,30 @@ def _load_remote(url: str) -> tuple[str, str]:
     req = urllib.request.Request(url, headers={"User-Agent": "nano-openclaw/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — SSRF guard above
         content_length = resp.headers.get("Content-Length")
-        if content_length and int(content_length) > _MAX_IMAGE_BYTES:
-            raise ValueError(f"remote image too large ({content_length} bytes)")
-        data = resp.read(_MAX_IMAGE_BYTES + 1)
-        if len(data) > _MAX_IMAGE_BYTES:
-            raise ValueError(f"remote image exceeds {_MAX_IMAGE_BYTES:,} bytes")
+
+        # Reject obviously huge files
+        if content_length and int(content_length) > _MAX_DOWNLOAD_BYTES:
+            raise ValueError(
+                f"远程图片过大 ({int(content_length) // 1024 // 1024}MB > {_MAX_DOWNLOAD_BYTES // 1024 // 1024}MB)"
+            )
+
+        data = resp.read(_MAX_DOWNLOAD_BYTES + 1)
+        if len(data) > _MAX_DOWNLOAD_BYTES:
+            raise ValueError(
+                f"远程图片超过 {_MAX_DOWNLOAD_BYTES // 1024 // 1024}MB，无法处理"
+            )
+
         mime = (resp.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+
+        # Compress if needed
+        if len(data) > _MAX_IMAGE_BYTES:
+            try:
+                data, mime = _compress_image(data, mime)
+            except Exception as e:
+                raise ValueError(
+                    f"远程图片过大且自动压缩失败: {e}"
+                ) from e
+
     return base64.standard_b64encode(data).decode(), mime
 
 
