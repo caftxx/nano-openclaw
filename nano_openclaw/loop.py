@@ -45,6 +45,8 @@ class Message:
 class LoopConfig:
     model: str = "claude-sonnet-4-5-20250929"
     api: str = "anthropic"   # mirrors OpenClaw's model.api field
+    base_url: str | None = None  # mirrors OpenClaw's models.providers.*.baseUrl
+    model_input: list[str] = ("text",)  # mirrors OpenClaw's model.input field
     max_iterations: int = 12
     max_tokens: int = 4096
     # Context compaction settings (mirrors OpenClaw's compaction config)
@@ -55,6 +57,10 @@ class LoopConfig:
     # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
     # str   → Media Understanding: images described to text by this model (apply.ts)
     image_model: str | None = None
+
+    @property
+    def model_has_vision(self) -> bool:
+        return "image" in self.model_input
 
 
 def agent_loop(
@@ -87,10 +93,13 @@ def agent_loop(
                 on_event(("ImageDescribe", ref))
                 desc = describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
                 content.append({"type": "text", "text": f"[Image: {desc}]"})
-            else:
+            elif cfg.model_has_vision:
                 # Native Vision path (openclaw: main model supports vision → attempt.ts:2648-2654)
                 # Image sent as base64 block directly to the main model.
                 content.append(to_anthropic_image_block(b64, mime))
+            else:
+                # Main model has no vision AND no image_model configured → skip image.
+                on_event(("ImageSkip", ref, "model has no vision capability and no image_model configured"))
             loaded_refs.append(ref)
         except Exception as exc:
             on_event(("ImageError", ref, str(exc)))
