@@ -174,19 +174,54 @@ def compact_if_needed(
         # Under budget, no compaction needed
         return history, None
 
+    # Import here to avoid circular import at runtime
+    from .loop import Message
+
+    # When severely over budget, force aggressive compaction:
+    # summarize ALL history and keep only one summary message
+    if current_tokens >= budget * 2 or len(history) <= 2:
+        summary = summarize_history(
+            history,
+            client=client,
+            model=model,
+            api=api,
+        )
+        summary_msg: Message = Message(
+            role="user",
+            content=[{
+                "type": "text",
+                "text": f"[Previous conversation summary]\n{summary}",
+            }],
+        )
+        history.clear()
+        history.append(summary_msg)
+        return history, summary
+
     # Calculate how many messages to keep (recent_turns * 2 = user + assistant pairs)
     keep_count = recent_turns * 2
 
     if len(history) <= keep_count:
-        # Not enough history to compact, return as-is
-        return history, None
+        # Not enough history to compact, summarize everything
+        summary = summarize_history(
+            history,
+            client=client,
+            model=model,
+            api=api,
+        )
+        summary_msg = Message(
+            role="user",
+            content=[{
+                "type": "text",
+                "text": f"[Previous conversation summary]\n{summary}",
+            }],
+        )
+        history.clear()
+        history.append(summary_msg)
+        return history, summary
 
     # Split: older messages to summarize, recent messages to keep
     older_messages = history[:-keep_count]
     recent_messages = history[-keep_count:]
-
-    if not older_messages:
-        return history, None
 
     # Generate summary of older messages
     summary = summarize_history(
@@ -197,10 +232,7 @@ def compact_if_needed(
     )
 
     # Create summary message to prepend
-    # Import here to avoid circular import at runtime
-    from .loop import Message
-
-    summary_msg: Message = Message(
+    summary_msg = Message(
         role="user",
         content=[{
             "type": "text",
@@ -213,6 +245,15 @@ def compact_if_needed(
     history.clear()
     history.append(summary_msg)
     history.extend(recent_messages)
+
+    # Verify: if still over budget, force aggressive compaction
+    # (ignore recent_turns, keep only summary + last single turn)
+    remaining_tokens = estimate_tokens(history)
+    if remaining_tokens >= threshold:
+        aggressive_keep = recent_messages[-2:] if len(recent_messages) >= 2 else recent_messages
+        history.clear()
+        history.append(summary_msg)
+        history.extend(aggressive_keep)
 
     return history, summary
 
