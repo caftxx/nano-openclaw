@@ -28,7 +28,7 @@ from .paths import resolve_config_path as _resolve_config_path
 # Default config filename for backward compatibility
 DEFAULT_CONFIG_FILENAME = "nano-openclaw.json5"
 
-DEFAULT_INPUT_CAPABILITIES = ("text", "image")
+DEFAULT_INPUT_CAPABILITIES = ("text",)
 
 DEFAULT_MAX_TOKENS = 4096
 
