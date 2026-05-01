@@ -44,6 +44,34 @@ from nano_openclaw.session import (
     resolve_session_store_path,
 )
 from nano_openclaw.tools import ToolRegistry, build_default_registry
+from nano_openclaw.approvals.manager import ApprovalManager
+from nano_openclaw.approvals.types import ApprovalPolicy
+from rich.console import Console
+
+
+def build_approval_manager(cfg, state_dir: Path) -> ApprovalManager | None:
+    """Build ApprovalManager from config."""
+    approvals_cfg = cfg.approvals
+    if approvals_cfg.askMode == "off":
+        return None
+    
+    allow_store = approvals_cfg.allowAlwaysStore
+    if allow_store is None:
+        allow_store = str(state_dir / "approvals.json")
+    
+    policy = ApprovalPolicy(
+        ask_mode=approvals_cfg.askMode,
+        security_mode=approvals_cfg.securityMode,
+        dangerous_tools=approvals_cfg.dangerousTools,
+        allow_always_store=allow_store,
+    )
+    
+    manager = ApprovalManager(policy)
+    existing_patterns = manager.load_allow_always_patterns()
+    if existing_patterns:
+        policy.allow_always_patterns = existing_patterns
+    
+    return manager
 
 
 def main() -> None:
@@ -106,8 +134,14 @@ def main() -> None:
     client = _build_client(api, api_key, base_url)
     registry = ToolRegistry() if config.noTools else build_default_registry()
     
-    # Resolve state directory (openclaw-aligned)
+    # Build approval manager and pass to registry
     state_dir = resolve_state_dir()
+    console = Console()
+    approval_manager = build_approval_manager(config, state_dir)
+    registry.approval_manager = approval_manager
+    registry.console = console
+    
+    # Resolve state directory (openclaw-aligned)
     
     # Resolve workspace directory for agent (openclaw-aligned)
     # Priority: agents.list[].workspace > agents.defaults.workspace > stateDir/workspace-{agentId} > ~/.openclaw/workspace
