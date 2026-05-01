@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-ToolHandler = Callable[[dict[str, Any]], "str | list[dict[str, Any]]"]
+ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
 
 
 @dataclass
@@ -30,9 +30,13 @@ class Tool:
 @dataclass
 class ToolRegistry:
     _tools: dict[str, Tool] = field(default_factory=dict)
+    _session_status_context: dict[str, Any] = field(default_factory=dict)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+
+    def set_session_status_context(self, **kwargs: Any) -> None:
+        self._session_status_context = kwargs
 
     def names(self) -> list[str]:
         return list(self._tools.keys())
@@ -56,11 +60,12 @@ class ToolRegistry:
         if tool is None:
             return _error_result(tool_use_id, f"unknown tool: {name!r}")
         try:
-            output = tool.run(args)
+            if name == "session_status":
+                output = tool.run(args, **self._session_status_context)
+            else:
+                output = tool.run(args)
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
             return _error_result(tool_use_id, f"{type(exc).__name__}: {exc}")
-        # Handlers may return either a plain string or a list of content blocks
-        # (e.g. read_file on an image returns [image_block, text_block]).
         content: list[dict[str, Any]] = (
             output if isinstance(output, list) else [{"type": "text", "text": output or "(no output)"}]
         )
@@ -156,14 +161,46 @@ def _bash(args: dict[str, Any]) -> str:
     )
 
 
-def _session_status(args: dict[str, Any]) -> str:
+def _session_status(
+    args: dict[str, Any],
+    *,
+    model: str = "",
+    session_id: str = "",
+    context_budget: int = 0,
+    current_tokens: int = 0,
+    compaction_count: int = 0,
+    message_count: int = 0,
+) -> str:
     from datetime import datetime
     now = datetime.now()
     weekday = now.strftime("%A")
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M:%S")
     timezone = datetime.now().astimezone().tzname() or "local"
-    return f"Clock: {weekday}, {date_str} {time_str} ({timezone})"
+
+    lines = [f"Clock: {weekday}, {date_str} {time_str} ({timezone})"]
+
+    if model:
+        lines.append(f"Model: {model}")
+
+    if session_id:
+        lines.append(f"Session: {session_id}")
+
+    if context_budget > 0:
+        def format_tokens(n: int) -> str:
+            if n >= 1000:
+                return f"{n / 1000:.1f}k"
+            return str(n)
+        used = format_tokens(current_tokens)
+        budget = format_tokens(context_budget)
+        lines.append(f"Context: {used}/{budget} tokens")
+        if compaction_count > 0:
+            lines[-1] += f" · Compactions: {compaction_count}"
+
+    if message_count > 0:
+        lines.append(f"Messages: {message_count}")
+
+    return "\n".join(lines)
 
 
 BUILTIN_TOOLS: list[Tool] = [
@@ -220,7 +257,7 @@ BUILTIN_TOOLS: list[Tool] = [
     ),
     Tool(
         name="session_status",
-        description="Show current session status including date, time, day of week, and timezone. Use when you need the current date, time, or day of week.",
+        description="Show current session status: date/time, model, session ID, context usage (tokens/compactions), and message count. Use for current time or session state.",
         input_schema={
             "type": "object",
             "properties": {},

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from nano_openclaw.compact import compact_if_needed
+from nano_openclaw.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
 from nano_openclaw.prompt import build_system_prompt
 from nano_openclaw.provider import (
@@ -207,6 +207,14 @@ def agent_loop(
             return history  # end_turn / max_tokens / stop_sequence — terminal
 
         # Dispatch every tool_use; package all results into ONE user message.
+        registry.set_session_status_context(
+            model=cfg.model,
+            session_id=transcript_writer.session_id if transcript_writer else "",
+            context_budget=cfg.context_budget,
+            current_tokens=estimate_tokens(history),
+            compaction_count=transcript_writer.compaction_count if transcript_writer else 0,
+            message_count=len(history),
+        )
         tool_results: list[dict[str, Any]] = []
         for block in assistant_blocks:
             if block.get("type") != "tool_use":

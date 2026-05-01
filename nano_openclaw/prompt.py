@@ -124,7 +124,6 @@ def build_system_prompt(
 
     prompt += (
         tools_block + "\n\n"
-        "If you need the current date, time, or day of week, use session_status.\n"
         "When the task is done, stop. Never invent file paths."
     )
 
