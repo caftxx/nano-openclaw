@@ -14,6 +14,7 @@ from nano_openclaw.config.types import (
     ModelDefinition,
     ModelProvider,
     ModelsConfig,
+    ModelThinkingParams,
     NanoOpenClawConfig,
     SessionConfig,
     SessionReset,
@@ -140,7 +141,6 @@ class TestNanoOpenClawConfig:
         cfg = NanoOpenClawConfig()
         assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
         assert cfg.maxIterations == 12
-        assert cfg.maxTokens == 4096
     
     def test_agents_structure(self):
         cfg = NanoOpenClawConfig()
@@ -340,3 +340,114 @@ class TestSessionConfig:
         """Reset mode must be either 'daily' or 'idle'."""
         with pytest.raises(Exception):
             SessionReset(mode="invalid")
+
+
+class TestModelThinkingParams:
+    def test_default_values(self):
+        p = ModelThinkingParams()
+        assert p.thinking is None
+    
+    def test_thinking_level(self):
+        p = ModelThinkingParams(thinking="medium")
+        assert p.thinking == "medium"
+    
+    def test_all_levels(self):
+        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]:
+            p = ModelThinkingParams(thinking=level)
+            assert p.thinking == level
+    
+    def test_invalid_level(self):
+        with pytest.raises(Exception):
+            ModelThinkingParams(thinking="invalid")
+
+
+class TestModelDefinitionWithParams:
+    def test_with_thinking_params(self):
+        md = ModelDefinition(
+            id="claude-sonnet",
+            name="Claude Sonnet",
+            params=ModelThinkingParams(thinking="off"),
+        )
+        assert md.params is not None
+        assert md.params.thinking == "off"
+    
+    def test_params_none_by_default(self):
+        md = ModelDefinition(id="simple-model")
+        assert md.params is None
+
+
+class TestResolveThinkingLevel:
+    def test_model_params_priority(self):
+        """Model params.thinking has highest priority."""
+        cfg = NanoOpenClawConfig(
+            agents=AgentsConfig(
+                defaults=AgentDefaultsConfig(thinkingDefault="high"),
+            ),
+            models=ModelsConfig(
+                providers={
+                    "test": ModelProvider(
+                        baseUrl="https://api.test.com/v1",
+                        models=[
+                            ModelDefinition(
+                                id="model-1",
+                                params=ModelThinkingParams(thinking="low"),
+                            ),
+                        ],
+                    ),
+                },
+            ),
+        )
+        assert cfg.resolve_thinking_level("test/model-1") == "low"
+    
+    def test_global_default_fallback(self):
+        """Global thinkingDefault is used when no model params."""
+        cfg = NanoOpenClawConfig(
+            agents=AgentsConfig(
+                defaults=AgentDefaultsConfig(thinkingDefault="medium"),
+            ),
+            models=ModelsConfig(
+                providers={
+                    "test": ModelProvider(
+                        baseUrl="https://api.test.com/v1",
+                        models=[ModelDefinition(id="model-1")],
+                    ),
+                },
+            ),
+        )
+        assert cfg.resolve_thinking_level("test/model-1") == "medium"
+    
+    def test_reasoning_model_fallback(self):
+        """Reasoning models fallback to 'low', non-reasoning to 'off'."""
+        cfg_reasoning = NanoOpenClawConfig(
+            models=ModelsConfig(
+                providers={
+                    "test": ModelProvider(
+                        baseUrl="https://api.test.com/v1",
+                        models=[ModelDefinition(id="model-1", reasoning=True)],
+                    ),
+                },
+            ),
+        )
+        assert cfg_reasoning.resolve_thinking_level("test/model-1") == "low"
+        
+        cfg_non_reasoning = NanoOpenClawConfig(
+            models=ModelsConfig(
+                providers={
+                    "test": ModelProvider(
+                        baseUrl="https://api.test.com/v1",
+                        models=[ModelDefinition(id="model-1", reasoning=False)],
+                    ),
+                },
+            ),
+        )
+        assert cfg_non_reasoning.resolve_thinking_level("test/model-1") == "off"
+    
+    def test_off_by_default(self):
+        """Unknown models return 'off'."""
+        cfg = NanoOpenClawConfig()
+        assert cfg.resolve_thinking_level("unknown/model") == "off"
+    
+    def test_invalid_model_ref(self):
+        """Invalid model ref returns 'off'."""
+        cfg = NanoOpenClawConfig()
+        assert cfg.resolve_thinking_level("invalid") == "off"

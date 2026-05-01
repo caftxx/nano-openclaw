@@ -39,6 +39,21 @@ if TYPE_CHECKING:
 
 EventCallback = Callable[[Any], None]
 
+# Thinking level type (mirrors openclaw ThinkLevel)
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]
+
+# Thinking budget mapping (mirrors openclaw anthropic-transport-stream.ts)
+THINKING_BUDGETS: dict[ThinkingLevel, int] = {
+    "off": 0,
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+    "xhigh": 32768,
+    "adaptive": 8192,  # adaptive uses medium budget as baseline
+    "max": 32768,
+}
+
 
 @dataclass
 class Message:
@@ -62,14 +77,21 @@ class LoopConfig:
     # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
     # str   → Media Understanding: images described to text by this model (apply.ts)
     image_model: str | None = None
-    # Extended thinking budget in tokens. None = disabled.
-    # When set, requires a model that supports extended thinking (Claude 3.7+).
-    # max_tokens is auto-adjusted to be at least thinking_budget_tokens + 1024.
-    thinking_budget_tokens: int | None = None
+    # Thinking level (mirrors openclaw agents.defaults.thinkingDefault)
+    # When "off", no thinking blocks are requested.
+    # When non-off, thinking is enabled with budget derived from level.
+    thinking_level: ThinkingLevel = "off"
 
     @property
     def model_has_vision(self) -> bool:
         return "image" in self.model_input
+    
+    @property
+    def thinking_budget_tokens(self) -> int | None:
+        """Convert thinking level to budget tokens (for API compatibility)."""
+        if self.thinking_level == "off":
+            return None
+        return THINKING_BUDGETS.get(self.thinking_level, 0)
 
 
 def agent_loop(

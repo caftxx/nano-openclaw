@@ -30,6 +30,8 @@ DEFAULT_CONFIG_FILENAME = "nano-openclaw.json5"
 
 DEFAULT_INPUT_CAPABILITIES = ("text", "image")
 
+DEFAULT_MAX_TOKENS = 4096
+
 BUILTIN_PROVIDERS = {
     "anthropic": {
         "api": "anthropic-messages",
@@ -59,6 +61,17 @@ def _resolve_model_input(provider_id: str, model_id: str, config: NanoOpenClawCo
         return list(DEFAULT_INPUT_CAPABILITIES)
     
     return ["text"]
+
+
+def _resolve_model_max_tokens(provider_id: str, model_id: str, config: NanoOpenClawConfig) -> int:
+    """Resolve max output tokens from model config or default."""
+    provider_config = config.models.providers.get(provider_id)
+    if provider_config:
+        for m in provider_config.models:
+            if m.id == model_id:
+                return m.maxTokens if m.maxTokens > 0 else DEFAULT_MAX_TOKENS
+    
+    return DEFAULT_MAX_TOKENS
 
 
 def find_config_file(config_path: Optional[str] = None, env: Optional[dict[str, str]] = None) -> Optional[Path]:
@@ -128,7 +141,7 @@ def resolve_model_config(
         env: Environment variables
     
     Returns:
-        Dict with provider_id, model_id, api_type, base_url, api_key, model_input
+        Dict with provider_id, model_id, api_type, base_url, api_key, model_input, max_tokens
     """
     if env is None:
         env = dict(os.environ)
@@ -152,6 +165,7 @@ def resolve_model_config(
     
     api_key = resolve_api_key(provider_id, provider_config, env)
     model_input = _resolve_model_input(provider_id, model_id, config)
+    max_tokens = _resolve_model_max_tokens(provider_id, model_id, config)
     
     return {
         "provider_id": provider_id,
@@ -160,6 +174,7 @@ def resolve_model_config(
         "base_url": base_url,
         "api_key": api_key,
         "model_input": model_input,
+        "max_tokens": max_tokens,
     }
 
 

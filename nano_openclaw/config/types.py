@@ -14,6 +14,23 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ============================================================================
+# Thinking Types (aligns with openclaw ThinkLevel)
+# ============================================================================
+
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]
+
+
+class ModelThinkingParams(BaseModel):
+    """Model thinking parameters (mirrors openclaw model params.thinking)."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    thinking: Optional[ThinkingLevel] = Field(
+        default=None,
+        description="Thinking level for this model: off|minimal|low|medium|high|xhigh|adaptive|max"
+    )
+
+
+# ============================================================================
 # Model Types (aligns with src/config/types.models.ts)
 # ============================================================================
 
@@ -41,6 +58,10 @@ class ModelDefinition(BaseModel):
     contextWindow: int = Field(default=8192, alias="contextWindow", description="Context window size")
     maxTokens: int = Field(default=4096, alias="maxTokens", description="Max output tokens")
     cost: ModelCost = Field(default_factory=ModelCost, description="Pricing cost")
+    params: Optional[ModelThinkingParams] = Field(
+        default=None,
+        description="Model-level params (e.g., thinking)"
+    )
 
 
 class ModelProvider(BaseModel):
@@ -188,7 +209,7 @@ class NanoOpenClawConfig(BaseModel):
     - agents: { defaults, list[] }
     - models: { mode, providers{} }
     - session: { idleMinutes, reset }
-    - Custom fields: maxIterations, thinkingBudgetTokens, context
+    - Custom fields: maxIterations, context
     """
     model_config = ConfigDict(populate_by_name=True)
     
@@ -199,13 +220,7 @@ class NanoOpenClawConfig(BaseModel):
     # nano-openclaw custom fields
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
     maxIterations: int = Field(default=12, ge=1, description="Max tool-use rounds per user turn")
-    maxTokens: int = Field(default=4096, ge=1, description="Max tokens per assistant response")
     context: ContextConfig = Field(default_factory=ContextConfig)
-    thinkingBudgetTokens: Optional[int] = Field(
-        default=None,
-        ge=512,
-        description="Extended thinking budget tokens. None = disabled."
-    )
 
     def resolve_primary_model(self, agent_id: Optional[str] = None) -> str:
         """
@@ -263,3 +278,42 @@ class NanoOpenClawConfig(BaseModel):
         if isinstance(image_model_config, AgentModelListConfig):
             return image_model_config.primary
         return None
+
+    def resolve_thinking_level(self, model_ref: str) -> ThinkingLevel:
+        """
+        Resolve thinking level for a model.
+        
+        Priority (mirrors openclaw):
+        1. models.providers[provider].models[id].params.thinking
+        2. agents.defaults.thinkingDefault
+        3. Fallback: "off" (non-reasoning models) or "low" (reasoning models)
+        
+        Args:
+            model_ref: Model reference in "provider/model-id" format
+        
+        Returns:
+            ThinkingLevel: The resolved thinking level
+        """
+        # Parse model reference
+        if "/" not in model_ref:
+            return "off"
+        provider_id, model_id = model_ref.split("/", 1)
+        
+        # Check model-level params.thinking (highest priority)
+        provider = self.models.providers.get(provider_id)
+        if provider:
+            for model in provider.models:
+                if model.id == model_id and model.params and model.params.thinking:
+                    return model.params.thinking
+        
+        # Check global default
+        if self.agents.defaults.thinkingDefault:
+            return self.agents.defaults.thinkingDefault
+        
+        # Check model's reasoning capability for fallback
+        if provider:
+            for model in provider.models:
+                if model.id == model_id:
+                    return "low" if model.reasoning else "off"
+        
+        return "off"

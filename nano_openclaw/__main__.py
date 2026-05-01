@@ -99,6 +99,7 @@ def main() -> None:
     base_url = resolved["base_url"]
     api_key = resolved["api_key"]
     model_input = resolved["model_input"]
+    model_max_tokens = resolved["max_tokens"]
 
     api = "anthropic" if api_type == "anthropic-messages" else "openai"
 
@@ -174,12 +175,12 @@ def main() -> None:
         base_url=base_url,
         model_input=tuple(model_input),
         max_iterations=config.maxIterations,
-        max_tokens=config.maxTokens,
+        max_tokens=model_max_tokens,
         context_budget=config.context.budget,
         context_threshold=config.context.threshold,
         context_recent_turns=config.context.recent_turns,
         image_model=image_model_id,
-        thinking_budget_tokens=config.thinkingBudgetTokens,
+        thinking_level=config.resolve_thinking_level(model_ref),
     )
 
     repl(
