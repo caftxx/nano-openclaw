@@ -268,6 +268,7 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
                 console.print()  # gap before assistant text
                 state["text_in_flight"] = True
             console.print(event.text, end="", soft_wrap=True, highlight=False)
+            console.file.flush()
 
         elif isinstance(event, ToolUseStart):
             if state["text_in_flight"]:
