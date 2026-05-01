@@ -154,3 +154,73 @@ def test_manager_check_allow_always():
     
     result = manager.check_request("bash", {"command": "ls -la"})
     assert result.requires_approval == False
+
+
+def test_ui_render_approval_request():
+    """UI renders approval request panel."""
+    from nano_openclaw.approvals.ui import ApprovalUI
+    from rich.console import Console
+    console = Console()
+    ui = ApprovalUI(console)
+    
+    req = ApprovalRequest(
+        request_id="abc123",
+        tool_name="bash",
+        tool_args={"command": "rm -rf /"},
+        risk_level="high",
+        reason="destructive command",
+    )
+    
+    ui.render_request(req)
+
+
+def test_ui_format_args():
+    """UI formats args correctly."""
+    from nano_openclaw.approvals.ui import ApprovalUI
+    from rich.console import Console
+    console = Console()
+    ui = ApprovalUI(console)
+    
+    short_args = {"path": "/tmp/test.txt"}
+    assert ui._format_args(short_args) == '{"path": "/tmp/test.txt"}'
+    
+    long_args = {"content": "x" * 100}
+    formatted = ui._format_args(long_args)
+    assert len(formatted) <= 63
+
+
+def test_ui_render_denied():
+    """UI renders denial message."""
+    from nano_openclaw.approvals.ui import ApprovalUI
+    from rich.console import Console
+    console = Console()
+    ui = ApprovalUI(console)
+    
+    req = ApprovalRequest(
+        request_id="abc123",
+        tool_name="bash",
+        tool_args={"command": "rm -rf /"},
+        risk_level="high",
+        reason="destructive command",
+    )
+    
+    ui.render_denied(req)
+
+
+def test_ui_render_allowed():
+    """UI renders approval message."""
+    from nano_openclaw.approvals.ui import ApprovalUI
+    from rich.console import Console
+    console = Console()
+    ui = ApprovalUI(console)
+    
+    req = ApprovalRequest(
+        request_id="abc123",
+        tool_name="bash",
+        tool_args={"command": "ls -la"},
+        risk_level="medium",
+        reason="ask_mode is always",
+    )
+    
+    ui.render_allowed(req, ApprovalDecision.ALLOW_ONCE)
+    ui.render_allowed(req, ApprovalDecision.ALLOW_ALWAYS)

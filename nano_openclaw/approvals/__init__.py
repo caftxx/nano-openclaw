@@ -7,6 +7,7 @@ from nano_openclaw.approvals.types import (
     ToolApprovalConfig,
 )
 from nano_openclaw.approvals.manager import ApprovalManager
+from nano_openclaw.approvals.ui import ApprovalUI
 
 __all__ = [
     "ApprovalDecision",
@@ -14,4 +15,5 @@ __all__ = [
     "ApprovalPolicy",
     "ToolApprovalConfig",
     "ApprovalManager",
+    "ApprovalUI",
 ]
