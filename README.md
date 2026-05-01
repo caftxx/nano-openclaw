@@ -28,8 +28,8 @@ uv sync
 uv run pytest tests/
 
 # 复制并编辑配置文件
-cp workspace/nano-openclaw.json5 .  # 或放在 workspace/ 目录下
-# 编辑 nano-openclaw.json5，填入你的 API key
+cp nano-openclaw-example.json5 nano-openclaw.json5
+# 编辑 nano-openclaw.json5，填入你的 API key 和 provider 信息
 ```
 
 ```bash
@@ -49,6 +49,8 @@ uv run python -m nano_openclaw --sessions
 uv run python -m nano_openclaw --agent coder
 ```
 
+**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改，详见下方配置说明。
+
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 
 ## 配置文件
@@ -62,6 +64,12 @@ uv run python -m nano_openclaw --agent coder
 5. `~/.openclaw/nano-openclaw.json5` — 用户全局配置
 
 状态目录 (`stateDir`) 解析：`$OPENCLAW_STATE_DIR` > `{cwd}/.openclaw` > `~/.openclaw`
+
+### 快速开始
+
+1. 复制示例配置：`cp nano-openclaw-example.json5 nano-openclaw.json5`
+2. 编辑配置文件，填入你的 API key 和 provider 信息
+3. 运行 `uv run python -m nano_openclaw`
 
 ### 模型引用格式
 

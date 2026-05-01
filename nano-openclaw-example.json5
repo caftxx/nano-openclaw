@@ -1,0 +1,183 @@
+{
+  // ==========================================
+  // nano-openclaw 配置示例
+  // ==========================================
+  // 使用方法：
+  // 1. 复制此文件为 nano-openclaw.json5
+  // 2. 修改下面的配置项（特别是 API key）
+  // 3. 将配置文件放在以下任一位置：
+  //    - 命令行指定：uv run python -m nano_openclaw --config nano-openclaw.json5
+  //    - 环境变量：export OPENCLAW_CONFIG_PATH=./nano-openclaw.json5
+  //    - 状态目录下：~/.openclaw/nano-openclaw.json5
+  //    - workspace 目录下：{cwd}/workspace/nano-openclaw.json5
+  //
+  // 完整字段说明见：docs/CONFIG_EXAMPLE.md
+  // ==========================================
+
+  // Agent 配置
+  agents: {
+    // 全局默认值（所有 agent 共享）
+    defaults: {
+      // 主模型，格式：provider/model-id
+      // 内置 provider（anthropic、openai）无需额外配置
+      model: "anthropic/claude-sonnet-4-5-20250929",
+
+      // 图像理解模型（用于图片描述）
+      // null = 使用 Native Vision（图片直接发给主模型）
+      // 设置后走 Media Understanding 路径（先用图片模型描述，再注入 prompt）
+      imageModel: null,
+
+      // Agent 工作目录（相对或绝对路径）
+      workspace: "./workspace",
+
+      // 上下文 token 上限（可选，null = 使用模型默认值）
+      // contextTokens: null,
+
+      // 默认思考模式（可选）
+      // 可选值：off | minimal | low | medium | high | xhigh | adaptive | max
+      // thinkingDefault: null,
+    },
+
+    // Agent 列表（用于多 agent 配置）
+    list: [
+      {
+        id: "default",
+        default: true,
+        name: "Default Agent",
+        // 可以覆盖 defaults 中的字段：
+        // model: "openai/gpt-4o",
+        // workspace: "./workspace-default",
+      },
+      // 多 agent 示例（取消注释启用）：
+      // {
+      //   id: "coder",
+      //   name: "Coding Agent",
+      //   model: "anthropic/claude-sonnet-4-5-20250929",
+      //   workspace: "./workspace-coder",
+      // },
+      // {
+      //   id: "analyst",
+      //   name: "Analysis Agent",
+      // },
+    ],
+  },
+
+  // ==========================================
+  // 模型/Provider 配置
+  // ==========================================
+  models: {
+    // merge = 自定义 provider 合并到内置 provider（默认）
+    // replace = 仅使用自定义 provider，忽略内置
+    mode: "merge",
+
+    // 自定义 Provider 定义
+    providers: {
+      // Provider ID（自定义，用于模型引用格式：your-provider/model-id）
+      "your-provider": {
+        // API 端点 URL（必需）
+        baseUrl: "https://your-api-endpoint.com/v1",
+
+        // API 密钥（支持环境变量替换语法）
+        // 推荐：设置为环境变量后使用 "${YOUR_API_KEY}" 语法
+        apiKey: "${YOUR_API_KEY}",
+
+        // API 协议类型
+        // 可选值：anthropic-messages | openai-completions | openai-responses
+        api: "openai-completions",
+
+        // 模型列表
+        models: [
+          {
+            // 模型 ID（在 provider 内唯一，用于引用：your-provider/your-model）
+            id: "your-model",
+
+            // 显示名称（可选）
+            name: "Your Custom Model",
+
+            // 输入模态（可选，默认 ["text"]）
+            // 可选值：text | image | video | audio
+            input: ["text", "image"],
+
+            // 是否支持推理（可选，默认 false）
+            reasoning: false,
+
+            // 上下文窗口大小（可选，默认 8192）
+            contextWindow: 128000,
+
+            // 最大输出 token 数（可选，默认 4096）
+            maxTokens: 8192,
+
+            // 价格配置（可选，默认全 0）
+            cost: {
+              input: 0,       // 输入价格（每百万 token）
+              output: 0,      // 输出价格（每百万 token）
+              cacheRead: 0,   // 缓存读取价格
+              cacheWrite: 0,  // 缓存写入价格
+            },
+          },
+        ],
+      },
+
+      // 多 Provider 示例（取消注释启用）：
+      // "openrouter": {
+      //   baseUrl: "https://openrouter.ai/api/v1",
+      //   apiKey: "${OPENROUTER_API_KEY}",
+      //   api: "openai-completions",
+      //   models: [
+      //     {
+      //       id: "anthropic/claude-sonnet-4",
+      //       name: "Claude Sonnet 4",
+      //       input: ["text", "image"],
+      //       contextWindow: 200000,
+      //       maxTokens: 8192,
+      //     },
+      //   ],
+      // },
+    },
+  },
+
+  // ==========================================
+  // Session 配置
+  // ==========================================
+  session: {
+    // 空闲超时分钟数
+    idleMinutes: 60,
+
+    // 重置模式配置
+    reset: {
+      // daily = 每天重置，idle = 空闲后重置
+      mode: "idle",
+
+      // 空闲多少分钟后重置
+      idleMinutes: 120,
+    },
+  },
+
+  // ==========================================
+  // nano-openclaw 自定义字段
+  // ==========================================
+
+  // 禁用工具，纯对话模式（默认 false）
+  noTools: false,
+
+  // 每轮用户输入最大工具调用次数（默认 12）
+  maxIterations: 12,
+
+  // 单次响应最大 token 数（默认 4096）
+  maxTokens: 4096,
+
+  // 扩展思考 token 预算（≥512 启用思考模式，null = 禁用）
+  thinkingBudgetTokens: null,
+
+  // 上下文压缩配置
+  context: {
+    // 上下文 token 预算（默认 100000）
+    budget: 100000,
+
+    // 触发压缩的阈值比例（默认 0.8 = 80%）
+    threshold: 0.8,
+
+    // 压缩时保留的最近对话轮数（默认 3）
+    recent_turns: 3,
+  },
+}
