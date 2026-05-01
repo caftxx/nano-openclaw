@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from nano_openclaw.cli import repl
 from nano_openclaw.loop import LoopConfig
@@ -22,6 +23,14 @@ from nano_openclaw.config import (
     DEFAULT_CONFIG_FILENAME,
     load_config,
     resolve_model_config,
+)
+from nano_openclaw.session import (
+    TranscriptWriter,
+    TranscriptReader,
+    load_session_store,
+    get_last_session,
+    list_sessions,
+    new_session_id,
 )
 from nano_openclaw.tools import ToolRegistry, build_default_registry
 
@@ -37,6 +46,11 @@ def main() -> None:
         "\n"
         "Model reference format: provider/model-id (e.g., anthropic/claude-sonnet-4-5)\n"
         "Custom providers can be defined in the config file under models.providers.\n"
+        "\n"
+        "Session persistence:\n"
+        "  --resume                             Resume the last session from transcript\n"
+        "  --sessions                           List all saved sessions and exit\n"
+        "  Session files are stored in .nano-sessions/ next to the config file.\n"
         "\n"
         "Configurable options (with defaults):\n"
         "  agents.model                           Main model (anthropic/claude-sonnet-4-5-20250929)\n"
@@ -86,6 +100,16 @@ def main() -> None:
         default=None,
         help=f"Path to config file (default: ./{DEFAULT_CONFIG_FILENAME})",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the last session from transcript file",
+    )
+    parser.add_argument(
+        "--sessions",
+        action="store_true",
+        help="List all saved sessions and exit",
+    )
     args = parser.parse_args()
 
     config, warnings = load_config(args.config)
@@ -116,6 +140,45 @@ def main() -> None:
     client = _build_client(api, api_key, base_url)
     registry = ToolRegistry() if config.no_tools else build_default_registry()
     
+    # Resolve session directory (next to config file)
+    config_path = Path(args.config) if args.config else Path.cwd() / DEFAULT_CONFIG_FILENAME
+    config_dir = config_path.parent.resolve()
+    session_dir = config_dir / ".nano-sessions"
+    store_path = session_dir / "sessions.json"
+
+    # Handle --sessions: list and exit
+    if args.sessions:
+        _print_sessions_list(store_path)
+        return
+
+    # Build session: new or resumed
+    transcript_writer: TranscriptWriter | None = None
+    session_id = ""
+    history = []
+
+    if args.resume:
+        store = load_session_store(store_path)
+        last = get_last_session(store)
+        if last:
+            session_id = last.session_id
+            transcript_path = session_dir / f"{session_id}.jsonl"
+            reader = TranscriptReader(transcript_path)
+            history, loaded_id, msg_count, comp_count, last_msg_id = reader.load_history()
+            transcript_writer = TranscriptWriter.resume(
+                transcript_path, session_id, msg_count, comp_count, last_msg_id
+            )
+            print(f"resumed session {session_id[:8]}… ({msg_count} messages, {comp_count} compactions)", file=sys.stderr)
+        else:
+            print("no previous session to resume — starting fresh", file=sys.stderr)
+
+    if not transcript_writer:
+        # New session
+        session_id = new_session_id()
+        transcript_path = session_dir / f"{session_id}.jsonl"
+        transcript_writer = TranscriptWriter(transcript_path)
+        transcript_writer.start(model=model_id, cwd=str(config_dir))
+        # Store metadata will be saved during REPL loop
+
     # Resolve image model reference to extract model_id for API calls
     image_model_ref = config.resolve_image_model()
     image_model_id: str | None = None
@@ -146,7 +209,34 @@ def main() -> None:
         image_model=image_model_id,
     )
 
-    repl(registry, client=client, cfg=cfg)
+    repl(
+        registry,
+        client=client,
+        cfg=cfg,
+        session_dir=session_dir,
+        transcript_writer=transcript_writer,
+        session_id=session_id,
+        store_path=store_path,
+        initial_history=history if history else None,
+    )
+
+
+def _print_sessions_list(store_path: Path) -> None:
+    """Print saved sessions to stdout."""
+    store = load_session_store(store_path)
+    sessions = list_sessions(store)
+    if not sessions:
+        print("no saved sessions")
+        return
+    from datetime import datetime, timezone
+    print(f"{'ID':<38} {'Model':<25} {'Messages':>8} {'Compactions':>11} {'Last Active'}")
+    print("-" * 100)
+    for s in sessions:
+        marker = " ← current" if s.session_id == store.get("lastSessionId") else ""
+        last_active = datetime.fromtimestamp(s.updated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(
+            f"{s.session_id:<36}{marker} {s.model or '(unknown)':<25} {s.message_count:>8} {s.compaction_count:>11} {last_active}"
+        )
 
 
 def _build_client(api: str, api_key: str, base_url: str | None):

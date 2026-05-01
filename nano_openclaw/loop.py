@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from nano_openclaw.compact import compact_if_needed
 from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
@@ -31,6 +31,9 @@ from nano_openclaw.provider import (
     stream_response,
 )
 from nano_openclaw.tools import ToolRegistry
+
+if TYPE_CHECKING:
+    from nano_openclaw.session import TranscriptWriter
 
 EventCallback = Callable[[Any], None]
 
@@ -71,6 +74,7 @@ def agent_loop(
     *,
     client: Any,  # anthropic.Anthropic | openai.OpenAI
     cfg: LoopConfig,
+    transcript_writer: "TranscriptWriter | None" = None,
 ) -> list[Message]:
     """Drive one user turn to completion (possibly through many tool rounds).
 
@@ -116,6 +120,8 @@ def agent_loop(
         content.append({"type": "text", "text": "(see attached image)"})
 
     history.append(Message("user", content))
+    if transcript_writer:
+        transcript_writer.append_message(history[-1])
 
     system = build_system_prompt(registry)
     tools_schema = registry.schemas()
@@ -133,6 +139,8 @@ def agent_loop(
         )
         if summary:
             on_event(("Compaction", summary))
+            if transcript_writer:
+                transcript_writer.append_compaction(summary)
         wire_messages = [{"role": m.role, "content": m.content} for m in history]
 
         assistant_blocks, stop_reason = _consume_one_assistant_turn(
@@ -147,6 +155,8 @@ def agent_loop(
         )
 
         history.append(Message("assistant", assistant_blocks))
+        if transcript_writer:
+            transcript_writer.append_message(history[-1])
 
         if stop_reason != "tool_use":
             return history  # end_turn / max_tokens / stop_sequence — terminal
@@ -161,6 +171,8 @@ def agent_loop(
             on_event(("ToolResult", block["name"], block.get("input") or {}, result))
 
         history.append(Message("user", tool_results))
+        if transcript_writer:
+            transcript_writer.append_message(history[-1])
         # next iteration sends history (now including tool_results) back to the model
 
     history.append(

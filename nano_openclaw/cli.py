@@ -5,18 +5,21 @@ and `src/tui/components/tool-execution.ts:55-137` (tool panels).
 Production OpenClaw uses pi-tui — a custom React-like terminal lib.
 nano uses ``rich``: simpler, less to learn, same visual idea.
 
-Slash commands: ``/quit``, ``/clear``, ``/new`` (alias to /clear), ``/help``, ``/context``, ``/compact``. No multiline editor.
+Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions``, ``/save``, ``/session [prefix]``. No multiline editor.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from anthropic import Anthropic
 from rich import markup
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
@@ -27,17 +30,37 @@ from nano_openclaw.provider import (
     ToolUseEnd,
     ToolUseStart,
 )
+from nano_openclaw.session import (
+    TranscriptWriter,
+    TranscriptReader,
+    load_session_store,
+    save_session_store,
+    get_last_session,
+    update_session,
+    list_sessions,
+    new_session_id,
+)
 from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
 
 
-def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
+def repl(
+    registry: ToolRegistry,
+    *,
+    client: Anthropic,
+    cfg: LoopConfig,
+    session_dir: Path | None = None,
+    transcript_writer: TranscriptWriter | None = None,
+    session_id: str = "",
+    store_path: Path | None = None,
+    initial_history: list[Message] | None = None,
+) -> None:
     """Interactive read-eval-print loop. Blocks until /quit or Ctrl-D."""
     console = Console()
-    history: list[Message] = []
+    history: list[Message] = list(initial_history) if initial_history else []
 
-    _print_banner(console, cfg.model, registry)
+    _print_banner(console, cfg.model, registry, session_id)
 
     while True:
         try:
@@ -51,13 +74,29 @@ def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
         if user_input in {"/quit", "/exit", "/q"}:
             console.print("[dim]bye.[/]")
             return
-        if user_input in {"/clear", "/new"}:
+        if user_input == "/clear":
             history.clear()
             console.print("[dim](history cleared)[/]")
             continue
+        if user_input == "/new":
+            if transcript_writer and store_path and session_id:
+                _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+            history.clear()
+            if store_path and session_dir:
+                session_id = new_session_id()
+                new_path = session_dir / f"{session_id}.jsonl"
+                transcript_writer = TranscriptWriter(new_path)
+                transcript_writer.start(model=cfg.model)
+                store = load_session_store(store_path)
+                update_session(store, session_id, model=cfg.model, message_count=0, compaction_count=0)
+                save_session_store(store_path, store)
+                console.print(f"[dim]new session: {session_id[:8]}…[/]")
+            else:
+                console.print("[dim](history cleared)[/]")
+            continue
         if user_input == "/help":
             console.print(
-                "[dim]commands: /quit, /clear (/new), /help, /context, /compact — anything else is sent to the model[/]"
+                "[dim]commands: /quit, /clear (clear history), /new (new session+ID), /help, /context, /compact, /sessions, /save, /session [prefix] — anything else is sent to the model[/]"
             )
             continue
         if user_input == "/context":
@@ -65,6 +104,45 @@ def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
             continue
         if user_input == "/compact":
             _manual_compact(console, history, cfg, client)
+            continue
+        if user_input == "/sessions":
+            if store_path:
+                _list_sessions_cli(console, store_path)
+            else:
+                console.print("[dim](no session store configured)[/]")
+            continue
+        if user_input == "/save":
+            if transcript_writer and store_path and session_id:
+                _save_session_now(console, store_path, transcript_writer, session_id, cfg.model)
+            else:
+                console.print("[dim](no active session to save)[/]")
+            continue
+        if user_input.startswith("/session"):
+            parts = user_input.split(None, 1)
+            if len(parts) == 1:
+                if session_id:
+                    console.print(f"[dim]current session: {session_id}[/]")
+                else:
+                    console.print("[dim](no active session)[/]")
+            else:
+                prefix = parts[1].strip()
+                if store_path and session_dir:
+                    result = _load_session_by_prefix(console, store_path, session_dir, prefix)
+                    if result:
+                        new_history, new_writer, new_sid = result
+                        if new_sid == session_id:
+                            console.print(f"[dim]already on session {new_sid[:8]}…[/]")
+                        else:
+                            if transcript_writer and store_path and session_id:
+                                _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+                            history.clear()
+                            history.extend(new_history)
+                            transcript_writer = new_writer
+                            session_id = new_sid
+                            _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+                            console.print(f"[dim]switched to session {session_id[:8]}… ({len(history)} messages)[/]")
+                else:
+                    console.print("[dim](no session store configured)[/]")
             continue
 
         on_event = _make_event_handler(console)
@@ -76,22 +154,29 @@ def repl(registry: ToolRegistry, *, client: Anthropic, cfg: LoopConfig) -> None:
                 on_event=on_event,
                 client=client,
                 cfg=cfg,
+                transcript_writer=transcript_writer,
             )
         except Exception as exc:  # noqa: BLE001 — surface model/network errors to user
             console.print(f"\n[red]error:[/] {type(exc).__name__}: {markup.escape(str(exc))}")
             continue
         console.print()  # blank line between turns
 
+        # Persist session metadata after each turn
+        if transcript_writer and store_path and session_id:
+            _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
 
-def _print_banner(console: Console, model: str, registry: ToolRegistry) -> None:
+
+def _print_banner(console: Console, model: str, registry: ToolRegistry, session_id: str = "") -> None:
     tools = ", ".join(registry.names()) or "(none)"
+    session_line = f"session: {session_id[:8]}…" if session_id else ""
     console.print(
         Panel.fit(
             Text.from_markup(
                 f"[bold]nano-openclaw[/]\n"
                 f"model:  [cyan]{markup.escape(model)}[/]\n"
-                f"tools:  {markup.escape(tools)}\n"
-                f"commands: /quit  /clear (/new)  /help  /context  /compact"
+                f"tools:  {markup.escape(tools)}"
+                + (f"\n{session_line}" if session_line else "")
+                + "\ncommands: /quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session [prefix]"
             ),
             border_style="cyan",
         )
@@ -293,3 +378,92 @@ def _short_args(args: dict[str, Any]) -> str:
     if len(rendered) > 80:
         rendered = rendered[:77] + "..."
     return rendered
+
+
+def _update_session_metadata(
+    store_path: Path,
+    session_id: str,
+    transcript_writer: TranscriptWriter,
+    model: str,
+) -> None:
+    """Update sessions.json with current session stats."""
+    store = load_session_store(store_path)
+    update_session(
+        store,
+        session_id,
+        model=model,
+        message_count=transcript_writer.message_count,
+        compaction_count=transcript_writer.compaction_count,
+    )
+    save_session_store(store_path, store)
+
+
+def _save_session_now(
+    console: Console,
+    store_path: Path,
+    transcript_writer: TranscriptWriter,
+    session_id: str,
+    model: str,
+) -> None:
+    """Force-save session metadata to sessions.json."""
+    _update_session_metadata(store_path, session_id, transcript_writer, model)
+    console.print(f"[dim]session {session_id[:8]}… saved[/]")
+
+
+def _list_sessions_cli(console: Console, store_path: Path) -> None:
+    """Display available sessions in a table."""
+    store = load_session_store(store_path)
+    sessions = list_sessions(store)
+
+    if not sessions:
+        console.print("[dim](no saved sessions)[/]")
+        return
+
+    table = Table(title="Saved Sessions", border_style="cyan")
+    table.add_column("Session ID", style="cyan")
+    table.add_column("Model", style="green")
+    table.add_column("Messages", justify="right")
+    table.add_column("Compactions", justify="right")
+    table.add_column("Last Active", style="dim")
+
+    for s in sessions:
+        last_active = datetime.fromtimestamp(s.updated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        marker = " ← current" if s.session_id == store.get("lastSessionId") else ""
+        table.add_row(
+            s.session_id[:8] + "…" + marker,
+            s.model or "(unknown)",
+            str(s.message_count),
+            str(s.compaction_count),
+            last_active,
+        )
+
+    console.print(table)
+
+
+def _load_session_by_prefix(
+    console: Console,
+    store_path: Path,
+    session_dir: Path,
+    prefix: str,
+) -> tuple[list[Message], TranscriptWriter, str] | None:
+    """Find a session by ID prefix, load its transcript, return (history, writer, session_id)."""
+    store = load_session_store(store_path)
+    sessions = list_sessions(store)
+    matches = [s for s in sessions if s.session_id.startswith(prefix)]
+
+    if not matches:
+        console.print(f"[dim]no session matching '{markup.escape(prefix)}'[/]")
+        return None
+    if len(matches) > 1:
+        console.print(f"[dim]{len(matches)} sessions match — be more specific:[/]")
+        for s in matches:
+            last_active = datetime.fromtimestamp(s.updated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            console.print(f"  [cyan]{s.session_id[:12]}…[/]  {s.model or '(unknown)'}  {s.message_count} msgs  {last_active}")
+        return None
+
+    target = matches[0]
+    transcript_path = session_dir / f"{target.session_id}.jsonl"
+    reader = TranscriptReader(transcript_path)
+    loaded_history, _, msg_count, comp_count, last_msg_id = reader.load_history()
+    writer = TranscriptWriter.resume(transcript_path, target.session_id, msg_count, comp_count, last_msg_id)
+    return loaded_history, writer, target.session_id
