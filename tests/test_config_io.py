@@ -54,17 +54,36 @@ class TestFindConfigFile:
     def test_default_path_not_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             env = {"OPENCLAW_STATE_DIR": tmpdir}
-            path = find_config_file(env=env)
-            assert path is None
+            # Patch cwd to temp dir so workspace/ config isn't found
+            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
+                path = find_config_file(env=env)
+                assert path is None
+    
+    def test_workspace_config_fallback(self):
+        """Workspace config is found when state dir has no config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            workspace_dir = tmpdir / "workspace"
+            workspace_dir.mkdir()
+            config_file = workspace_dir / DEFAULT_CONFIG_FILENAME
+            config_file.write_text('{"agents":{"defaults":{"model":"test/model"}}}')
+            
+            env = {"OPENCLAW_STATE_DIR": str(tmpdir)}
+            with patch('pathlib.Path.cwd', return_value=tmpdir):
+                path = find_config_file(env=env)
+                assert path is not None
+                assert path == config_file
 
 
 class TestLoadConfig:
     def test_no_config_file_returns_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             env = {"OPENCLAW_STATE_DIR": tmpdir}
-            cfg, warnings = load_config(env=env)
-            assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
-            assert len(warnings) == 0
+            # Patch cwd to temp dir so workspace/ config isn't found
+            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
+                cfg, warnings = load_config(env=env)
+                assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
+                assert len(warnings) == 0
     
     def test_load_simple_config(self):
         content = '''
