@@ -88,10 +88,9 @@ class LoopConfig:
     
     @property
     def thinking_budget_tokens(self) -> int | None:
-        """Convert thinking level to budget tokens (for API compatibility)."""
-        if self.thinking_level == "off":
-            return None
-        return THINKING_BUDGETS.get(self.thinking_level, 0)
+        """Convert thinking level to budget tokens.
+        Returns 0 to explicitly disable thinking, >0 to enable, None if level unknown."""
+        return THINKING_BUDGETS.get(self.thinking_level)
 
 
 def agent_loop(

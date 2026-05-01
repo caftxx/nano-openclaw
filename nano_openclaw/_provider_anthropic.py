@@ -54,13 +54,16 @@ def stream_response(
     if tools:
         request["tools"] = tools
 
-    if thinking_budget_tokens is not None:
+    if thinking_budget_tokens is not None and thinking_budget_tokens > 0:
         # Ensure max_tokens is large enough to hold thinking + some output tokens.
         request["max_tokens"] = max(max_tokens, thinking_budget_tokens + 1024)
         request["thinking"] = {
             "type": "enabled",
             "budget_tokens": thinking_budget_tokens,
         }
+    elif thinking_budget_tokens == 0:
+        # Explicitly disable thinking (needed for providers like DashScope that enable it by default).
+        request["thinking"] = {"type": "disabled"}
 
     pending_stop_reason = "end_turn"
     pending_usage: dict[str, Any] = {}
