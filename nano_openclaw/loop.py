@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from nano_openclaw.compact import compact_if_needed
@@ -33,6 +34,7 @@ from nano_openclaw.provider import (
     stream_response,
 )
 from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.workspace import WorkspaceBootstrapFile, get_or_load_bootstrap_files
 
 if TYPE_CHECKING:
     from nano_openclaw.session import TranscriptWriter
@@ -81,6 +83,11 @@ class LoopConfig:
     # When "off", no thinking blocks are requested.
     # When non-off, thinking is enabled with budget derived from level.
     thinking_level: ThinkingLevel = "off"
+    # Workspace bootstrap (mirrors openclaw workspace bootstrap injection)
+    workspace_dir: Path | None = None  # Path to workspace directory
+    session_key: str = "default"  # Session identifier for caching
+    bootstrap_max_chars: int = 12000  # Per-file character budget
+    bootstrap_total_max_chars: int = 60000  # Total character budget
 
     @property
     def model_has_vision(self) -> bool:
@@ -150,7 +157,17 @@ def agent_loop(
     if transcript_writer:
         transcript_writer.append_message(history[-1])
 
-    system = build_system_prompt(registry)
+    # Load workspace bootstrap files (AGENTS.md, SOUL.md, etc.) for prompt injection
+    bootstrap_files: list[WorkspaceBootstrapFile] | None = None
+    if cfg.workspace_dir:
+        bootstrap_files = get_or_load_bootstrap_files(
+            cfg.workspace_dir,
+            cfg.session_key,
+            cfg.bootstrap_max_chars,
+            cfg.bootstrap_total_max_chars,
+        )
+
+    system = build_system_prompt(registry, cfg.workspace_dir, bootstrap_files)
     tools_schema = registry.schemas()
 
     for _ in range(cfg.max_iterations):

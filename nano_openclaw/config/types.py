@@ -147,6 +147,18 @@ class AgentDefaultsConfig(BaseModel):
         default=None,
         description="Default thinking mode: off|minimal|low|medium|high|xhigh|adaptive|max"
     )
+    bootstrapMaxChars: int = Field(
+        default=12000,
+        ge=100,
+        alias="bootstrapMaxChars",
+        description="Per-file character budget for bootstrap files (AGENTS.md, SOUL.md, etc.)"
+    )
+    bootstrapTotalMaxChars: int = Field(
+        default=60000,
+        ge=100,
+        alias="bootstrapTotalMaxChars",
+        description="Total character budget across all bootstrap files"
+    )
 
     @field_validator("model", mode="before")
     @classmethod

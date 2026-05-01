@@ -156,6 +156,16 @@ def _bash(args: dict[str, Any]) -> str:
     )
 
 
+def _session_status(args: dict[str, Any]) -> str:
+    from datetime import datetime
+    now = datetime.now()
+    weekday = now.strftime("%A")
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    timezone = datetime.now().astimezone().tzname() or "local"
+    return f"Clock: {weekday}, {date_str} {time_str} ({timezone})"
+
+
 BUILTIN_TOOLS: list[Tool] = [
     Tool(
         name="read_file",
@@ -207,6 +217,15 @@ BUILTIN_TOOLS: list[Tool] = [
             "required": ["command"],
         },
         run=_bash,
+    ),
+    Tool(
+        name="session_status",
+        description="Show current session status including date, time, day of week, and timezone. Use when you need the current date, time, or day of week.",
+        input_schema={
+            "type": "object",
+            "properties": {},
+        },
+        run=_session_status,
     ),
 ]
 

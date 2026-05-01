@@ -33,6 +33,11 @@
       // 默认思考等级（可选）
       // 可选值：off | minimal | low | medium | high | xhigh | adaptive | max
       // thinkingDefault: off,
+
+      // Workspace 文件注入预算配置（可选）
+      // 控制 AGENTS.md、SOUL.md 等文件注入到系统提示的大小限制
+      // bootstrapMaxChars: 12000,    // 单个文件最大字符数（默认 12000）
+      // bootstrapTotalMaxChars: 60000, // 所有文件总字符数（默认 60000）
     },
 
     // Agent 列表（用于多 agent 配置）

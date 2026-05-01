@@ -63,7 +63,7 @@ def test_bash_captures_exit_code(registry):
 
 def test_schemas_have_required_anthropic_fields(registry):
     schemas = registry.schemas()
-    assert {s["name"] for s in schemas} == {"read_file", "write_file", "list_dir", "bash"}
+    assert {s["name"] for s in schemas} == {"read_file", "write_file", "list_dir", "bash", "session_status"}
     for s in schemas:
         assert "description" in s and isinstance(s["description"], str)
         assert s["input_schema"]["type"] == "object"

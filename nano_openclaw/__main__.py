@@ -181,6 +181,11 @@ def main() -> None:
         context_recent_turns=config.context.recent_turns,
         image_model=image_model_id,
         thinking_level=config.resolve_thinking_level(model_ref),
+        # Workspace bootstrap configuration (AGENTS.md, SOUL.md, etc.)
+        workspace_dir=workspace_dir,
+        session_key=session_id if session_id else args.agent,
+        bootstrap_max_chars=config.agents.defaults.bootstrapMaxChars,
+        bootstrap_total_max_chars=config.agents.defaults.bootstrapTotalMaxChars,
     )
 
     repl(
