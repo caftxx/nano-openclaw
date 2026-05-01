@@ -53,7 +53,7 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `imageModel` | string \| null | `null` | 图像理解模型，`null` 表示使用 Native Vision |
 | `workspace` | string \| null | `null` | Agent 工作目录路径（相对或绝对） |
 | `contextTokens` | number \| null | `null` | 上下文 token 上限 |
-| `thinkingDefault` | string \| null | `null` | 默认思考模式：`off\|minimal\|low\|medium\|high\|xhigh\|adaptive\|max` |
+| `thinkingDefault` | string \| null | `null` | 默认思考等级：`off\|minimal\|low\|medium\|high\|xhigh\|adaptive\|max` |
 
 #### agents.list[] — Agent 列表
 
@@ -122,7 +122,8 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `noTools` | boolean | `false` | 禁用工具，纯对话模式 |
 | `maxIterations` | number | `12` | 每轮用户输入最大工具调用次数 |
 | `maxTokens` | number | `4096` | 单次响应最大 token 数 |
-| `thinkingBudgetTokens` | number \| null | `null` | 扩展思考 token 预算 |
+| `thinkingDefault` | string \| null | `null` | 默认思考等级：`off\|minimal\|low\|medium\|high\|xhigh\|adaptive\|max` |
+| `maxTokens` | number | `4096` | 单次响应最大 token 数（优先从模型配置的 `maxTokens` 读取） |
 | `context.budget` | number | `100000` | 上下文 token 预算 |
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |

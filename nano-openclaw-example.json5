@@ -33,7 +33,7 @@
       // 上下文 token 上限（可选，null = 使用模型默认值）
       // contextTokens: null,
 
-      // 默认思考模式（可选）
+      // 默认思考等级（可选）
       // 可选值：off | minimal | low | medium | high | xhigh | adaptive | max
       // thinkingDefault: null,
     },
@@ -163,11 +163,8 @@
   // 每轮用户输入最大工具调用次数（默认 12）
   maxIterations: 12,
 
-  // 单次响应最大 token 数（默认 4096）
+  // 单次响应最大 token 数（默认 4096，优先从模型配置的 maxTokens 读取）
   maxTokens: 4096,
-
-  // 扩展思考 token 预算（≥512 启用思考模式，null = 禁用）
-  thinkingBudgetTokens: null,
 
   // 上下文压缩配置
   context: {

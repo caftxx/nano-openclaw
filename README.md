@@ -197,7 +197,7 @@ uv run python -m nano_openclaw --agent coder
 
 图片处理遵循**双路径架构**：未配置 `image_model` 时走 Native Vision（图片直接发给主模型）；配置后走 Media Understanding（图片模型先描述，文字注入 prompt）。若主模型无视觉能力且未配置 `image_model`，图片会被跳过并显示警告。`parse_image_refs` 在循环入口处统一处理用户输入中的 `@file.png`、Markdown `![]()` 和 URL 引用。
 
-Extended thinking 支持：配置 `thinkingBudgetTokens`（≥512）后启用。Anthropic provider 使用原生 thinking API；OpenAI-compatible provider 使用 `reasoning_content` 流。Thinking 块会持久化到消息历史（`thinking`/`redacted_thinking` 类型），CLI 以 dim 样式在 assistant 输出前渲染。`max_tokens` 会自动调整为 `thinkingBudgetTokens + 1024` 最小值。
+Thinking 支持：通过 `agents.defaults.thinkingDefault` 配置思考等级（`off|minimal|low|medium|high|xhigh|adaptive|max`）。Anthropic provider 使用原生 thinking API；OpenAI-compatible provider 使用 `reasoning_content` 流。Thinking 块会持久化到消息历史（`thinking`/`redacted_thinking` 类型），CLI 以 dim 样式在 assistant 输出前渲染。当设置为 `off` 时，会显式发送 `{"type": "disabled"}` 给 API，以覆盖某些默认启用 thinking 的 provider（如 DashScope）。
 
 ## 端到端验证
 
@@ -257,6 +257,7 @@ nano-openclaw/
 ├── README.md
 ├── docs/
 │   └── CONFIG_EXAMPLE.md   配置字段完整说明（每个字段的含义和示例）
+├── nano-openclaw-example.json5  配置示例模板（复制为 nano-openclaw.json5 使用）
 ├── LICENSE                   MIT
 ├── pyproject.toml            uv 管理；anthropic + openai + rich + pillow + json5 + pydantic
 ├── uv.lock                   锁定版本
