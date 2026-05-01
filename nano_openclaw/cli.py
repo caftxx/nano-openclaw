@@ -11,7 +11,7 @@ Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (n
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,6 +33,7 @@ from nano_openclaw.provider import (
 from nano_openclaw.session import (
     TranscriptWriter,
     TranscriptReader,
+    SessionInfo,
     load_session_store,
     save_session_store,
     get_last_session,
@@ -76,6 +77,10 @@ def repl(
             return
         if user_input == "/clear":
             history.clear()
+            if transcript_writer:
+                transcript_writer.clear()
+            if transcript_writer and store_path and session_id:
+                _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
             console.print("[dim](history cleared)[/]")
             continue
         if user_input == "/new":
@@ -107,7 +112,7 @@ def repl(
             continue
         if user_input == "/sessions":
             if store_path:
-                _list_sessions_cli(console, store_path)
+                _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer)
             else:
                 console.print("[dim](no session store configured)[/]")
             continue
@@ -410,10 +415,29 @@ def _save_session_now(
     console.print(f"[dim]session {session_id[:8]}… saved[/]")
 
 
-def _list_sessions_cli(console: Console, store_path: Path) -> None:
+def _list_sessions_cli(
+    console: Console,
+    store_path: Path,
+    current_session_id: str | None = None,
+    current_model: str = "",
+    transcript_writer: TranscriptWriter | None = None,
+) -> None:
     """Display available sessions in a table."""
+    import time
+
     store = load_session_store(store_path)
     sessions = list_sessions(store)
+
+    saved_ids = {s.session_id for s in sessions}
+    if current_session_id and current_session_id not in saved_ids:
+        sessions.insert(0, SessionInfo(
+            session_id=current_session_id,
+            created_at=time.time(),
+            updated_at=time.time(),
+            model=current_model,
+            message_count=transcript_writer.message_count if transcript_writer else 0,
+            compaction_count=transcript_writer.compaction_count if transcript_writer else 0,
+        ))
 
     if not sessions:
         console.print("[dim](no saved sessions)[/]")
@@ -427,8 +451,11 @@ def _list_sessions_cli(console: Console, store_path: Path) -> None:
     table.add_column("Last Active", style="dim")
 
     for s in sessions:
-        last_active = datetime.fromtimestamp(s.updated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        marker = " ← current" if s.session_id == store.get("lastSessionId") else ""
+        last_active = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M:%S")
+        is_current = (current_session_id and s.session_id == current_session_id) or (
+            not current_session_id and s.session_id == store.get("lastSessionId")
+        )
+        marker = " ← current" if is_current else ""
         table.add_row(
             s.session_id[:8] + "…" + marker,
             s.model or "(unknown)",
@@ -457,7 +484,7 @@ def _load_session_by_prefix(
     if len(matches) > 1:
         console.print(f"[dim]{len(matches)} sessions match — be more specific:[/]")
         for s in matches:
-            last_active = datetime.fromtimestamp(s.updated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            last_active = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M:%S")
             console.print(f"  [cyan]{s.session_id[:12]}…[/]  {s.model or '(unknown)'}  {s.message_count} msgs  {last_active}")
         return None
 

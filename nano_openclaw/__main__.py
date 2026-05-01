@@ -28,6 +28,8 @@ from nano_openclaw.session import (
     TranscriptWriter,
     TranscriptReader,
     load_session_store,
+    save_session_store,
+    update_session,
     get_last_session,
     list_sessions,
     new_session_id,
@@ -172,12 +174,14 @@ def main() -> None:
             print("no previous session to resume — starting fresh", file=sys.stderr)
 
     if not transcript_writer:
-        # New session
+        # New session — write store immediately (store-first, like OpenClaw)
         session_id = new_session_id()
         transcript_path = session_dir / f"{session_id}.jsonl"
         transcript_writer = TranscriptWriter(transcript_path)
         transcript_writer.start(model=model_id, cwd=str(config_dir))
-        # Store metadata will be saved during REPL loop
+        store = load_session_store(store_path)
+        update_session(store, session_id, model=model_id, message_count=0, compaction_count=0)
+        save_session_store(store_path, store)
 
     # Resolve image model reference to extract model_id for API calls
     image_model_ref = config.resolve_image_model()

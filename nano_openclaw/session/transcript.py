@@ -86,6 +86,30 @@ class TranscriptWriter:
         self._compaction_count += 1
         self._append(entry)
 
+    def clear(self) -> None:
+        """Rewrite the transcript keeping only the session header; reset counters."""
+        if not self.path.exists():
+            self._message_count = 0
+            self._compaction_count = 0
+            self._last_message_id = ""
+            return
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        header_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("type") == "session":
+                header_lines.append(stripped)
+        self.path.write_text("\n".join(header_lines) + ("\n" if header_lines else ""), encoding="utf-8")
+        self._message_count = 0
+        self._compaction_count = 0
+        self._last_message_id = ""
+
     @property
     def message_count(self) -> int:
         return self._message_count
