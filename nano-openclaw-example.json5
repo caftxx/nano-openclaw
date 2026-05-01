@@ -30,12 +30,9 @@
       // Agent 工作目录（相对或绝对路径）
       workspace: "./workspace",
 
-      // 上下文 token 上限（可选，null = 使用模型默认值）
-      // contextTokens: null,
-
       // 默认思考等级（可选）
       // 可选值：off | minimal | low | medium | high | xhigh | adaptive | max
-      // thinkingDefault: null,
+      // thinkingDefault: off,
     },
 
     // Agent 列表（用于多 agent 配置）
@@ -101,19 +98,14 @@
             // 是否支持推理（可选，默认 false）
             reasoning: false,
 
+            // 同 thinkingDefault
+            params: { thinking: "low" },
+
             // 上下文窗口大小（可选，默认 8192）
             contextWindow: 128000,
 
             // 最大输出 token 数（可选，默认 4096）
             maxTokens: 8192,
-
-            // 价格配置（可选，默认全 0）
-            cost: {
-              input: 0,       // 输入价格（每百万 token）
-              output: 0,      // 输出价格（每百万 token）
-              cacheRead: 0,   // 缓存读取价格
-              cacheWrite: 0,  // 缓存写入价格
-            },
           },
         ],
       },
@@ -162,9 +154,6 @@
 
   // 每轮用户输入最大工具调用次数（默认 12）
   maxIterations: 12,
-
-  // 单次响应最大 token 数（默认 4096，优先从模型配置的 maxTokens 读取）
-  maxTokens: 4096,
 
   // 上下文压缩配置
   context: {

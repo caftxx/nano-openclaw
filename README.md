@@ -93,6 +93,8 @@ uv run python -m nano_openclaw --agent coder
 - `/clear` — 仅清空内存历史，重置 transcript 文件保留 session header，立即更新 session metadata
 
 ## 60 秒架构图
+
+```
                       ┌──────────────────────┐
     user types  ───▶ │   cli.repl()         │  rich-rendered REPL
                       └─────────┬────────────┘

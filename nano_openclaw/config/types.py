@@ -143,7 +143,7 @@ class AgentDefaultsConfig(BaseModel):
     )
     workspace: Optional[str] = Field(default=None, description="Default workspace directory")
     contextTokens: Optional[int] = Field(default=None, description="Context window token limit")
-    thinkingDefault: Optional[str] = Field(
+    thinkingDefault: Optional[ThinkingLevel] = Field(
         default=None,
         description="Default thinking mode: off|minimal|low|medium|high|xhigh|adaptive|max"
     )

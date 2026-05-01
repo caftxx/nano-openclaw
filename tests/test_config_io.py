@@ -218,7 +218,7 @@ class TestResolveModelConfig:
         cfg = NanoOpenClawConfig()
         env = {"ANTHROPIC_API_KEY": "test_key"}
         result = resolve_model_config("anthropic/claude-sonnet-4", cfg, env)
-        assert "image" in result["model_input"]
+        assert result["model_input"] == ["text"]
     
     def test_custom_provider_model_input(self):
         cfg = NanoOpenClawConfig(

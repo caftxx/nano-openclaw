@@ -191,12 +191,13 @@ def resolve_agent_workspace_dir(
             # Non-default agents get subdirectory
             return base_dir / agent_id
     
-    # 3. Fallback to state dir
+    # 3. Fallback: state dir for non-default agents, profile-aware default for default agent
     state_dir = resolve_state_dir(env)
-    
-    # 4. Ultimate default
+
     if agent_id == DEFAULT_AGENT_ID:
+        # Default agent uses profile-aware workspace (OPENCLAW_PROFILE support),
+        # mirroring openclaw's resolveDefaultAgentWorkspaceDir().
         return resolve_default_agent_workspace_dir(env)
-    
+
     # Non-default agents get workspace-{agentId} under state dir
     return state_dir / f"workspace-{agent_id}"

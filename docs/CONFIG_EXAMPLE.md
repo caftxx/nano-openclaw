@@ -34,10 +34,10 @@ Session 数据存储在状态目录下，按 agent 隔离：
 
 Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenClaw 一致）：
 
-1. `agents.list[<agentId>].workspace` — 单个 agent 的 workspace
-2. `agents.defaults.workspace` — 默认 agent 直接使用，其他 agent 自动创建子目录
-3. `{stateDir}/workspace-<agentId>` — 回退到状态目录
-4. `~/.openclaw/workspace` — 最终默认值
+1. `agents.list[<agentId>].workspace` — 单个 agent 的显式配置
+2. `agents.defaults.workspace` — 默认 agent 直接使用；非默认 agent 自动追加 `/<agentId>` 子目录
+3. 默认 agent：`~/.openclaw/workspace`（支持 `OPENCLAW_PROFILE`，变为 `~/.openclaw/workspace-<profile>`）
+4. 非默认 agent：`{stateDir}/workspace-<agentId>`
 
 ---
 
@@ -121,9 +121,6 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 |------|------|--------|------|
 | `noTools` | boolean | `false` | 禁用工具，纯对话模式 |
 | `maxIterations` | number | `12` | 每轮用户输入最大工具调用次数 |
-| `maxTokens` | number | `4096` | 单次响应最大 token 数 |
-| `thinkingDefault` | string \| null | `null` | 默认思考等级：`off\|minimal\|low\|medium\|high\|xhigh\|adaptive\|max` |
-| `maxTokens` | number | `4096` | 单次响应最大 token 数（优先从模型配置的 `maxTokens` 读取） |
 | `context.budget` | number | `100000` | 上下文 token 预算 |
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
