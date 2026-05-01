@@ -6,10 +6,12 @@ from nano_openclaw.approvals.types import (
     ApprovalPolicy,
     ToolApprovalConfig,
 )
+from nano_openclaw.approvals.manager import ApprovalManager
 
 __all__ = [
     "ApprovalDecision",
     "ApprovalRequest",
     "ApprovalPolicy",
     "ToolApprovalConfig",
+    "ApprovalManager",
 ]

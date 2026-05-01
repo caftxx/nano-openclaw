@@ -100,3 +100,57 @@ def test_policy_evaluator_allowlist():
     
     result = evaluator.evaluate("bash", {"command": "ls -la"})
     assert result.requires_approval == False
+
+
+def test_manager_create_request():
+    """Manager creates approval requests."""
+    from nano_openclaw.approvals import ApprovalManager
+    
+    policy = ApprovalPolicy()
+    manager = ApprovalManager(policy)
+    
+    req = manager.create_request("bash", {"command": "rm -rf /"})
+    assert req.tool_name == "bash"
+    assert req.risk_level == "high"
+    assert req.request_id != ""
+
+
+def test_manager_record_decision():
+    """Manager records decisions."""
+    from nano_openclaw.approvals import ApprovalManager
+    
+    policy = ApprovalPolicy()
+    manager = ApprovalManager(policy)
+    
+    req = manager.create_request("bash", {"command": "rm -rf /"})
+    manager.record_decision(req.request_id, ApprovalDecision.ALLOW_ONCE)
+    
+    assert manager.get_decision(req.request_id) == ApprovalDecision.ALLOW_ONCE
+
+
+def test_manager_allow_always_persistence(tmp_path):
+    """Manager persists allow-always decisions."""
+    from nano_openclaw.approvals import ApprovalManager
+    
+    store_path = tmp_path / "approvals.json"
+    policy = ApprovalPolicy(allow_always_store=str(store_path))
+    manager = ApprovalManager(policy)
+    
+    req = manager.create_request("bash", {"command": "ls -la"})
+    manager.record_decision(req.request_id, ApprovalDecision.ALLOW_ALWAYS)
+    
+    assert store_path.exists()
+    
+    patterns = manager.load_allow_always_patterns()
+    assert len(patterns) > 0
+
+
+def test_manager_check_allow_always():
+    """Manager checks stored allow-always patterns."""
+    from nano_openclaw.approvals import ApprovalManager
+    
+    policy = ApprovalPolicy(allow_always_patterns=["ls *", "cat *.txt"])
+    manager = ApprovalManager(policy)
+    
+    result = manager.check_request("bash", {"command": "ls -la"})
+    assert result.requires_approval == False
