@@ -25,6 +25,8 @@ from nano_openclaw.provider import (
     MessageEnd,
     StreamEvent,
     TextDelta,
+    ThinkingBlockComplete,
+    ThinkingDelta,
     ToolUseDelta,
     ToolUseEnd,
     ToolUseStart,
@@ -60,6 +62,10 @@ class LoopConfig:
     # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
     # str   → Media Understanding: images described to text by this model (apply.ts)
     image_model: str | None = None
+    # Extended thinking budget in tokens. None = disabled.
+    # When set, requires a model that supports extended thinking (Claude 3.7+).
+    # max_tokens is auto-adjusted to be at least thinking_budget_tokens + 1024.
+    thinking_budget_tokens: int | None = None
 
     @property
     def model_has_vision(self) -> bool:
@@ -151,6 +157,7 @@ def agent_loop(
             messages=wire_messages,
             tools=tools_schema,
             max_tokens=cfg.max_tokens,
+            thinking_budget_tokens=cfg.thinking_budget_tokens,
             on_event=on_event,
         )
 
@@ -190,6 +197,7 @@ def _consume_one_assistant_turn(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     max_tokens: int,
+    thinking_budget_tokens: int | None,
     on_event: EventCallback,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Stream one model response, accumulating mixed text + tool_use blocks."""
@@ -212,10 +220,21 @@ def _consume_one_assistant_turn(
         messages=messages,
         tools=tools,
         max_tokens=max_tokens,
+        thinking_budget_tokens=thinking_budget_tokens,
     ):
         on_event(ev)
 
-        if isinstance(ev, TextDelta):
+        if isinstance(ev, ThinkingDelta):
+            pass  # display only — ThinkingBlockComplete carries the full content
+
+        elif isinstance(ev, ThinkingBlockComplete):
+            _flush_text()
+            if ev.redacted:
+                blocks.append({"type": "redacted_thinking", "data": ev.signature})
+            else:
+                blocks.append({"type": "thinking", "thinking": ev.thinking, "signature": ev.signature})
+
+        elif isinstance(ev, TextDelta):
             text_buf += ev.text
 
         elif isinstance(ev, ToolUseStart):

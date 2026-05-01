@@ -27,6 +27,8 @@ from nano_openclaw.loop import LoopConfig, Message, agent_loop
 from nano_openclaw.provider import (
     MessageEnd,
     TextDelta,
+    ThinkingBlockComplete,
+    ThinkingDelta,
     ToolUseEnd,
     ToolUseStart,
 )
@@ -260,14 +262,26 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
     call as a Panel after dispatch (via the ``("ToolResult", ...)`` tuple
     emitted by ``loop.agent_loop``).
     """
-    state = {"text_in_flight": False}
+    state = {"text_in_flight": False, "thinking_in_flight": False}
 
     def handle(event: Any) -> None:
-        if isinstance(event, TextDelta):
+        if isinstance(event, ThinkingDelta):
+            if not state["thinking_in_flight"]:
+                console.print()
+                state["thinking_in_flight"] = True
+            console.print(markup.escape(event.text), end="", soft_wrap=True, style="dim", highlight=False)
+            console.file.flush()
+
+        elif isinstance(event, ThinkingBlockComplete):
+            if state["thinking_in_flight"]:
+                console.print()
+                state["thinking_in_flight"] = False
+
+        elif isinstance(event, TextDelta):
             if not state["text_in_flight"]:
                 console.print()  # gap before assistant text
                 state["text_in_flight"] = True
-            console.print(event.text, end="", soft_wrap=True, highlight=False)
+            console.print(markup.escape(event.text), end="", soft_wrap=True, highlight=False)
             console.file.flush()
 
         elif isinstance(event, ToolUseStart):

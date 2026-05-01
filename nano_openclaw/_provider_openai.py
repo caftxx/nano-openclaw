@@ -1,12 +1,14 @@
 """OpenAI Chat Completions API transport.
 
 Mirrors the role of `src/agents/openai-transport-stream.ts` — translate
-OpenAI's streaming chunks into the same 5 StreamEvent types that
+OpenAI's streaming chunks into the same StreamEvent types that
 _provider_anthropic produces, so loop.py stays provider-agnostic.
 
 Message format translation (Anthropic internal → OpenAI wire):
   history is stored in Anthropic format (text/tool_use/tool_result blocks);
   this module converts to OpenAI format before sending.
+  thinking/redacted_thinking blocks in history are skipped — OpenAI format
+  does not support them and they are not needed for context.
 
 Tool schema translation (Anthropic → OpenAI):
   Anthropic: {"name": ..., "description": ..., "input_schema": {...}}
@@ -20,6 +22,11 @@ Stop reason mapping:
   finish_reason "stop"       -> stop_reason "end_turn"
   finish_reason "tool_calls" -> stop_reason "tool_use"
   finish_reason "length"     -> stop_reason "max_tokens"
+
+Extended thinking (OpenAI-compatible providers):
+  thinking_budget_tokens is passed via extra_body={"thinking": {...}}.
+  Streaming thinking text arrives in delta.reasoning_content (non-standard
+  field used by many compatible providers); yielded as ThinkingDelta events.
 """
 
 from __future__ import annotations
@@ -27,7 +34,16 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator
 
-from ._stream_events import MessageEnd, StreamEvent, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from ._stream_events import (
+    MessageEnd,
+    StreamEvent,
+    TextDelta,
+    ThinkingBlockComplete,
+    ThinkingDelta,
+    ToolUseDelta,
+    ToolUseEnd,
+    ToolUseStart,
+)
 
 
 def stream_response(
@@ -38,6 +54,7 @@ def stream_response(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
+    thinking_budget_tokens: int | None = None,
 ) -> Iterator[StreamEvent]:
     oai_messages = [{"role": "system", "content": system}] + _to_openai_messages(messages)
 
@@ -50,8 +67,14 @@ def stream_response(
     if tools:
         kwargs["tools"] = _to_openai_tools(tools)
 
+    if thinking_budget_tokens is not None:
+        kwargs["extra_body"] = {
+            "thinking": {"type": "enabled", "budget_tokens": thinking_budget_tokens}
+        }
+
     pending_stop_reason = "end_turn"
     cur_index = -1
+    thinking_buf = ""
 
     response = client.chat.completions.create(**kwargs)
     for chunk in response:
@@ -59,6 +82,13 @@ def stream_response(
             continue
         choice = chunk.choices[0]
         delta = choice.delta
+
+        # reasoning_content is a non-standard field used by many OpenAI-compatible
+        # providers to stream thinking/reasoning text.
+        rc = getattr(delta, "reasoning_content", None)
+        if rc:
+            thinking_buf += rc
+            yield ThinkingDelta(text=rc)
 
         if delta.content:
             yield TextDelta(text=delta.content)
@@ -75,14 +105,18 @@ def stream_response(
                     yield ToolUseDelta(partial_json=tc.function.arguments)
 
         fr = choice.finish_reason
-        if fr == "tool_calls":
-            if cur_index >= 0:
-                yield ToolUseEnd()
-            pending_stop_reason = "tool_use"
-        elif fr == "stop":
-            pending_stop_reason = "end_turn"
-        elif fr == "length":
-            pending_stop_reason = "max_tokens"
+        if fr is not None:
+            if thinking_buf:
+                yield ThinkingBlockComplete(thinking=thinking_buf, signature="")
+                thinking_buf = ""
+            if fr == "tool_calls":
+                if cur_index >= 0:
+                    yield ToolUseEnd()
+                pending_stop_reason = "tool_use"
+            elif fr == "stop":
+                pending_stop_reason = "end_turn"
+            elif fr == "length":
+                pending_stop_reason = "max_tokens"
 
     yield MessageEnd(stop_reason=pending_stop_reason, usage={})
 
@@ -132,6 +166,7 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 })
 
         elif role == "assistant":
+            # thinking/redacted_thinking blocks are skipped — not valid in OpenAI format.
             text_parts = [c for c in content if c.get("type") == "text"]
             tool_uses = [c for c in content if c.get("type") == "tool_use"]
 

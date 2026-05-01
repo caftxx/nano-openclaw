@@ -65,6 +65,7 @@ def main() -> None:
         "  noTools                                Run as plain chatbot, no tools (false)\n"
         "  maxIterations                          Max tool-use rounds per user turn (12)\n"
         "  maxTokens                              Max tokens per assistant response (4096)\n"
+        "  thinkingBudgetTokens                   Extended thinking budget in tokens (None = disabled)\n"
         "  context.budget                         Maximum token budget for context window (100000)\n"
         "  context.threshold                      Trigger compaction at this fraction (0.8)\n"
         "  context.recent_turns                   Recent turns to preserve during compaction (3)\n"
@@ -87,6 +88,9 @@ def main() -> None:
         '        },\n'
         '      },\n'
         '    },\n'
+        '    // Extended thinking (requires Claude 3.7+ or claude-sonnet-4+)\n'
+        '    thinkingBudgetTokens: 8000,  // enable extended thinking\n'
+        '    maxTokens: 16000,            // must be >= thinkingBudgetTokens + 1024\n'
         '    // Runtime settings\n'
         '    maxIterations: 12,\n'
         '    context: {\n'
@@ -211,6 +215,7 @@ def main() -> None:
         context_threshold=config.context.threshold,
         context_recent_turns=config.context.recent_turns,
         image_model=image_model_id,
+        thinking_budget_tokens=config.thinking_budget_tokens,
     )
 
     repl(

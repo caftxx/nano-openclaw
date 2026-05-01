@@ -101,6 +101,17 @@ class NanoOpenClawConfig(BaseModel):
     
     context: ContextConfig = Field(default_factory=ContextConfig)
 
+    thinking_budget_tokens: Optional[int] = Field(
+        default=None,
+        alias="thinkingBudgetTokens",
+        ge=512,
+        description=(
+            "Extended thinking budget in tokens. None = disabled. "
+            "Requires a model that supports extended thinking (Claude 3.7+). "
+            "max_tokens is auto-adjusted to be at least thinkingBudgetTokens + 1024."
+        ),
+    )
+
     def resolve_primary_model(self) -> str:
         """Resolve primary model from agents.model config."""
         model_config = self.agents.model

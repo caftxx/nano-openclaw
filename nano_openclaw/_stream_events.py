@@ -38,4 +38,16 @@ class MessageEnd:
     usage: dict[str, Any]
 
 
-StreamEvent = Union[TextDelta, ToolUseStart, ToolUseDelta, ToolUseEnd, MessageEnd]
+@dataclass
+class ThinkingDelta:
+    text: str
+
+
+@dataclass
+class ThinkingBlockComplete:
+    thinking: str   # full thinking text (empty for redacted blocks)
+    signature: str  # thinking signature, or redacted_thinking data
+    redacted: bool = False
+
+
+StreamEvent = Union[TextDelta, ToolUseStart, ToolUseDelta, ToolUseEnd, MessageEnd, ThinkingDelta, ThinkingBlockComplete]

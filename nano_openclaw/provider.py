@@ -21,6 +21,8 @@ from ._stream_events import (  # noqa: F401
     MessageEnd,
     StreamEvent,
     TextDelta,
+    ThinkingBlockComplete,
+    ThinkingDelta,
     ToolUseDelta,
     ToolUseEnd,
     ToolUseStart,
@@ -39,6 +41,7 @@ def stream_response(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
+    thinking_budget_tokens: int | None = None,
 ) -> Iterator[StreamEvent]:
     """Route a streaming completion request to the correct provider transport."""
     if api == "anthropic":
@@ -49,6 +52,7 @@ def stream_response(
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
+            thinking_budget_tokens=thinking_budget_tokens,
         )
     if api == "openai":
         return _provider_openai.stream_response(
@@ -58,5 +62,6 @@ def stream_response(
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
+            thinking_budget_tokens=thinking_budget_tokens,
         )
     raise ValueError(f"unsupported api: {api!r}  (choose from: {SUPPORTED_APIS})")
