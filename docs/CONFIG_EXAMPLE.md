@@ -115,6 +115,40 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `reset.mode` | string | `"idle"` | 重置模式：`daily` \| `idle` |
 | `reset.idleMinutes` | number | `120` | 空闲多少分钟后重置 |
 
+### approvals — 审批门禁配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `askMode` | string | `"on-miss"` | 审批提示模式：`off` \| `on-miss` \| `always` |
+| `securityMode` | string | `"allowlist"` | 安全模式：`deny` \| `allowlist` \| `full` |
+| `dangerousTools` | string[] | `["bash", "write_file"]` | 需要审批的工具列表 |
+| `allowAlwaysStore` | string \| null | `null` | "allow always" 决策存储路径 |
+
+#### askMode 说明
+
+| 值 | 说明 |
+|----|------|
+| `"off"` | 从不提示审批，直接执行 |
+| `"on-miss"` | 仅当操作不在白名单时提示（推荐） |
+| `"always"` | 对危险工具总是提示审批 |
+
+#### securityMode 说明
+
+| 值 | 说明 |
+|----|------|
+| `"deny"` | 直接阻止匹配危险模式的命令 |
+| `"allowlist"` | 检查白名单，不在白名单则提示审批 |
+| `"full"` | 允许所有命令（不推荐） |
+
+#### 示例
+
+```json5
+approvals: {
+  askMode: "on-miss",
+  dangerousTools: ["bash", "write_file"],
+}
+```
+
 ### 其他字段（nano-openclaw 自定义）
 
 | 字段 | 类型 | 默认值 | 说明 |
