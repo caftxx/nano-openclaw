@@ -14,7 +14,12 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
+
+from rich.console import Console
+
+from nano_openclaw.approvals.manager import ApprovalManager
+from nano_openclaw.approvals.types import ApprovalDecision
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
 
@@ -31,6 +36,8 @@ class Tool:
 class ToolRegistry:
     _tools: dict[str, Tool] = field(default_factory=dict)
     _session_status_context: dict[str, Any] = field(default_factory=dict)
+    approval_manager: Optional[ApprovalManager] = field(default=None)
+    console: Optional[Console] = field(default=None)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -56,9 +63,37 @@ class ToolRegistry:
         ]
 
     def dispatch(self, tool_use_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch tool with approval check if manager is set."""
         tool = self._tools.get(name)
         if tool is None:
             return _error_result(tool_use_id, f"unknown tool: {name!r}")
+        
+        # Check approval if manager is configured
+        if self.approval_manager:
+            eval_result = self.approval_manager.check_request(name, args)
+            
+            if eval_result.requires_approval:
+                # Need approval - create request and prompt user
+                request = self.approval_manager.create_request(name, args)
+                
+                if self.console:
+                    from nano_openclaw.approvals.ui import ApprovalUI
+                    ui = ApprovalUI(self.console)
+                    ui.render_request(request)
+                    decision = ui.prompt_decision(request)
+                    
+                    self.approval_manager.record_decision(request.request_id, decision)
+                    
+                    if decision == ApprovalDecision.DENY:
+                        ui.render_denied(request)
+                        return _error_result(
+                            tool_use_id,
+                            f"approval denied for {name}: {request.reason}"
+                        )
+                    
+                    ui.render_allowed(request, decision)
+        
+        # Execute tool
         try:
             if name == "session_status":
                 output = tool.run(args, **self._session_status_context)
@@ -66,6 +101,7 @@ class ToolRegistry:
                 output = tool.run(args)
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
             return _error_result(tool_use_id, f"{type(exc).__name__}: {exc}")
+        
         content: list[dict[str, Any]] = (
             output if isinstance(output, list) else [{"type": "text", "text": output or "(no output)"}]
         )

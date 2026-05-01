@@ -210,6 +210,36 @@ class ContextConfig(BaseModel):
 
 
 # ============================================================================
+# Approval Types (nano-openclaw specific)
+# ============================================================================
+
+class ApprovalConfig(BaseModel):
+    """Approval configuration for dangerous operations."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    askMode: Literal["off", "on-miss", "always"] = Field(
+        default="on-miss",
+        alias="askMode",
+        description="Approval prompt mode"
+    )
+    securityMode: Literal["deny", "allowlist", "full"] = Field(
+        default="allowlist",
+        alias="securityMode",
+        description="Security mode for operations"
+    )
+    dangerousTools: List[str] = Field(
+        default_factory=lambda: ["bash", "write_file"],
+        alias="dangerousTools",
+        description="Tools that may require approval"
+    )
+    allowAlwaysStore: Optional[str] = Field(
+        default=None,
+        alias="allowAlwaysStore",
+        description="Path to store allow-always patterns"
+    )
+
+
+# ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
 
@@ -233,6 +263,10 @@ class NanoOpenClawConfig(BaseModel):
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
     maxIterations: int = Field(default=12, ge=1, description="Max tool-use rounds per user turn")
     context: ContextConfig = Field(default_factory=ContextConfig)
+    approvals: ApprovalConfig = Field(
+        default_factory=ApprovalConfig,
+        description="Approval settings for dangerous operations"
+    )
 
     def resolve_primary_model(self, agent_id: Optional[str] = None) -> str:
         """
