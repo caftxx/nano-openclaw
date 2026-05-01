@@ -46,41 +46,43 @@ class TestFindConfigFile:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text('{}')
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                path = find_config_file()
-                assert path is not None
-                assert path.name == DEFAULT_CONFIG_FILENAME
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            path = find_config_file(env=env)
+            assert path is not None
+            assert path.name == DEFAULT_CONFIG_FILENAME
     
     def test_default_path_not_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                path = find_config_file()
-                assert path is None
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            path = find_config_file(env=env)
+            assert path is None
 
 
 class TestLoadConfig:
     def test_no_config_file_returns_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                cfg, warnings = load_config()
-                assert cfg.agents.model == "anthropic/claude-sonnet-4-5-20250929"
-                assert len(warnings) == 0
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            cfg, warnings = load_config(env=env)
+            assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
+            assert len(warnings) == 0
     
     def test_load_simple_config(self):
         content = '''
         {
             agents: {
-                model: "openai/gpt-4o",
+                defaults: {
+                    model: "openai/gpt-4o",
+                },
             },
         }
         '''
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                cfg, warnings = load_config()
-                assert cfg.agents.model == "openai/gpt-4o"
-                assert len(warnings) == 0
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            cfg, warnings = load_config(env=env)
+            assert cfg.agents.defaults.model == "openai/gpt-4o"
+            assert len(warnings) == 0
     
     def test_env_var_substitution(self):
         content = '''
@@ -88,20 +90,21 @@ class TestLoadConfig:
             models: {
                 providers: {
                     "custom": {
+                        baseUrl: "https://api.custom.com/v1",
                         apiKey: "${TEST_API_KEY}",
                     },
                 },
             },
         }
         '''
-        env = {"TEST_API_KEY": "secret123"}
+        env = {"TEST_API_KEY": "secret123", "OPENCLAW_STATE_DIR": tempfile.mkdtemp()}
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                cfg, warnings = load_config(env=env)
-                assert cfg.models.providers["custom"].api_key == "secret123"
-                assert len(warnings) == 0
+            env["OPENCLAW_STATE_DIR"] = tmpdir
+            cfg, warnings = load_config(env=env)
+            assert cfg.models.providers["custom"].apiKey == "secret123"
+            assert len(warnings) == 0
     
     def test_missing_env_var_warning(self):
         content = '''
@@ -109,6 +112,7 @@ class TestLoadConfig:
             models: {
                 providers: {
                     "custom": {
+                        baseUrl: "https://api.custom.com/v1",
                         apiKey: "${MISSING_KEY}",
                     },
                 },
@@ -118,27 +122,29 @@ class TestLoadConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                cfg, warnings = load_config(env={})
-                assert len(warnings) == 1
-                assert warnings[0][0] == "MISSING_KEY"
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            cfg, warnings = load_config(env=env)
+            assert len(warnings) == 1
+            assert warnings[0][0] == "MISSING_KEY"
     
     def test_comments_and_trailing_commas(self):
         content = '''
         {
             // This is a comment
             agents: {
-                model: "anthropic/claude-sonnet",
-                imageModel: null,  // trailing comma
+                defaults: {
+                    model: "anthropic/claude-sonnet",
+                    imageModel: null,  // trailing comma
+                },
             },
         }
         '''
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                cfg, warnings = load_config()
-                assert cfg.agents.model == "anthropic/claude-sonnet"
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            cfg, warnings = load_config(env=env)
+            assert cfg.agents.defaults.model == "anthropic/claude-sonnet"
 
 
 class TestResolveModelConfig:
@@ -264,13 +270,15 @@ class TestResolveApiKey:
         assert "No API key" in str(exc_info.value)
 
 
-class TestConfigIntegration:
+class TestNanoOpenClawConfig:
     def test_full_config_scenario(self):
         content = '''
         {
             agents: {
-                model: "openrouter/anthropic/claude-sonnet-4",
-                imageModel: "openai/gpt-4o-mini",
+                defaults: {
+                    model: "openrouter/anthropic/claude-sonnet-4",
+                    imageModel: "openai/gpt-4o-mini",
+                },
             },
             models: {
                 mode: "merge",
@@ -280,8 +288,8 @@ class TestConfigIntegration:
                         apiKey: "${OPENROUTER_API_KEY}",
                         api: "openai-completions",
                         models: [
-                            { id: "anthropic/claude-sonnet-4" },
-                            { id: "openai/gpt-4o" },
+                            { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" },
+                            { id: "openai/gpt-4o", name: "GPT-4o" },
                         ],
                     },
                 },
@@ -298,14 +306,16 @@ class TestConfigIntegration:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
-                cfg, warnings = load_config(env=env)
-                
-                assert cfg.resolve_primary_model() == "openrouter/anthropic/claude-sonnet-4"
-                assert cfg.resolve_image_model() == "openai/gpt-4o-mini"
-                assert cfg.max_iterations == 15
-                assert cfg.context.budget == 80000
-                
-                resolved = resolve_model_config("openrouter/anthropic/claude-sonnet-4", cfg, env)
-                assert resolved["base_url"] == "https://openrouter.ai/api/v1"
-                assert resolved["api_key"] == "router_key"
+            env["OPENCLAW_STATE_DIR"] = tmpdir
+            cfg, warnings = load_config(env=env)
+            
+            assert cfg.agents.defaults.model == "openrouter/anthropic/claude-sonnet-4"
+            assert cfg.agents.defaults.imageModel == "openai/gpt-4o-mini"
+            assert cfg.resolve_primary_model() == "openrouter/anthropic/claude-sonnet-4"
+            assert cfg.resolve_image_model() == "openai/gpt-4o-mini"
+            assert cfg.maxIterations == 15
+            assert cfg.context.budget == 80000
+            
+            resolved = resolve_model_config("openrouter/anthropic/claude-sonnet-4", cfg, env)
+            assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+            assert resolved["api_key"] == "router_key"

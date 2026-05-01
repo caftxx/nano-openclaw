@@ -1,12 +1,18 @@
 """Entry point.
 
-Mirrors the chain ``openclaw.mjs`` -> ``src/entry.ts`` -> ``src/run-main.ts``,
+Mirrors the chain openclaw.mjs -> src/entry.ts -> src/run-main.ts,
 collapsed into one file because nano has no plugin loader, no auth-profile
 resolution, and no telemetry init.
 
-Configuration is loaded from:
-1. Default: ./nano-openclaw.json5 (current directory)
-2. Custom: --config <path>
+Configuration is loaded using openclaw-aligned path resolution:
+1. OPENCLAW_CONFIG_PATH environment variable
+2. {stateDir}/nano-openclaw.json5
+3. {cwd}/workspace/nano-openclaw.json5
+4. ~/.openclaw/nano-openclaw.json5
+
+Session storage aligns with openclaw:
+- {stateDir}/agents/{agentId}/sessions/
+- Supports multi-agent session isolation
 
 Model reference format: provider/model-id (e.g., anthropic/claude-sonnet-4-5)
 """
@@ -18,11 +24,12 @@ import sys
 from pathlib import Path
 
 from nano_openclaw.cli import repl
-from nano_openclaw.loop import LoopConfig
+from nano_openclaw.loop import LoopConfig, Message, agent_loop
 from nano_openclaw.config import (
-    DEFAULT_CONFIG_FILENAME,
     load_config,
     resolve_model_config,
+    resolve_state_dir,
+    resolve_agent_workspace_dir,
 )
 from nano_openclaw.session import (
     TranscriptWriter,
@@ -33,6 +40,8 @@ from nano_openclaw.session import (
     get_last_session,
     list_sessions,
     new_session_id,
+    resolve_agent_sessions_dir,
+    resolve_session_store_path,
 )
 from nano_openclaw.tools import ToolRegistry, build_default_registry
 
@@ -43,8 +52,17 @@ def main() -> None:
         description="Minimal educational reimplementation of OpenClaw's agent loop.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-        f"Configuration is loaded from {DEFAULT_CONFIG_FILENAME} in the current directory.\n"
-        "Use --config to specify a custom config file.\n"
+        "Configuration is loaded using openclaw-aligned path resolution:\n"
+        "  1. --config <path> (explicit)\n"
+        "  2. OPENCLAW_CONFIG_PATH environment variable\n"
+        "  3. {stateDir}/nano-openclaw.json5\n"
+        "  4. {cwd}/workspace/nano-openclaw.json5\n"
+        "  5. ~/.openclaw/nano-openclaw.json5\n"
+        "\n"
+        "State directory resolution:\n"
+        "  1. OPENCLAW_STATE_DIR environment variable\n"
+        "  2. {cwd}/.openclaw (if exists)\n"
+        "  3. ~/.openclaw\n"
         "\n"
         "Model reference format: provider/model-id (e.g., anthropic/claude-sonnet-4-5)\n"
         "Custom providers can be defined in the config file under models.providers.\n"
@@ -52,30 +70,36 @@ def main() -> None:
         "Session persistence:\n"
         "  --resume                             Resume the last session from transcript\n"
         "  --sessions                           List all saved sessions and exit\n"
-        "  Session files are stored in .nano-sessions/ next to the config file.\n"
+        "  --agent AGENT_ID                     Agent ID for session isolation (default: default)\n"
+        "  Session files stored in: {stateDir}/agents/{agentId}/sessions/\n"
         "\n"
         "Configurable options (with defaults):\n"
-        "  agents.model                           Main model (anthropic/claude-sonnet-4-5-20250929)\n"
-        "  agents.imageModel                      Image understanding model (None = Native Vision)\n"
-        "  models.providers.<id>.baseUrl          Custom API endpoint (None = default)\n"
-        "  models.providers.<id>.apiKey           API key, supports ${ENV_VAR} syntax\n"
-        "  models.providers.<id>.api              API type (anthropic-messages|openai-completions|openai-responses)\n"
-        "  models.providers.<id>.models[]         Model catalog with id, name, input, contextWindow, maxTokens\n"
-        "  models.mode                            Provider catalog mode (merge|replace)\n"
-        "  noTools                                Run as plain chatbot, no tools (false)\n"
-        "  maxIterations                          Max tool-use rounds per user turn (12)\n"
-        "  maxTokens                              Max tokens per assistant response (4096)\n"
-        "  thinkingBudgetTokens                   Extended thinking budget in tokens (None = disabled)\n"
-        "  context.budget                         Maximum token budget for context window (100000)\n"
-        "  context.threshold                      Trigger compaction at this fraction (0.8)\n"
-        "  context.recent_turns                   Recent turns to preserve during compaction (3)\n"
+        "  agents.defaults.model                Main model (anthropic/claude-sonnet-4-5-20250929)\n"
+        "  agents.defaults.imageModel           Image understanding model (None = Native Vision)\n"
+        "  agents.list[].model                  Per-agent model override\n"
+        "  models.providers.<id>.baseUrl        Custom API endpoint (None = default)\n"
+        "  models.providers.<id>.apiKey         API key, supports ${ENV_VAR} syntax\n"
+        "  models.providers.<id>.api            API type (anthropic-messages|openai-completions|openai-responses)\n"
+        "  models.providers.<id>.models[]       Model catalog with id, name, input, contextWindow, maxTokens\n"
+        "  models.mode                          Provider catalog mode (merge|replace)\n"
+        "  noTools                              Run as plain chatbot, no tools (false)\n"
+        "  maxIterations                        Max tool-use rounds per user turn (12)\n"
+        "  maxTokens                            Max tokens per assistant response (4096)\n"
+        "  thinkingBudgetTokens                 Extended thinking budget in tokens (None = disabled)\n"
+        "  context.budget                       Maximum token budget for context window (100000)\n"
+        "  context.threshold                    Trigger compaction at this fraction (0.8)\n"
+        "  context.recent_turns                 Recent turns to preserve during compaction (3)\n"
         "\n"
         'Example config file (JSON5 — supports comments and trailing commas):\n'
         '  {\n'
-        '    // Main model (provider/model-id format)\n'
         '    agents: {\n'
-        '      model: "openrouter/anthropic/claude-sonnet-4",\n'
-        '      imageModel: "openai/gpt-4o-mini",  // for Media Understanding path\n'
+        '      defaults: {\n'
+        '        model: "openrouter/anthropic/claude-sonnet-4",\n'
+        '        imageModel: "openai/gpt-4o-mini",  // for Media Understanding path\n'
+        '      },\n'
+        '      list: [\n'
+        '        { id: "default", default: true, name: "Default Agent" },\n'
+        '      ],\n'
         '    },\n'
         '    models: {\n'
         '      providers: {\n'
@@ -88,10 +112,6 @@ def main() -> None:
         '        },\n'
         '      },\n'
         '    },\n'
-        '    // Extended thinking (requires Claude 3.7+ or claude-sonnet-4+)\n'
-        '    thinkingBudgetTokens: 8000,  // enable extended thinking\n'
-        '    maxTokens: 16000,            // must be >= thinkingBudgetTokens + 1024\n'
-        '    // Runtime settings\n'
         '    maxIterations: 12,\n'
         '    context: {\n'
         '      budget: 100000,\n'
@@ -104,7 +124,13 @@ def main() -> None:
         "--config",
         metavar="PATH",
         default=None,
-        help=f"Path to config file (default: ./{DEFAULT_CONFIG_FILENAME})",
+        help="Path to config file (or use OPENCLAW_CONFIG_PATH)",
+    )
+    parser.add_argument(
+        "--agent",
+        metavar="AGENT_ID",
+        default="default",
+        help="Agent ID for session isolation (default: default)",
     )
     parser.add_argument(
         "--resume",
@@ -118,6 +144,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Load configuration
     config, warnings = load_config(args.config)
     
     for var_name, config_path in warnings:
@@ -127,7 +154,8 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    model_ref = config.resolve_primary_model()
+    # Resolve model for agent
+    model_ref = config.resolve_primary_model(args.agent)
     
     try:
         resolved = resolve_model_config(model_ref, config)
@@ -144,13 +172,18 @@ def main() -> None:
     api = "anthropic" if api_type == "anthropic-messages" else "openai"
 
     client = _build_client(api, api_key, base_url)
-    registry = ToolRegistry() if config.no_tools else build_default_registry()
+    registry = ToolRegistry() if config.noTools else build_default_registry()
     
-    # Resolve session directory (next to config file)
-    config_path = Path(args.config) if args.config else Path.cwd() / DEFAULT_CONFIG_FILENAME
-    config_dir = config_path.parent.resolve()
-    session_dir = config_dir / ".nano-sessions"
-    store_path = session_dir / "sessions.json"
+    # Resolve state directory (openclaw-aligned)
+    state_dir = resolve_state_dir()
+    
+    # Resolve workspace directory for agent (openclaw-aligned)
+    # Priority: agents.list[].workspace > agents.defaults.workspace > stateDir/workspace-{agentId} > ~/.openclaw/workspace
+    workspace_dir = resolve_agent_workspace_dir(config, args.agent)
+    
+    # Resolve session directory for agent: {stateDir}/agents/{agentId}/sessions/
+    session_dir = resolve_agent_sessions_dir(state_dir, args.agent)
+    store_path = resolve_session_store_path(session_dir)
 
     # Handle --sessions: list and exit
     if args.sessions:
@@ -182,13 +215,13 @@ def main() -> None:
         session_id = new_session_id()
         transcript_path = session_dir / f"{session_id}.jsonl"
         transcript_writer = TranscriptWriter(transcript_path)
-        transcript_writer.start(model=model_id, cwd=str(config_dir))
+        transcript_writer.start(model=model_id, cwd=str(workspace_dir))
         store = load_session_store(store_path)
         update_session(store, session_id, model=model_id, message_count=0, compaction_count=0)
         save_session_store(store_path, store)
 
     # Resolve image model reference to extract model_id for API calls
-    image_model_ref = config.resolve_image_model()
+    image_model_ref = config.resolve_image_model(args.agent)
     image_model_id: str | None = None
     if image_model_ref:
         if "/" in image_model_ref:
@@ -209,13 +242,13 @@ def main() -> None:
         api=api,
         base_url=base_url,
         model_input=tuple(model_input),
-        max_iterations=config.max_iterations,
-        max_tokens=config.max_tokens,
+        max_iterations=config.maxIterations,
+        max_tokens=config.maxTokens,
         context_budget=config.context.budget,
         context_threshold=config.context.threshold,
         context_recent_turns=config.context.recent_turns,
         image_model=image_model_id,
-        thinking_budget_tokens=config.thinking_budget_tokens,
+        thinking_budget_tokens=config.thinkingBudgetTokens,
     )
 
     repl(

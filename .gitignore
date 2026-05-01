@@ -20,3 +20,13 @@ Thumbs.db
 
 # Project specific
 .claude/
+
+# OpenClaw state directory (session data, agent state)
+.openclaw/
+
+# Legacy session directory (if using old location)
+.nano-sessions/
+
+# Environment files
+.env
+.env.local

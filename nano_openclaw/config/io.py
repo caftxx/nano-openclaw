@@ -1,10 +1,16 @@
 """Configuration loading and resolution.
 
-Mirrors openclaw's config io.ts:
-- find_config_file: locate config file
+Mirrors openclaw's src/config/io.ts:
+- resolve_config_path: locate config file (delegates to paths.py)
 - load_config: load + parse JSON5 + env substitution + validation
 - resolve_model_config: resolve provider/model-id reference
 - resolve_api_key: resolve API key with env var priority
+
+Path resolution aligns with openclaw:
+1. OPENCLAW_CONFIG_PATH environment variable
+2. {stateDir}/nano-openclaw.json5
+3. {cwd}/workspace/nano-openclaw.json5
+4. ~/.openclaw/nano-openclaw.json5
 """
 
 from __future__ import annotations
@@ -16,14 +22,32 @@ from typing import Any, Optional
 
 from .types import NanoOpenClawConfig, ModelProvider
 from .env_substitution import resolve_config_env_vars, EnvSubstitutionWarning
+from .paths import resolve_config_path as _resolve_config_path
 
 
+# Default config filename for backward compatibility
 DEFAULT_CONFIG_FILENAME = "nano-openclaw.json5"
 
 DEFAULT_INPUT_CAPABILITIES = ("text", "image")
 
+BUILTIN_PROVIDERS = {
+    "anthropic": {
+        "api": "anthropic-messages",
+        "baseUrl": None,
+        "env_key": "ANTHROPIC_API_KEY",
+        "default_model": "claude-sonnet-4-5-20250929",
+    },
+    "openai": {
+        "api": "openai-completions",
+        "baseUrl": None,
+        "env_key": "OPENAI_API_KEY",
+        "default_model": "gpt-4o",
+    },
+}
+
 
 def _resolve_model_input(provider_id: str, model_id: str, config: NanoOpenClawConfig) -> list[str]:
+    """Resolve model input modalities from config or builtin defaults."""
     provider_config = config.models.providers.get(provider_id)
     if provider_config:
         for m in provider_config.models:
@@ -36,38 +60,20 @@ def _resolve_model_input(provider_id: str, model_id: str, config: NanoOpenClawCo
     
     return ["text"]
 
-BUILTIN_PROVIDERS = {
-    "anthropic": {
-        "api": "anthropic-messages",
-        "base_url": None,
-        "env_key": "ANTHROPIC_API_KEY",
-        "default_model": "claude-sonnet-4-5-20250929",
-    },
-    "openai": {
-        "api": "openai-completions",
-        "base_url": None,
-        "env_key": "OPENAI_API_KEY",
-        "default_model": "gpt-4o",
-    },
-}
 
-
-def find_config_file(config_path: Optional[str] = None) -> Optional[Path]:
+def find_config_file(config_path: Optional[str] = None, env: Optional[dict[str, str]] = None) -> Optional[Path]:
     """
-    Find config file.
+    Find config file using openclaw-aligned path resolution.
     
     Args:
         config_path: Explicit config path (from --config argument)
+        env: Environment variables (defaults to os.environ)
     
     Returns:
-        Path to config file, or None if not found
+        Path to config file if it exists, None otherwise
     """
-    if config_path:
-        path = Path(config_path)
-        return path if path.exists() else None
-    
-    default_path = Path.cwd() / DEFAULT_CONFIG_FILENAME
-    return default_path if default_path.exists() else None
+    resolved = _resolve_config_path(config_path, env)
+    return resolved if resolved.exists() else None
 
 
 def load_config(
@@ -75,7 +81,13 @@ def load_config(
     env: Optional[dict[str, str]] = None,
 ) -> tuple[NanoOpenClawConfig, list[EnvSubstitutionWarning]]:
     """
-    Load config file.
+    Load config file with environment variable substitution.
+    
+    Mirrors openclaw's loadConfig() flow:
+    1. Resolve config path
+    2. Read and parse JSON5
+    3. Apply environment variable substitution
+    4. Validate with Pydantic schema
     
     Args:
         config_path: Explicit config path (from --config argument)
@@ -87,7 +99,7 @@ def load_config(
     if env is None:
         env = dict(os.environ)
     
-    path = find_config_file(config_path)
+    path = find_config_file(config_path, env)
     if not path:
         return NanoOpenClawConfig(), []
     
@@ -116,7 +128,7 @@ def resolve_model_config(
         env: Environment variables
     
     Returns:
-        Dict with provider_id, model_id, api_type, base_url, api_key
+        Dict with provider_id, model_id, api_type, base_url, api_key, model_input
     """
     if env is None:
         env = dict(os.environ)
@@ -129,11 +141,11 @@ def resolve_model_config(
     provider_config = config.models.providers.get(provider_id)
     
     if provider_config:
-        base_url = provider_config.base_url
+        base_url = provider_config.baseUrl
         api_type = provider_config.api
     elif provider_id in BUILTIN_PROVIDERS:
         builtin = BUILTIN_PROVIDERS[provider_id]
-        base_url = builtin["base_url"]
+        base_url = builtin["baseUrl"]
         api_type = builtin["api"]
     else:
         raise ValueError(f"Unknown provider: {provider_id}")
@@ -184,8 +196,8 @@ def resolve_api_key(
     if env.get(env_key):
         return env[env_key]
     
-    if provider_config and provider_config.api_key:
-        return provider_config.api_key
+    if provider_config and provider_config.apiKey:
+        return provider_config.apiKey
     
     hint = ""
     if provider_id == "anthropic":
