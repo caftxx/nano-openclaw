@@ -63,6 +63,7 @@ from nano_openclaw.skills import (
 from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
+_MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
 _COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  — /sessions launches interactive picker"
 
 
@@ -151,7 +152,7 @@ def repl(
                         transcript_writer = new_writer
                         session_id = target_id
                         _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-                        console.print(f"[dim]switched to session {session_id[:8]}… ({len(history)} messages)[/]")
+                        _replay_history(console, history, session_id)
                 else:
                     _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir)
             else:
@@ -189,7 +190,7 @@ def repl(
                             transcript_writer = new_writer
                             session_id = new_sid
                             _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-                            console.print(f"[dim]switched to session {session_id[:8]}… ({len(history)} messages)[/]")
+                            _replay_history(console, history, session_id)
                 else:
                     console.print("[dim](no session store configured)[/]")
             continue
@@ -294,6 +295,62 @@ def _show_context(console: Console, history: list[Message], cfg: LoopConfig) -> 
             border_style=color,
         )
     )
+
+
+def _replay_history(console: Console, history: list[Message], session_id: str) -> None:
+    """Print a compact recap of conversation history after switching sessions."""
+    if not history:
+        return
+
+    # Group into (user_msg, asst_msg) turn pairs
+    turns: list[tuple[Message | None, Message | None]] = []
+    i = 0
+    while i < len(history):
+        if history[i].role == "user":
+            asst = history[i + 1] if i + 1 < len(history) and history[i + 1].role == "assistant" else None
+            turns.append((history[i], asst))
+            i += 2 if asst else 1
+        else:
+            turns.append((None, history[i]))
+            i += 1
+
+    total_turns = len(turns)
+    skip = max(0, total_turns - _MAX_HISTORY_PREVIEW_TURNS)
+
+    console.rule(
+        Text.from_markup(f"[dim cyan]session [cyan]{session_id[:8]}…[/cyan]  {len(history)} messages[/]"),
+        style="dim cyan",
+    )
+
+    if skip:
+        console.print(f"[dim]  … {skip} earlier turn{'s' if skip > 1 else ''} not shown …[/]")
+
+    for user_msg, asst_msg in turns[skip:]:
+        if user_msg:
+            text = " ".join(
+                b.get("text", "").strip()
+                for b in user_msg.content
+                if b.get("type") == "text"
+            ).strip()
+            preview = markup.escape(text[:140]) + ("[dim]…[/]" if len(text) > 140 else "")
+            console.print(Text.from_markup(f" [bold cyan]You[/] [dim]›[/] {preview}"))
+
+        if asst_msg:
+            text = " ".join(
+                b.get("text", "").strip()
+                for b in asst_msg.content
+                if b.get("type") == "text"
+            ).strip()
+            tools = [b.get("name", "?") for b in asst_msg.content if b.get("type") == "tool_use"]
+            parts: list[str] = []
+            if text:
+                parts.append(markup.escape(text[:200]) + ("[dim]…[/]" if len(text) > 200 else ""))
+            if tools:
+                parts.append(f"[dim](used {markup.escape(', '.join(tools))})[/]")
+            body = "  ".join(parts) if parts else "[dim](no text)[/]"
+            console.print(Text.from_markup(f"  [bold] AI[/] [dim]›[/] {body}"))
+
+    console.rule(style="dim cyan")
 
 
 def _make_event_handler(console: Console) -> Callable[[Any], None]:
