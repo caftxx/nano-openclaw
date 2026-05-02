@@ -4,10 +4,10 @@ Mirrors `src/agents/system-prompt.ts:189+` and
 `src/agents/pi-embedded-runner/system-prompt.ts:12-95`. Production
 OpenClaw stitches together ~10 fragment sources (identity, bootstrap,
 workspace context, skills, memory, heartbeat, tool catalog, channel
-hints, runtime info, provider quirks). nano keeps just four: identity,
-runtime info, project context (AGENTS.md/SOUL.md/etc.), tool catalog —
-enough to teach the *shape* of dynamic prompt assembly without drowning
-the reader.
+hints, runtime info, provider quirks). nano keeps just five: identity,
+runtime info, project context (AGENTS.md/SOUL.md/etc.), skills catalog,
+tool catalog — enough to teach the *shape* of dynamic prompt assembly
+without drowning the reader.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from nano_openclaw.tools import ToolRegistry
 from nano_openclaw.workspace import (
@@ -22,6 +23,9 @@ from nano_openclaw.workspace import (
     CONTEXT_FILE_ORDER,
     DEFAULT_SOUL_FILENAME,
 )
+
+if TYPE_CHECKING:
+    from nano_openclaw.skills.types import Skill
 
 
 _IDENTITY = (
@@ -85,6 +89,9 @@ def build_system_prompt(
     registry: ToolRegistry,
     workspace_dir: Path | None = None,
     bootstrap_files: list[WorkspaceBootstrapFile] | None = None,
+    skills: list["Skill"] | None = None,
+    max_skills_in_prompt: int = 150,
+    max_skills_prompt_chars: int = 18_000,
 ) -> str:
     """Build the complete system prompt for the agent.
 
@@ -92,6 +99,9 @@ def build_system_prompt(
         registry: Tool registry for dynamic tool catalog
         workspace_dir: Path to workspace directory (for loading bootstrap files)
         bootstrap_files: Pre-loaded bootstrap files (overrides workspace_dir)
+        skills: Pre-loaded and filtered skills for prompt injection
+        max_skills_in_prompt: Max number of skills to include
+        max_skills_prompt_chars: Max characters for the skills section
 
     Returns:
         Complete system prompt string
@@ -114,6 +124,22 @@ def build_system_prompt(
     if bootstrap_files:
         project_context = _build_project_context_section(bootstrap_files)
 
+    # Skills section (mirrors openclaw applySkillsPromptLimits + formatSkillsForPrompt)
+    skills_block = ""
+    if skills:
+        from nano_openclaw.skills import (
+            apply_skills_prompt_limits,
+            format_skills_compact,
+            format_skills_for_prompt,
+        )
+        limited, _, use_compact = apply_skills_prompt_limits(
+            skills,
+            max_skills=max_skills_in_prompt,
+            max_chars=max_skills_prompt_chars,
+        )
+        if limited:
+            skills_block = format_skills_compact(limited) if use_compact else format_skills_for_prompt(limited)
+
     prompt = (
         f"{_IDENTITY}\n\n"
         "Runtime:\n" + "\n".join(runtime_lines) + "\n\n"
@@ -122,9 +148,11 @@ def build_system_prompt(
     if project_context:
         prompt += project_context + "\n"
 
-    prompt += (
-        tools_block + "\n\n"
-        "When the task is done, stop. Never invent file paths."
-    )
+    prompt += tools_block + "\n"
+
+    if skills_block:
+        prompt += skills_block + "\n"
+
+    prompt += "\nWhen the task is done, stop. Never invent file paths."
 
     return prompt

@@ -127,6 +127,10 @@ class AgentConfig(BaseModel):
     workspace: Optional[str] = Field(default=None, description="Working directory path")
     model: Optional[AgentModelConfig] = Field(default=None, description="Model override")
     imageModel: Optional[AgentModelConfig] = Field(default=None, description="Image model override")
+    skills: Optional[List[str]] = Field(
+        default=None,
+        description="Skill allowlist for this agent (replaces defaults.skills, not merges. None = inherit, [] = no skills)"
+    )
 
 
 class AgentDefaultsConfig(BaseModel):
@@ -158,6 +162,10 @@ class AgentDefaultsConfig(BaseModel):
         ge=100,
         alias="bootstrapTotalMaxChars",
         description="Total character budget across all bootstrap files"
+    )
+    skills: Optional[List[str]] = Field(
+        default=None,
+        description="Default skill allowlist for agents (None = unrestricted, [] = no skills)"
     )
 
     @field_validator("model", mode="before")
@@ -210,6 +218,80 @@ class ContextConfig(BaseModel):
 
 
 # ============================================================================
+# Skills Types (aligns with src/config/types.openclaw.ts skills.*)
+# ============================================================================
+
+class SkillEntryConfig(BaseModel):
+    """Per-skill configuration override (mirrors openclaw skills.entries)."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    enabled: bool = Field(default=True, description="Enable or disable this skill")
+    apiKey: Optional[str] = Field(default=None, description="API key override")
+    env: Optional[Dict[str, str]] = Field(default=None, description="Environment variable overrides")
+
+
+class SkillsLoadConfig(BaseModel):
+    """Skills loading configuration (mirrors openclaw skills.load)."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    extraDirs: List[str] = Field(
+        default_factory=list,
+        alias="extraDirs",
+        description="Additional skill directories to load"
+    )
+    watch: bool = Field(default=False, description="Watch skill directories for changes")
+    maxCandidatesPerRoot: int = Field(
+        default=300,
+        alias="maxCandidatesPerRoot",
+        ge=1,
+        description="Max candidate directories to scan per root"
+    )
+    maxSkillsLoadedPerSource: int = Field(
+        default=200,
+        alias="maxSkillsLoadedPerSource",
+        ge=1,
+        description="Max skills to load per source"
+    )
+    maxSkillsInPrompt: int = Field(
+        default=150,
+        alias="maxSkillsInPrompt",
+        ge=1,
+        description="Max skills to include in prompt"
+    )
+    maxSkillsPromptChars: int = Field(
+        default=18_000,
+        alias="maxSkillsPromptChars",
+        ge=100,
+        description="Max characters for skills section in prompt"
+    )
+    maxSkillFileBytes: int = Field(
+        default=256_000,
+        alias="maxSkillFileBytes",
+        ge=1000,
+        description="Max bytes per SKILL.md file"
+    )
+
+
+class SkillsConfig(BaseModel):
+    """Skills configuration (mirrors openclaw skills.*)."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    entries: Dict[str, SkillEntryConfig] = Field(
+        default_factory=dict,
+        description="Per-skill configuration overrides"
+    )
+    load: SkillsLoadConfig = Field(
+        default_factory=SkillsLoadConfig,
+        description="Skills loading configuration"
+    )
+    allowBundled: Optional[List[str]] = Field(
+        default=None,
+        alias="allowBundled",
+        description="Allowlist for bundled skills (None = allow all)"
+    )
+
+
+# ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
 
@@ -228,6 +310,7 @@ class NanoOpenClawConfig(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
     
     # nano-openclaw custom fields
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
@@ -329,3 +412,54 @@ class NanoOpenClawConfig(BaseModel):
                     return "low" if model.reasoning else "off"
         
         return "off"
+    
+    def resolve_skill_filter(self, agent_id: Optional[str] = None) -> Optional[List[str]]:
+        """
+        Resolve skill filter (allowlist) for an agent.
+        
+        Priority (mirrors openclaw agents.defaults.skills + agents.list[].skills):
+        1. agents.list[].skills (if agent found) — replaces defaults, not merges
+        2. agents.defaults.skills — inherited when agent has no skills field
+        3. None — unrestricted (all eligible skills available)
+        
+        Args:
+            agent_id: Agent identifier
+        
+        Returns:
+            List of allowed skill names, or None for unrestricted
+        """
+        # Check agent-specific skills
+        if agent_id:
+            for agent in self.agents.list:
+                if agent.id == agent_id:
+                    if agent.skills is not None:
+                        # Explicit list replaces defaults (even if empty [])
+                        return agent.skills
+                    # No skills field = inherit defaults (break to check defaults)
+                    break
+        
+        # Fall back to defaults (None = unrestricted)
+        return self.agents.defaults.skills
+    
+    def resolve_skills_config_for_agent(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Resolve full skills configuration for an agent.
+        
+        Combines:
+        - skill_filter from resolve_skill_filter()
+        - extraDirs from skills.load.extraDirs
+        - limits from skills.load
+        
+        Args:
+            agent_id: Agent identifier
+        
+        Returns:
+            Dict with skill_filter, extra_dirs, and limits
+        """
+        return {
+            "skill_filter": self.resolve_skill_filter(agent_id),
+            "extra_dirs": self.skills.load.extraDirs,
+            "max_skill_file_bytes": self.skills.load.maxSkillFileBytes,
+            "max_skills_in_prompt": self.skills.load.maxSkillsInPrompt,
+            "max_skills_prompt_chars": self.skills.load.maxSkillsPromptChars,
+        }

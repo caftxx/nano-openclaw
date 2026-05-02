@@ -23,7 +23,18 @@ from rich.table import Table
 from rich.text import Text
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
-from nano_openclaw.loop import LoopConfig, Message, agent_loop
+from nano_openclaw.loop import (
+    Compaction,
+    ImageAttached,
+    ImageDescribe,
+    ImageError,
+    ImageSkip,
+    LoopConfig,
+    Message,
+    SkillInvoked,
+    ToolResult,
+    agent_loop,
+)
 from nano_openclaw.provider import (
     MessageEnd,
     TextDelta,
@@ -42,6 +53,11 @@ from nano_openclaw.session import (
     update_session,
     list_sessions,
     new_session_id,
+)
+from nano_openclaw.skills import (
+    filter_eligible_skills,
+    filter_visible_skills,
+    get_or_load_skills,
 )
 from nano_openclaw.tools import ToolRegistry
 
@@ -103,7 +119,7 @@ def repl(
             continue
         if user_input == "/help":
             console.print(
-                "[dim]commands: /quit, /clear (clear history), /new (new session+ID), /help, /context, /compact, /sessions, /save, /session [prefix] — anything else is sent to the model[/]"
+                "[dim]commands: /quit, /clear (clear history), /new (new session+ID), /help, /context, /compact, /sessions, /save, /session [prefix], /skills — anything else is sent to the model[/]"
             )
             continue
         if user_input == "/context":
@@ -111,6 +127,9 @@ def repl(
             continue
         if user_input == "/compact":
             _manual_compact(console, history, cfg, client)
+            continue
+        if user_input == "/skills":
+            _list_skills(console, cfg)
             continue
         if user_input == "/sessions":
             if store_path:
@@ -183,7 +202,7 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry, session_
                 f"model:  [cyan]{markup.escape(model)}[/]\n"
                 f"tools:  {markup.escape(tools)}"
                 + (f"\n{session_line}" if session_line else "")
-                + "\ncommands: /quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session [prefix]"
+                + "\ncommands: /quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session [prefix]  /skills"
             ),
             border_style="cyan",
         )
@@ -298,32 +317,29 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
                 console.print()
                 state["text_in_flight"] = False
 
-        elif isinstance(event, tuple) and event and event[0] == "ToolResult":
-            _, name, args, result = event
-            _render_tool_result(console, name=name, args=args, result=result)
+        elif isinstance(event, ToolResult):
+            _render_tool_result(console, name=event.name, args=event.args, result=event.result)
 
-        elif isinstance(event, tuple) and event and event[0] == "Compaction":
-            _, summary = event
-            _render_compaction(console, summary=summary)
+        elif isinstance(event, Compaction):
+            _render_compaction(console, summary=event.summary)
 
-        elif isinstance(event, tuple) and event and event[0] == "ImageDescribe":
-            _, ref = event
-            console.print(f"[dim]describing: {markup.escape(ref)}[/]")
+        elif isinstance(event, ImageDescribe):
+            console.print(f"[dim]describing: {markup.escape(event.ref)}[/]")
 
-        elif isinstance(event, tuple) and event and event[0] == "ImageAttached":
-            _, refs, via_model = event
+        elif isinstance(event, ImageAttached):
             # "described" = Media Understanding path; "attached" = Native Vision path
-            mode = "described" if via_model else "attached"
-            for ref in refs:
+            mode = "described" if event.via_model else "attached"
+            for ref in event.refs:
                 console.print(f"[dim]{mode}: {markup.escape(ref)}[/]")
 
-        elif isinstance(event, tuple) and event and event[0] == "ImageError":
-            _, ref, error = event
-            console.print(f"[red]image error:[/] {markup.escape(ref)}: {markup.escape(error)}")
+        elif isinstance(event, ImageError):
+            console.print(f"[red]image error:[/] {markup.escape(event.ref)}: {markup.escape(event.error)}")
 
-        elif isinstance(event, tuple) and event and event[0] == "ImageSkip":
-            _, ref, reason = event
-            console.print(f"[yellow]image skipped:[/] {markup.escape(ref)}: {markup.escape(reason)}")
+        elif isinstance(event, ImageSkip):
+            console.print(f"[yellow]image skipped:[/] {markup.escape(event.ref)}: {markup.escape(event.reason)}")
+
+        elif isinstance(event, SkillInvoked):
+            console.print(f"[cyan]skill invoked:[/] {markup.escape(event.skill_name)} ({markup.escape(event.skill_path)})")
 
     return handle
 
@@ -509,3 +525,94 @@ def _load_session_by_prefix(
     loaded_history, _, msg_count, comp_count, last_msg_id = reader.load_history()
     writer = TranscriptWriter.resume(transcript_path, target.session_id, msg_count, comp_count, last_msg_id)
     return loaded_history, writer, target.session_id
+
+
+def _list_skills(console: Console, cfg: LoopConfig) -> None:
+    """Display available skills with eligibility status."""
+    if not cfg.workspace_dir:
+        console.print("[dim](no workspace configured — skills unavailable)[/]")
+        return
+    
+    # Load all skills
+    try:
+        all_entries = get_or_load_skills(
+            cfg.workspace_dir,
+            cfg.session_key,
+            extra_dirs=cfg.extra_skill_dirs,
+            max_bytes=cfg.max_skill_file_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]error loading skills:[/] {type(exc).__name__}: {markup.escape(str(exc))}")
+        return
+    
+    if not all_entries:
+        console.print("[dim]no skills found[/]")
+        return
+
+    # Show active filter
+    if cfg.skill_filter is not None:
+        console.print(f"[dim]skill filter: {', '.join(cfg.skill_filter)}[/]")
+
+    # Apply gating with skill filter (mutates entries in-place)
+    eligible = filter_eligible_skills(all_entries, skill_filter=cfg.skill_filter)
+    visible = filter_visible_skills(eligible)
+    
+    # Build table
+    table = Table(title="Skills", border_style="cyan")
+    table.add_column("Name", style="cyan")
+    table.add_column("Source", style="dim")
+    table.add_column("Status", style="green")
+    table.add_column("In Prompt", style="yellow")
+    table.add_column("Reason", style="dim")
+    
+    # Sort by name
+    sorted_entries = sorted(all_entries, key=lambda e: e.skill.name)
+    
+    for entry in sorted_entries:
+        skill = entry.skill
+        
+        # Status
+        if entry.eligible:
+            status = "[green]eligible[/]"
+        else:
+            status = "[red]blocked[/]"
+        
+        # In prompt
+        if skill in visible:
+            in_prompt = "[green]yes[/]"
+        elif entry.eligible:
+            in_prompt = "[yellow]no (hidden)[/]"
+        else:
+            in_prompt = "[dim]—[/]"
+        
+        # Reason
+        reason = entry.eligibilityReason or ""
+        if skill in visible:
+            reason = ""  # Clear reason for visible skills
+        elif not entry.eligible and not reason:
+            reason = "gating failed"
+        
+        table.add_row(
+            skill.name,
+            skill.source,
+            status,
+            in_prompt,
+            markup.escape(reason[:40] + "..." if len(reason) > 40 else reason),
+        )
+    
+    console.print(table)
+    
+    # Summary
+    eligible_count = len(eligible)
+    visible_count = len(visible)
+    blocked_count = len(all_entries) - eligible_count
+    
+    console.print(
+        f"[dim]{eligible_count} eligible, {visible_count} in prompt, {blocked_count} blocked[/]"
+    )
+    
+    # Skill filter info
+    if cfg.skill_filter:
+        console.print(f"[dim]skill filter: {', '.join(cfg.skill_filter)}[/]")
+    else:
+        console.print("[dim]skill filter: unrestricted[/]")

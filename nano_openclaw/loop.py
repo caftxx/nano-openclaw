@@ -35,6 +35,17 @@ from nano_openclaw.provider import (
     ToolUseStart,
     stream_response,
 )
+from nano_openclaw.skills import (
+    Skill,
+    SkillEntry,
+    build_skill_registry_from_entries,
+    build_slash_command_context,
+    filter_eligible_skills,
+    filter_visible_skills,
+    get_or_load_skills,
+    parse_slash_command,
+    SlashCommand,
+)
 from nano_openclaw.tools import ToolRegistry
 from nano_openclaw.workspace import WorkspaceBootstrapFile, get_or_load_bootstrap_files
 
@@ -42,6 +53,48 @@ if TYPE_CHECKING:
     from nano_openclaw.session import TranscriptWriter
 
 EventCallback = Callable[[Any], None]
+
+
+@dataclass
+class ToolResult:
+    name: str
+    args: dict[str, Any]
+    result: dict[str, Any]
+
+
+@dataclass
+class Compaction:
+    summary: str
+
+
+@dataclass
+class ImageDescribe:
+    ref: str
+
+
+@dataclass
+class ImageAttached:
+    refs: list[str]
+    via_model: bool
+
+
+@dataclass
+class ImageError:
+    ref: str
+    error: str
+
+
+@dataclass
+class ImageSkip:
+    ref: str
+    reason: str
+
+
+@dataclass
+class SkillInvoked:
+    skill_name: str
+    skill_path: str
+
 
 # Thinking level type (mirrors openclaw ThinkLevel)
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]
@@ -90,6 +143,12 @@ class LoopConfig:
     session_key: str = "default"  # Session identifier for caching
     bootstrap_max_chars: int = 12000  # Per-file character budget
     bootstrap_total_max_chars: int = 60000  # Total character budget
+    # Skills configuration (mirrors openclaw skills.*)
+    skill_filter: list[str] | None = None  # Agent skill allowlist
+    extra_skill_dirs: list[str] | None = None  # Extra skill directories
+    max_skill_file_bytes: int = 256_000  # Max bytes per SKILL.md
+    max_skills_in_prompt: int = 150  # Max skills in prompt
+    max_skills_prompt_chars: int = 18_000  # Max chars for skills section
 
     @property
     def model_has_vision(self) -> bool:
@@ -116,13 +175,48 @@ def agent_loop(
 
     ``history`` is mutated in place AND returned for convenience. The caller
     keeps the same list across turns to maintain conversation state.
-    ``on_event`` receives every streaming event and every ``("ToolResult", ...)``
-    notification; the CLI uses it for live rendering.
+    ``on_event`` receives every streaming event and every loop event (``ToolResult``,
+    ``Compaction``, ``ImageAttached``, etc.); the CLI uses it for live rendering.
+    Skills are loaded from cfg each turn (cached per session) and used for
+    both slash command dispatch and system prompt injection.
     """
-    # Parse image references from user input (mirrors openclaw attempt.ts detectAndLoadPromptImages)
-    cleaned_text, image_refs = parse_image_refs(user_input)
+    # 1. Load skills early (needed for slash commands + prompt injection)
+    eligible_entries: list[SkillEntry] = []
+    visible_skills: list[Skill] | None = None
+    if cfg.workspace_dir:
+        skill_entries = get_or_load_skills(
+            cfg.workspace_dir,
+            cfg.session_key,
+            extra_dirs=cfg.extra_skill_dirs,
+            max_bytes=cfg.max_skill_file_bytes,
+        )
+        if skill_entries:
+            eligible_entries = filter_eligible_skills(skill_entries, skill_filter=cfg.skill_filter)
+            visible_skills = filter_visible_skills(eligible_entries)
 
+    # 2. Parse slash command (mirrors openclaw slash-commands.md)
+    command: SlashCommand | None = None
+    remaining_text = user_input
+    skill_registry: dict[str, Skill] = {}
+    if eligible_entries:
+        runtime_registry = build_skill_registry_from_entries(eligible_entries)
+        if runtime_registry:
+            skill_registry = runtime_registry
+            command, remaining_text = parse_slash_command(user_input, runtime_registry)
+            # Pass eligible skills to registry for Skill tool invocation
+            registry.set_eligible_skills(skill_registry)
+
+    # 3. Build message content
     content: list[dict[str, Any]] = []
+    
+    # Slash command invocation: inject skill content
+    if command:
+        skill_context = build_slash_command_context(command)
+        content.append({"type": "text", "text": skill_context})
+        on_event(SkillInvoked(skill_name=command.name, skill_path=command.skill.filePath))
+    
+    # 3. Parse image references from remaining text (mirrors openclaw attempt.ts detectAndLoadPromptImages)
+    cleaned_text, image_refs = parse_image_refs(remaining_text)
     loaded_refs: list[str] = []
     for ref in image_refs:
         try:
@@ -130,7 +224,7 @@ def agent_loop(
             if cfg.image_model:
                 # Media Understanding path (openclaw: imageModel configured → apply.ts)
                 # Image model describes the image; main model receives text, not pixels.
-                on_event(("ImageDescribe", ref))
+                on_event(ImageDescribe(ref=ref))
                 desc = describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
                 content.append({"type": "text", "text": f"[Image: {desc}]"})
             elif cfg.model_has_vision:
@@ -139,13 +233,13 @@ def agent_loop(
                 content.append(to_anthropic_image_block(b64, mime))
             else:
                 # Main model has no vision AND no image_model configured → skip image.
-                on_event(("ImageSkip", ref, "model has no vision capability and no image_model configured"))
+                on_event(ImageSkip(ref=ref, reason="model has no vision capability and no image_model configured"))
             loaded_refs.append(ref)
         except Exception as exc:
-            on_event(("ImageError", ref, str(exc)))
+            on_event(ImageError(ref=ref, error=str(exc)))
 
     if loaded_refs:
-        on_event(("ImageAttached", loaded_refs, bool(cfg.image_model)))
+        on_event(ImageAttached(refs=loaded_refs, via_model=bool(cfg.image_model)))
 
     # Mirror openclaw convertContentBlocks: guarantee at least one text block.
     if cleaned_text:
@@ -169,7 +263,14 @@ def agent_loop(
             cfg.bootstrap_total_max_chars,
         )
 
-    system = build_system_prompt(registry, cfg.workspace_dir, bootstrap_files)
+    system = build_system_prompt(
+        registry,
+        cfg.workspace_dir,
+        bootstrap_files,
+        visible_skills,
+        max_skills_in_prompt=cfg.max_skills_in_prompt,
+        max_skills_prompt_chars=cfg.max_skills_prompt_chars,
+    )
     tools_schema = registry.schemas()
 
     for _ in range(cfg.max_iterations):
@@ -184,7 +285,7 @@ def agent_loop(
             recent_turns=cfg.context_recent_turns,
         )
         if summary:
-            on_event(("Compaction", summary))
+            on_event(Compaction(summary=summary))
             if transcript_writer:
                 transcript_writer.append_compaction(summary)
         wire_messages = [{"role": m.role, "content": m.content} for m in history]
@@ -221,9 +322,20 @@ def agent_loop(
         for block in assistant_blocks:
             if block.get("type") != "tool_use":
                 continue
-            result = registry.dispatch(block["id"], block["name"], block.get("input") or {})
+
+            tool_name = block["name"]
+            tool_args = block.get("input") or {}
+
+            # Skill tool invocation: emit SkillInvoked event
+            if tool_name == "Skill" and "skill" in tool_args:
+                skill_name = tool_args["skill"]
+                if skill_registry and skill_name in skill_registry:
+                    skill = skill_registry[skill_name]
+                    on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
+
+            result = registry.dispatch(block["id"], tool_name, tool_args)
             tool_results.append(result)
-            on_event(("ToolResult", block["name"], block.get("input") or {}, result))
+            on_event(ToolResult(name=tool_name, args=tool_args, result=result))
 
         history.append(Message("user", tool_results))
         if transcript_writer:

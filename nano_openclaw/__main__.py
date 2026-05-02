@@ -207,6 +207,12 @@ def main() -> None:
         session_key=session_id if session_id else args.agent,
         bootstrap_max_chars=config.agents.defaults.bootstrapMaxChars,
         bootstrap_total_max_chars=config.agents.defaults.bootstrapTotalMaxChars,
+        # Skills configuration (mirrors openclaw agents.defaults.skills + skills.load)
+        skill_filter=config.resolve_skill_filter(args.agent),
+        extra_skill_dirs=config.skills.load.extraDirs,
+        max_skill_file_bytes=config.skills.load.maxSkillFileBytes,
+        max_skills_in_prompt=config.skills.load.maxSkillsInPrompt,
+        max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
     )
 
     repl(

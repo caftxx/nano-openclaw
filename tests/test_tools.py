@@ -63,7 +63,7 @@ def test_bash_captures_exit_code(registry):
 
 def test_schemas_have_required_anthropic_fields(registry):
     schemas = registry.schemas()
-    assert {s["name"] for s in schemas} == {"read_file", "write_file", "list_dir", "bash", "session_status"}
+    assert {s["name"] for s in schemas} == {"read_file", "write_file", "list_dir", "bash", "session_status", "Skill"}
     for s in schemas:
         assert "description" in s and isinstance(s["description"], str)
         assert s["input_schema"]["type"] == "object"
@@ -156,12 +156,82 @@ def test_bash_workdir_overrides_workspace(tmp_path, registry):
     workspace_dir.mkdir()
     override_dir = tmp_path / "override"
     override_dir.mkdir()
-    
+
     registry.set_workspace_dir(workspace_dir)
-    
+
     import platform
     cmd = "cd" if platform.system() == "Windows" else "pwd"
     out = registry.dispatch("id-b", "bash", {"command": cmd, "workdir": str(override_dir)})
     assert out.get("is_error") is None
     text = out["content"][0]["text"]
     assert str(override_dir) in text or override_dir.name in text
+
+
+def test_skill_tool_requires_skill_name(registry):
+    """Skill tool returns error when skill name is missing."""
+    out = registry.dispatch("id-s", "Skill", {})
+    assert out["is_error"] is True
+    assert "skill name required" in out["content"][0]["text"]
+
+
+def test_skill_tool_returns_error_for_unknown_skill(registry):
+    """Skill tool returns error for unknown skill."""
+    out = registry.dispatch("id-s", "Skill", {"skill": "unknown-skill"})
+    assert out["is_error"] is True
+    assert "not found" in out["content"][0]["text"]
+
+
+def test_skill_tool_returns_content_for_known_skill(registry, tmp_path):
+    """Skill tool returns skill content when skill is eligible."""
+    from nano_openclaw.skills import Skill
+
+    # Create a skill file
+    skill_dir = tmp_path / "skills" / "test-skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("# Test Skill\nThis is the skill content.")
+
+    skill = Skill(
+        name="test-skill",
+        description="A test skill",
+        filePath=str(skill_file),
+        baseDir=str(skill_dir),
+        source="workspace",
+        content="# Test Skill\nThis is the skill content.",
+    )
+
+    registry.set_eligible_skills({"test-skill": skill})
+
+    out = registry.dispatch("id-s", "Skill", {"skill": "test-skill"})
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert "Test Skill" in text
+    assert "skill content" in text
+
+
+def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
+    """Skill tool loads content from file when skill.content is None."""
+    from nano_openclaw.skills import Skill
+
+    # Create a skill file
+    skill_dir = tmp_path / "skills" / "load-skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("# Load Skill\nContent loaded from file.")
+
+    skill = Skill(
+        name="load-skill",
+        description="A skill to load",
+        filePath=str(skill_file),
+        baseDir=str(skill_dir),
+        source="workspace",
+        content=None,  # Content not loaded yet
+    )
+
+    registry.set_eligible_skills({"load-skill": skill})
+
+    out = registry.dispatch("id-s", "Skill", {"skill": "load-skill"})
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert "Load Skill" in text
+    assert "loaded from file" in text

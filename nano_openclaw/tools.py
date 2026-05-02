@@ -14,12 +14,15 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from rich.console import Console
 
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision
+
+if TYPE_CHECKING:
+    from nano_openclaw.skills.types import Skill
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
 
@@ -36,6 +39,7 @@ class Tool:
 class ToolRegistry:
     _tools: dict[str, Tool] = field(default_factory=dict)
     _session_status_context: dict[str, Any] = field(default_factory=dict)
+    _eligible_skills: dict[str, "Skill"] = field(default_factory=dict)
     approval_manager: Optional[ApprovalManager] = field(default=None)
     console: Optional[Console] = field(default=None)
     _workspace_dir: str | None = field(default=None)
@@ -45,6 +49,10 @@ class ToolRegistry:
 
     def set_session_status_context(self, **kwargs: Any) -> None:
         self._session_status_context = kwargs
+
+    def set_eligible_skills(self, skills: dict[str, "Skill"]) -> None:
+        """Set eligible skills for Skill tool invocation."""
+        self._eligible_skills = skills
 
     def set_workspace_dir(self, workspace_dir: str | Path) -> None:
         self._workspace_dir = str(workspace_dir)
@@ -99,7 +107,9 @@ class ToolRegistry:
         
         # Execute tool
         try:
-            if name == "session_status":
+            if name == "Skill":
+                output = tool.run(args, eligible_skills=self._eligible_skills)
+            elif name == "session_status":
                 output = tool.run(args, **self._session_status_context)
             elif name in ("read_file", "write_file", "list_dir", "bash"):
                 output = tool.run(args, workspace_dir=self._workspace_dir)
@@ -264,6 +274,36 @@ def _session_status(
     return "\n".join(lines)
 
 
+def _invoke_skill(
+    args: dict[str, Any],
+    eligible_skills: dict[str, "Skill"] | None = None,
+) -> "str | list[dict[str, Any]]":
+    """Invoke a skill by name, returning its content.
+
+    Mirrors openclaw's Skill tool behavior:
+    - LLM calls this tool to activate a skill
+    - Returns the skill's SKILL.md content
+    """
+    skill_name = args.get("skill")
+    if not skill_name:
+        raise ValueError("skill name required")
+
+    if not eligible_skills or skill_name not in eligible_skills:
+        raise ValueError(f"skill '{skill_name}' not found or not eligible")
+
+    skill = eligible_skills[skill_name]
+
+    # Return skill content
+    if skill.content:
+        return skill.content
+
+    # Load content from file if not already loaded
+    skill_path = Path(skill.filePath)
+    if not skill_path.exists():
+        raise FileNotFoundError(f"skill file not found: {skill.filePath}")
+    return skill_path.read_text(encoding="utf-8")
+
+
 BUILTIN_TOOLS: list[Tool] = [
     Tool(
         name="read_file",
@@ -328,6 +368,19 @@ BUILTIN_TOOLS: list[Tool] = [
             "properties": {},
         },
         run=_session_status,
+    ),
+    Tool(
+        name="Skill",
+        description="Invoke a skill by name to load its specialized instructions. Use when the task matches a skill's description from the available_skills list in the system prompt.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Skill name to invoke (must match a name from available_skills)."},
+                "args": {"type": "string", "description": "Optional arguments for the skill task."},
+            },
+            "required": ["skill"],
+        },
+        run=_invoke_skill,
     ),
 ]
 
