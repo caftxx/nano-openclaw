@@ -62,6 +62,7 @@ from nano_openclaw.skills import (
 from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session [prefix]  /skills"
 
 
 def repl(
@@ -119,7 +120,7 @@ def repl(
             continue
         if user_input == "/help":
             console.print(
-                "[dim]commands: /quit, /clear (clear history), /new (new session+ID), /help, /context, /compact, /sessions, /save, /session [prefix], /skills — anything else is sent to the model[/]"
+                f"[dim]commands: {_COMMANDS_HELP} — anything else is sent to the model[/]"
             )
             continue
         if user_input == "/context":
@@ -202,7 +203,7 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry, session_
                 f"model:  [cyan]{markup.escape(model)}[/]\n"
                 f"tools:  {markup.escape(tools)}"
                 + (f"\n{session_line}" if session_line else "")
-                + "\ncommands: /quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session [prefix]  /skills"
+                + f"\ncommands: {_COMMANDS_HELP}"
             ),
             border_style="cyan",
         )

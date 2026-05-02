@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 
 
 
+BUILTIN_COMMANDS: frozenset[str] = frozenset(
+    {"quit", "clear", "help", "new", "context", "compact", "sessions", "save"}
+)
+
+
 @dataclass
 class SlashCommand:
     """Parsed slash command from user input."""
@@ -59,8 +64,7 @@ def parse_slash_command(
 
     # Handle special built-in commands that aren't skills
     # (e.g., /quit, /clear, /help, /new - these are handled by CLI)
-    builtin_commands = {"quit", "clear", "help", "new", "context", "compact", "sessions", "save"}
-    if cmd_name in builtin_commands:
+    if cmd_name in BUILTIN_COMMANDS:
         return None, user_input
 
     # Look up skill by name

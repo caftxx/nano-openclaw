@@ -8,7 +8,7 @@ from nano_openclaw.skills import (
     build_slash_command_context,
     parse_slash_command,
 )
-from nano_openclaw.skills.slash_commands import is_skill_user_invocable
+from nano_openclaw.skills.slash_commands import BUILTIN_COMMANDS, is_skill_user_invocable
 
 
 def test_parse_slash_command_not_a_command():
@@ -25,7 +25,7 @@ def test_parse_slash_command_builtin():
     skill_registry = {}
     
     # Built-in commands should not trigger skill lookup
-    for builtin in ["quit", "clear", "help", "new"]:
+    for builtin in BUILTIN_COMMANDS:
         cmd, text = parse_slash_command(f"/{builtin}", skill_registry)
         assert cmd is None
         assert text == f"/{builtin}"
