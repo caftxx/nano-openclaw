@@ -199,12 +199,16 @@ def agent_loop(
     remaining_text = user_input
     skill_registry: dict[str, Skill] = {}
     if eligible_entries:
+        # Slash commands: user-invocable skills only
         runtime_registry = build_skill_registry_from_entries(eligible_entries)
         if runtime_registry:
             skill_registry = runtime_registry
-            command, remaining_text = parse_slash_command(user_input, runtime_registry)
-            # Pass eligible skills to registry for Skill tool invocation
-            registry.set_eligible_skills(skill_registry)
+        command, remaining_text = parse_slash_command(user_input, skill_registry)
+        # Model Skill tool: all eligible skills, not just user-invocable ones.
+        # user-invocable controls slash command access; disable-model-invocation
+        # controls model access. These are separate gates.
+        model_registry = build_skill_registry_from_entries(eligible_entries, user_invocable_only=False)
+        registry.set_eligible_skills(model_registry)
 
     # 3. Build message content
     content: list[dict[str, Any]] = []

@@ -162,6 +162,69 @@ def test_build_skill_registry_from_entries():
     assert "skill2" not in registry
 
 
+def test_build_skill_registry_excludes_non_user_invocable_by_default():
+    """user-invocable: false skills are excluded from the slash command registry by default."""
+    from nano_openclaw.skills import SkillInvocationPolicy
+
+    skill_model_only = Skill(
+        name="mockup",
+        description="Model-only skill",
+        filePath="/p/SKILL.md",
+        baseDir="/p",
+        source="bundled",
+    )
+    skill_user = Skill(
+        name="github",
+        description="User-invocable skill",
+        filePath="/p2/SKILL.md",
+        baseDir="/p2",
+        source="bundled",
+    )
+
+    entries = [
+        SkillEntry(
+            skill=skill_model_only,
+            eligible=True,
+            invocation=SkillInvocationPolicy(userInvocable=False),
+        ),
+        SkillEntry(
+            skill=skill_user,
+            eligible=True,
+            invocation=SkillInvocationPolicy(userInvocable=True),
+        ),
+    ]
+
+    # Default: user_invocable_only=True — slash command registry
+    slash_registry = build_skill_registry_from_entries(entries)
+    assert "mockup" not in slash_registry
+    assert "github" in slash_registry
+
+
+def test_build_skill_registry_includes_non_user_invocable_when_unrestricted():
+    """user-invocable: false skills ARE included when user_invocable_only=False (model Skill tool registry)."""
+    from nano_openclaw.skills import SkillInvocationPolicy
+
+    skill_model_only = Skill(
+        name="mockup",
+        description="Model-only skill",
+        filePath="/p/SKILL.md",
+        baseDir="/p",
+        source="bundled",
+    )
+
+    entries = [
+        SkillEntry(
+            skill=skill_model_only,
+            eligible=True,
+            invocation=SkillInvocationPolicy(userInvocable=False),
+        ),
+    ]
+
+    # user_invocable_only=False — model Skill tool registry
+    model_registry = build_skill_registry_from_entries(entries, user_invocable_only=False)
+    assert "mockup" in model_registry
+
+
 def test_is_skill_user_invocable_default():
     """Default to invocable."""
     skill = Skill(name="test", description="Test", filePath="/p", baseDir="/p", source="bundled")

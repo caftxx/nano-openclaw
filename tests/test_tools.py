@@ -209,6 +209,37 @@ def test_skill_tool_returns_content_for_known_skill(registry, tmp_path):
     assert "skill content" in text
 
 
+def test_skill_tool_invokable_when_not_user_invocable(registry, tmp_path):
+    """Skill tool works for skills with user-invocable: false.
+
+    These skills are excluded from slash commands but must be reachable via
+    the model Skill tool when the loop passes user_invocable_only=False to
+    build_skill_registry_from_entries.
+    """
+    from nano_openclaw.skills import Skill
+
+    skill_dir = tmp_path / "skills" / "mockup"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("---\nname: mockup\nuser-invocable: false\n---\n# Mockup Skill\nContent here.")
+
+    skill = Skill(
+        name="mockup",
+        description="Activate when encountering .mu files",
+        filePath=str(skill_file),
+        baseDir=str(skill_dir),
+        source="bundled",
+        content="# Mockup Skill\nContent here.",
+    )
+
+    # Simulate what the loop does: model_registry built with user_invocable_only=False
+    registry.set_eligible_skills({"mockup": skill})
+
+    out = registry.dispatch("id-m", "Skill", {"skill": "mockup"})
+    assert out.get("is_error") is None
+    assert "Mockup Skill" in out["content"][0]["text"]
+
+
 def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
     """Skill tool loads content from file when skill.content is None."""
     from nano_openclaw.skills import Skill
