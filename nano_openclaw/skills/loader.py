@@ -19,6 +19,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from nano_openclaw.skills.constants import (
     DEFAULT_MAX_CANDIDATES_PER_ROOT,
     DEFAULT_MAX_SKILL_FILE_BYTES,
@@ -46,37 +48,24 @@ FRONTMATTER_PATTERN = re.compile(
 )
 
 
-def parse_frontmatter(content: str) -> dict[str, str]:
+def parse_frontmatter(content: str) -> dict[str, Any]:
     """Parse YAML frontmatter from SKILL.md content.
 
     Mirrors openclaw parseFrontmatterBlock.
-    Returns empty dict if no frontmatter found.
+    Returns empty dict if no frontmatter found or parse fails.
     """
     match = FRONTMATTER_PATTERN.match(content)
     if not match:
         return {}
 
     frontmatter_text = match.group(1)
-    result: dict[str, str] = {}
-
-    # Simple YAML parsing (single-line key: value)
-    # OpenClaw requires single-line frontmatter keys
-    for line in frontmatter_text.split("\n"):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" in line:
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            # Remove quotes if present
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]
-            elif value.startswith("'") and value.endswith("'"):
-                value = value[1:-1]
-            result[key] = value
-
-    return result
+    try:
+        result = yaml.safe_load(frontmatter_text)
+        if isinstance(result, dict):
+            return result
+    except yaml.YAMLError:
+        pass
+    return {}
 
 
 def extract_content_after_frontmatter(content: str) -> str:
@@ -87,28 +76,30 @@ def extract_content_after_frontmatter(content: str) -> str:
     return content
 
 
-def parse_metadata_json(frontmatter: dict[str, str]) -> dict[str, Any] | None:
+def parse_metadata_json(frontmatter: dict[str, Any]) -> dict[str, Any] | None:
     """Parse metadata.openclaw JSON from frontmatter.
 
     Mirrors openclaw resolveOpenClawManifestBlock.
+    Handles both dict (PyYAML inline mapping) and str (JSON string) values.
     """
     metadata_raw = frontmatter.get("metadata")
     if not metadata_raw:
         return None
 
+    if isinstance(metadata_raw, dict):
+        return metadata_raw.get("openclaw", metadata_raw)
+
     try:
-        # metadata should be a JSON object string
-        metadata_obj = json.loads(metadata_raw)
+        metadata_obj = json.loads(str(metadata_raw))
         if isinstance(metadata_obj, dict):
             return metadata_obj.get("openclaw", metadata_obj)
     except json.JSONDecodeError:
-        # Try legacy clawdbot format
         pass
 
     return None
 
 
-def resolve_skill_metadata(frontmatter: dict[str, str]) -> SkillMetadata | None:
+def resolve_skill_metadata(frontmatter: dict[str, Any]) -> SkillMetadata | None:
     """Resolve SkillMetadata from frontmatter.
 
     Mirrors openclaw resolveOpenClawMetadata.
@@ -164,16 +155,24 @@ def resolve_skill_metadata(frontmatter: dict[str, str]) -> SkillMetadata | None:
     )
 
 
-def resolve_invocation_policy(frontmatter: dict[str, str]) -> SkillInvocationPolicy:
+def resolve_invocation_policy(frontmatter: dict[str, Any]) -> SkillInvocationPolicy:
     """Resolve invocation policy from frontmatter.
 
     Mirrors openclaw resolveSkillInvocationPolicy.
+    Handles native bool from PyYAML and legacy string values.
     """
-    user_invocable_raw = frontmatter.get("user-invocable", "true")
-    disable_model_raw = frontmatter.get("disable-model-invocation", "false")
+    user_invocable_raw = frontmatter.get("user-invocable", True)
+    disable_model_raw = frontmatter.get("disable-model-invocation", False)
 
-    user_invocable = user_invocable_raw.lower() == "true"
-    disable_model = disable_model_raw.lower() == "true"
+    if isinstance(user_invocable_raw, bool):
+        user_invocable = user_invocable_raw
+    else:
+        user_invocable = str(user_invocable_raw).lower() == "true"
+
+    if isinstance(disable_model_raw, bool):
+        disable_model = disable_model_raw
+    else:
+        disable_model = str(disable_model_raw).lower() == "true"
 
     return SkillInvocationPolicy(
         userInvocable=user_invocable,

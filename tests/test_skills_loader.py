@@ -17,6 +17,7 @@ from nano_openclaw.skills import (
 )
 from nano_openclaw.skills.loader import (
     extract_content_after_frontmatter,
+    parse_metadata_json,
     resolve_skill_metadata,
 )
 
@@ -252,3 +253,56 @@ def test_load_skill_entries_parses_invocation_policy(tmp_path: Path):
     entry = found[0]
     assert entry.invocation is not None
     assert entry.invocation.userInvocable is False
+
+
+def test_parse_frontmatter_native_bool():
+    """PyYAML parses YAML boolean values as Python booleans."""
+    content = "---\nname: test\ndescription: desc\nuser-invocable: false\n---\n"
+    result = parse_frontmatter(content)
+    assert result["user-invocable"] is False
+    assert result["name"] == "test"
+
+
+def test_parse_frontmatter_inline_dict():
+    """PyYAML parses inline YAML mappings as dicts, not strings."""
+    content = '---\nname: test\ndescription: desc\nmetadata: {"openclaw": {"always": true}}\n---\n'
+    result = parse_frontmatter(content)
+    assert isinstance(result["metadata"], dict)
+    assert result["metadata"]["openclaw"]["always"] is True
+
+
+def test_parse_frontmatter_invalid_yaml():
+    """Returns empty dict when YAML is malformed."""
+    content = "---\n: invalid: yaml: :\n---\n"
+    result = parse_frontmatter(content)
+    assert isinstance(result, dict)
+
+
+def test_resolve_invocation_policy_native_bool():
+    """resolve_invocation_policy handles Python bool from PyYAML."""
+    from nano_openclaw.skills.loader import resolve_invocation_policy
+    policy = resolve_invocation_policy({"user-invocable": False, "disable-model-invocation": True})
+    assert policy.userInvocable is False
+    assert policy.disableModelInvocation is True
+
+
+def test_parse_metadata_json_dict_value():
+    """parse_metadata_json handles dict metadata (from PyYAML inline mapping)."""
+    frontmatter = {
+        "name": "test",
+        "metadata": {"openclaw": {"requires": {"bins": ["mycli"]}}}
+    }
+    result = parse_metadata_json(frontmatter)
+    assert result is not None
+    assert result["requires"]["bins"] == ["mycli"]
+
+
+def test_parse_metadata_json_string_value():
+    """parse_metadata_json still handles JSON string metadata (legacy/unit-test usage)."""
+    frontmatter = {
+        "name": "test",
+        "metadata": '{"openclaw": {"requires": {"bins": ["mycli"]}}}'
+    }
+    result = parse_metadata_json(frontmatter)
+    assert result is not None
+    assert result["requires"]["bins"] == ["mycli"]
