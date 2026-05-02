@@ -566,39 +566,39 @@ def _win_readline() -> str:
     sys.stdout.flush()
 
     while True:
-        ch = msvcrt.getch()
-        if ch in (b"\x00", b"\xe0"):
-            ext = msvcrt.getch()
-            if ext == b"H" and hist_pos > 0:                      # up
+        # getwch() returns Unicode characters directly, fixing CJK/IME input garbling
+        wch = msvcrt.getwch()
+        if wch in ('\x00', '\xe0'):
+            ext = msvcrt.getwch()
+            if ext == 'H' and hist_pos > 0:                      # up
                 if hist_pos == len(_input_history):
                     saved = buf[:]
                 hist_pos -= 1
                 buf[:] = list(_input_history[hist_pos])
                 redraw()
-            elif ext == b"P" and hist_pos < len(_input_history):  # down
+            elif ext == 'P' and hist_pos < len(_input_history):  # down
                 hist_pos += 1
                 buf[:] = saved[:] if hist_pos == len(_input_history) else list(_input_history[hist_pos])
                 redraw()
-        elif ch == b"\r":                 # Enter
+        elif wch == '\r':                 # Enter
             sys.stdout.write("\n")
             sys.stdout.flush()
             result = "".join(buf)
             if result and (not _input_history or _input_history[-1] != result):
                 _input_history.append(result)
             return result
-        elif ch == b"\x03":               # Ctrl+C
+        elif wch == '\x03':               # Ctrl+C
             sys.stdout.write("\n")
             sys.stdout.flush()
             raise KeyboardInterrupt
-        elif ch == b"\x04":               # Ctrl+D
+        elif wch == '\x04':               # Ctrl+D
             raise EOFError
-        elif ch in (b"\x08", b"\x7f"):   # Backspace
+        elif wch in ('\x08', '\x7f'):    # Backspace
             if buf:
                 buf.pop()
                 redraw()
-        elif ch[0] >= 32:                 # Printable char
-            c = ch.decode("mbcs", errors="replace")
-            buf.append(c)
+        elif ord(wch) >= 32:             # Printable char (including CJK via IME)
+            buf.append(wch)
             redraw()
 
 
