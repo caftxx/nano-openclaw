@@ -549,10 +549,6 @@ def _list_skills(console: Console, cfg: LoopConfig) -> None:
         console.print("[dim]no skills found[/]")
         return
 
-    # Show active filter
-    if cfg.skill_filter is not None:
-        console.print(f"[dim]skill filter: {', '.join(cfg.skill_filter)}[/]")
-
     # Apply gating with skill filter (mutates entries in-place)
     eligible = filter_eligible_skills(all_entries, skill_filter=cfg.skill_filter)
     visible = filter_visible_skills(eligible)

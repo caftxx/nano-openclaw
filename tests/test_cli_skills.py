@@ -162,7 +162,7 @@ def test_list_skills_shows_in_prompt_column(tmp_path: Path):
     """/skills shows 'In Prompt' column."""
     skill_dir = tmp_path / "skills" / "visible-skill"
     skill_dir.mkdir(parents=True)
-    
+
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text("""---
 name: visible-skill
@@ -170,14 +170,36 @@ description: Visible skill
 ---
 # Visible
 """)
-    
+
     console = Console()
     cfg = LoopConfig(workspace_dir=tmp_path, session_key="test")
-    
+
     with console.capture() as capture:
         _list_skills(console, cfg)
-    
+
     output = capture.get()
-    
+
     # Table should have "In Prompt" column
     assert "In Prompt" in output
+
+
+def test_list_skills_filter_printed_once(tmp_path: Path):
+    """skill filter line appears exactly once, not duplicated."""
+    skill_dir = tmp_path / "skills" / "test"
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        "---\nname: test\ndescription: Test skill\n---\nContent\n"
+    )
+
+    console = Console()
+    cfg = LoopConfig(
+        workspace_dir=tmp_path,
+        session_key="test",
+        skill_filter=["github", "weather"],
+    )
+
+    with console.capture() as capture:
+        _list_skills(console, cfg)
+
+    output = capture.get()
+    assert output.count("skill filter:") == 1

@@ -356,7 +356,12 @@ def load_skill_entries(
     for source, skill_dir in skill_dirs:
         skills = load_skills_from_dir(skill_dir, source, max_bytes)
         for skill in skills:
-            frontmatter = parse_frontmatter(skill.content or "")
+            # Re-read raw file to parse frontmatter (skill.content is the stripped body)
+            try:
+                raw = Path(skill.filePath).read_text(encoding="utf-8")
+                frontmatter = parse_frontmatter(raw)
+            except (OSError, UnicodeDecodeError):
+                frontmatter = {}
             metadata = resolve_skill_metadata(frontmatter)
             invocation = resolve_invocation_policy(frontmatter)
 

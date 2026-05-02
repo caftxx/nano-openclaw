@@ -203,12 +203,52 @@ def test_skill_entry_structure():
         source="bundled",
         content="# Content",
     )
-    
+
     entry = SkillEntry(
         skill=skill,
         frontmatter={"name": "test"},
         eligible=True,
     )
-    
+
     assert entry.skill.name == "test"
     assert entry.eligible is True
+
+
+def test_load_skill_entries_parses_frontmatter_metadata(tmp_path: Path):
+    """load_skill_entries reads raw file to populate metadata, not stripped body."""
+    skill_dir = tmp_path / "skills" / "gated-skill"
+    skill_dir.mkdir(parents=True)
+
+    skill_file = skill_dir / SKILL_FILE_NAME
+    skill_file.write_text(
+        '---\nname: gated-skill\ndescription: Needs a binary\n'
+        'metadata: {"openclaw": {"requires": {"bins": ["nonexistent-cli"]}}}\n'
+        '---\n# Gated Skill\nContent here.\n'
+    )
+
+    entries = load_skill_entries(tmp_path)
+    found = [e for e in entries if e.skill.name == "gated-skill"]
+    assert len(found) == 1
+    entry = found[0]
+    assert entry.metadata is not None, "metadata should be populated from raw frontmatter"
+    assert entry.metadata.requires is not None
+    assert entry.metadata.requires.bins == ["nonexistent-cli"]
+
+
+def test_load_skill_entries_parses_invocation_policy(tmp_path: Path):
+    """load_skill_entries correctly reads user-invocable flag from frontmatter."""
+    skill_dir = tmp_path / "skills" / "hidden-skill"
+    skill_dir.mkdir(parents=True)
+
+    skill_file = skill_dir / SKILL_FILE_NAME
+    skill_file.write_text(
+        '---\nname: hidden-skill\ndescription: Not user invocable\n'
+        'user-invocable: false\n---\n# Hidden Skill\nContent.\n'
+    )
+
+    entries = load_skill_entries(tmp_path)
+    found = [e for e in entries if e.skill.name == "hidden-skill"]
+    assert len(found) == 1
+    entry = found[0]
+    assert entry.invocation is not None
+    assert entry.invocation.userInvocable is False
