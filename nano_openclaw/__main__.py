@@ -45,12 +45,17 @@ from nano_openclaw.session import (
 )
 from nano_openclaw.tools import ToolRegistry, build_default_registry
 from nano_openclaw.approvals.manager import ApprovalManager
-from nano_openclaw.approvals.types import ApprovalPolicy
+from nano_openclaw.approvals.types import ApprovalPolicy, DEFAULT_AGENT_ID
 from rich.console import Console
 
 
-def build_approval_manager(cfg, state_dir: Path) -> ApprovalManager | None:
-    """Build ApprovalManager from config."""
+def build_approval_manager(cfg, state_dir: Path, agent_id: str = DEFAULT_AGENT_ID) -> ApprovalManager | None:
+    """Build ApprovalManager from config.
+    
+    Mirrors openclaw's approval initialization:
+    - Per-agent allowlist storage
+    - Rich metadata for allowlist entries
+    """
     approvals_cfg = cfg.approvals
     if approvals_cfg.askMode == "off":
         return None
@@ -60,6 +65,7 @@ def build_approval_manager(cfg, state_dir: Path) -> ApprovalManager | None:
         allow_store = str(state_dir / "approvals.json")
     
     policy = ApprovalPolicy(
+        agent_id=agent_id,
         ask_mode=approvals_cfg.askMode,
         security_mode=approvals_cfg.securityMode,
         dangerous_tools=approvals_cfg.dangerousTools,
@@ -67,9 +73,9 @@ def build_approval_manager(cfg, state_dir: Path) -> ApprovalManager | None:
     )
     
     manager = ApprovalManager(policy)
-    existing_patterns = manager.load_allow_always_patterns()
-    if existing_patterns:
-        policy.allow_always_patterns = existing_patterns
+    existing_allowlist = manager.load_allowlist()
+    if existing_allowlist:
+        policy.allowlist = existing_allowlist
     
     return manager
 
@@ -137,7 +143,7 @@ def main() -> None:
     # Build approval manager and pass to registry
     state_dir = resolve_state_dir()
     console = Console()
-    approval_manager = build_approval_manager(config, state_dir)
+    approval_manager = build_approval_manager(config, state_dir, args.agent)
     registry.approval_manager = approval_manager
     registry.console = console
     

@@ -4,6 +4,7 @@ Mirrors openclaw's exec-approvals.ts:
 - ApprovalDecision (allow-once/allow-always/deny)
 - ApprovalRequest (tool invocation capture)
 - ApprovalPolicy (security/ask modes)
+- AllowlistEntry (rich metadata per pattern)
 """
 
 from enum import Enum
@@ -17,6 +18,37 @@ class ApprovalDecision(str, Enum):
     ALLOW_ONCE = "allow-once"
     ALLOW_ALWAYS = "allow-always"
     DENY = "deny"
+
+
+class AllowlistEntry(BaseModel):
+    """A single allowlist entry with rich metadata.
+    
+    Mirrors openclaw's ExecAllowlistEntry:
+    - id: unique identifier
+    - pattern: the pattern to match
+    - source: where this entry came from ("allow-always" or null)
+    - commandText: original command that created this entry
+    - lastUsedAt: timestamp of last use
+    """
+    model_config = ConfigDict(populate_by_name=True)
+    
+    id: str = Field(default="", description="Unique entry ID (UUID)")
+    pattern: str = Field(description="Pattern to match against tool args")
+    source: Optional[Literal["allow-always"]] = Field(
+        default=None,
+        description="Source of this entry (allow-always = user approved)"
+    )
+    commandText: Optional[str] = Field(
+        default=None,
+        description="Original command/text that created this entry"
+    )
+    lastUsedAt: Optional[float] = Field(
+        default=None,
+        description="Timestamp of last use"
+    )
+
+
+DEFAULT_AGENT_ID = "default"
 
 
 class ApprovalRequest(BaseModel):
@@ -54,6 +86,10 @@ class ApprovalPolicy(BaseModel):
     """Global approval policy configuration."""
     model_config = ConfigDict(populate_by_name=True)
     
+    agent_id: str = Field(
+        default=DEFAULT_AGENT_ID,
+        description="Agent ID for per-agent allowlist storage"
+    )
     ask_mode: Literal["off", "on-miss", "always"] = Field(
         default="on-miss",
         description="off=never ask, on-miss=ask if not in allowlist, always=always ask"
@@ -74,7 +110,7 @@ class ApprovalPolicy(BaseModel):
         default=None,
         description="Path to store allow-always decisions"
     )
-    allow_always_patterns: List[str] = Field(
+    allowlist: List[AllowlistEntry] = Field(
         default_factory=list,
-        description="Patterns that have been approved with allow-always"
+        description="Allowlist entries with rich metadata"
     )

@@ -1,10 +1,14 @@
 """Approval module tests."""
+import json
 import pytest
+from pathlib import Path
 from nano_openclaw.approvals.types import (
     ApprovalDecision,
     ApprovalRequest,
     ApprovalPolicy,
     ToolApprovalConfig,
+    AllowlistEntry,
+    DEFAULT_AGENT_ID,
 )
 
 
@@ -34,6 +38,7 @@ def test_approval_policy_defaults():
     assert policy.ask_mode == "on-miss"
     assert policy.security_mode == "allowlist"
     assert len(policy.dangerous_tools) > 0
+    assert policy.agent_id == DEFAULT_AGENT_ID
 
 
 def test_tool_approval_config():
@@ -45,6 +50,27 @@ def test_tool_approval_config():
     )
     assert config.tool_name == "bash"
     assert "rm -rf" in config.dangerous_patterns
+
+
+def test_allowlist_entry():
+    """AllowlistEntry has rich metadata."""
+    entry = AllowlistEntry(
+        id="abc123",
+        pattern="/usr/bin/ls",
+        source="allow-always",
+        commandText="ls -la",
+        lastUsedAt=1730000000.0,
+    )
+    assert entry.id == "abc123"
+    assert entry.pattern == "/usr/bin/ls"
+    assert entry.source == "allow-always"
+    assert entry.commandText == "ls -la"
+    assert entry.lastUsedAt == 1730000000.0
+
+
+def test_default_agent_id():
+    """DEFAULT_AGENT_ID is 'default'."""
+    assert DEFAULT_AGENT_ID == "default"
 
 
 def test_default_dangerous_patterns():
@@ -92,14 +118,18 @@ def test_policy_evaluator_write_file():
 
 
 def test_policy_evaluator_allowlist():
-    """Evaluator respects allow-always patterns."""
+    """Evaluator respects allowlist patterns."""
     from nano_openclaw.approvals.policy import ApprovalPolicyEvaluator
     
-    policy = ApprovalPolicy(allow_always_patterns=["ls *", "cat *.txt"])
+    policy = ApprovalPolicy(allowlist=[
+        AllowlistEntry(pattern="ls", source="allow-always"),
+        AllowlistEntry(pattern="cat", source="allow-always"),
+    ])
     evaluator = ApprovalPolicyEvaluator(policy)
     
-    result = evaluator.evaluate("bash", {"command": "ls -la"})
-    assert result.requires_approval == False
+    # Should not require approval for matching pattern
+    result = evaluator.check_allow_always("bash", {"command": "ls -la"}, ["ls", "cat"])
+    assert result == True
 
 
 def test_manager_create_request():
@@ -129,11 +159,11 @@ def test_manager_record_decision():
 
 
 def test_manager_allow_always_persistence(tmp_path):
-    """Manager persists allow-always decisions."""
+    """Manager persists allow-always decisions with rich metadata."""
     from nano_openclaw.approvals import ApprovalManager
     
     store_path = tmp_path / "approvals.json"
-    policy = ApprovalPolicy(allow_always_store=str(store_path))
+    policy = ApprovalPolicy(allow_always_store=str(store_path), agent_id="test-agent")
     manager = ApprovalManager(policy)
     
     req = manager.create_request("bash", {"command": "ls -la"})
@@ -141,15 +171,96 @@ def test_manager_allow_always_persistence(tmp_path):
     
     assert store_path.exists()
     
-    patterns = manager.load_allow_always_patterns()
-    assert len(patterns) > 0
+    data = json.loads(store_path.read_text())
+    assert data["version"] == 1
+    assert "test-agent" in data["agents"]
+    
+    allowlist = data["agents"]["test-agent"]["allowlist"]
+    assert len(allowlist) > 0
+    
+    entry = allowlist[0]
+    assert entry["pattern"] == "ls"
+    assert entry["source"] == "allow-always"
+    assert entry["commandText"] == "ls -la"
+    assert "id" in entry
+    assert "lastUsedAt" in entry
+
+
+def test_manager_per_agent_storage(tmp_path):
+    """Manager stores allowlist per agent."""
+    from nano_openclaw.approvals import ApprovalManager
+    
+    store_path = tmp_path / "approvals.json"
+    
+    # Agent 1
+    policy1 = ApprovalPolicy(allow_always_store=str(store_path), agent_id="agent-1")
+    manager1 = ApprovalManager(policy1)
+    req1 = manager1.create_request("bash", {"command": "ls"})
+    manager1.record_decision(req1.request_id, ApprovalDecision.ALLOW_ALWAYS)
+    
+    # Agent 2
+    policy2 = ApprovalPolicy(allow_always_store=str(store_path), agent_id="agent-2")
+    manager2 = ApprovalManager(policy2)
+    req2 = manager2.create_request("bash", {"command": "cat"})
+    manager2.record_decision(req2.request_id, ApprovalDecision.ALLOW_ALWAYS)
+    
+    # Check file
+    data = json.loads(store_path.read_text())
+    assert "agent-1" in data["agents"]
+    assert "agent-2" in data["agents"]
+    
+    # Each agent should have different patterns
+    agent1_patterns = [e["pattern"] for e in data["agents"]["agent-1"]["allowlist"]]
+    agent2_patterns = [e["pattern"] for e in data["agents"]["agent-2"]["allowlist"]]
+    
+    assert "ls" in agent1_patterns
+    assert "cat" in agent2_patterns
+    assert "ls" not in agent2_patterns
+    assert "cat" not in agent1_patterns
+
+
+def test_manager_load_allowlist(tmp_path):
+    """Manager loads existing allowlist from file."""
+    from nano_openclaw.approvals import ApprovalManager
+    
+    store_path = tmp_path / "approvals.json"
+    
+    # Pre-populate file
+    existing_data = {
+        "version": 1,
+        "agents": {
+            "default": {
+                "allowlist": [
+                    {
+                        "id": "existing-id",
+                        "pattern": "echo",
+                        "source": "allow-always",
+                        "commandText": "echo hello",
+                        "lastUsedAt": 1730000000.0,
+                    }
+                ]
+            }
+        }
+    }
+    store_path.write_text(json.dumps(existing_data))
+    
+    policy = ApprovalPolicy(allow_always_store=str(store_path))
+    manager = ApprovalManager(policy)
+    
+    allowlist = manager.load_allowlist()
+    assert len(allowlist) == 1
+    assert allowlist[0].pattern == "echo"
+    assert allowlist[0].source == "allow-always"
 
 
 def test_manager_check_allow_always():
-    """Manager checks stored allow-always patterns."""
+    """Manager checks stored allowlist patterns."""
     from nano_openclaw.approvals import ApprovalManager
     
-    policy = ApprovalPolicy(allow_always_patterns=["ls *", "cat *.txt"])
+    policy = ApprovalPolicy(allowlist=[
+        AllowlistEntry(pattern="ls", source="allow-always"),
+        AllowlistEntry(pattern="cat", source="allow-always"),
+    ])
     manager = ApprovalManager(policy)
     
     result = manager.check_request("bash", {"command": "ls -la"})

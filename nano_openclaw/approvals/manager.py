@@ -1,9 +1,10 @@
 """Approval request manager.
 
-Mirrors openclaw's exec-approval-manager.ts:
+Mirrors openclaw's exec-approval-manager.ts and exec-approvals.ts:
 - Create/register/resolve approval requests
 - Track pending requests
-- Persist allow-always decisions
+- Persist allow-always decisions with rich metadata
+- Per-agent allowlist storage
 """
 
 import json
@@ -16,8 +17,13 @@ from nano_openclaw.approvals.types import (
     ApprovalDecision,
     ApprovalPolicy,
     ApprovalRequest,
+    AllowlistEntry,
+    DEFAULT_AGENT_ID,
 )
 from nano_openclaw.approvals.policy import ApprovalPolicyEvaluator, EvaluationResult
+
+
+APPROVALS_FILE_VERSION = 1
 
 
 class ApprovalManager:
@@ -28,7 +34,8 @@ class ApprovalManager:
         self.evaluator = ApprovalPolicyEvaluator(policy)
         self._pending_requests: Dict[str, ApprovalRequest] = {}
         self._decisions: Dict[str, ApprovalDecision] = {}
-        self._allow_always_patterns: List[str] = list(policy.allow_always_patterns)
+        self._allowlist: List[AllowlistEntry] = list(policy.allowlist)
+        self._file_cache: Optional[Dict] = None
     
     def create_request(
         self,
@@ -59,15 +66,14 @@ class ApprovalManager:
         """Check if a tool invocation requires approval.
         
         Returns EvaluationResult with requires_approval flag.
-        Also checks against stored allow-always patterns.
+        Also checks against stored allowlist entries.
         """
-        if self.evaluator.check_allow_always(
-            tool_name, tool_args, self._allow_always_patterns
-        ):
+        patterns = [e.pattern for e in self._allowlist]
+        if self.evaluator.check_allow_always(tool_name, tool_args, patterns):
             return EvaluationResult(
                 requires_approval=False,
                 risk_level="low",
-                reason="matches allow-always pattern"
+                reason="matches allowlist entry"
             )
         
         return self.evaluator.evaluate(tool_name, tool_args)
@@ -87,17 +93,44 @@ class ApprovalManager:
         if decision == ApprovalDecision.ALLOW_ALWAYS:
             request = self._pending_requests.get(request_id)
             if request:
-                pattern = self._extract_pattern(request)
-                if pattern and pattern not in self._allow_always_patterns:
-                    self._allow_always_patterns.append(pattern)
-                    self._save_allow_always_patterns()
+                self._add_allowlist_entry(request)
     
     def get_decision(self, request_id: str) -> Optional[ApprovalDecision]:
         """Get the recorded decision for a request."""
         return self._decisions.get(request_id)
     
+    def _add_allowlist_entry(self, request: ApprovalRequest) -> None:
+        """Add an allowlist entry from an approved request.
+        
+        Mirrors openclaw's addAllowlistEntry():
+        - Generate UUID
+        - Extract pattern from request
+        - Add source="allow-always"
+        - Add commandText, lastUsedAt metadata
+        - Persist to file
+        """
+        pattern = self._extract_pattern(request)
+        if not pattern:
+            return
+        
+        now = time.time()
+        entry = AllowlistEntry(
+            id=uuid.uuid4().hex,
+            pattern=pattern,
+            source="allow-always",
+            commandText=self._get_command_text(request),
+            lastUsedAt=now,
+        )
+        
+        self._allowlist.append(entry)
+        self._persist_allowlist_entry(entry)
+    
     def _extract_pattern(self, request: ApprovalRequest) -> str:
-        """Extract a pattern from the request for allow-always matching."""
+        """Extract a pattern from the request for allowlist matching.
+        
+        For bash: parse executable path from command
+        For write_file: use the path directly
+        """
         tool_name = request.tool_name
         tool_args = request.tool_args
         
@@ -111,20 +144,52 @@ class ApprovalManager:
         
         return ""
     
+    def _get_command_text(self, request: ApprovalRequest) -> str:
+        """Get the original command text for metadata."""
+        if request.tool_name == "bash":
+            return str(request.tool_args.get("command", ""))
+        if request.tool_name == "write_file":
+            return str(request.tool_args.get("path", ""))
+        return ""
+    
     def _command_to_pattern(self, command: str) -> str:
-        """Convert a command to a glob-like pattern.
+        """Convert a command to a pattern for allowlist matching.
         
-        e.g., "ls -la /home" -> "ls *"
+        Mirrors openclaw's resolveAllowAlwaysPatternEntries():
+        - Parse the command to find the executable
+        - Return the executable path as pattern (if absolute)
+        - Otherwise return base command
         """
+        command = command.strip()
+        if not command:
+            return ""
+        
         parts = command.split()
         if not parts:
             return ""
         
         base_cmd = parts[0]
-        return f"{base_cmd} *"
+        
+        if base_cmd.startswith("/") or base_cmd.startswith("~"):
+            return base_cmd
+        
+        return base_cmd
     
-    def load_allow_always_patterns(self) -> List[str]:
-        """Load allow-always patterns from store file."""
+    def load_allowlist(self) -> List[AllowlistEntry]:
+        """Load allowlist from store file for current agent.
+        
+        File structure (mirrors openclaw):
+        {
+          "version": 1,
+          "agents": {
+            "default": {
+              "allowlist": [
+                { "id": "...", "pattern": "...", "source": "allow-always", ... }
+              ]
+            }
+          }
+        }
+        """
         if not self.policy.allow_always_store:
             return []
         
@@ -134,21 +199,75 @@ class ApprovalManager:
         
         try:
             data = json.loads(store_path.read_text())
-            return data.get("allow_always_patterns", [])
-        except (json.JSONDecodeError, IOError):
+            if data.get("version") != APPROVALS_FILE_VERSION:
+                return []
+            
+            agents = data.get("agents", {})
+            agent_data = agents.get(self.policy.agent_id, {})
+            allowlist_raw = agent_data.get("allowlist", [])
+            
+            return [AllowlistEntry(**entry) for entry in allowlist_raw]
+        except (json.JSONDecodeError, IOError, TypeError):
             return []
     
-    def _save_allow_always_patterns(self) -> None:
-        """Save allow-always patterns to store file."""
+    def _persist_allowlist_entry(self, entry: AllowlistEntry) -> None:
+        """Persist a single allowlist entry to the store file.
+        
+        Mirrors openclaw's saveExecApprovals():
+        - Load existing file
+        - Add/update entry for agent
+        - Save file
+        """
         if not self.policy.allow_always_store:
             return
         
         store_path = Path(self.policy.allow_always_store)
         store_path.parent.mkdir(parents=True, exist_ok=True)
         
-        data = {"allow_always_patterns": self._allow_always_patterns}
+        data = self._load_or_create_file(store_path)
+        
+        agents = data.get("agents", {})
+        agent_data = agents.get(self.policy.agent_id, {"allowlist": []})
+        allowlist = agent_data.get("allowlist", [])
+        
+        entry_dict = entry.model_dump()
+        
+        existing_idx = None
+        for i, existing in enumerate(allowlist):
+            if existing.get("pattern") == entry.pattern:
+                existing_idx = i
+                break
+        
+        if existing_idx is not None:
+            allowlist[existing_idx] = entry_dict
+        else:
+            allowlist.append(entry_dict)
+        
+        agent_data["allowlist"] = allowlist
+        agents[self.policy.agent_id] = agent_data
+        data["agents"] = agents
+        
         store_path.write_text(json.dumps(data, indent=2))
+    
+    def _load_or_create_file(self, store_path: Path) -> Dict:
+        """Load existing file or create new structure."""
+        if store_path.exists():
+            try:
+                data = json.loads(store_path.read_text())
+                if data.get("version") == APPROVALS_FILE_VERSION:
+                    return data
+            except (json.JSONDecodeError, IOError):
+                pass
+        
+        return {
+            "version": APPROVALS_FILE_VERSION,
+            "agents": {},
+        }
     
     def clear_pending(self, request_id: str) -> None:
         """Clear a pending request after it's resolved."""
         self._pending_requests.pop(request_id, None)
+    
+    def get_allowlist_patterns(self) -> List[str]:
+        """Get all allowlist patterns for matching."""
+        return [e.pattern for e in self._allowlist]
