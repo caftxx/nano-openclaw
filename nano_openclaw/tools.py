@@ -113,6 +113,8 @@ class ToolRegistry:
                 output = tool.run(args, **self._session_status_context)
             elif name in ("read_file", "write_file", "list_dir", "bash"):
                 output = tool.run(args, workspace_dir=self._workspace_dir)
+            elif name in ("memory_get", "memory_search"):
+                output = tool.run(args, workspace_dir=self._workspace_dir)
             else:
                 output = tool.run(args)
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
@@ -304,6 +306,8 @@ def _invoke_skill(
     return skill_path.read_text(encoding="utf-8")
 
 
+from nano_openclaw.memory.tools import memory_get, memory_search
+
 BUILTIN_TOOLS: list[Tool] = [
     Tool(
         name="read_file",
@@ -381,6 +385,34 @@ BUILTIN_TOOLS: list[Tool] = [
             "required": ["skill"],
         },
         run=_invoke_skill,
+    ),
+    Tool(
+        name="memory_get",
+        description="Read a specific memory file (MEMORY.md or memory/*.md). Use to retrieve exact content by path.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to workspace (e.g., MEMORY.md or memory/2026-05-02.md)"},
+                "from": {"type": "integer", "description": "Starting line number (1-indexed)"},
+                "lines": {"type": "integer", "description": "Number of lines to read"},
+            },
+            "required": ["path"],
+        },
+        run=lambda args, workspace_dir=None: memory_get(args, workspace_dir),
+    ),
+    Tool(
+        name="memory_search",
+        description="Search memory files (MEMORY.md + memory/*.md) for keywords. Use before answering questions about prior work or decisions.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "maxResults": {"type": "integer", "description": "Max results (default 10)"},
+                "minScore": {"type": "number", "description": "Min match score 0-1 (default 0.1)"},
+            },
+            "required": ["query"],
+        },
+        run=lambda args, workspace_dir=None: memory_search(args, workspace_dir),
     ),
 ]
 

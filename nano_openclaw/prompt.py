@@ -140,6 +140,12 @@ def build_system_prompt(
         if limited:
             skills_block = format_skills_compact(limited) if use_compact else format_skills_for_prompt(limited)
 
+    # Daily memory prelude (mirrors openclaw startup-context.ts)
+    daily_memory = ""
+    if workspace_dir:
+        from nano_openclaw.memory.daily import build_daily_memory_prelude
+        daily_memory = build_daily_memory_prelude(workspace_dir) or ""
+
     prompt = (
         f"{_IDENTITY}\n\n"
         "Runtime:\n" + "\n".join(runtime_lines) + "\n\n"
@@ -150,9 +156,24 @@ def build_system_prompt(
 
     prompt += tools_block + "\n"
 
+    # Memory tool guidance (after tools section)
+    prompt += _MEMORY_TOOL_GUIDANCE + "\n"
+
     if skills_block:
         prompt += skills_block + "\n"
 
     prompt += "\nWhen the task is done, stop. Never invent file paths."
 
+    # Prepend daily memory prelude if available
+    if daily_memory:
+        prompt = f"{daily_memory}\n\n{prompt}"
+
     return prompt
+
+
+_MEMORY_TOOL_GUIDANCE = """
+## Memory Recall
+Before answering anything about prior work, decisions, dates, people, preferences, or todos:
+run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull needed lines.
+If low confidence after search, say you checked.
+"""

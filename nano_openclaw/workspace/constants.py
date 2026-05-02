@@ -48,3 +48,18 @@ MINIMAL_BOOTSTRAP_ALLOWLIST: set[str] = {
     DEFAULT_IDENTITY_FILENAME,
     DEFAULT_USER_FILENAME,
 }
+
+# Daily memory directory name (openclaw startup-context.ts:227)
+DEFAULT_MEMORY_DIR = "memory"
+
+# Daily memory file pattern: YYYY-MM-DD.md or YYYY-MM-DD-slug.md
+DAILY_MEMORY_PATTERN = r"^\d{4}-\d{2}-\d{2}"  # regex prefix for date stamps
+
+# Default days to load (today + yesterday, openclaw startup-context.ts:10)
+DEFAULT_DAILY_MEMORY_DAYS = 2
+MAX_DAILY_MEMORY_DAYS = 14
+
+# Character limits (openclaw startup-context.ts:7-9)
+DAILY_MEMORY_FILE_MAX_CHARS = 1200
+DAILY_MEMORY_TOTAL_MAX_CHARS = 2800
+MAX_SLUGGED_FILES_PER_DAY = 4
