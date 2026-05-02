@@ -24,7 +24,9 @@ from rich.table import Table
 from rich.text import Text
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
+from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.loop import (
+    ActiveMemoryRecall,
     Compaction,
     ImageAttached,
     ImageDescribe,
@@ -64,7 +66,7 @@ from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
 _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  — /sessions launches interactive picker"
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /active-memory \\[status|on|off|mode|style]  — /sessions launches interactive picker"
 
 
 def repl(
@@ -196,6 +198,9 @@ def repl(
                             _replay_history(console, history, session_id)
                 else:
                     console.print("[dim](no session store configured)[/]")
+            continue
+        if user_input.startswith("/active-memory"):
+            _handle_active_memory_command(console, user_input, cfg)
             continue
 
         on_event = _make_event_handler(console)
@@ -423,6 +428,12 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
 
         elif isinstance(event, SkillInvoked):
             console.print(f"[cyan]skill invoked:[/] {markup.escape(event.skill_name)} ({markup.escape(event.skill_path)})")
+
+        elif isinstance(event, ActiveMemoryRecall):
+            result = event.result
+            if result.context:
+                cached_str = ", cached" if result.cached else ""
+                console.print(f"[dim]Active Memory: {result.elapsed_ms}ms{cached_str}[/]")
 
     return handle
 
@@ -1024,3 +1035,91 @@ def _list_skills(console: Console, cfg: LoopConfig) -> None:
         console.print(f"[dim]skill filter: {', '.join(cfg.skill_filter)}[/]")
     else:
         console.print("[dim]skill filter: unrestricted[/]")
+
+
+def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopConfig) -> None:
+    """Handle /active-memory command for toggling and configuring Active Memory.
+
+    Usage:
+        /active-memory           - Show current status
+        /active-memory on        - Enable Active Memory
+        /active-memory off       - Disable Active Memory
+        /active-memory mode <mode> - Set query mode (message/recent/full)
+        /active-memory style <style> - Set prompt style
+    """
+    parts = user_input.strip().split()
+
+    # Initialize config if not exists
+    if cfg.active_memory_config is None:
+        cfg.active_memory_config = ActiveMemoryConfig()
+
+    config = cfg.active_memory_config
+
+    if len(parts) == 1:
+        # Just /active-memory - show status
+        status_text = "enabled" if config.enabled else "disabled"
+        console.print(
+            Panel.fit(
+                Text.from_markup(
+                    f"[bold]Active Memory Status[/]\n"
+                    f"State: [{('green' if config.enabled else 'red')}]{status_text}[/]\n"
+                    f"Query Mode: [cyan]{config.query_mode.value}[/]\n"
+                    f"Prompt Style: [cyan]{config.prompt_style.value}[/]\n"
+                    f"Timeout: {config.timeout_seconds}s\n"
+                    f"Recent Messages: {config.recent_message_count}"
+                ),
+                border_style="cyan",
+            )
+        )
+        return
+
+    cmd = parts[1].lower()
+
+    if cmd == "on":
+        config.enabled = True
+        console.print("[dim]Active Memory: enabled[/]")
+        return
+
+    if cmd == "off":
+        config.enabled = False
+        console.print("[dim]Active Memory: disabled[/]")
+        return
+
+    if cmd == "status":
+        status_text = "enabled" if config.enabled else "disabled"
+        console.print(
+            f"[dim]Active Memory: {status_text}, "
+            f"mode={config.query_mode.value}, "
+            f"style={config.prompt_style.value}[/]"
+        )
+        return
+
+    if cmd == "mode" and len(parts) > 2:
+        try:
+            mode = QueryMode(parts[2].lower())
+            config.query_mode = mode
+            console.print(f"[dim]Query mode set to: {mode.value}[/]")
+        except ValueError:
+            valid_modes = ", ".join(m.value for m in QueryMode)
+            console.print(f"[red]Invalid mode. Options: {valid_modes}[/]")
+        return
+
+    if cmd == "style" and len(parts) > 2:
+        try:
+            style = PromptStyle(parts[2].lower())
+            config.prompt_style = style
+            console.print(f"[dim]Prompt style set to: {style.value}[/]")
+        except ValueError:
+            valid_styles = ", ".join(s.value for s in PromptStyle)
+            console.print(f"[red]Invalid style. Options: {valid_styles}[/]")
+        return
+
+    # Unknown command - show help
+    console.print(
+        "[dim]Usage:\n"
+        "  /active-memory - Show status\n"
+        "  /active-memory on - Enable\n"
+        "  /active-memory off - Disable\n"
+        "  /active-memory mode <message|recent|full>\n"
+        "  /active-memory style <balanced|strict|contextual|recall-heavy|precision-heavy|preference-only>[/]"
+    )

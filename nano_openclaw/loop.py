@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
+from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
 from nano_openclaw.prompt import build_system_prompt
 from nano_openclaw.provider import (
     MessageEnd,
@@ -65,6 +66,11 @@ class ToolResult:
 @dataclass
 class Compaction:
     summary: str
+
+
+@dataclass
+class ActiveMemoryRecall:
+    result: ActiveMemoryResult
 
 
 @dataclass
@@ -149,6 +155,8 @@ class LoopConfig:
     max_skill_file_bytes: int = 256_000  # Max bytes per SKILL.md
     max_skills_in_prompt: int = 150  # Max skills in prompt
     max_skills_prompt_chars: int = 18_000  # Max chars for skills section
+    # Active Memory configuration (mirrors openclaw active-memory plugin)
+    active_memory_config: ActiveMemoryConfig | None = None  # None = disabled
 
     @property
     def model_has_vision(self) -> bool:
@@ -267,6 +275,24 @@ def agent_loop(
             cfg.bootstrap_total_max_chars,
         )
 
+    # Run Active Memory recall before building system prompt
+    active_memory_context: str | None = None
+    if cfg.workspace_dir and cfg.active_memory_config and cfg.active_memory_config.enabled:
+        from anthropic import Anthropic
+        if isinstance(client, Anthropic):
+            manager = ActiveMemoryManager(
+                client=client,
+                workspace_dir=str(cfg.workspace_dir),
+                config=cfg.active_memory_config,
+            )
+            # Convert history to dict format for manager
+            wire_messages = [{"role": m.role, "content": m.content} for m in history]
+            recall_result = manager.run(wire_messages)
+            if recall_result:
+                on_event(ActiveMemoryRecall(result=recall_result))
+                if recall_result.context:
+                    active_memory_context = recall_result.context
+
     system = build_system_prompt(
         registry,
         cfg.workspace_dir,
@@ -275,6 +301,11 @@ def agent_loop(
         max_skills_in_prompt=cfg.max_skills_in_prompt,
         max_skills_prompt_chars=cfg.max_skills_prompt_chars,
     )
+
+    # Inject Active Memory context if available
+    if active_memory_context:
+        system = f"{active_memory_context}\n\n{system}"
+
     tools_schema = registry.schemas()
 
     for _ in range(cfg.max_iterations):
