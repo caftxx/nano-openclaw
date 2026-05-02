@@ -62,7 +62,7 @@ from nano_openclaw.skills import (
 from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session [prefix]  /skills"
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session \\[prefix]  /skills"
 
 
 def repl(
