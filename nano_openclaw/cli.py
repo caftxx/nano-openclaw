@@ -5,7 +5,7 @@ and `src/tui/components/tool-execution.ts:55-137` (tool panels).
 Production OpenClaw uses pi-tui — a custom React-like terminal lib.
 nano uses ``rich``: simpler, less to learn, same visual idea.
 
-Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions``, ``/save``, ``/session [prefix]``. No multiline editor.
+Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions [all]``, ``/save``, ``/session [prefix|#]``. No multiline editor.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ from nano_openclaw.skills import (
 from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions  /save  /session \\[prefix]  /skills"
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills"
 
 
 def repl(
@@ -132,9 +132,10 @@ def repl(
         if user_input == "/skills":
             _list_skills(console, cfg)
             continue
-        if user_input == "/sessions":
+        if user_input.startswith("/sessions"):
             if store_path:
-                _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer)
+                show_all = user_input.strip() == "/sessions all"
+                _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir, show_all=show_all)
             else:
                 console.print("[dim](no session store configured)[/]")
             continue
@@ -152,9 +153,12 @@ def repl(
                 else:
                     console.print("[dim](no active session)[/]")
             else:
-                prefix = parts[1].strip()
+                key = parts[1].strip()
                 if store_path and session_dir:
-                    result = _load_session_by_prefix(console, store_path, session_dir, prefix)
+                    if key.isdigit():
+                        result = _load_session_by_index(console, store_path, session_dir, int(key))
+                    else:
+                        result = _load_session_by_prefix(console, store_path, session_dir, key)
                     if result:
                         new_history, new_writer, new_sid = result
                         if new_sid == session_id:
@@ -447,14 +451,45 @@ def _save_session_now(
     console.print(f"[dim]session {session_id[:8]}… saved[/]")
 
 
+def _get_session_snippet(session_dir: Path, session_id: str, max_chars: int = 60) -> str:
+    """Return the first user text from a session transcript, truncated."""
+    path = session_dir / f"{session_id}.jsonl"
+    if not path.exists():
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "message" and entry.get("role") == "user":
+                    for block in entry.get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "").strip()
+                            if text:
+                                return text[:max_chars] + ("…" if len(text) > max_chars else "")
+    except OSError:
+        pass
+    return ""
+
+
+_SESSIONS_PAGE_SIZE = 10
+
+
 def _list_sessions_cli(
     console: Console,
     store_path: Path,
     current_session_id: str | None = None,
     current_model: str = "",
     transcript_writer: TranscriptWriter | None = None,
+    session_dir: Path | None = None,
+    show_all: bool = False,
 ) -> None:
-    """Display available sessions in a table."""
+    """Display available sessions in a numbered table with descriptions."""
     import time
 
     store = load_session_store(store_path)
@@ -475,28 +510,36 @@ def _list_sessions_cli(
         console.print("[dim](no saved sessions)[/]")
         return
 
+    total = len(sessions)
+    visible = sessions if show_all else sessions[:_SESSIONS_PAGE_SIZE]
+
     table = Table(title="Saved Sessions", border_style="cyan")
+    table.add_column("#", style="dim", justify="right")
     table.add_column("Session ID", style="cyan")
-    table.add_column("Model", style="green")
+    table.add_column("Description", style="white", no_wrap=False, max_width=62)
     table.add_column("Messages", justify="right")
-    table.add_column("Compactions", justify="right")
     table.add_column("Last Active", style="dim")
 
-    for s in sessions:
-        last_active = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M:%S")
+    for idx, s in enumerate(visible, start=1):
+        last_active = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M")
         is_current = (current_session_id and s.session_id == current_session_id) or (
             not current_session_id and s.session_id == store.get("lastSessionId")
         )
         marker = " ← current" if is_current else ""
+        snippet = _get_session_snippet(session_dir, s.session_id) if session_dir else ""
         table.add_row(
+            str(idx),
             s.session_id[:8] + "…" + marker,
-            s.model or "(unknown)",
+            snippet or "[dim](empty)[/]",
             str(s.message_count),
-            str(s.compaction_count),
             last_active,
         )
 
     console.print(table)
+    if not show_all and total > _SESSIONS_PAGE_SIZE:
+        hidden = total - _SESSIONS_PAGE_SIZE
+        console.print(f"[dim]showing {_SESSIONS_PAGE_SIZE} of {total} — /sessions all to see {hidden} more[/]")
+    console.print("[dim]tip: /session # to switch by number[/]")
 
 
 def _load_session_by_prefix(
@@ -521,6 +564,28 @@ def _load_session_by_prefix(
         return None
 
     target = matches[0]
+    transcript_path = session_dir / f"{target.session_id}.jsonl"
+    reader = TranscriptReader(transcript_path)
+    loaded_history, _, msg_count, comp_count, last_msg_id = reader.load_history()
+    writer = TranscriptWriter.resume(transcript_path, target.session_id, msg_count, comp_count, last_msg_id)
+    return loaded_history, writer, target.session_id
+
+
+def _load_session_by_index(
+    console: Console,
+    store_path: Path,
+    session_dir: Path,
+    n: int,
+) -> tuple[list[Message], TranscriptWriter, str] | None:
+    """Load the nth session (1-based) from the sorted sessions list."""
+    store = load_session_store(store_path)
+    sessions = list_sessions(store)
+
+    if n < 1 or n > len(sessions):
+        console.print(f"[dim]no session #{n} — run /sessions to see available sessions[/]")
+        return None
+
+    target = sessions[n - 1]
     transcript_path = session_dir / f"{target.session_id}.jsonl"
     reader = TranscriptReader(transcript_path)
     loaded_history, _, msg_count, comp_count, last_msg_id = reader.load_history()
