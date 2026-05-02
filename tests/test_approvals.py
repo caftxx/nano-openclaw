@@ -256,15 +256,62 @@ def test_manager_load_allowlist(tmp_path):
 def test_manager_check_allow_always():
     """Manager checks stored allowlist patterns."""
     from nano_openclaw.approvals import ApprovalManager
-    
+
     policy = ApprovalPolicy(allowlist=[
         AllowlistEntry(pattern="ls", source="allow-always"),
         AllowlistEntry(pattern="cat", source="allow-always"),
     ])
     manager = ApprovalManager(policy)
-    
+
     result = manager.check_request("bash", {"command": "ls -la"})
     assert result.requires_approval == False
+
+
+def test_on_miss_requires_approval_for_safe_command():
+    """Mirrors requiresExecApproval(): on-miss + allowlist + miss -> require approval.
+
+    Bug scenario: ask_mode=on-miss, empty allowlist, safe command like 'ls -la'
+    should require approval (not just dangerous patterns).
+    """
+    from nano_openclaw.approvals import ApprovalManager
+
+    policy = ApprovalPolicy(
+        ask_mode="on-miss",
+        security_mode="allowlist",
+        dangerous_tools=["bash"],
+        allowlist=[],
+    )
+    manager = ApprovalManager(policy)
+
+    result = manager.check_request("bash", {"command": "ls -la"})
+    assert result.requires_approval is True
+
+
+def test_on_miss_no_approval_when_allowlist_hit():
+    """on-miss: allowlist hit -> no approval needed."""
+    from nano_openclaw.approvals import ApprovalManager
+
+    policy = ApprovalPolicy(
+        ask_mode="on-miss",
+        security_mode="allowlist",
+        dangerous_tools=["bash"],
+        allowlist=[AllowlistEntry(pattern="ls", source="allow-always")],
+    )
+    manager = ApprovalManager(policy)
+
+    result = manager.check_request("bash", {"command": "ls -la"})
+    assert result.requires_approval is False
+
+
+def test_ask_off_never_requires_approval():
+    """ask_mode=off -> never require approval, even for dangerous commands."""
+    from nano_openclaw.approvals import ApprovalManager
+
+    policy = ApprovalPolicy(ask_mode="off", dangerous_tools=["bash"], allowlist=[])
+    manager = ApprovalManager(policy)
+
+    result = manager.check_request("bash", {"command": "rm -rf /"})
+    assert result.requires_approval is False
 
 
 def test_ui_render_approval_request():

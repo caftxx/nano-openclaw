@@ -64,19 +64,59 @@ class ApprovalManager:
         tool_args: Dict[str, object],
     ) -> EvaluationResult:
         """Check if a tool invocation requires approval.
-        
-        Returns EvaluationResult with requires_approval flag.
-        Also checks against stored allowlist entries.
+
+        Mirrors openclaw's requiresExecApproval():
+          ask=off           → never
+          ask=always        → always
+          ask=on-miss + security=allowlist + allowlist miss → require approval
         """
-        patterns = [e.pattern for e in self._allowlist]
-        if self.evaluator.check_allow_always(tool_name, tool_args, patterns):
+        if self.policy.ask_mode == "off":
             return EvaluationResult(
                 requires_approval=False,
                 risk_level="low",
-                reason="matches allowlist entry"
+                reason="ask_mode is off",
             )
-        
-        return self.evaluator.evaluate(tool_name, tool_args)
+
+        if tool_name not in self.policy.dangerous_tools:
+            return EvaluationResult(
+                requires_approval=False,
+                risk_level="low",
+                reason=f"tool {tool_name} not in dangerous_tools",
+            )
+
+        patterns = [e.pattern for e in self._allowlist]
+        allowlist_satisfied = self.evaluator.check_allow_always(tool_name, tool_args, patterns)
+
+        if allowlist_satisfied:
+            return EvaluationResult(
+                requires_approval=False,
+                risk_level="low",
+                reason="matches allowlist entry",
+            )
+
+        # Mirror requiresExecApproval(): ask=always → always require
+        if self.policy.ask_mode == "always":
+            return EvaluationResult(
+                requires_approval=True,
+                risk_level="medium",
+                reason="ask_mode is always",
+            )
+
+        # Mirror requiresExecApproval(): ask=on-miss + security=allowlist + not satisfied → require
+        if self.policy.ask_mode == "on-miss" and self.policy.security_mode == "allowlist":
+            eval_result = self.evaluator.evaluate(tool_name, tool_args)
+            return EvaluationResult(
+                requires_approval=True,
+                risk_level=eval_result.risk_level,
+                reason=eval_result.reason,
+                matched_pattern=eval_result.matched_pattern,
+            )
+
+        return EvaluationResult(
+            requires_approval=False,
+            risk_level="low",
+            reason="no approval needed",
+        )
     
     def get_pending_request(self, request_id: str) -> Optional[ApprovalRequest]:
         """Get a pending approval request."""
