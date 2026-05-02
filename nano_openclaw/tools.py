@@ -38,12 +38,16 @@ class ToolRegistry:
     _session_status_context: dict[str, Any] = field(default_factory=dict)
     approval_manager: Optional[ApprovalManager] = field(default=None)
     console: Optional[Console] = field(default=None)
+    _workspace_dir: str | None = field(default=None)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
 
     def set_session_status_context(self, **kwargs: Any) -> None:
         self._session_status_context = kwargs
+
+    def set_workspace_dir(self, workspace_dir: str | Path) -> None:
+        self._workspace_dir = str(workspace_dir)
 
     def names(self) -> list[str]:
         return list(self._tools.keys())
@@ -97,6 +101,8 @@ class ToolRegistry:
         try:
             if name == "session_status":
                 output = tool.run(args, **self._session_status_context)
+            elif name in ("read_file", "write_file", "list_dir", "bash"):
+                output = tool.run(args, workspace_dir=self._workspace_dir)
             else:
                 output = tool.run(args)
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
@@ -136,8 +142,24 @@ _OTHER_MEDIA_EXTS = frozenset({
 })
 
 
-def _read_file(args: dict[str, Any]) -> "str | list[dict[str, Any]]":
-    path = Path(args["path"])
+def _resolve_path(path_arg: str, workspace_dir: str | None) -> Path:
+    """Resolve path relative to workspace_dir (mirrors openclaw pi-tools.host-edit.ts:25-29).
+    
+    Priority:
+    1. Absolute path → use directly
+    2. Relative path → resolve against workspace_dir
+    3. No workspace_dir → resolve against cwd (fallback)
+    """
+    p = Path(path_arg)
+    if p.is_absolute():
+        return p
+    if workspace_dir:
+        return Path(workspace_dir) / p
+    return p
+
+
+def _read_file(args: dict[str, Any], workspace_dir: str | None = None) -> "str | list[dict[str, Any]]":
+    path = _resolve_path(args["path"], workspace_dir)
     suffix = path.suffix.lower()
 
     if suffix in _IMAGE_EXTS:
@@ -163,16 +185,16 @@ def _read_file(args: dict[str, Any]) -> "str | list[dict[str, Any]]":
     return data
 
 
-def _write_file(args: dict[str, Any]) -> str:
-    path = Path(args["path"])
+def _write_file(args: dict[str, Any], workspace_dir: str | None = None) -> str:
+    path = _resolve_path(args["path"], workspace_dir)
     content = args["content"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return f"wrote {len(content)} bytes to {path}"
 
 
-def _list_dir(args: dict[str, Any]) -> str:
-    path = Path(args.get("path") or ".")
+def _list_dir(args: dict[str, Any], workspace_dir: str | None = None) -> str:
+    path = _resolve_path(args.get("path") or ".", workspace_dir)
     entries = sorted(
         f"{p.name}/" if p.is_dir() else p.name
         for p in path.iterdir()
@@ -180,15 +202,18 @@ def _list_dir(args: dict[str, Any]) -> str:
     return "\n".join(entries) if entries else "(empty)"
 
 
-def _bash(args: dict[str, Any]) -> str:
+def _bash(args: dict[str, Any], workspace_dir: str | None = None) -> str:
     command = args["command"]
     timeout = int(args.get("timeout") or 30)
+    workdir = args.get("workdir")
+    cwd = workdir if workdir else (workspace_dir if workspace_dir else None)
     result = subprocess.run(
         command,
         shell=True,
         capture_output=True,
         text=True,
         timeout=timeout,
+        cwd=cwd,
     )
     return (
         f"exit={result.returncode}\n"
@@ -276,7 +301,7 @@ BUILTIN_TOOLS: list[Tool] = [
     ),
     Tool(
         name="bash",
-        description="Run a shell command via /bin/sh -c (or cmd on Windows). Returns exit code, stdout, and stderr.",
+        description="Run a shell command via /bin/sh -c (or cmd on Windows). Returns exit code, stdout, and stderr. Defaults to workspace directory.",
         input_schema={
             "type": "object",
             "properties": {
@@ -285,6 +310,10 @@ BUILTIN_TOOLS: list[Tool] = [
                     "type": "integer",
                     "description": "Timeout in seconds. Default 30.",
                     "default": 30,
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Working directory for the command. Defaults to workspace directory.",
                 },
             },
             "required": ["command"],

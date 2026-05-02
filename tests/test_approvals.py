@@ -382,3 +382,88 @@ def test_ui_render_allowed():
     
     ui.render_allowed(req, ApprovalDecision.ALLOW_ONCE)
     ui.render_allowed(req, ApprovalDecision.ALLOW_ALWAYS)
+
+
+# ---------------------------------------------------------------------------
+# exec_approvals loader tests
+# ---------------------------------------------------------------------------
+
+def test_exec_approvals_defaults_when_no_file(tmp_path):
+    """No exec-approvals.json -> openclaw defaults: ask=off, security=full."""
+    from nano_openclaw.approvals.exec_approvals import load_exec_approvals
+
+    policy = load_exec_approvals(tmp_path, "default")
+    assert policy.ask_mode == "off"
+    assert policy.security_mode == "full"
+    assert policy.allowlist == []
+
+
+def test_exec_approvals_reads_defaults(tmp_path):
+    """Reads ask/security from defaults section."""
+    from nano_openclaw.approvals.exec_approvals import load_exec_approvals
+
+    (tmp_path / "exec-approvals.json").write_text(json.dumps({
+        "version": 1,
+        "defaults": {"ask": "on-miss", "security": "allowlist"},
+    }))
+    policy = load_exec_approvals(tmp_path, "default")
+    assert policy.ask_mode == "on-miss"
+    assert policy.security_mode == "allowlist"
+
+
+def test_exec_approvals_agent_overrides_defaults(tmp_path):
+    """Agent-specific settings override defaults (mirrors resolveExecApprovalsFromFile)."""
+    from nano_openclaw.approvals.exec_approvals import load_exec_approvals
+
+    (tmp_path / "exec-approvals.json").write_text(json.dumps({
+        "version": 1,
+        "defaults": {"ask": "off", "security": "full"},
+        "agents": {
+            "coder": {"ask": "always", "security": "allowlist"},
+        },
+    }))
+    policy = load_exec_approvals(tmp_path, "coder")
+    assert policy.ask_mode == "always"
+    assert policy.security_mode == "allowlist"
+
+
+def test_exec_approvals_wildcard_between_defaults_and_agent(tmp_path):
+    """Wildcard (*) has lower priority than agent-specific settings."""
+    from nano_openclaw.approvals.exec_approvals import load_exec_approvals
+
+    (tmp_path / "exec-approvals.json").write_text(json.dumps({
+        "version": 1,
+        "defaults": {"ask": "off"},
+        "agents": {
+            "*": {"ask": "on-miss", "security": "allowlist"},
+            "coder": {"ask": "always"},
+        },
+    }))
+    policy = load_exec_approvals(tmp_path, "coder")
+    # agent overrides wildcard for ask; wildcard fills security
+    assert policy.ask_mode == "always"
+    assert policy.security_mode == "allowlist"
+
+
+def test_exec_approvals_allowlist_merges_wildcard_and_agent(tmp_path):
+    """Allowlist = wildcard entries + agent entries (wildcard first)."""
+    from nano_openclaw.approvals.exec_approvals import load_exec_approvals
+
+    (tmp_path / "exec-approvals.json").write_text(json.dumps({
+        "version": 1,
+        "agents": {
+            "*": {"allowlist": [{"pattern": "git", "source": "allow-always"}]},
+            "default": {"ask": "on-miss", "allowlist": [{"pattern": "ls", "source": "allow-always"}]},
+        },
+    }))
+    policy = load_exec_approvals(tmp_path, "default")
+    patterns = [e.pattern for e in policy.allowlist]
+    assert patterns == ["git", "ls"]
+
+
+def test_exec_approvals_path_stored_in_policy(tmp_path):
+    """allow_always_store points to exec-approvals.json."""
+    from nano_openclaw.approvals.exec_approvals import load_exec_approvals, resolve_exec_approvals_path
+
+    policy = load_exec_approvals(tmp_path, "default")
+    assert policy.allow_always_store == str(resolve_exec_approvals_path(tmp_path))

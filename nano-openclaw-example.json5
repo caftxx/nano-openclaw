@@ -172,26 +172,4 @@
     recent_turns: 3,
   },
 
-  // ==========================================
-  // 审批门禁配置（危险命令确认）
-  // ==========================================
-  approvals: {
-    // 审批提示模式
-    // off = 从不提示
-    // on-miss = 仅当不在白名单时提示（默认）
-    // always = 对危险工具总是提示
-    askMode: "on-miss",
-
-    // 安全模式
-    // deny = 阻止危险命令
-    // allowlist = 检查白名单（默认）
-    // full = 允许所有（不推荐）
-    securityMode: "allowlist",
-
-    // 需要审批的工具列表（默认 ["bash", "write_file"]）
-    dangerousTools: ["bash", "write_file"],
-
-    // "allow always" 决策的存储路径（默认 .openclaw/approvals.json）
-    // allowAlwaysStore: null,
-  },
 }

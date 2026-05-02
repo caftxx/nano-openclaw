@@ -95,3 +95,73 @@ def test_session_status_with_context(registry):
     assert "12.5k" in text
     assert "Compactions: 1" in text
     assert "Messages: 15" in text
+
+
+def test_relative_path_resolves_to_workspace_dir(tmp_path, registry):
+    """Mirrors openclaw pi-tools.workspace-paths.test.ts:57."""
+    other_dir = tmp_path / "cwd"
+    other_dir.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    
+    registry.set_workspace_dir(workspace_dir)
+    
+    test_file = workspace_dir / "test.txt"
+    test_file.write_text("workspace content", encoding="utf-8")
+    
+    out = registry.dispatch("id-r", "read_file", {"path": "test.txt"})
+    assert out.get("is_error") is None
+    assert "workspace content" in out["content"][0]["text"]
+    
+    out = registry.dispatch("id-w", "write_file", {"path": "new.txt", "content": "written to workspace"})
+    assert out.get("is_error") is None
+    assert (workspace_dir / "new.txt").exists()
+    assert (workspace_dir / "new.txt").read_text() == "written to workspace"
+    
+    assert not (other_dir / "new.txt").exists()
+
+
+def test_absolute_path_not_redirected_to_workspace(tmp_path, registry):
+    """Absolute paths should be resolved directly, not to workspace_dir."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("outside content", encoding="utf-8")
+    
+    registry.set_workspace_dir(workspace_dir)
+    
+    out = registry.dispatch("id-r", "read_file", {"path": str(outside_file)})
+    assert out.get("is_error") is None
+    assert "outside content" in out["content"][0]["text"]
+
+
+def test_bash_defaults_to_workspace_dir(tmp_path, registry):
+    """Mirrors openclaw pi-tools.workspace-paths.test.ts:148."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    
+    registry.set_workspace_dir(workspace_dir)
+    
+    import platform
+    cmd = "cd" if platform.system() == "Windows" else "pwd"
+    out = registry.dispatch("id-b", "bash", {"command": cmd})
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert str(workspace_dir) in text or workspace_dir.name in text
+
+
+def test_bash_workdir_overrides_workspace(tmp_path, registry):
+    """Mirrors openclaw pi-tools.workspace-paths.test.ts:155."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    override_dir = tmp_path / "override"
+    override_dir.mkdir()
+    
+    registry.set_workspace_dir(workspace_dir)
+    
+    import platform
+    cmd = "cd" if platform.system() == "Windows" else "pwd"
+    out = registry.dispatch("id-b", "bash", {"command": cmd, "workdir": str(override_dir)})
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert str(override_dir) in text or override_dir.name in text

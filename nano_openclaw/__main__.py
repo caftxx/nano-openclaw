@@ -45,39 +45,22 @@ from nano_openclaw.session import (
 )
 from nano_openclaw.tools import ToolRegistry, build_default_registry
 from nano_openclaw.approvals.manager import ApprovalManager
-from nano_openclaw.approvals.types import ApprovalPolicy, DEFAULT_AGENT_ID
+from nano_openclaw.approvals.exec_approvals import load_exec_approvals
 from rich.console import Console
 
 
-def build_approval_manager(cfg, state_dir: Path, agent_id: str = DEFAULT_AGENT_ID) -> ApprovalManager | None:
-    """Build ApprovalManager from config.
-    
+def build_approval_manager(state_dir: Path, agent_id: str) -> ApprovalManager | None:
+    """Build ApprovalManager from exec-approvals.json.
+
     Mirrors openclaw's approval initialization:
-    - Per-agent allowlist storage
-    - Rich metadata for allowlist entries
+    - Reads policy from {stateDir}/exec-approvals.json
+    - Per-agent allowlist stored in the same file
+    - Resolution: defaults → agents.* → agents.{agentId}
     """
-    approvals_cfg = cfg.approvals
-    if approvals_cfg.askMode == "off":
+    policy = load_exec_approvals(state_dir, agent_id)
+    if policy.ask_mode == "off":
         return None
-    
-    allow_store = approvals_cfg.allowAlwaysStore
-    if allow_store is None:
-        allow_store = str(state_dir / "approvals.json")
-    
-    policy = ApprovalPolicy(
-        agent_id=agent_id,
-        ask_mode=approvals_cfg.askMode,
-        security_mode=approvals_cfg.securityMode,
-        dangerous_tools=approvals_cfg.dangerousTools,
-        allow_always_store=allow_store,
-    )
-    
-    manager = ApprovalManager(policy)
-    existing_allowlist = manager.load_allowlist()
-    if existing_allowlist:
-        policy.allowlist = existing_allowlist
-    
-    return manager
+    return ApprovalManager(policy)
 
 
 def main() -> None:
@@ -143,15 +126,13 @@ def main() -> None:
     # Build approval manager and pass to registry
     state_dir = resolve_state_dir()
     console = Console()
-    approval_manager = build_approval_manager(config, state_dir, args.agent)
+    approval_manager = build_approval_manager(state_dir, args.agent)
     registry.approval_manager = approval_manager
     registry.console = console
     
-    # Resolve state directory (openclaw-aligned)
-    
     # Resolve workspace directory for agent (openclaw-aligned)
-    # Priority: agents.list[].workspace > agents.defaults.workspace > stateDir/workspace-{agentId} > ~/.openclaw/workspace
     workspace_dir = resolve_agent_workspace_dir(config, args.agent)
+    registry.set_workspace_dir(workspace_dir)
     
     # Resolve session directory for agent: {stateDir}/agents/{agentId}/sessions/
     session_dir = resolve_agent_sessions_dir(state_dir, args.agent)

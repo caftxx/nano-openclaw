@@ -115,39 +115,61 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `reset.mode` | string | `"idle"` | 重置模式：`daily` \| `idle` |
 | `reset.idleMinutes` | number | `120` | 空闲多少分钟后重置 |
 
-### approvals — 审批门禁配置
+### exec-approvals.json — 审批门禁配置
+
+审批策略**不在主配置文件中**，与 openclaw 一致：读取独立文件 `{stateDir}/exec-approvals.json`。
+
+**文件格式**（与 openclaw 的 `ExecApprovalsFile` 完全相同）：
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "ask": "on-miss",
+    "security": "allowlist"
+  },
+  "agents": {
+    "*": { "allowlist": [...] },
+    "default": {
+      "ask": "always",
+      "allowlist": [
+        { "id": "...", "pattern": "ls", "source": "allow-always", "lastUsedAt": 1234567890 }
+      ]
+    }
+  }
+}
+```
+
+**字段说明**
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `askMode` | string | `"on-miss"` | 审批提示模式：`off` \| `on-miss` \| `always` |
-| `securityMode` | string | `"allowlist"` | 安全模式：`deny` \| `allowlist` \| `full` |
-| `dangerousTools` | string[] | `["bash", "write_file"]` | 需要审批的工具列表 |
-| `allowAlwaysStore` | string \| null | `null` | "allow always" 决策存储路径 |
+| `defaults.ask` | string | `"off"` | 全局默认审批模式 |
+| `defaults.security` | string | `"full"` | 全局默认安全模式 |
+| `agents.*` | object | — | 通配符：所有 agent 共享的 allowlist |
+| `agents.{id}` | object | — | 特定 agent 配置，覆盖 defaults 和通配符 |
+| `agents.{id}.allowlist` | array | `[]` | 已授权的命令模式列表 |
 
-#### askMode 说明
+**解析优先级**（镜像 `resolveExecApprovalsFromFile()`）：
+`defaults` → `agents.*`（通配符）→ `agents.{agentId}`（特定 agent）
 
-| 值 | 说明 |
-|----|------|
-| `"off"` | 从不提示审批，直接执行 |
-| `"on-miss"` | 仅当操作不在白名单时提示（推荐） |
-| `"always"` | 对危险工具总是提示审批 |
-
-#### securityMode 说明
+#### ask 值说明
 
 | 值 | 说明 |
 |----|------|
-| `"deny"` | 直接阻止匹配危险模式的命令 |
-| `"allowlist"` | 检查白名单，不在白名单则提示审批 |
-| `"full"` | 允许所有命令（不推荐） |
+| `"off"` | 从不提示（默认） |
+| `"on-miss"` | 未命中 allowlist 时提示 |
+| `"always"` | 总是提示 |
 
-#### 示例
+#### security 值说明
 
-```json5
-approvals: {
-  askMode: "on-miss",
-  dangerousTools: ["bash", "write_file"],
-}
-```
+| 值 | 说明 |
+|----|------|
+| `"full"` | 允许所有（默认） |
+| `"allowlist"` | 未命中 allowlist 则提示（配合 ask=on-miss） |
+| `"deny"` | 无 allowlist 门禁（openclaw 依赖 OS 沙箱；nano 中仅 ask=always 有效） |
+
+**文件路径**：`{stateDir}/exec-approvals.json`（stateDir 解析同上）。`allow-always` 决策也持久化到此文件的对应 agent allowlist 中。
 
 ### 其他字段（nano-openclaw 自定义）
 

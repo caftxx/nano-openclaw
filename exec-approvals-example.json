@@ -1,0 +1,27 @@
+{
+  "version": 1,
+
+  "defaults": {
+    "ask": "on-miss",
+    "security": "allowlist"
+  },
+
+  "agents": {
+    "*": {
+      "allowlist": [
+        { "pattern": "git", "source": "allow-always" }
+      ]
+    },
+    "default": {
+      "ask": "on-miss",
+      "security": "allowlist",
+      "allowlist": [
+        { "id": "a1b2c3d4", "pattern": "ls",  "source": "allow-always", "commandText": "ls -la", "lastUsedAt": 1748822400 },
+        { "id": "e5f6a7b8", "pattern": "cat", "source": "allow-always", "commandText": "cat README.md", "lastUsedAt": 1748822400 }
+      ]
+    },
+    "coder": {
+      "ask": "always"
+    }
+  }
+}

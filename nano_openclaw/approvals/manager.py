@@ -290,19 +290,15 @@ class ApprovalManager:
         store_path.write_text(json.dumps(data, indent=2))
     
     def _load_or_create_file(self, store_path: Path) -> Dict:
-        """Load existing file or create new structure."""
+        """Load existing file or create new exec-approvals.json skeleton."""
         if store_path.exists():
             try:
-                data = json.loads(store_path.read_text())
+                data = json.loads(store_path.read_text(encoding="utf-8"))
                 if data.get("version") == APPROVALS_FILE_VERSION:
                     return data
             except (json.JSONDecodeError, IOError):
                 pass
-        
-        return {
-            "version": APPROVALS_FILE_VERSION,
-            "agents": {},
-        }
+        return {"version": APPROVALS_FILE_VERSION}
     
     def clear_pending(self, request_id: str) -> None:
         """Clear a pending request after it's resolved."""
