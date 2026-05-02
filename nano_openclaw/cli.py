@@ -5,12 +5,13 @@ and `src/tui/components/tool-execution.ts:55-137` (tool panels).
 Production OpenClaw uses pi-tui — a custom React-like terminal lib.
 nano uses ``rich``: simpler, less to learn, same visual idea.
 
-Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions [all]``, ``/save``, ``/session [prefix|#]``. No multiline editor.
+Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions`` (interactive picker; ``/sessions all`` for plain list), ``/save``, ``/session [prefix|#]``. No multiline editor.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -62,7 +63,7 @@ from nano_openclaw.skills import (
 from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills"
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  — /sessions launches interactive picker"
 
 
 def repl(
@@ -134,8 +135,25 @@ def repl(
             continue
         if user_input.startswith("/sessions"):
             if store_path:
-                show_all = user_input.strip() == "/sessions all"
-                _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir, show_all=show_all)
+                if user_input.strip() == "/sessions all":
+                    _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir, show_all=True)
+                elif session_dir:
+                    target_id = _interactive_session_picker(console, store_path, session_dir, session_id)
+                    if target_id and target_id != session_id:
+                        transcript_path = session_dir / f"{target_id}.jsonl"
+                        reader = TranscriptReader(transcript_path)
+                        new_history, _, msg_count, comp_count, last_msg_id = reader.load_history()
+                        new_writer = TranscriptWriter.resume(transcript_path, target_id, msg_count, comp_count, last_msg_id)
+                        if transcript_writer and session_id:
+                            _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+                        history.clear()
+                        history.extend(new_history)
+                        transcript_writer = new_writer
+                        session_id = target_id
+                        _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+                        console.print(f"[dim]switched to session {session_id[:8]}… ({len(history)} messages)[/]")
+                else:
+                    _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir)
             else:
                 console.print("[dim](no session store configured)[/]")
             continue
@@ -451,6 +469,162 @@ def _save_session_now(
     console.print(f"[dim]session {session_id[:8]}… saved[/]")
 
 
+def _getch() -> bytes:
+    """Read a single keypress cross-platform, returning raw bytes."""
+    if sys.platform == "win32":
+        import msvcrt
+        ch = msvcrt.getch()
+        if ch in (b"\x00", b"\xe0"):
+            return ch + msvcrt.getch()
+        return ch
+    else:
+        import select as _sel
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.buffer.read(1)
+            if ch == b"\x1b" and _sel.select([sys.stdin.buffer], [], [], 0.05)[0]:
+                ch2 = sys.stdin.buffer.read(1)
+                if ch2 == b"[" and _sel.select([sys.stdin.buffer], [], [], 0.05)[0]:
+                    return ch + ch2 + sys.stdin.buffer.read(1)
+                return ch + ch2
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _render_sessions_page(
+    sessions: list[SessionInfo],
+    snippets: dict[str, str],
+    current_session_id: str | None,
+    store_last_id: str | None,
+    selected: int,
+    page: int,
+    page_size: int,
+) -> Table:
+    total = len(sessions)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    start = page * page_size
+    page_sessions = sessions[start : start + page_size]
+
+    page_info = f"page {page + 1}/{total_pages}  " if total_pages > 1 else ""
+    table = Table(
+        title=f"Sessions  {page_info}[dim]↑↓ select  ←→ page  Enter switch  q cancel[/]",
+        border_style="cyan",
+        highlight=False,
+    )
+    table.add_column("#", justify="right", width=4, style="dim")
+    table.add_column("Session ID", width=12)
+    table.add_column("Description", no_wrap=False, max_width=58)
+    table.add_column("Msgs", justify="right", width=5)
+    table.add_column("Last Active", width=16)
+
+    for i, s in enumerate(page_sessions):
+        abs_idx = start + i
+        is_current = (current_session_id and s.session_id == current_session_id) or (
+            not current_session_id and s.session_id == store_last_id
+        )
+        marker = " ←" if is_current else ""
+        last_active = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M")
+        snippet = snippets.get(s.session_id, "") or "(empty)"
+        row_style = "bold reverse" if abs_idx == selected else ""
+        table.add_row(
+            str(abs_idx + 1),
+            s.session_id[:8] + "…" + marker,
+            snippet,
+            str(s.message_count),
+            last_active,
+            style=row_style,
+        )
+
+    return table
+
+
+def _interactive_session_picker(
+    console: Console,
+    store_path: Path,
+    session_dir: Path | None,
+    current_session_id: str | None,
+) -> str | None:
+    """Arrow-key session picker. Returns session_id of selected session, or None if cancelled."""
+    import time
+    from rich.live import Live
+
+    store = load_session_store(store_path)
+    sessions = list_sessions(store)
+
+    saved_ids = {s.session_id for s in sessions}
+    if current_session_id and current_session_id not in saved_ids:
+        sessions.insert(0, SessionInfo(
+            session_id=current_session_id,
+            created_at=time.time(),
+            updated_at=time.time(),
+            model="",
+            message_count=0,
+            compaction_count=0,
+        ))
+
+    if not sessions:
+        console.print("[dim](no saved sessions)[/]")
+        return None
+
+    total = len(sessions)
+    page_size = _SESSIONS_PAGE_SIZE
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    store_last_id = store.get("lastSessionId")
+
+    # Pre-load snippets once to avoid re-reading files on every keypress
+    snippets: dict[str, str] = {}
+    if session_dir:
+        for s in sessions:
+            snippets[s.session_id] = _get_session_snippet(session_dir, s.session_id)
+
+    # Start with current session highlighted
+    selected = 0
+    if current_session_id:
+        for i, s in enumerate(sessions):
+            if s.session_id == current_session_id:
+                selected = i
+                break
+    page = selected // page_size
+
+    with Live(console=console, auto_refresh=False) as live:
+        def refresh() -> None:
+            live.update(_render_sessions_page(
+                sessions, snippets, current_session_id,
+                store_last_id, selected, page, page_size,
+            ))
+            live.refresh()
+
+        refresh()
+        while True:
+            key = _getch()
+            if key in (b"\xe0H", b"\x1b[A"):          # up
+                if selected > 0:
+                    selected -= 1
+                    page = selected // page_size
+            elif key in (b"\xe0P", b"\x1b[B"):        # down
+                if selected < total - 1:
+                    selected += 1
+                    page = selected // page_size
+            elif key in (b"\xe0K", b"\x1b[D"):        # left — prev page
+                if page > 0:
+                    page -= 1
+                    selected = page * page_size
+            elif key in (b"\xe0M", b"\x1b[C"):        # right — next page
+                if page < total_pages - 1:
+                    page += 1
+                    selected = page * page_size
+            elif key in (b"\r", b"\n"):                # enter — confirm
+                return sessions[selected].session_id
+            elif key in (b"q", b"Q", b"\x1b", b"\x03"):  # q / Esc / Ctrl-C
+                return None
+            refresh()
+
+
 def _get_session_snippet(session_dir: Path, session_id: str, max_chars: int = 60) -> str:
     """Return the first user text from a session transcript, truncated."""
     path = session_dir / f"{session_id}.jsonl"
@@ -477,7 +651,7 @@ def _get_session_snippet(session_dir: Path, session_id: str, max_chars: int = 60
     return ""
 
 
-_SESSIONS_PAGE_SIZE = 10
+_SESSIONS_PAGE_SIZE = 20
 
 
 def _list_sessions_cli(
