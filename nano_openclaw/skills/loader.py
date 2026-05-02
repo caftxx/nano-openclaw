@@ -15,7 +15,6 @@ Key behaviors:
 from __future__ import annotations
 
 import json
-import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -39,8 +38,6 @@ from nano_openclaw.skills.types import (
     SkillInvocationPolicy,
     SkillMetadata,
 )
-
-logger = logging.getLogger(__name__)
 
 # Frontmatter pattern: YAML between --- lines
 FRONTMATTER_PATTERN = re.compile(
@@ -216,23 +213,12 @@ def load_skill_from_file(
 
     # Path escape check
     if not is_path_inside(base_dir, skill_file):
-        logger.warning(
-            "Skill file %s escapes base_dir %s — skipping",
-            skill_file,
-            base_dir,
-        )
         return None
 
     # Size check
     try:
         stat = skill_file.stat()
         if stat.st_size > max_bytes:
-            logger.warning(
-                "Skill file %s exceeds %d bytes (%d) — skipping",
-                skill_file,
-                max_bytes,
-                stat.st_size,
-            )
             return None
     except OSError:
         return None
@@ -240,8 +226,7 @@ def load_skill_from_file(
     # Read content
     try:
         content = skill_file.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.warning("Failed to read %s: %s", skill_file, exc)
+    except (OSError, UnicodeDecodeError):
         return None
 
     # Parse frontmatter
@@ -250,10 +235,6 @@ def load_skill_from_file(
     description = frontmatter.get("description")
 
     if not name or not description:
-        logger.warning(
-            "Skill file %s missing required name/description in frontmatter — skipping",
-            skill_file,
-        )
         return None
 
     # Extract markdown body
@@ -309,12 +290,6 @@ def load_skills_from_dir(
         return []
 
     if len(entries) > max_candidates:
-        logger.warning(
-            "Skills dir %s has too many entries (%d > %d) — truncating",
-            skill_dir,
-            len(entries),
-            max_candidates,
-        )
         entries = entries[:max_candidates]
 
     for subdir in entries:

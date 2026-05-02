@@ -10,15 +10,12 @@ file reads. Cache is invalidated when:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from nano_openclaw.skills.loader import load_skill_entries
 from nano_openclaw.skills.types import SkillEntry
-
-logger = logging.getLogger(__name__)
 
 # Global cache instance
 _cache: SkillsCache | None = None
@@ -56,11 +53,9 @@ class SkillsCache:
             and self.session_key == session_key
             and self.workspace_dir == workspace_dir
         ):
-            logger.debug("Using cached skills for session %s", session_key)
             return self.entries
 
         # Load fresh
-        logger.debug("Loading skills for session %s", session_key)
         self.session_key = session_key
         self.workspace_dir = workspace_dir
         self.entries = load_skill_entries(
@@ -70,14 +65,12 @@ class SkillsCache:
         )
         self.loaded = True
 
-        logger.info("Loaded %d skills for session %s", len(self.entries), session_key)
         return self.entries
 
     def invalidate(self) -> None:
         """Invalidate cache, forcing reload on next access."""
         self.loaded = False
         self.entries = []
-        logger.debug("Skills cache invalidated")
 
     def clear(self) -> None:
         """Clear cache completely."""
@@ -85,7 +78,6 @@ class SkillsCache:
         self.workspace_dir = None
         self.entries = []
         self.loaded = False
-        logger.debug("Skills cache cleared")
 
 
 def get_skills_cache() -> SkillsCache:

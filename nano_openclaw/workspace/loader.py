@@ -15,7 +15,6 @@ Truncation strategy (openclaw 75/25 rule):
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from nano_openclaw.workspace.constants import (
     CONTEXT_FILE_ORDER,
 )
 
-logger = logging.getLogger(__name__)
 
 # Hard safety limit: never read files larger than 2 MB
 MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES = 2 * 1024 * 1024

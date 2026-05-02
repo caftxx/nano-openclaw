@@ -13,14 +13,12 @@ Skills must have user-invocable: true to be slash command eligible.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from nano_openclaw.skills.types import Skill, SkillEntry
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,7 +67,6 @@ def parse_slash_command(
     skill = skill_registry.get(cmd_name)
     if skill is None:
         # Not a known skill - return original input
-        logger.debug("Unknown slash command: /%s", cmd_name)
         return None, user_input
 
     return SlashCommand(name=cmd_name, skill=skill, args=args), args

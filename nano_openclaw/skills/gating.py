@@ -15,7 +15,6 @@ Gating conditions:
 
 from __future__ import annotations
 
-import logging
 import os
 import platform
 import shutil
@@ -25,8 +24,6 @@ from nano_openclaw.skills.constants import OS_MAP
 
 if TYPE_CHECKING:
     from nano_openclaw.skills.types import Skill, SkillEntry
-
-logger = logging.getLogger(__name__)
 
 
 def get_current_os() -> str:
@@ -198,12 +195,6 @@ def filter_eligible_skills(
 
         if eligible:
             result.append(entry)
-        else:
-            logger.debug(
-                "Skill %s not eligible: %s",
-                entry.skill.name,
-                reason,
-            )
 
     return result
 
