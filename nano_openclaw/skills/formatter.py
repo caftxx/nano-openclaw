@@ -11,6 +11,9 @@ Output format:
   </skill>
 </available_skills>
 
+The prompt instructs the LLM to use the Skill tool (not read_file) to
+load skill content when the task matches a skill's description.
+
 Also supports compact format (name + location only) when budget exceeds.
 """
 
@@ -45,7 +48,7 @@ def format_skills_for_prompt(skills: list["Skill"]) -> str:
 
     lines = [
         "\n\nThe following skills provide specialized instructions for specific tasks.",
-        "Use the read tool to load a skill's file when the task matches its description.",
+        "Use the Skill tool to load a skill when the task matches its description.",
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
         "",
         "<available_skills>",
@@ -75,7 +78,7 @@ def format_skills_compact(skills: list["Skill"]) -> str:
 
     lines = [
         "\n\nThe following skills provide specialized instructions for specific tasks.",
-        "Use the read tool to load a skill's file when the task matches its name.",
+        "Use the Skill tool to load a skill when the task matches its name.",
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
         "",
         "<available_skills>",
