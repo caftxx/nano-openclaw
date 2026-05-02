@@ -79,10 +79,12 @@ class TestActiveMemoryConfig:
         assert config.enabled is True
         assert config.query_mode == QueryMode.RECENT
         assert config.prompt_style == PromptStyle.BALANCED
-        assert config.max_query_chars == 800
-        assert config.result_max_chars == 220
-        assert config.timeout_seconds == 30
-        assert config.recent_message_count == 5
+        assert config.max_summary_chars == 220
+        assert config.timeout_ms == 15000
+        assert config.recent_user_turns == 2
+        assert config.recent_assistant_turns == 1
+        assert config.recent_user_chars == 220
+        assert config.recent_assistant_chars == 180
 
     def test_custom_config(self):
         """Config should accept custom values."""
@@ -90,12 +92,12 @@ class TestActiveMemoryConfig:
             enabled=False,
             query_mode=QueryMode.FULL,
             prompt_style=PromptStyle.STRICT,
-            max_query_chars=500,
+            max_summary_chars=300,
         )
         assert config.enabled is False
         assert config.query_mode == QueryMode.FULL
         assert config.prompt_style == PromptStyle.STRICT
-        assert config.max_query_chars == 500
+        assert config.max_summary_chars == 300
 
 
 class TestActiveMemoryResult:
@@ -149,10 +151,10 @@ class TestBuildQuery:
         assert query == "Block message"
 
     def test_message_mode_truncates_to_max_chars(self):
-        """MESSAGE mode should truncate query to max_query_chars."""
+        """MESSAGE mode should truncate query to recent_user_chars."""
         long_msg = "A" * 1000
         messages = [{"role": "user", "content": long_msg}]
-        config = ActiveMemoryConfig(query_mode=QueryMode.MESSAGE, max_query_chars=100)
+        config = ActiveMemoryConfig(query_mode=QueryMode.MESSAGE, recent_user_chars=100)
         query = build_query(messages, QueryMode.MESSAGE, config)
         assert len(query) == 100
 
@@ -167,7 +169,8 @@ class TestBuildQuery:
         ]
         config = ActiveMemoryConfig(
             query_mode=QueryMode.RECENT,
-            recent_message_count=3,
+            recent_user_turns=2,
+            recent_assistant_turns=1,
         )
         query = build_query(messages, QueryMode.RECENT, config)
         # Should include M2, R2 (truncated), M3
@@ -199,30 +202,35 @@ class TestBuildRecallPrompt:
 
     def test_includes_query_text(self):
         """Prompt should include the query text."""
-        prompt = build_recall_prompt("test query", PromptStyle.BALANCED)
+        config = ActiveMemoryConfig()
+        prompt = build_recall_prompt("test query", PromptStyle.BALANCED, config)
         assert "test query" in prompt
 
     def test_includes_style_instructions(self):
         """Prompt should include style-specific instructions."""
-        prompt = build_recall_prompt("query", PromptStyle.BALANCED)
+        config = ActiveMemoryConfig()
+        prompt = build_recall_prompt("query", PromptStyle.BALANCED, config)
         # Balanced style has broad recall instructions
         assert "prior work" in prompt.lower()
         assert "decisions" in prompt.lower()
 
     def test_strict_style_has_precision_instructions(self):
         """STRICT style should have precision-focused instructions."""
-        prompt = build_recall_prompt("query", PromptStyle.STRICT)
+        config = ActiveMemoryConfig()
+        prompt = build_recall_prompt("query", PromptStyle.STRICT, config)
         assert "precise" in prompt.lower()
 
     def test_preference_only_style_filters_content(self):
         """PREFERENCE_ONLY style should search only preferences."""
-        prompt = build_recall_prompt("query", PromptStyle.PREFERENCE_ONLY)
+        config = ActiveMemoryConfig()
+        prompt = build_recall_prompt("query", PromptStyle.PREFERENCE_ONLY, config)
         assert "preferences" in prompt.lower()
         assert "coding style" in prompt.lower()
 
     def test_output_format_instructions(self):
         """Prompt should include output format instructions."""
-        prompt = build_recall_prompt("query", PromptStyle.BALANCED)
+        config = ActiveMemoryConfig()
+        prompt = build_recall_prompt("query", PromptStyle.BALANCED, config)
         assert "<found>" in prompt
         assert "NONE" in prompt
 
@@ -250,6 +258,7 @@ class TestActiveMemoryManager:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=True),
         )
@@ -268,6 +277,7 @@ class TestActiveMemoryManager:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
         )
         manager.set_query_mode(QueryMode.FULL)
@@ -278,6 +288,7 @@ class TestActiveMemoryManager:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
         )
         manager.set_prompt_style(PromptStyle.STRICT)
@@ -288,6 +299,7 @@ class TestActiveMemoryManager:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=False),
         )
@@ -299,6 +311,7 @@ class TestActiveMemoryManager:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=True),
         )
@@ -310,6 +323,7 @@ class TestActiveMemoryManager:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=True),
         )
@@ -322,7 +336,8 @@ class TestActiveMemoryManager:
             query_used="User: test",
             elapsed_ms=50,
         )
-        manager._cache["User: test:balanced"] = cached_result
+        import time
+        manager._cache["User: test:balanced"] = (cached_result, time.time())
 
         # Second call with same query should hit cache
         messages = [{"role": "user", "content": "test"}]
@@ -388,6 +403,7 @@ class TestRunRecallSubagent:
         mock_client = Mock()
         manager = ActiveMemoryManager(
             client=mock_client,
+            model="claude-3-5-sonnet-20241022",
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=True),
         )
@@ -397,6 +413,7 @@ class TestRunRecallSubagent:
         from nano_openclaw.memory.active import run_recall_subagent
         result = run_recall_subagent(
             mock_client,
+            "claude-3-5-sonnet-20241022",
             "preferences",
             PromptStyle.BALANCED,
             "/tmp",
@@ -413,6 +430,7 @@ class TestRunRecallSubagent:
         from nano_openclaw.memory.active import run_recall_subagent
         result = run_recall_subagent(
             mock_client,
+            "claude-3-5-sonnet-20241022",
             "test query",
             PromptStyle.BALANCED,
             "/tmp",

@@ -102,36 +102,38 @@ uv run python -m nano_openclaw --agent coder
                                 ▼
                       ┌──────────────────────┐
     image refs ─────▶ │   loop.agent_loop()  │  parse_image_refs → load_image
-    (@file.png)       └──┬──────────────┬────┘
+    (@file.png)       │  active_memory_hook  │  before_prompt_build → sub-agent recall
+                      └──┬──────────────┬────┘
           compact check │              │ tool_use blocks
-                       ▼              ▼
-              ┌──────────────┐  ┌──────────────────────┐
-              │  compact.py  │  │  tools.dispatch()    │
-              │  token est.  │  │  read/write/list/bash│
-              │  summarize   │  └────────┬─────────────┘
-              └──────┬───────┘           │
-      history shrunk │    stream events  │
-                     ▼                   ▼
-                    ┌──────────────────────┐
-                    │     provider.py      │
-                    │  路由层 switch(api)   │
-                    └────┬─────────────────┘
-          ┌─────────────┴──────────────┐
-          ▼                            ▼
- ┌──────────────────────┐   ┌──────────────────────┐
- │ _provider_anthropic  │   │  _provider_openai    │
- │  Anthropic Messages  │   │  OpenAI Completions  │
- └──────────────────────┘   └──────────────────────┘
+                        ▼              ▼
+               ┌──────────────┐  ┌──────────────────────┐
+               │  compact.py  │  │  tools.dispatch()    │
+               │  token est.  │  │  read/write/list/bash│
+               │  summarize   │  │  memory_get/search   │
+               └──────┬───────┘  └────────┬─────────────┘
+       history shrunk │    stream events  │
+                      ▼                   ▼
+                     ┌──────────────────────┐
+                     │     provider.py      │
+                     │  路由层 switch(api)   │
+                     └────┬─────────────────┘
+           ┌─────────────┴──────────────┐
+           ▼                            ▼
+  ┌──────────────────────┐   ┌──────────────────────┐
+  │ _provider_anthropic  │   │  _provider_openai    │
+  │  Anthropic Messages  │   │  OpenAI Completions  │
+  └──────────────────────┘   └──────────────────────┘
 
   config/           = JSON5 加载 + Pydantic 类型验证 + 环境变量替换 + 模型解析
   _stream_events.py = 5 个共享 dataclass（两个 transport 的协议契约）+ thinking 事件
   system prompt     = prompt.build_system_prompt(registry)
-                      identity + cwd/platform/date + 工具清单
+                      identity + cwd/platform/date + 工具清单 + daily memory prelude
   compact.py        = estimate_tokens → compact_if_needed → summarize_history
   approvals/        = requiresExecApproval() 门禁 → Rich 审批提示 → per-agent allowlist 持久化
   images.py         = parse_image_refs → load_image → describe_image（双路径架构）
   session/          = transcript 持久化（.jsonl）+ sessions.json 索引 + 8KB 截断 + store-first 初始化
   thinking          = Anthropic 原生 thinking / OpenAI reasoning_content → dim 样式渲染 → 持久化到消息历史
+  memory/           = daily memory 文件加载 + memory_get/search 工具 + Active Memory 自动召回
 ```
 
 ## 模块映射（nano ↔ OpenClaw）
@@ -167,6 +169,11 @@ uv run python -m nano_openclaw --agent coder
 | `workspace/loader.py`                      | `src/agents/workspace.ts`（bootstrap 文件加载 + budget 截断）                         |
 | `workspace/cache.py`                       | `src/agents/workspace.ts`（session-scoped 缓存）                                      |
 | `workspace/constants.py`                   | `src/agents/workspace.ts`（bootstrap 文件常量定义）                                   |
+| `memory/daily.py::build_daily_memory_prelude` | `src/auto-reply/reply/startup-context.ts`（每日记忆文件加载 + 日期戳生成）             |
+| `memory/tools.py::memory_get`              | `extensions/memory-core/src/tools.ts:memory_get`（读取记忆文件/片段）                  |
+| `memory/tools.py::memory_search`           | `extensions/memory-core/src/tools.ts:memory_search`（搜索记忆文件，nano 用词法匹配）    |
+| `memory/active.py::ActiveMemoryManager`    | `extensions/active-memory/index.ts`（before_prompt_build hook + 子 agent 召回）       |
+| `memory/active.py::QueryMode/PromptStyle`  | `extensions/active-memory/index.ts:17-34`（查询模式和召回风格枚举）                     |
 | `cli.py::repl`                             | `src/cli/tui-cli.ts:8-63` → `src/tui/tui.ts:1-52`                                    |
 | `cli.py::_render_tool_result`              | `src/tui/components/tool-execution.ts:55-137`                                        |
 | `session/types.py`                         | `src/config/sessions/types.ts`（SessionEntry 数据结构）                               |
@@ -184,21 +191,24 @@ uv run python -m nano_openclaw --agent coder
 4. **`config/env_substitution.py`** — 环境变量替换。`${ENV_VAR}` 语法，递归遍历嵌套对象。
 5. **`prompt.py`** — 我们告诉模型什么。简短，先建立"system prompt 是动态拼出来的"这个认知。
 6. **`workspace/`** — Workspace 引导文件加载。从项目目录加载 AGENTS.md、SOUL.md 等 8 个标准文件，应用安全防护和预算截断，注入到系统提示中。先看 `constants.py` 了解文件列表，再看 `loader.py` 理解加载和截断逻辑，最后看 `cache.py` 理解 session-scoped 缓存。
-7. **`tools.py`** — 模型能干什么。看 `Tool` 形状、5 个内置工具、`dispatch` 永不抛异常的契约。包含 `session_status` 工具用于查询日期时间和会话上下文。
-8. **`approvals/`** — 危险命令门禁。`policy.py` 评估风险，`manager.py` 管理审批请求和 per-agent allowlist 持久化，`ui.py` 渲染 Rich 提示。`check_request()` 镜像 openclaw 的 `requiresExecApproval()`：`on-miss + allowlist + 未命中 = 提示用户`。
-9. **`images.py`** — 图片怎么处理。`parse_image_refs` 检测引用 → `load_image` 加载 → `describe_image` 双路径架构。
-10. **`_stream_events.py`** — provider 协议契约。5 个 dataclass 是两个 transport 共同说的语言 + thinking 事件。
-11. **`_provider_anthropic.py`** — Anthropic transport：SDK SSE 事件 → 5 个 dataclass + 原生 thinking 支持。
-12. **`_provider_openai.py`** — OpenAI transport：同样翻译到 5 个 dataclass，顺带做消息格式转换 + reasoning_content 支持。
-13. **`provider.py`** — 路由层：`switch(api)` 派发给正确的 transport，对外只暴露一个 `stream_response`。
-14. **`compact.py`** — 上下文压缩：`estimate_tokens` → `compact_if_needed` → `summarize_history`。
-15. **`loop.py`** — 把上面全部粘起来。这一步最关键，看完你就懂 agent 了。
-16. **`session/paths.py`** — Session 路径解析。按 agent 隔离的 session 存储结构。
-17. **`session/store.py`** — sessions.json 管理。
-18. **`session/transcript.py`** — JSONL 转录文件读写。
-19. **`session/truncate.py`** — tool_result 截断。
-20. **`cli.py`** — 给人看的部分。理解 `on_event` 回调如何把"loop 内部状态"暴露给"渲染层"。
-21. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL。
+7. **`memory/daily.py`** — Daily Memory 加载。理解如何扫描 `memory/` 目录，按日期加载每日记忆文件，生成 startup context prelude。
+8. **`memory/tools.py`** — Memory 工具。`memory_get` 读取指定记忆文件，`memory_search` 搜索相关内容（nano 用词法匹配而非 embedding）。
+9. **`memory/active.py`** — Active Memory 自动召回。理解 `before_prompt_build` hook 模式、子 agent 执行、QueryMode 和 PromptStyle 的含义。
+10. **`tools.py`** — 模型能干什么。看 `Tool` 形状、5 个内置工具、`dispatch` 永不抛异常的契约。包含 `session_status` 工具用于查询日期时间和会话上下文。
+11. **`approvals/`** — 危险命令门禁。`policy.py` 评估风险，`manager.py` 管理审批请求和 per-agent allowlist 持久化，`ui.py` 渲染 Rich 提示。`check_request()` 镜像 openclaw 的 `requiresExecApproval()`：`on-miss + allowlist + 未命中 = 提示用户`。
+12. **`images.py`** — 图片怎么处理。`parse_image_refs` 检测引用 → `load_image` 加载 → `describe_image` 双路径架构。
+13. **`_stream_events.py`** — provider 协议契约。5 个 dataclass 是两个 transport 共同说的语言 + thinking 事件。
+14. **`_provider_anthropic.py`** — Anthropic transport：SDK SSE 事件 → 5 个 dataclass + 原生 thinking 支持。
+15. **`_provider_openai.py`** — OpenAI transport：同样翻译到 5 个 dataclass，顺带做消息格式转换 + reasoning_content 支持。
+16. **`provider.py`** — 路由层：`switch(api)` 派发给正确的 transport，对外只暴露一个 `stream_response`。
+17. **`compact.py`** — 上下文压缩：`estimate_tokens` → `compact_if_needed` → `summarize_history`。
+18. **`loop.py`** — 把上面全部粘起来。这一步最关键，看完你就懂 agent 了。
+19. **`session/paths.py`** — Session 路径解析。按 agent 隔离的 session 存储结构。
+20. **`session/store.py`** — sessions.json 管理。
+21. **`session/transcript.py`** — JSONL 转录文件读写。
+22. **`session/truncate.py`** — tool_result 截断。
+23. **`cli.py`** — 给人看的部分。理解 `on_event` 回调如何把"loop 内部状态"暴露给"渲染层"。
+24. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL。
 
 ## 三条不变量
 
@@ -213,6 +223,11 @@ uv run python -m nano_openclaw --agent coder
 Thinking 支持：通过 `agents.defaults.thinkingDefault` 配置思考等级（`off|minimal|low|medium|high|xhigh|adaptive|max`）。Anthropic provider 使用原生 thinking API；OpenAI-compatible provider 使用 `reasoning_content` 流。Thinking 块会持久化到消息历史（`thinking`/`redacted_thinking` 类型），CLI 以 dim 样式在 assistant 输出前渲染。当设置为 `off` 时，会显式发送 `{"type": "disabled"}` 给 API，以覆盖某些默认启用 thinking 的 provider（如 DashScope）。
 
 Workspace 引导文件：从 `workspaceDir`（默认为当前工作目录）加载 8 个标准引导文件（AGENTS.md、SOUL.md、IDENTITY.md、USER.md、MEMORY.md、TOOLS.md、BOOTSTRAP.md、HEARTBEAT.md），应用安全防护（路径遍历检查、文件大小限制）和预算截断（`bootstrapBudget` 字段控制总 token 预算），注入到系统提示的项目上下文部分。支持 session-scoped 缓存，避免重复加载。配置文件的 `workspaceDir` 字段可自定义工作目录。
+
+Memory 系统：包含三层机制：
+- **Daily Memory**：启动时自动加载 `workspace/memory/*.md` 中最近 N 天的记忆文件（默认 2 天），生成日期戳 prelude 注入系统提示，让 agent 知道"最近发生了什么"。
+- **Memory Tools**：提供 `memory_get`（读取指定记忆文件）和 `memory_search`（搜索记忆内容）两个工具，agent 可主动查询记忆。nano 用词法匹配而非 embedding 搜索。
+- **Active Memory**：可选插件，启用后在每次用户消息前自动执行子 agent 搜索记忆，将相关结果注入系统提示，实现"自动记住偏好和历史"的效果。通过 `activeMemory` 配置字段启用。
 
 Session Status 工具：内置 `session_status` 工具用于查询当前日期时间（避免模型凭空猜测）和会话上下文信息（模型 ID、session ID、上下文预算、token 使用量、压缩次数、消息计数）。工具结果由 `ToolRegistry` 注入会话上下文，模型可据此了解当前状态。
 
@@ -313,6 +328,11 @@ nano-openclaw/
 │   │   ├── manager.py        审批管理器（请求生命周期 + per-agent allowlist 持久化）
 │   │   └── ui.py             Rich 审批提示 UI
 │   ├── images.py             parse_image_refs / load_image / describe_image（双路径）
+│   ├── memory/               Memory 模块（记忆文件加载 + 工具 + 自动召回）
+│   │   ├── __init__.py       公开接口
+│   │   ├── daily.py          每日记忆文件加载（扫描 memory/ 目录 + 日期戳生成 + prelude 构建）
+│   │   ├── tools.py          memory_get / memory_search 工具（词法搜索版本）
+│   │   └── active.py         Active Memory 自动召回（before_prompt_build hook + 子 agent）
 │   ├── workspace/            Workspace 引导文件管理模块
 │   │   ├── __init__.py       公开接口
 │   │   ├── constants.py      引导文件常量定义（8 个标准文件名、预算配置）

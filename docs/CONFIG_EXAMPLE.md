@@ -181,6 +181,75 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
 
+### activeMemory — Active Memory 插件配置
+
+Active Memory 是可选插件，启用后在每次用户消息前自动搜索 `MEMORY.md` 和 `memory/*.md`，将相关记忆注入系统提示，让 agent 自动记住偏好和历史。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | `true` | 是否启用 Active Memory |
+| `model` | string \| null | `null` | 子 agent 使用的模型（null = 复用主模型） |
+| `thinking` | string | `"off"` | 子 agent 思考等级：`off|minimal|low|medium|high|xhigh|adaptive|max` |
+| `queryMode` | string | `"recent"` | 查询模式：`message` \| `recent` \| `full` |
+| `promptStyle` | string | `"balanced"` | 召回风格（见下方说明） |
+| `timeoutMs` | number | `15000` | 超时时间（毫秒，范围 250-120000） |
+| `maxSummaryChars` | number | `220` | 返回摘要最大字符数（范围 40-1000） |
+| `recentUserTurns` | number | `2` | `recent` 模式保留的最近用户消息数（范围 0-4） |
+| `recentAssistantTurns` | number | `1` | `recent` 模式保留的最近 assistant 回复数（范围 0-3） |
+| `recentUserChars` | number | `220` | `recent` 模式每条用户消息字符限制（范围 40-1000） |
+| `recentAssistantChars` | number | `180` | `recent` 模式每条 assistant 回复字符限制（范围 40-1000） |
+| `cacheTtlMs` | number | `15000` | 结果缓存 TTL（毫秒，范围 1000-120000） |
+| `logging` | boolean | `false` | 是否打印调试日志 |
+
+#### queryMode 说明
+
+| 值 | 说明 |
+|----|------|
+| `"message"` | 仅使用最新用户消息作为查询 |
+| `"recent"` | 使用最近 N 轮对话（可配置 user/assistant 消息数和字符限制） |
+| `"full"` | 使用完整对话历史 |
+
+#### promptStyle 说明
+
+| 值 | 说明 |
+|----|------|
+| `"balanced"` | 平衡召回：搜索相关决策、偏好、todo、日期、人物（默认） |
+| `"strict"` | 精确匹配：只返回直接回答查询的事实 |
+| `"contextual"` | 上下文关联：搜索项目、时间线、依赖关系 |
+| `"recall-heavy"` | 广泛召回：搜索所有可能相关信息 |
+| `"precision-heavy"` | 高精度召回：只返回高度置信的结果 |
+| `"preference-only"` | 偏好搜索：只搜索用户偏好（代码风格、工具选择等） |
+
+### skills — Skills 技能配置
+
+Skills 配置管理技能加载和过滤行为，对齐 openclaw 的 `skills.*` 配置。
+
+#### skills.entries — 单技能配置覆盖
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `<skillName>.enabled` | boolean | `true` | 启用/禁用该技能 |
+| `<skillName>.apiKey` | string \| null | `null` | 该技能的 API key 覆盖 |
+| `<skillName>.env` | object \| null | `null` | 该技能的环境变量覆盖 |
+
+#### skills.load — 技能加载配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `extraDirs` | string[] | `[]` | 额外的技能搜索目录 |
+| `watch` | boolean | `false` | 监听技能目录变化 |
+| `maxCandidatesPerRoot` | number | `300` | 每个根目录最大扫描候选数 |
+| `maxSkillsLoadedPerSource` | number | `200` | 每个来源最大加载技能数 |
+| `maxSkillsInPrompt` | number | `150` | 提示中最大包含技能数 |
+| `maxSkillsPromptChars` | number | `18000` | 技能部分最大字符数 |
+| `maxSkillFileBytes` | number | `256000` | 单个 SKILL.md 文件最大字节 |
+
+#### skills.allowBundled — 内置技能白名单
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `allowBundled` | string[] \| null | `null` | 允许的内置技能列表（null = 允许所有） |
+
 ---
 
 ## 环境变量
@@ -282,3 +351,52 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 - `default` → `./workspace`
 - `coder` → `./workspace/coder`
 - `analyst` → `./workspace/analyst`
+
+### Active Memory 配置示例
+
+```json5
+{
+  agents: {
+    defaults: {
+      model: "anthropic/claude-sonnet-4-5-20250929",
+      workspace: "./workspace",
+    },
+  },
+  activeMemory: {
+    enabled: true,
+    // 使用快速小模型节省成本
+    model: "anthropic/claude-haiku-4-5-20251001",
+    queryMode: "recent",
+    promptStyle: "balanced",
+    timeoutMs: 15000,
+    maxSummaryChars: 220,
+    recentUserTurns: 2,
+    recentAssistantTurns: 1,
+    recentUserChars: 220,
+    recentAssistantChars: 180,
+    cacheTtlMs: 15000,
+    logging: false,
+  },
+}
+```
+
+### Skills 配置示例
+
+```json5
+{
+  skills: {
+    // 禁用特定技能
+    entries: {
+      "some-skill": { enabled: false },
+      "api-skill": { apiKey: "${API_SKILL_KEY}" },
+    },
+    // 加载配置
+    load: {
+      extraDirs: ["~/.skills", "./custom-skills"],
+      maxSkillsInPrompt: 100,
+    },
+    // 限制内置技能
+    allowBundled: ["frontend-design", "brainstorming"],
+  },
+}
+```

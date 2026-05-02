@@ -9,6 +9,8 @@ Mirrors openclaw extensions/active-memory/index.ts:
 
 from __future__ import annotations
 
+import json
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -18,30 +20,41 @@ import time
 class QueryMode(str, Enum):
     """How much conversation history to include in the query."""
     MESSAGE = "message"      # Latest user message only
-    RECENT = "recent"        # Last N messages + current
+    RECENT = "recent"        # Last N turns (per-role counts)
     FULL = "full"            # Full conversation history
 
 
 class PromptStyle(str, Enum):
     """Style of recall instructions for the sub-agent."""
-    BALANCED = "balanced"        # Default: broad recall, moderate precision
-    STRICT = "strict"            # High precision, narrow recall
-    CONTEXTUAL = "contextual"    # Focus on context and relationships
-    RECALL_HEAVY = "recall-heavy"  # Maximize recall breadth
-    PRECISION_HEAVY = "precision-heavy"  # Maximize precision
-    PREFERENCE_ONLY = "preference-only"  # Only search preferences
+    BALANCED = "balanced"
+    STRICT = "strict"
+    CONTEXTUAL = "contextual"
+    RECALL_HEAVY = "recall-heavy"
+    PRECISION_HEAVY = "precision-heavy"
+    PREFERENCE_ONLY = "preference-only"
 
 
 @dataclass
 class ActiveMemoryConfig:
-    """Configuration for Active Memory behavior."""
+    """Configuration for Active Memory behavior.
+
+    Field names and defaults mirror openclaw active-memory plugin schema.
+    """
     enabled: bool = True
     query_mode: QueryMode = QueryMode.RECENT
     prompt_style: PromptStyle = PromptStyle.BALANCED
-    max_query_chars: int = 800
-    result_max_chars: int = 220
-    timeout_seconds: int = 30
-    recent_message_count: int = 5  # For RECENT mode
+    model: str | None = None              # sub-agent model override (None = use main model)
+    thinking: str = "off"                 # thinking level for sub-agent
+    timeout_ms: int = 15000
+    max_summary_chars: int = 220
+    recent_user_turns: int = 2            # RECENT: how many user messages to include
+    recent_assistant_turns: int = 1       # RECENT: how many assistant messages to include
+    recent_user_chars: int = 220          # RECENT: char limit per user message
+    recent_assistant_chars: int = 180     # RECENT: char limit per assistant message
+    prompt_override: str | None = None    # fully replace the recall prompt body
+    prompt_append: str | None = None      # append extra instructions to the prompt
+    cache_ttl_ms: int = 15000             # cache TTL in milliseconds
+    logging: bool = False                 # print debug line after each recall
 
 
 @dataclass
@@ -89,6 +102,18 @@ Return a concise summary (<200 chars) or NONE if no preferences found.
 }
 
 
+def _extract_text(msg: dict[str, Any]) -> str:
+    """Extract plain text from a message's content field."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    return " ".join(parts)
+
+
 def build_query(
     messages: list[dict[str, Any]],
     mode: QueryMode,
@@ -99,70 +124,59 @@ def build_query(
     Mirrors openclaw index.ts:311-367 (buildQuery).
     """
     if mode == QueryMode.MESSAGE:
-        # Only the latest user message
         for msg in reversed(messages):
             if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    return content[:config.max_query_chars]
-                # Handle content blocks
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                return " ".join(text_parts)[:config.max_query_chars]
+                return _extract_text(msg)[:config.recent_user_chars]
         return ""
 
     elif mode == QueryMode.RECENT:
-        # Last N messages + current
-        recent = messages[-config.recent_message_count:]
-        parts = []
-        for msg in recent:
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    parts.append(f"User: {content}")
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            parts.append(f"User: {block.get('text', '')}")
-            elif msg.get("role") == "assistant":
-                # Brief summary of assistant replies
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    parts.append(f"Assistant: {content[:100]}...")
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            parts.append(f"Assistant: {text[:100]}...")
-        return "\n".join(parts)[:config.max_query_chars]
+        # Collect the most recent N user and M assistant messages in reverse order,
+        # then flip back to chronological so the query reads naturally.
+        user_count = 0
+        assistant_count = 0
+        parts: list[str] = []
+
+        for msg in reversed(messages):
+            role = msg.get("role", "")
+            if role == "user" and user_count < config.recent_user_turns:
+                text = _extract_text(msg)[:config.recent_user_chars]
+                parts.append(f"User: {text}")
+                user_count += 1
+            elif role == "assistant" and assistant_count < config.recent_assistant_turns:
+                text = _extract_text(msg)[:config.recent_assistant_chars]
+                parts.append(f"Assistant: {text}")
+                assistant_count += 1
+
+            if (user_count >= config.recent_user_turns
+                    and assistant_count >= config.recent_assistant_turns):
+                break
+
+        parts.reverse()
+        return "\n".join(parts)
 
     elif mode == QueryMode.FULL:
-        # Full conversation (truncated)
         parts = []
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                parts.append(f"{role}: {content[:200]}")
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        parts.append(f"{role}: {block.get('text', '')[:200]}")
-        return "\n".join(parts)[:config.max_query_chars]
+            text = _extract_text(msg)[:200]
+            parts.append(f"{role}: {text}")
+        return "\n".join(parts)
 
     return ""
 
 
-def build_recall_prompt(query: str, style: PromptStyle) -> str:
+def build_recall_prompt(query: str, style: PromptStyle, config: ActiveMemoryConfig) -> str:
     """Build the sub-agent prompt for memory recall.
 
     Mirrors openclaw index.ts:369-425 (buildRecallPrompt).
+    Supports prompt_override (full replacement) and prompt_append (suffix).
     """
+    if config.prompt_override:
+        return f"Query: {query}\n\n{config.prompt_override}"
+
     style_instruction = STYLE_PROMPTS.get(style, STYLE_PROMPTS[PromptStyle.BALANCED])
 
-    return f"""
+    base = f"""
 You are a memory recall assistant. Your task is to search memory files and return relevant information.
 
 Query: {query}
@@ -177,27 +191,25 @@ Output format:
 Do not explain your search process. Just output the result.
 """
 
+    if config.prompt_append:
+        return f"{base}\n{config.prompt_append}"
+    return base
 
-def run_recall_subagent(
-    client: Any,
-    query: str,
-    style: PromptStyle,
-    workspace_dir: str,
-    config: ActiveMemoryConfig,
-) -> ActiveMemoryResult:
-    """Execute the memory recall sub-agent.
 
-    Mirrors openclaw index.ts:427-521 (runRecallSubagent).
+# ──────────────────────────── Tool dispatch ────────────────────────────
 
-    Uses Anthropic API directly with restricted tools (memory_search, memory_get only).
-    """
-    start_time = time.time()
+def _dispatch_tool(name: str, args: dict[str, Any], workspace_dir: str) -> str:
+    """Execute a memory tool call and return its string result."""
+    from nano_openclaw.memory.tools import memory_search, memory_get
+    if name == "memory_search":
+        return memory_search(args, workspace_dir)
+    if name == "memory_get":
+        return memory_get(args, workspace_dir)
+    return f"[unknown tool: {name}]"
 
-    # Build sub-agent prompt
-    prompt = build_recall_prompt(query, style)
 
-    # Create restricted tool registry (only memory_search, memory_get)
-    tools = [
+def _anthropic_tools_schema() -> list[dict]:
+    return [
         {
             "name": "memory_search",
             "description": "Search memory files for keywords.",
@@ -205,8 +217,8 @@ def run_recall_subagent(
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "maxResults": {"type": "integer", "default": 10},
-                    "minScore": {"type": "number", "default": 0.1},
+                    "maxResults": {"type": "integer"},
+                    "minScore": {"type": "number"},
                 },
                 "required": ["query"],
             },
@@ -226,71 +238,254 @@ def run_recall_subagent(
         },
     ]
 
-    # Execute sub-agent
+
+def _openai_tools_schema() -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "description": "Search memory files for keywords.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "maxResults": {"type": "integer"},
+                        "minScore": {"type": "number"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memory_get",
+                "description": "Read a specific memory file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path relative to workspace"},
+                        "from": {"type": "integer", "description": "Starting line number (1-indexed)"},
+                        "lines": {"type": "integer", "description": "Number of lines to read"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+    ]
+
+
+# ──────────────────────────── Backends ────────────────────────────
+
+_MAX_TOOL_ITERS = 5
+
+
+class RecallBackend(ABC):
+    """Abstraction over LLM provider for the memory recall sub-agent.
+
+    Each backend runs a small agentic loop: send prompt → handle tool
+    calls → return final text.  Tool results are dispatched locally so
+    no network round-trips are needed for file I/O.
+    """
+
+    @abstractmethod
+    def run(
+        self,
+        prompt: str,
+        system: str,
+        workspace_dir: str,
+        config: ActiveMemoryConfig,
+    ) -> str | None:
+        """Run the agentic recall loop. Returns text result or None."""
+        ...
+
+
+class AnthropicRecallBackend(RecallBackend):
+    """Recall backend for the Anthropic Messages API."""
+
+    def __init__(self, client: Any, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
+        tools = _anthropic_tools_schema()
+        messages: list[dict] = [{"role": "user", "content": prompt}]
+
+        # Build thinking params if requested
+        thinking_params: dict = {}
+        if config.thinking and config.thinking != "off":
+            from nano_openclaw.loop import THINKING_BUDGETS
+            budget = THINKING_BUDGETS.get(config.thinking, 1024)  # type: ignore[arg-type]
+            if budget:
+                thinking_params = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+
+        for _ in range(_MAX_TOOL_ITERS):
+            response = self._client.messages.create(
+                model=self._model,
+                max_tokens=300,
+                system=system,
+                messages=messages,
+                tools=tools,
+                **thinking_params,
+            )
+
+            assistant_content: list[dict] = []
+            text_parts: list[str] = []
+            tool_results: list[dict] = []
+
+            for block in response.content:
+                if block.type == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                    text_parts.append(block.text)
+                elif block.type == "tool_use":
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+                    result = _dispatch_tool(block.name, block.input, workspace_dir)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+
+            if tool_results:
+                messages.append({"role": "assistant", "content": assistant_content})
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                return "\n".join(text_parts) if text_parts else None
+
+        return None
+
+
+class OpenAIRecallBackend(RecallBackend):
+    """Recall backend for OpenAI-compatible chat completions API."""
+
+    def __init__(self, client: Any, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
+        tools = _openai_tools_schema()
+        messages: list[dict] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+
+        for _ in range(_MAX_TOOL_ITERS):
+            response = self._client.chat.completions.create(
+                model=self._model,
+                max_tokens=300,
+                messages=messages,
+                tools=tools,
+            )
+            choice = response.choices[0]
+            msg = choice.message
+
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content}
+            if msg.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            messages.append(assistant_msg)
+
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = _dispatch_tool(tc.function.name, args, workspace_dir)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+            else:
+                return msg.content or None
+
+        return None
+
+
+def _create_backend(client: Any, model: str) -> RecallBackend:
+    """Return the appropriate backend based on the client type."""
     try:
         from anthropic import Anthropic
-        if not isinstance(client, Anthropic):
-            # Skip if not Anthropic client (OpenAI doesn't support this pattern)
-            elapsed = int((time.time() - start_time) * 1000)
-            return ActiveMemoryResult(
-                context=None,
-                query_used=query,
-                elapsed_ms=elapsed,
-            )
+        if isinstance(client, Anthropic):
+            return AnthropicRecallBackend(client, model)
+    except ImportError:
+        pass
+    return OpenAIRecallBackend(client, model)
 
-        # Build tool definitions that include workspace_dir context
-        system_prompt = f"Workspace: {workspace_dir}\nYou have access to memory_search and memory_get tools. Use them to search MEMORY.md and memory/*.md files."
 
-        response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",  # Use current model for recall
-            max_tokens=300,
-            system=system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-            tools=tools,
-        )
+# ──────────────────────────── Sub-agent entry point ────────────────────────────
 
-        # Process response
-        content_blocks = response.content
-        result_text = ""
-        for block in content_blocks:
-            if hasattr(block, "type") and block.type == "text":
-                result_text += block.text
+def run_recall_subagent(
+    client: Any,
+    model: str,
+    query: str,
+    style: PromptStyle,
+    workspace_dir: str,
+    config: ActiveMemoryConfig,
+) -> ActiveMemoryResult:
+    """Execute the memory recall sub-agent.
 
-        # Check for NONE result
-        if "NONE" in result_text.upper() or not result_text.strip():
-            elapsed = int((time.time() - start_time) * 1000)
-            return ActiveMemoryResult(
-                context=None,
-                query_used=query,
-                elapsed_ms=elapsed,
-            )
+    Mirrors openclaw index.ts:427-521 (runRecallSubagent).
+    Supports both Anthropic and OpenAI-compatible clients.
+    """
+    start_time = time.time()
 
-        # Extract summary
+    prompt = build_recall_prompt(query, style, config)
+    system = (
+        f"Workspace: {workspace_dir}\n"
+        "You have access to memory_search and memory_get tools. "
+        "Use them to search MEMORY.md and memory/*.md files."
+    )
+
+    # config.model overrides the main model for the sub-agent
+    effective_model = config.model or model
+
+    try:
+        backend = _create_backend(client, effective_model)
+        result_text = backend.run(prompt, system, workspace_dir, config)
+    except Exception:  # noqa: BLE001 — errors become NONE result
+        result_text = None
+
+    elapsed = int((time.time() - start_time) * 1000)
+
+    if not result_text or "NONE" in result_text.upper():
+        result = ActiveMemoryResult(context=None, query_used=query, elapsed_ms=elapsed)
+    else:
         if "<found>" in result_text:
             summary = result_text.split("<found>")[-1].strip()
         else:
             summary = result_text.strip()
-
-        # Truncate to max chars
-        summary = summary[:config.result_max_chars]
-
-        elapsed = int((time.time() - start_time) * 1000)
-
-        return ActiveMemoryResult(
+        summary = summary[:config.max_summary_chars]
+        result = ActiveMemoryResult(
             context=f"[Active Memory Recall: {summary}]",
             query_used=query,
             elapsed_ms=elapsed,
         )
 
-    except Exception:  # noqa: BLE001 — errors become NONE result
-        elapsed = int((time.time() - start_time) * 1000)
-        # On error, return NONE (no injection)
-        return ActiveMemoryResult(
-            context=None,
-            query_used=query,
-            elapsed_ms=elapsed,
-        )
+    if config.logging:
+        hit = "FOUND" if result.context else "NONE"
+        print(f"[active-memory] {hit} elapsed={elapsed}ms model={effective_model} query={query[:60]!r}")
 
+    return result
+
+
+# ──────────────────────────── Manager ────────────────────────────
 
 @dataclass
 class ActiveMemoryManager:
@@ -299,9 +494,11 @@ class ActiveMemoryManager:
     Mirrors openclaw index.ts:523-680 (ActiveMemoryPlugin class).
     """
     client: Any
+    model: str
     workspace_dir: str
     config: ActiveMemoryConfig = field(default_factory=ActiveMemoryConfig)
-    _cache: dict[str, ActiveMemoryResult] = field(default_factory=dict)
+    # Cache entries: query+style key → (result, insertion_timestamp)
+    _cache: dict[str, tuple[ActiveMemoryResult, float]] = field(default_factory=dict)
 
     def toggle(self) -> bool:
         """Toggle Active Memory on/off. Returns new state."""
@@ -309,11 +506,9 @@ class ActiveMemoryManager:
         return self.config.enabled
 
     def set_query_mode(self, mode: QueryMode) -> None:
-        """Set the query mode."""
         self.config.query_mode = mode
 
     def set_prompt_style(self, style: PromptStyle) -> None:
-        """Set the prompt style."""
         self.config.prompt_style = style
 
     def run(self, messages: list[dict[str, Any]]) -> ActiveMemoryResult | None:
@@ -324,29 +519,29 @@ class ActiveMemoryManager:
         if not self.config.enabled:
             return None
 
-        # Build query
         query = build_query(messages, self.config.query_mode, self.config)
-
         if not query:
             return None
 
-        # Check cache (simplified)
         cache_key = f"{query}:{self.config.prompt_style.value}"
-        if cache_key in self._cache:
-            cached = self._cache[cache_key]
-            cached.cached = True
-            return cached
+        now = time.time()
 
-        # Run recall
+        if cache_key in self._cache:
+            cached_result, ts = self._cache[cache_key]
+            if now - ts < self.config.cache_ttl_ms / 1000:
+                cached_result.cached = True
+                return cached_result
+            # expired — fall through to fresh recall
+            del self._cache[cache_key]
+
         result = run_recall_subagent(
             self.client,
+            self.model,
             query,
             self.config.prompt_style,
             self.workspace_dir,
             self.config,
         )
 
-        # Cache result
-        self._cache[cache_key] = result
-
+        self._cache[cache_key] = (result, now)
         return result

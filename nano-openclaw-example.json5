@@ -172,4 +172,48 @@
     recent_turns: 3,
   },
 
+  // ==========================================
+  // Active Memory 配置（自动记忆召回）
+  // ==========================================
+  // 每次用户发送消息前，自动搜索 workspace/MEMORY.md 和 workspace/memory/*.md
+  // 将相关记忆注入 system prompt，让 agent 自动记住你的偏好和历史。
+  //
+  // 取消注释并修改以启用：
+  // activeMemory: {
+  //   enabled: true,
+  //
+  //   // 子 agent 使用的模型（可指定快速小模型节省成本，默认复用主模型）
+  //   // model: "anthropic/claude-haiku-4-5-20251001",
+  //
+  //   // 查询模式：message（仅最新消息）| recent（最近N轮）| full（完整历史）
+  //   queryMode: "recent",
+  //
+  //   // 召回风格：balanced | strict | contextual | recall-heavy | precision-heavy | preference-only
+  //   promptStyle: "balanced",
+  //
+  //   // 超时时间（毫秒，250-120000，默认 15000）
+  //   timeoutMs: 15000,
+  //
+  //   // 返回摘要最大字符数（40-1000，默认 220）
+  //   maxSummaryChars: 220,
+  //
+  //   // recent 模式：保留最近几条用户消息（0-4，默认 2）
+  //   recentUserTurns: 2,
+  //
+  //   // recent 模式：保留最近几条 assistant 回复（0-3，默认 1）
+  //   recentAssistantTurns: 1,
+  //
+  //   // recent 模式：每条用户消息的字符限制（40-1000，默认 220）
+  //   recentUserChars: 220,
+  //
+  //   // recent 模式：每条 assistant 回复的字符限制（40-1000，默认 180）
+  //   recentAssistantChars: 180,
+  //
+  //   // 结果缓存 TTL（毫秒，1000-120000，默认 15000）
+  //   cacheTtlMs: 15000,
+  //
+  //   // 是否打印调试日志（默认 false）
+  //   logging: false,
+  // },
+
 }

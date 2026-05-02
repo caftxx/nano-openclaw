@@ -1049,9 +1049,9 @@ def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopCo
     """
     parts = user_input.strip().split()
 
-    # Initialize config if not exists
+    # Initialize config if not exists (default to disabled)
     if cfg.active_memory_config is None:
-        cfg.active_memory_config = ActiveMemoryConfig()
+        cfg.active_memory_config = ActiveMemoryConfig(enabled=False)
 
     config = cfg.active_memory_config
 
@@ -1065,8 +1065,9 @@ def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopCo
                     f"State: [{('green' if config.enabled else 'red')}]{status_text}[/]\n"
                     f"Query Mode: [cyan]{config.query_mode.value}[/]\n"
                     f"Prompt Style: [cyan]{config.prompt_style.value}[/]\n"
-                    f"Timeout: {config.timeout_seconds}s\n"
-                    f"Recent Messages: {config.recent_message_count}"
+                    f"Timeout: {config.timeout_ms}ms\n"
+                    f"User Turns: {config.recent_user_turns} / "
+                    f"Assistant Turns: {config.recent_assistant_turns}"
                 ),
                 border_style="cyan",
             )

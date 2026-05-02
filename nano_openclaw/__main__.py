@@ -25,6 +25,7 @@ from pathlib import Path
 
 from nano_openclaw.cli import repl
 from nano_openclaw.loop import LoopConfig, Message, agent_loop
+from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.config import (
     load_config,
     resolve_model_config,
@@ -190,6 +191,28 @@ def main() -> None:
         else:
             image_model_id = image_model_ref
     
+    # Build Active Memory config from JSON config if present
+    active_mem_cfg: ActiveMemoryConfig | None = None
+    if config.activeMemory and config.activeMemory.enabled:
+        am = config.activeMemory
+        active_mem_cfg = ActiveMemoryConfig(
+            enabled=am.enabled,
+            query_mode=QueryMode(am.queryMode),
+            prompt_style=PromptStyle(am.promptStyle),
+            model=am.model,
+            thinking=am.thinking,
+            timeout_ms=am.timeoutMs,
+            max_summary_chars=am.maxSummaryChars,
+            recent_user_turns=am.recentUserTurns,
+            recent_assistant_turns=am.recentAssistantTurns,
+            recent_user_chars=am.recentUserChars,
+            recent_assistant_chars=am.recentAssistantChars,
+            prompt_override=am.promptOverride,
+            prompt_append=am.promptAppend,
+            cache_ttl_ms=am.cacheTtlMs,
+            logging=am.logging,
+        )
+
     cfg = LoopConfig(
         model=model_id,
         api=api,
@@ -213,6 +236,7 @@ def main() -> None:
         max_skill_file_bytes=config.skills.load.maxSkillFileBytes,
         max_skills_in_prompt=config.skills.load.maxSkillsInPrompt,
         max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
+        active_memory_config=active_mem_cfg,
     )
 
     repl(

@@ -292,6 +292,47 @@ class SkillsConfig(BaseModel):
 
 
 # ============================================================================
+# Active Memory Config (mirrors openclaw active-memory plugin schema)
+# ============================================================================
+
+class ActiveMemoryConfigInput(BaseModel):
+    """Active Memory 插件配置，对齐 openclaw active-memory plugin schema。"""
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = True
+    model: Optional[str] = None
+    thinking: ThinkingLevel = "off"
+    queryMode: str = Field(default="recent", description="message | recent | full")
+    promptStyle: str = Field(default="balanced", description="balanced | strict | contextual | recall-heavy | precision-heavy | preference-only")
+    promptOverride: Optional[str] = None
+    promptAppend: Optional[str] = None
+    timeoutMs: int = Field(default=15000, ge=250, le=120000)
+    maxSummaryChars: int = Field(default=220, ge=40, le=1000)
+    recentUserTurns: int = Field(default=2, ge=0, le=4)
+    recentAssistantTurns: int = Field(default=1, ge=0, le=3)
+    recentUserChars: int = Field(default=220, ge=40, le=1000)
+    recentAssistantChars: int = Field(default=180, ge=40, le=1000)
+    cacheTtlMs: int = Field(default=15000, ge=1000, le=120000)
+    logging: bool = False
+
+    @field_validator("queryMode")
+    @classmethod
+    def validate_query_mode(cls, v: str) -> str:
+        allowed = {"message", "recent", "full"}
+        if v not in allowed:
+            raise ValueError(f"queryMode must be one of {allowed}")
+        return v
+
+    @field_validator("promptStyle")
+    @classmethod
+    def validate_prompt_style(cls, v: str) -> str:
+        allowed = {"balanced", "strict", "contextual", "recall-heavy", "precision-heavy", "preference-only"}
+        if v not in allowed:
+            raise ValueError(f"promptStyle must be one of {allowed}")
+        return v
+
+
+# ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
 
@@ -316,6 +357,10 @@ class NanoOpenClawConfig(BaseModel):
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
     maxIterations: int = Field(default=12, ge=1, description="Max tool-use rounds per user turn")
     context: ContextConfig = Field(default_factory=ContextConfig)
+    activeMemory: Optional[ActiveMemoryConfigInput] = Field(
+        default=None,
+        description="Active Memory plugin configuration (automatic memory recall)"
+    )
 
     def resolve_primary_model(self, agent_id: Optional[str] = None) -> str:
         """

@@ -278,20 +278,18 @@ def agent_loop(
     # Run Active Memory recall before building system prompt
     active_memory_context: str | None = None
     if cfg.workspace_dir and cfg.active_memory_config and cfg.active_memory_config.enabled:
-        from anthropic import Anthropic
-        if isinstance(client, Anthropic):
-            manager = ActiveMemoryManager(
-                client=client,
-                workspace_dir=str(cfg.workspace_dir),
-                config=cfg.active_memory_config,
-            )
-            # Convert history to dict format for manager
-            wire_messages = [{"role": m.role, "content": m.content} for m in history]
-            recall_result = manager.run(wire_messages)
-            if recall_result:
-                on_event(ActiveMemoryRecall(result=recall_result))
-                if recall_result.context:
-                    active_memory_context = recall_result.context
+        manager = ActiveMemoryManager(
+            client=client,
+            model=cfg.model,
+            workspace_dir=str(cfg.workspace_dir),
+            config=cfg.active_memory_config,
+        )
+        wire_messages = [{"role": m.role, "content": m.content} for m in history]
+        recall_result = manager.run(wire_messages)
+        if recall_result:
+            on_event(ActiveMemoryRecall(result=recall_result))
+            if recall_result.context:
+                active_memory_context = recall_result.context
 
     system = build_system_prompt(
         registry,
