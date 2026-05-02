@@ -81,12 +81,13 @@ def repl(
     """Interactive read-eval-print loop. Blocks until /quit or Ctrl-D."""
     console = Console()
     history: list[Message] = list(initial_history) if initial_history else []
+    _load_input_history(history)
 
     _print_banner(console, cfg.model, registry, session_id)
 
     while True:
         try:
-            user_input = console.input("[bold cyan]>>>[/] ").strip()
+            user_input = _repl_input(console).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return
@@ -152,6 +153,7 @@ def repl(
                         transcript_writer = new_writer
                         session_id = target_id
                         _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+                        _load_input_history(history)
                         _replay_history(console, history, session_id)
                 else:
                     _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir)
@@ -190,6 +192,7 @@ def repl(
                             transcript_writer = new_writer
                             session_id = new_sid
                             _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
+                            _load_input_history(history)
                             _replay_history(console, history, session_id)
                 else:
                     console.print("[dim](no session store configured)[/]")
@@ -526,6 +529,117 @@ def _save_session_now(
     console.print(f"[dim]session {session_id[:8]}… saved[/]")
 
 
+def _win_readline() -> str:
+    """Windows character-by-character input with up/down history navigation."""
+    import msvcrt
+    import shutil
+    import unicodedata as _ud
+
+    _PROMPT = "\033[1;36m>>>\033[0m "
+    _PROMPT_COLS = 4  # visible columns of ">>> "
+
+    def disp_width(text: str) -> int:
+        """Terminal column width: CJK/fullwidth chars count as 2."""
+        w = 0
+        for c in text:
+            w += 2 if _ud.east_asian_width(c) in ("W", "F") else 1
+        return w
+
+    buf: list[str] = []
+    hist_pos = len(_input_history)
+    saved: list[str] = []
+    prev_lines = [1]  # how many terminal lines the last render occupied
+
+    def redraw() -> None:
+        term_w = shutil.get_terminal_size().columns
+        # Move cursor back to the first line of the current input block
+        if prev_lines[0] > 1:
+            sys.stdout.write(f"\033[{prev_lines[0] - 1}A")
+        # Erase from here to end of screen, then redraw
+        sys.stdout.write("\r\033[J" + _PROMPT + "".join(buf))
+        sys.stdout.flush()
+        # Track how many lines this render now occupies
+        total_w = _PROMPT_COLS + disp_width("".join(buf))
+        prev_lines[0] = max(1, (total_w + term_w - 1) // term_w)
+
+    sys.stdout.write(_PROMPT)
+    sys.stdout.flush()
+
+    while True:
+        ch = msvcrt.getch()
+        if ch in (b"\x00", b"\xe0"):
+            ext = msvcrt.getch()
+            if ext == b"H" and hist_pos > 0:                      # up
+                if hist_pos == len(_input_history):
+                    saved = buf[:]
+                hist_pos -= 1
+                buf[:] = list(_input_history[hist_pos])
+                redraw()
+            elif ext == b"P" and hist_pos < len(_input_history):  # down
+                hist_pos += 1
+                buf[:] = saved[:] if hist_pos == len(_input_history) else list(_input_history[hist_pos])
+                redraw()
+        elif ch == b"\r":                 # Enter
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            result = "".join(buf)
+            if result and (not _input_history or _input_history[-1] != result):
+                _input_history.append(result)
+            return result
+        elif ch == b"\x03":               # Ctrl+C
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            raise KeyboardInterrupt
+        elif ch == b"\x04":               # Ctrl+D
+            raise EOFError
+        elif ch in (b"\x08", b"\x7f"):   # Backspace
+            if buf:
+                buf.pop()
+                redraw()
+        elif ch[0] >= 32:                 # Printable char
+            c = ch.decode("mbcs", errors="replace")
+            buf.append(c)
+            redraw()
+
+
+def _load_input_history(messages: list[Message]) -> None:
+    """Populate _input_history (and readline on Unix) from session's user messages."""
+    inputs = []
+    for msg in messages:
+        if msg.role != "user":
+            continue
+        text = " ".join(
+            b.get("text", "").strip()
+            for b in msg.content
+            if b.get("type") == "text"
+        ).strip()
+        if text:
+            inputs.append(text)
+
+    _input_history.clear()
+    _input_history.extend(inputs)
+
+    if sys.platform != "win32":
+        try:
+            import readline as _rl
+            _rl.clear_history()
+            for entry in inputs:
+                _rl.add_history(entry)
+        except ImportError:
+            pass
+
+
+def _repl_input(console: Console) -> str:
+    """Input prompt with up/down arrow history. Uses readline on Unix, custom loop on Windows."""
+    if sys.platform == "win32":
+        return _win_readline()
+    try:
+        import readline  # noqa: F401 — side-effect enables arrow-key history in input()
+    except ImportError:
+        pass
+    return console.input("[bold cyan]>>>[/] ")
+
+
 def _getch() -> bytes:
     """Read a single keypress cross-platform, returning raw bytes."""
     if sys.platform == "win32":
@@ -709,6 +823,7 @@ def _get_session_snippet(session_dir: Path, session_id: str, max_chars: int = 60
 
 
 _SESSIONS_PAGE_SIZE = 20
+_input_history: list[str] = []
 
 
 def _list_sessions_cli(
