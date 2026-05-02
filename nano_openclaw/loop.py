@@ -15,7 +15,9 @@ That's it. Read this file top-to-bottom and you understand the whole thing.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -234,6 +236,32 @@ def agent_loop(
     return history
 
 
+def _maybe_dump_payload(
+    *,
+    model: str,
+    system: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    max_tokens: int,
+    thinking_budget_tokens: int | None,
+) -> None:
+    """Append one JSONL entry to nano-openclaw-debug.jsonl when NANO_DEBUG_PROMPT=1."""
+    if os.getenv("NANO_DEBUG_PROMPT") != "1":
+        return
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "max_tokens": max_tokens,
+        "thinking_budget_tokens": thinking_budget_tokens,
+        "system": system,
+        "tools": tools,
+        "messages": messages,
+    }
+    path = Path.cwd() / "nano-openclaw-debug.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def _consume_one_assistant_turn(
     *,
     client: Any,
@@ -258,6 +286,14 @@ def _consume_one_assistant_turn(
             blocks.append({"type": "text", "text": text_buf})
             text_buf = ""
 
+    _maybe_dump_payload(
+        model=model,
+        system=system,
+        messages=messages,
+        tools=tools,
+        max_tokens=max_tokens,
+        thinking_budget_tokens=thinking_budget_tokens,
+    )
     for ev in stream_response(
         api=api,
         client=client,
