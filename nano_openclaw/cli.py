@@ -540,82 +540,11 @@ def _save_session_now(
     console.print(f"[dim]session {session_id[:8]}… saved[/]")
 
 
-def _win_readline() -> str:
-    """Windows character-by-character input with up/down history navigation."""
-    import msvcrt
-    import shutil
-    import unicodedata as _ud
-
-    _PROMPT = "\033[1;36m>>>\033[0m "
-    _PROMPT_COLS = 4  # visible columns of ">>> "
-
-    def disp_width(text: str) -> int:
-        """Terminal column width: CJK/fullwidth chars count as 2."""
-        w = 0
-        for c in text:
-            w += 2 if _ud.east_asian_width(c) in ("W", "F") else 1
-        return w
-
-    buf: list[str] = []
-    hist_pos = len(_input_history)
-    saved: list[str] = []
-    prev_lines = [1]  # how many terminal lines the last render occupied
-
-    def redraw() -> None:
-        term_w = shutil.get_terminal_size().columns
-        # Move cursor back to the first line of the current input block
-        if prev_lines[0] > 1:
-            sys.stdout.write(f"\033[{prev_lines[0] - 1}A")
-        # Erase from here to end of screen, then redraw
-        sys.stdout.write("\r\033[J" + _PROMPT + "".join(buf))
-        sys.stdout.flush()
-        # Track how many lines this render now occupies
-        total_w = _PROMPT_COLS + disp_width("".join(buf))
-        prev_lines[0] = max(1, (total_w + term_w - 1) // term_w)
-
-    sys.stdout.write(_PROMPT)
-    sys.stdout.flush()
-
-    while True:
-        # getwch() returns Unicode characters directly, fixing CJK/IME input garbling
-        wch = msvcrt.getwch()
-        if wch in ('\x00', '\xe0'):
-            ext = msvcrt.getwch()
-            if ext == 'H' and hist_pos > 0:                      # up
-                if hist_pos == len(_input_history):
-                    saved = buf[:]
-                hist_pos -= 1
-                buf[:] = list(_input_history[hist_pos])
-                redraw()
-            elif ext == 'P' and hist_pos < len(_input_history):  # down
-                hist_pos += 1
-                buf[:] = saved[:] if hist_pos == len(_input_history) else list(_input_history[hist_pos])
-                redraw()
-        elif wch == '\r':                 # Enter
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            result = "".join(buf)
-            if result and (not _input_history or _input_history[-1] != result):
-                _input_history.append(result)
-            return result
-        elif wch == '\x03':               # Ctrl+C
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            raise KeyboardInterrupt
-        elif wch == '\x04':               # Ctrl+D
-            raise EOFError
-        elif wch in ('\x08', '\x7f'):    # Backspace
-            if buf:
-                buf.pop()
-                redraw()
-        elif ord(wch) >= 32:             # Printable char (including CJK via IME)
-            buf.append(wch)
-            redraw()
-
-
 def _load_input_history(messages: list[Message]) -> None:
-    """Populate _input_history (and readline on Unix) from session's user messages."""
-    inputs = []
+    """Populate prompt_toolkit history from session's user messages."""
+    # InMemoryHistory has no clear(); rebuild by replacing the internal list
+    strings = _pt_history.get_strings()
+    strings.clear()
     for msg in messages:
         if msg.role != "user":
             continue
@@ -625,57 +554,14 @@ def _load_input_history(messages: list[Message]) -> None:
             if b.get("type") == "text"
         ).strip()
         if text:
-            inputs.append(text)
-
-    _input_history.clear()
-    _input_history.extend(inputs)
-
-    if sys.platform != "win32":
-        try:
-            import readline as _rl
-            _rl.clear_history()
-            for entry in inputs:
-                _rl.add_history(entry)
-        except ImportError:
-            pass
+            strings.append(text)
 
 
-def _repl_input(console: Console) -> str:
-    """Input prompt with up/down arrow history. Uses readline on Unix, custom loop on Windows."""
-    if sys.platform == "win32":
-        return _win_readline()
-    try:
-        import readline  # noqa: F401 — side-effect enables arrow-key history in input()
-    except ImportError:
-        pass
-    return console.input("[bold cyan]>>>[/] ")
+def _repl_input(_console: Console) -> str:
+    """Input prompt with full readline editing and history via prompt_toolkit."""
+    return _pt_prompt(">>> ", history=_pt_history)
 
 
-def _getch() -> bytes:
-    """Read a single keypress cross-platform, returning raw bytes."""
-    if sys.platform == "win32":
-        import msvcrt
-        ch = msvcrt.getch()
-        if ch in (b"\x00", b"\xe0"):
-            return ch + msvcrt.getch()
-        return ch
-    else:
-        import select as _sel
-        import termios
-        import tty
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.buffer.read(1)
-            if ch == b"\x1b" and _sel.select([sys.stdin.buffer], [], [], 0.05)[0]:
-                ch2 = sys.stdin.buffer.read(1)
-                if ch2 == b"[" and _sel.select([sys.stdin.buffer], [], [], 0.05)[0]:
-                    return ch + ch2 + sys.stdin.buffer.read(1)
-                return ch + ch2
-            return ch
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def _render_sessions_page(
@@ -733,6 +619,8 @@ def _interactive_session_picker(
 ) -> str | None:
     """Arrow-key session picker. Returns session_id of selected session, or None if cancelled."""
     import time
+    from prompt_toolkit.input import create_input
+    from prompt_toolkit.keys import Keys
     from rich.live import Live
 
     store = load_session_store(store_path)
@@ -758,13 +646,11 @@ def _interactive_session_picker(
     total_pages = max(1, (total + page_size - 1) // page_size)
     store_last_id = store.get("lastSessionId")
 
-    # Pre-load snippets once to avoid re-reading files on every keypress
     snippets: dict[str, str] = {}
     if session_dir:
         for s in sessions:
             snippets[s.session_id] = _get_session_snippet(session_dir, s.session_id)
 
-    # Start with current session highlighted
     selected = 0
     if current_session_id:
         for i, s in enumerate(sessions):
@@ -773,7 +659,8 @@ def _interactive_session_picker(
                 break
     page = selected // page_size
 
-    with Live(console=console, auto_refresh=False) as live:
+    inp = create_input()
+    with inp.raw_mode(), Live(console=console, auto_refresh=False) as live:
         def refresh() -> None:
             live.update(_render_sessions_page(
                 sessions, snippets, current_session_id,
@@ -783,27 +670,28 @@ def _interactive_session_picker(
 
         refresh()
         while True:
-            key = _getch()
-            if key in (b"\xe0H", b"\x1b[A"):          # up
-                if selected > 0:
-                    selected -= 1
-                    page = selected // page_size
-            elif key in (b"\xe0P", b"\x1b[B"):        # down
-                if selected < total - 1:
-                    selected += 1
-                    page = selected // page_size
-            elif key in (b"\xe0K", b"\x1b[D"):        # left — prev page
-                if page > 0:
-                    page -= 1
-                    selected = page * page_size
-            elif key in (b"\xe0M", b"\x1b[C"):        # right — next page
-                if page < total_pages - 1:
-                    page += 1
-                    selected = page * page_size
-            elif key in (b"\r", b"\n"):                # enter — confirm
-                return sessions[selected].session_id
-            elif key in (b"q", b"Q", b"\x1b", b"\x03"):  # q / Esc / Ctrl-C
-                return None
+            for kp in inp.read_keys():
+                key = kp.key
+                if key == Keys.Up:
+                    if selected > 0:
+                        selected -= 1
+                        page = selected // page_size
+                elif key == Keys.Down:
+                    if selected < total - 1:
+                        selected += 1
+                        page = selected // page_size
+                elif key == Keys.Left:
+                    if page > 0:
+                        page -= 1
+                        selected = page * page_size
+                elif key == Keys.Right:
+                    if page < total_pages - 1:
+                        page += 1
+                        selected = page * page_size
+                elif key in (Keys.ControlM, Keys.ControlJ):  # Enter
+                    return sessions[selected].session_id
+                elif key in ("q", "Q", Keys.Escape, Keys.ControlC):
+                    return None
             refresh()
 
 
@@ -834,7 +722,10 @@ def _get_session_snippet(session_dir: Path, session_id: str, max_chars: int = 60
 
 
 _SESSIONS_PAGE_SIZE = 20
-_input_history: list[str] = []
+
+from prompt_toolkit import prompt as _pt_prompt
+from prompt_toolkit.history import InMemoryHistory as _InMemoryHistory
+_pt_history: _InMemoryHistory = _InMemoryHistory()
 
 
 def _list_sessions_cli(
