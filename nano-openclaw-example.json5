@@ -249,4 +249,37 @@
   //   // model: "anthropic/claude-haiku-4-5-20251001",
   // },
 
+  // ==========================================
+  // MCP 配置（外部工具服务器，默认关闭）
+  // ==========================================
+  // MCP（Model Context Protocol）用于连接外部工具服务器。
+  // 支持三种传输方式：stdio（本地进程）、SSE、streamable-http（远程服务器）。
+  //
+  // 取消注释并修改以启用：
+  // mcp: {
+  //   servers: {
+  //     // stdio 传输：本地文件系统服务器
+  //     "filesystem": {
+  //       command: "npx",
+  //       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
+  //       // env: { "DEBUG": "1" },
+  //       // cwd: "/working/directory",
+  //     },
+  //     // SSE 传输：远程服务器
+  //     // "remote-server": {
+  //     //   url: "https://mcp.example.com/sse",
+  //     //   transport: "sse",
+  //     //   headers: { "Authorization": "Bearer ${MCP_API_KEY}" },
+  //     // },
+  //     // streamable-http 传输
+  //     // "streamable-server": {
+  //     //   url: "https://mcp.example.com/mcp",
+  //     //   transport: "streamable-http",
+  //     //   connectionTimeoutMs: 10000,
+  //     // },
+  //   },
+  //   // 会话空闲超时（可选）
+  //   // sessionIdleTtlMs: 300000,
+  // },
+
 }
