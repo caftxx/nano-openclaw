@@ -193,10 +193,15 @@ def test_multiple_tools_conversion():
 
 
 def test_unsupported_api_raises():
+    import asyncio
+
+    async def _collect():
+        async for _ in stream_response(api="bogus", client=None, model="x", system="s",
+                                       messages=[], tools=[]):
+            pass
+
     with pytest.raises(ValueError, match="unsupported api"):
-        # Pass a dummy client — the ValueError should fire before any I/O.
-        list(stream_response(api="bogus", client=None, model="x", system="s",
-                             messages=[], tools=[]))
+        asyncio.run(_collect())
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ Model reference format: provider/model-id (e.g., anthropic/claude-sonnet-4-5)
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 import threading
 from pathlib import Path
@@ -53,13 +54,7 @@ from rich.console import Console
 
 
 def build_approval_manager(state_dir: Path, agent_id: str) -> ApprovalManager | None:
-    """Build ApprovalManager from exec-approvals.json.
-
-    Mirrors openclaw's approval initialization:
-    - Reads policy from {stateDir}/exec-approvals.json
-    - Per-agent allowlist stored in the same file
-    - Resolution: defaults → agents.* → agents.{agentId}
-    """
+    """Build ApprovalManager from exec-approvals.json."""
     policy = load_exec_approvals(state_dir, agent_id)
     if policy.ask_mode == "off":
         return None
@@ -97,7 +92,7 @@ def main() -> None:
 
     # Load configuration
     config, warnings = load_config(args.config)
-    
+
     for var_name, config_path in warnings:
         print(
             f"warning: missing env var \"{var_name}\" at {config_path} - "
@@ -107,7 +102,7 @@ def main() -> None:
 
     # Resolve model for agent
     model_ref = config.resolve_primary_model(args.agent)
-    
+
     try:
         resolved = resolve_model_config(model_ref, config)
     except ValueError as e:
@@ -123,41 +118,71 @@ def main() -> None:
 
     api = "anthropic" if api_type == "anthropic-messages" else "openai"
 
+    # --sessions: list and exit (no async needed)
+    state_dir = resolve_state_dir()
+    session_dir = resolve_agent_sessions_dir(state_dir, args.agent)
+    store_path = resolve_session_store_path(session_dir)
+
+    if args.sessions:
+        _print_sessions_list(store_path)
+        return
+
+    asyncio.run(_async_main(
+        args=args,
+        config=config,
+        api=api,
+        api_key=api_key,
+        base_url=base_url,
+        model_id=model_id,
+        model_ref=model_ref,
+        model_input=model_input,
+        model_max_tokens=model_max_tokens,
+        resolved=resolved,
+        state_dir=state_dir,
+        session_dir=session_dir,
+        store_path=store_path,
+    ))
+
+
+async def _async_main(
+    *,
+    args,
+    config,
+    api: str,
+    api_key: str,
+    base_url: str | None,
+    model_id: str,
+    model_ref: str,
+    model_input,
+    model_max_tokens: int,
+    resolved: dict,
+    state_dir: Path,
+    session_dir: Path,
+    store_path: Path,
+) -> None:
     client = _build_client(api, api_key, base_url)
     no_tools = config.noTools or config.tools.noTools
     registry = ToolRegistry() if no_tools else build_default_registry(config.tools)
-    
-    # Initialize MCP runtime and register MCP tools
+
+    # Initialize MCP runtime (now async)
     mcp_runtime = None
     if not no_tools and config.mcp.servers:
         from nano_openclaw.mcp.runtime import McpRuntime
         from nano_openclaw.mcp.materialize import materialize_mcp_tools
         mcp_runtime = McpRuntime()
-        mcp_runtime.initialize(config.mcp.servers)
+        await mcp_runtime.initialize(config.mcp.servers)
         mcp_tools = materialize_mcp_tools(mcp_runtime, existing_names=set(registry.names()))
         for tool in mcp_tools:
             registry.register(tool)
         print(f"MCP: loaded {len(mcp_tools)} tools from {len(config.mcp.servers)} server(s)", file=sys.stderr)
-    
-    # Build approval manager and pass to registry
-    state_dir = resolve_state_dir()
+
     console = Console()
     approval_manager = build_approval_manager(state_dir, args.agent)
     registry.approval_manager = approval_manager
     registry.console = console
-    
-    # Resolve workspace directory for agent (openclaw-aligned)
+
     workspace_dir = resolve_agent_workspace_dir(config, args.agent)
     registry.set_workspace_dir(workspace_dir)
-    
-    # Resolve session directory for agent: {stateDir}/agents/{agentId}/sessions/
-    session_dir = resolve_agent_sessions_dir(state_dir, args.agent)
-    store_path = resolve_session_store_path(session_dir)
-
-    # Handle --sessions: list and exit
-    if args.sessions:
-        _print_sessions_list(store_path)
-        return
 
     # Build session: new or resumed
     transcript_writer: TranscriptWriter | None = None
@@ -180,7 +205,6 @@ def main() -> None:
             print("no previous session to resume — starting fresh", file=sys.stderr)
 
     if not transcript_writer:
-        # New session — write store immediately (store-first, like OpenClaw)
         session_id = new_session_id()
         transcript_path = session_dir / f"{session_id}.jsonl"
         transcript_writer = TranscriptWriter(transcript_path)
@@ -189,13 +213,12 @@ def main() -> None:
         update_session(store, session_id, model=model_id, message_count=0, compaction_count=0)
         save_session_store(store_path, store)
 
-    # Resolve image model reference to extract model_id for API calls
+    # Resolve image model
     image_model_ref = config.resolve_image_model(args.agent)
     image_model_id: str | None = None
     if image_model_ref:
         if "/" in image_model_ref:
             image_provider_id, image_model_id = image_model_ref.split("/", 1)
-            # If image model uses a different provider, warn and fall back to main provider's model
             if image_provider_id != resolved["provider_id"]:
                 print(
                     f"warning: image model provider '{image_provider_id}' differs from main "
@@ -205,8 +228,8 @@ def main() -> None:
                 )
         else:
             image_model_id = image_model_ref
-    
-    # Build Active Memory config from JSON config if present
+
+    # Build Active Memory config
     active_mem_cfg: ActiveMemoryConfig | None = None
     if config.activeMemory and config.activeMemory.enabled:
         am = config.activeMemory
@@ -228,7 +251,7 @@ def main() -> None:
             logging=am.logging,
         )
 
-    # Build Dreaming config from JSON config
+    # Build Dreaming config
     d = config.dreaming
     dreaming_cfg = DreamingConfig(
         enabled=d.enabled,
@@ -253,12 +276,10 @@ def main() -> None:
         context_recent_turns=config.context.recent_turns,
         image_model=image_model_id,
         thinking_level=config.resolve_thinking_level(model_ref),
-        # Workspace bootstrap configuration (AGENTS.md, SOUL.md, etc.)
         workspace_dir=workspace_dir,
         session_key=session_id if session_id else args.agent,
         bootstrap_max_chars=config.agents.defaults.bootstrapMaxChars,
         bootstrap_total_max_chars=config.agents.defaults.bootstrapTotalMaxChars,
-        # Skills configuration (mirrors openclaw agents.defaults.skills + skills.load)
         skill_filter=config.resolve_skill_filter(args.agent),
         extra_skill_dirs=config.skills.load.extraDirs,
         max_skill_file_bytes=config.skills.load.maxSkillFileBytes,
@@ -268,13 +289,14 @@ def main() -> None:
         dreaming_config=dreaming_cfg,
     )
 
-    # Start periodic dreaming scheduler (independent of user interaction)
+    # Start dreaming scheduler as asyncio task (replaces background thread)
     _dreaming_stop = threading.Event()
+    dreaming_task = None
     if dreaming_cfg.enabled and workspace_dir:
-        start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, _dreaming_stop)
+        dreaming_task = start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, _dreaming_stop)
 
     try:
-        repl(
+        await repl(
             registry,
             client=client,
             cfg=cfg,
@@ -285,13 +307,16 @@ def main() -> None:
             initial_history=history if history else None,
         )
     finally:
-        # Cleanup dreaming scheduler
-        if _dreaming_stop.is_set() is False and dreaming_cfg.enabled:
-            _dreaming_stop.set()
-        
-        # Cleanup MCP runtime
+        _dreaming_stop.set()
+        if dreaming_task and not dreaming_task.done():
+            dreaming_task.cancel()
+            try:
+                await dreaming_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
         if mcp_runtime:
-            mcp_runtime.close()
+            await mcp_runtime.close()
 
 
 def _print_sessions_list(store_path: Path) -> None:
@@ -314,11 +339,11 @@ def _print_sessions_list(store_path: Path) -> None:
 
 def _build_client(api: str, api_key: str, base_url: str | None):
     if api == "anthropic":
-        from anthropic import Anthropic
-        return Anthropic(api_key=api_key, base_url=base_url)
+        from anthropic import AsyncAnthropic
+        return AsyncAnthropic(api_key=api_key, base_url=base_url)
     if api == "openai":
-        from openai import OpenAI
-        return OpenAI(api_key=api_key, base_url=base_url)
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(api_key=api_key, base_url=base_url)
     raise ValueError(f"unsupported api: {api!r}")
 
 

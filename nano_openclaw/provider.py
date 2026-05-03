@@ -5,8 +5,8 @@ that dispatches to the right transport implementation based on the `api`
 parameter, exactly as OpenClaw's switch(model.api) does.
 
 Supported apis:
-  "anthropic"  — Anthropic Messages API  (client: anthropic.Anthropic)
-  "openai"     — OpenAI Chat Completions (client: openai.OpenAI)
+  "anthropic"  — Anthropic Messages API  (client: anthropic.AsyncAnthropic)
+  "openai"     — OpenAI Chat Completions (client: openai.AsyncOpenAI)
 
 Re-exports all StreamEvent types so callers (loop.py, cli.py) import from
 one place and never touch the SDK-specific modules directly.
@@ -14,7 +14,7 @@ one place and never touch the SDK-specific modules directly.
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any, AsyncIterator
 
 # Re-export the shared event vocabulary — callers import from here.
 from ._stream_events import (  # noqa: F401
@@ -32,7 +32,7 @@ from . import _provider_anthropic, _provider_openai
 SUPPORTED_APIS = ("anthropic", "openai")
 
 
-def stream_response(
+async def stream_response(
     *,
     api: str = "anthropic",
     client: Any,
@@ -42,10 +42,10 @@ def stream_response(
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
     thinking_budget_tokens: int | None = None,
-) -> Iterator[StreamEvent]:
+) -> AsyncIterator[StreamEvent]:
     """Route a streaming completion request to the correct provider transport."""
     if api == "anthropic":
-        return _provider_anthropic.stream_response(
+        async for event in _provider_anthropic.stream_response(
             client=client,
             model=model,
             system=system,
@@ -53,9 +53,11 @@ def stream_response(
             tools=tools,
             max_tokens=max_tokens,
             thinking_budget_tokens=thinking_budget_tokens,
-        )
+        ):
+            yield event
+        return
     if api == "openai":
-        return _provider_openai.stream_response(
+        async for event in _provider_openai.stream_response(
             client=client,
             model=model,
             system=system,
@@ -63,5 +65,7 @@ def stream_response(
             tools=tools,
             max_tokens=max_tokens,
             thinking_budget_tokens=thinking_budget_tokens,
-        )
+        ):
+            yield event
+        return
     raise ValueError(f"unsupported api: {api!r}  (choose from: {SUPPORTED_APIS})")

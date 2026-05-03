@@ -14,6 +14,7 @@ That's it. Read this file top-to-bottom and you understand the whole thing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import contextmanager
@@ -208,13 +209,13 @@ class LoopConfig:
         return THINKING_BUDGETS.get(self.thinking_level)
 
 
-def agent_loop(
+async def agent_loop(
     user_input: str,
     history: list[Message],
     registry: ToolRegistry,
     on_event: EventCallback,
     *,
-    client: Any,  # anthropic.Anthropic | openai.OpenAI
+    client: Any,  # anthropic.AsyncAnthropic | openai.AsyncOpenAI
     cfg: LoopConfig,
     transcript_writer: "TranscriptWriter | None" = None,
     cancellation_token: "CancellationToken | None" = None,
@@ -283,7 +284,7 @@ def agent_loop(
                 # Media Understanding path (openclaw: imageModel configured → apply.ts)
                 # Image model describes the image; main model receives text, not pixels.
                 on_event(ImageDescribe(ref=ref))
-                desc = describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
+                desc = await describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
                 content.append({"type": "text", "text": f"[Image: {desc}]"})
             elif cfg.model_has_vision:
                 # Native Vision path (openclaw: main model supports vision → attempt.ts:2648-2654)
@@ -330,7 +331,7 @@ def agent_loop(
             config=cfg.active_memory_config,
         )
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
-        recall_result = manager.run(wire_messages)
+        recall_result = await manager.run(wire_messages)
         if recall_result:
             on_event(ActiveMemoryRecall(result=recall_result))
             if recall_result.context:
@@ -354,7 +355,7 @@ def agent_loop(
     for _ in range(cfg.max_iterations):
         _check_cancelled(cancellation_token)
         # Check context budget and compact if needed (mirrors OpenClaw's compaction)
-        _, summary = compact_if_needed(
+        _, summary = await compact_if_needed(
             scratch_history,
             budget=cfg.context_budget,
             client=client,
@@ -368,7 +369,7 @@ def agent_loop(
             pending_transcript_ops.append(("compaction", summary))
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
-        assistant_blocks, stop_reason = _consume_one_assistant_turn(
+        assistant_blocks, stop_reason = await _consume_one_assistant_turn(
             client=client,
             api=cfg.api,
             model=cfg.model,
@@ -404,31 +405,36 @@ def agent_loop(
             compaction_count=transcript_writer.compaction_count if transcript_writer else 0,
             message_count=len(scratch_history),
         )
-        tool_results: list[dict[str, Any]] = []
-        for block in assistant_blocks:
-            if block.get("type") != "tool_use":
-                continue
+        tool_use_blocks = [b for b in assistant_blocks if b.get("type") == "tool_use"]
 
+        # Emit SkillInvoked events before dispatch (synchronous, order matters for UX)
+        for block in tool_use_blocks:
             tool_name = block["name"]
             tool_args = block.get("input") or {}
-
-            # Skill tool invocation: emit SkillInvoked event
             if tool_name == "Skill" and "skill" in tool_args:
                 skill_name = tool_args["skill"]
                 if skill_registry and skill_name in skill_registry:
                     skill = skill_registry[skill_name]
                     on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
 
-            _check_cancelled(cancellation_token)
-            result = registry.dispatch(
-                block["id"],
-                tool_name,
-                tool_args,
-                cancellation_token=cancellation_token,
-            )
-            _check_cancelled(cancellation_token)
-            tool_results.append(result)
-            on_event(ToolResult(name=tool_name, args=tool_args, result=result))
+        _check_cancelled(cancellation_token)
+
+        # Dispatch all tool calls in parallel — core benefit of async model.
+        tool_results: list[dict[str, Any]] = list(
+            await asyncio.gather(*[
+                registry.dispatch(
+                    b["id"],
+                    b["name"],
+                    b.get("input") or {},
+                    cancellation_token=cancellation_token,
+                )
+                for b in tool_use_blocks
+            ])
+        )
+
+        _check_cancelled(cancellation_token)
+        for block, result in zip(tool_use_blocks, tool_results):
+            on_event(ToolResult(name=block["name"], args=block.get("input") or {}, result=result))
 
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
@@ -474,7 +480,7 @@ def _maybe_dump_payload(
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _consume_one_assistant_turn(
+async def _consume_one_assistant_turn(
     *,
     client: Any,
     api: str,
@@ -507,7 +513,7 @@ def _consume_one_assistant_turn(
         max_tokens=max_tokens,
         thinking_budget_tokens=thinking_budget_tokens,
     )
-    for ev in stream_response(
+    async for ev in stream_response(
         api=api,
         client=client,
         model=model,

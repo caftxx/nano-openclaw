@@ -87,7 +87,7 @@ def _format_messages_for_summary(messages: list[Message]) -> str:
     return "\n".join(lines)
 
 
-def summarize_history(
+async def summarize_history(
     messages: list[Message],
     *,
     client: Any,
@@ -122,18 +122,17 @@ Reply with the summary only, no meta-commentary."""
 
     # Use non-streaming API for summarization
     if api == "anthropic":
-        response = client.messages.create(
+        response = await client.messages.create(
             model=model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": summary_prompt}],
         )
-        # Extract text from response
         for block in response.content:
             if hasattr(block, "type") and block.type == "text":
                 return block.text
         return ""
     elif api == "openai":
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": summary_prompt}],
@@ -143,7 +142,7 @@ Reply with the summary only, no meta-commentary."""
         raise ValueError(f"Unsupported api for summarization: {api!r}")
 
 
-def compact_if_needed(
+async def compact_if_needed(
     history: list[Message],
     *,
     budget: int,
@@ -158,7 +157,7 @@ def compact_if_needed(
     Args:
         history: The conversation history (will be modified in place if compaction occurs)
         budget: Maximum token budget for the context
-        client: LLM client (anthropic.Anthropic or openai.OpenAI)
+        client: LLM client (anthropic.AsyncAnthropic or openai.AsyncOpenAI)
         model: Model identifier for summarization
         api: API type ("anthropic" or "openai")
         threshold_ratio: Trigger compaction when tokens exceed this ratio of budget
@@ -171,7 +170,6 @@ def compact_if_needed(
     threshold = int(budget * threshold_ratio)
 
     if current_tokens < threshold:
-        # Under budget, no compaction needed
         return history, None
 
     # Import here to avoid circular import at runtime
@@ -180,7 +178,7 @@ def compact_if_needed(
     # When severely over budget, force aggressive compaction:
     # summarize ALL history and keep only one summary message
     if current_tokens >= budget * 2 or len(history) <= 2:
-        summary = summarize_history(
+        summary = await summarize_history(
             history,
             client=client,
             model=model,
@@ -201,8 +199,7 @@ def compact_if_needed(
     keep_count = recent_turns * 2
 
     if len(history) <= keep_count:
-        # Not enough history to compact, summarize everything
-        summary = summarize_history(
+        summary = await summarize_history(
             history,
             client=client,
             model=model,
@@ -223,15 +220,13 @@ def compact_if_needed(
     older_messages = history[:-keep_count]
     recent_messages = history[-keep_count:]
 
-    # Generate summary of older messages
-    summary = summarize_history(
+    summary = await summarize_history(
         older_messages,
         client=client,
         model=model,
         api=api,
     )
 
-    # Create summary message to prepend
     summary_msg = Message(
         role="user",
         content=[{
@@ -240,14 +235,11 @@ def compact_if_needed(
         }],
     )
 
-    # Rebuild history: summary + recent messages
-    # Note: we modify the list in place for caller consistency
     history.clear()
     history.append(summary_msg)
     history.extend(recent_messages)
 
     # Verify: if still over budget, force aggressive compaction
-    # (ignore recent_turns, keep only summary + last single turn)
     remaining_tokens = estimate_tokens(history)
     if remaining_tokens >= threshold:
         aggressive_keep = recent_messages[-2:] if len(recent_messages) >= 2 else recent_messages
@@ -264,10 +256,7 @@ def should_compact(
     budget: int,
     threshold_ratio: float = DEFAULT_THRESHOLD_RATIO,
 ) -> bool:
-    """Check if compaction should be triggered without actually compacting.
-
-    Useful for pre-emptive checks or logging.
-    """
+    """Check if compaction should be triggered without actually compacting."""
     current_tokens = estimate_tokens(history)
     threshold = int(budget * threshold_ratio)
     return current_tokens >= threshold

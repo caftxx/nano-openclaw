@@ -2,7 +2,7 @@
 
 Mirrors openclaw's pi-bundle-mcp-materialize.ts:
 - Converts McpToolInfo to Tool objects
-- Wraps runtime.call_tool() as sync run function
+- Wraps runtime.call_tool() as async run function
 - Names: {server}__{tool} format (safe sanitization)
 - Description prefix: [MCP:server_name]
 """
@@ -19,31 +19,31 @@ def materialize_mcp_tools(
     existing_names: Set[str],
 ) -> List[Tool]:
     """Convert MCP tools to nano-openclaw Tool objects.
-    
+
     Args:
         runtime: McpRuntime instance with connected servers
         existing_names: Set of already-registered tool names (avoid conflicts)
-    
+
     Returns:
         List of Tool objects ready for registry.register()
     """
     tools: List[Tool] = []
-    
+
     for info in runtime.get_mcp_tools():
         safe_server = re.sub(r'[^a-zA-Z0-9_]', '_', info.server_name)
         safe_tool = re.sub(r'[^a-zA-Z0-9_]', '_', info.tool_name)
         full_name = f"{safe_server}__{safe_tool}"
-        
+
         if full_name in existing_names:
             continue
-            
+
         description = f"[MCP:{info.server_name}] {info.description}"
-        
+
         def make_run(server_name: str, tool_name: str):
-            def run(args: Dict[str, Any]) -> str:
-                return runtime.call_tool(server_name, tool_name, args)
+            async def run(args: Dict[str, Any]) -> str:
+                return await runtime.call_tool(server_name, tool_name, args)
             return run
-            
+
         tool = Tool(
             name=full_name,
             description=description,
@@ -51,5 +51,5 @@ def materialize_mcp_tools(
             run=make_run(info.server_name, info.tool_name),
         )
         tools.append(tool)
-        
+
     return tools

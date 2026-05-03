@@ -10,6 +10,7 @@ Mirrors openclaw extensions/memory-core dreaming behavior:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from datetime import datetime, timedelta
@@ -414,19 +415,19 @@ class TestRunDreaming:
         ws = workspace_with_daily
         for i in range(3):
             track_recall("memory/2026-05-01.md", 3, 3, "TypeScript", f"q{i}", ws)
-        result = run_dreaming(ws, default_config, "dummy-model", api_client=None)
+        result = asyncio.run(run_dreaming(ws, default_config, "dummy-model", api_client=None))
         assert result.elapsed_ms >= 0
         assert isinstance(result.candidates, list)
         assert isinstance(result.promoted, list)
 
     def test_updates_last_run_at(self, workspace_with_daily, default_config):
         ws = workspace_with_daily
-        result = run_dreaming(ws, default_config, "dummy-model", api_client=None)
+        result = asyncio.run(run_dreaming(ws, default_config, "dummy-model", api_client=None))
         state = load_dreaming_state(ws)
         assert state.last_run_at is not None
 
     def test_no_promotions_when_no_state(self, workspace, default_config):
-        result = run_dreaming(workspace, default_config, "dummy-model", api_client=None)
+        result = asyncio.run(run_dreaming(workspace, default_config, "dummy-model", api_client=None))
         assert result.promoted == []
 
     def test_config_types_integration(self):

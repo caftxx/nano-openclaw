@@ -10,6 +10,7 @@ Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (n
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import threading
@@ -19,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from anthropic import Anthropic
 from rich import markup
 from rich.console import Console
 from rich.panel import Panel
@@ -74,10 +74,10 @@ _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after sess
 _COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /active-memory \\[status|on|off|mode|style]  /dreaming \\[status|on|off|run]  — /sessions launches interactive picker"
 
 
-def repl(
+async def repl(
     registry: ToolRegistry,
     *,
-    client: Anthropic,
+    client: Any,
     cfg: LoopConfig,
     session_dir: Path | None = None,
     transcript_writer: TranscriptWriter | None = None,
@@ -85,7 +85,7 @@ def repl(
     store_path: Path | None = None,
     initial_history: list[Message] | None = None,
 ) -> None:
-    """Interactive read-eval-print loop. Blocks until /quit or Ctrl-D."""
+    """Interactive read-eval-print loop. Runs until /quit or Ctrl-D."""
     console = Console()
     history: list[Message] = list(initial_history) if initial_history else []
     _load_input_history(history)
@@ -94,7 +94,7 @@ def repl(
 
     while True:
         try:
-            user_input = _repl_input(console).strip()
+            user_input = (await _repl_input(console)).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return
@@ -137,7 +137,7 @@ def repl(
             _show_context(console, history, cfg)
             continue
         if user_input == "/compact":
-            _manual_compact(console, history, cfg, client)
+            await _manual_compact(console, history, cfg, client)
             continue
         if user_input == "/skills":
             _list_skills(console, cfg)
@@ -208,13 +208,13 @@ def repl(
             _handle_active_memory_command(console, user_input, cfg)
             continue
         if user_input.startswith("/dreaming"):
-            _handle_dreaming_command(console, user_input, cfg, client)
+            await _handle_dreaming_command(console, user_input, cfg, client)
             continue
 
         on_event = _make_event_handler(console)
         try:
             with _escape_cancellation_token() as cancellation_token:
-                agent_loop(
+                await agent_loop(
                     user_input=user_input,
                     history=history,
                     registry=registry,
@@ -254,7 +254,7 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry, session_
     )
 
 
-def _manual_compact(
+async def _manual_compact(
     console: Console,
     history: list[Message],
     cfg: LoopConfig,
@@ -268,7 +268,7 @@ def _manual_compact(
     console.print("[dim]compacting context...[/]")
 
     try:
-        _, summary = compact_if_needed(
+        _, summary = await compact_if_needed(
             history,
             budget=1,  # Force compaction by setting very low budget
             client=client,
@@ -280,7 +280,6 @@ def _manual_compact(
 
         if summary:
             _render_compaction(console, summary=summary)
-            # Show updated context stats
             current_tokens = estimate_tokens(history)
             console.print(f"[dim]context reduced to {current_tokens:,} tokens ({len(history)} messages)[/]")
         else:
@@ -572,9 +571,10 @@ def _load_input_history(messages: list[Message]) -> None:
     _pt_history = _InMemoryHistory(history_strings=texts)
 
 
-def _repl_input(_console: Console) -> str:
+async def _repl_input(_console: Console) -> str:
     """Input prompt with full readline editing and history via prompt_toolkit."""
-    return _pt_prompt(">>> ", history=_pt_history)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _pt_prompt(">>> ", history=_pt_history))
 
 
 @contextmanager
@@ -1116,7 +1116,7 @@ def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopCo
     )
 
 
-def _handle_dreaming_command(
+async def _handle_dreaming_command(
     console: Console, user_input: str, cfg: "LoopConfig", client: Any
 ) -> None:
     """Handle /dreaming command for toggling and running Dreaming.
@@ -1196,7 +1196,7 @@ def _handle_dreaming_command(
             return
         console.print("[dim]Running dreaming sweep...[/]")
         try:
-            result = run_dreaming(workspace_dir, dc, cfg.model, api_client=client)
+            result = await run_dreaming(workspace_dir, dc, cfg.model, api_client=client)
             console.print(
                 f"[dim]Dreaming complete in {result.elapsed_ms}ms — "
                 f"candidates: {len(result.candidates)}, promoted: {len(result.promoted)}[/]"

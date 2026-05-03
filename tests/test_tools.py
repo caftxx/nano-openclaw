@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,18 @@ from rich.console import Console
 
 from nano_openclaw.approvals import ApprovalDecision, ApprovalPolicy
 from nano_openclaw.config.types import ToolsConfig
-from nano_openclaw.tools import build_default_registry
+from nano_openclaw.tools import ToolRegistry, build_default_registry
+
+# Patch ToolRegistry.dispatch to be synchronous for tests — avoids changing
+# every call site while still exercising the full dispatch logic.
+_orig_dispatch = ToolRegistry.dispatch
+
+
+def _sync_dispatch(self, *args, **kwargs):
+    return asyncio.run(_orig_dispatch(self, *args, **kwargs))
+
+
+ToolRegistry.dispatch = _sync_dispatch  # type: ignore[method-assign]
 
 
 @pytest.fixture

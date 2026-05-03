@@ -9,9 +9,10 @@ Mirrors openclaw extensions/active-memory/index.ts behavior:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -303,7 +304,7 @@ class TestActiveMemoryManager:
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=False),
         )
-        result = manager.run([{"role": "user", "content": "test"}])
+        result = asyncio.run(manager.run([{"role": "user", "content": "test"}]))
         assert result is None
 
     def test_empty_query_returns_none(self):
@@ -315,7 +316,7 @@ class TestActiveMemoryManager:
             workspace_dir="/tmp",
             config=ActiveMemoryConfig(enabled=True),
         )
-        result = manager.run([])
+        result = asyncio.run(manager.run([]))
         assert result is None
 
     def test_cache_hit_returns_cached_result(self):
@@ -341,7 +342,7 @@ class TestActiveMemoryManager:
 
         # Second call with same query should hit cache
         messages = [{"role": "user", "content": "test"}]
-        result = manager.run(messages)
+        result = asyncio.run(manager.run(messages))
 
         assert result is not None
         assert result.cached is True
@@ -411,30 +412,30 @@ class TestRunRecallSubagent:
         # This test uses mock, so the actual run_recall_subagent is patched
         # We just verify the manager can call it
         from nano_openclaw.memory.active import run_recall_subagent
-        result = run_recall_subagent(
+        result = asyncio.run(run_recall_subagent(
             mock_client,
             "claude-3-5-sonnet-20241022",
             "preferences",
             PromptStyle.BALANCED,
             "/tmp",
             ActiveMemoryConfig(),
-        )
+        ))
         assert result.context is not None
 
-    @patch("anthropic.Anthropic")
+    @patch("anthropic.AsyncAnthropic")
     def test_returns_none_on_api_error(self, mock_anthropic):
         """API errors should result in None context."""
         mock_client = mock_anthropic.return_value
-        mock_client.messages.create.side_effect = Exception("API error")
+        mock_client.messages.create = AsyncMock(side_effect=Exception("API error"))
 
         from nano_openclaw.memory.active import run_recall_subagent
-        result = run_recall_subagent(
+        result = asyncio.run(run_recall_subagent(
             mock_client,
             "claude-3-5-sonnet-20241022",
             "test query",
             PromptStyle.BALANCED,
             "/tmp",
             ActiveMemoryConfig(),
-        )
+        ))
         assert result.context is None
         assert result.elapsed_ms >= 0  # Should still track time (may be 0 if very fast)

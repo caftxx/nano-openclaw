@@ -10,6 +10,7 @@ Mirrors openclaw extensions/memory-core/src/dreaming.ts and dreaming-phases.ts:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -283,37 +284,36 @@ def start_dreaming_scheduler(
     model: str,
     api_client: Any,
     stop_event: threading.Event,
-) -> threading.Thread:
-    """Start a background daemon thread that runs dreaming sweeps on schedule.
+) -> asyncio.Task:
+    """Schedule background dreaming sweeps as an asyncio task.
 
-    The thread wakes at the configured frequency (cron-style), independent of
-    user interaction. Uses stop_event.wait(timeout) so it exits cleanly when
-    the main process sets stop_event before shutdown.
+    Returns the Task so the caller can cancel it on shutdown.
+    stop_event (threading.Event) is also checked for compatibility with
+    the existing shutdown path in __main__.py.
     """
 
-    def _run_once() -> None:
-        try:
-            run_dreaming(workspace_dir, config, model, api_client=api_client, blocking=False)
-            # Returns None silently if /dreaming run is already in progress.
-        except Exception:
-            pass
-
-    def _loop() -> None:
-        # If already due at startup (e.g. last ran yesterday), fire immediately.
+    async def _loop() -> None:
         state = load_dreaming_state(workspace_dir)
         if is_dreaming_due(config.frequency, state.last_run_at):
-            _run_once()
+            try:
+                await run_dreaming(workspace_dir, config, model, api_client=api_client, blocking=False)
+            except Exception:
+                pass
 
         while not stop_event.is_set():
             wait_secs = next_scheduled_seconds(config.frequency)
-            # wait() returns True if event was set (shutdown), False on timeout (time to run)
-            if stop_event.wait(timeout=wait_secs):
-                break
-            _run_once()
+            try:
+                await asyncio.sleep(wait_secs)
+            except asyncio.CancelledError:
+                return
+            if stop_event.is_set():
+                return
+            try:
+                await run_dreaming(workspace_dir, config, model, api_client=api_client, blocking=False)
+            except Exception:
+                pass
 
-    t = threading.Thread(target=_loop, daemon=True, name="dreaming-scheduler")
-    t.start()
-    return t
+    return asyncio.create_task(_loop(), name="dreaming-scheduler")
 
 
 # ============================================================================
@@ -442,7 +442,7 @@ def run_deep_phase(
 # Dream Diary
 # ============================================================================
 
-def generate_dream_diary(
+async def generate_dream_diary(
     workspace_dir: str,
     promoted: list[tuple[ShortTermRecallEntry, float, str]],
     candidates: list[ShortTermRecallEntry],
@@ -472,9 +472,9 @@ def generate_dream_diary(
         diary_model = config.model or model
 
         try:
-            from anthropic import Anthropic
-            if isinstance(api_client, Anthropic):
-                response = api_client.messages.create(
+            from anthropic import AsyncAnthropic
+            if isinstance(api_client, AsyncAnthropic):
+                response = await api_client.messages.create(
                     model=diary_model,
                     max_tokens=200,
                     messages=[{"role": "user", "content": prompt}],
@@ -485,9 +485,9 @@ def generate_dream_diary(
 
         if narrative is None:
             try:
-                from openai import OpenAI
-                if isinstance(api_client, OpenAI):
-                    response = api_client.chat.completions.create(
+                from openai import AsyncOpenAI
+                if isinstance(api_client, AsyncOpenAI):
+                    response = await api_client.chat.completions.create(
                         model=diary_model,
                         max_tokens=200,
                         messages=[{"role": "user", "content": prompt}],
@@ -509,12 +509,18 @@ def generate_dream_diary(
 # Main entry point
 # ============================================================================
 
-# Serializes concurrent sweeps. Regular Lock is sufficient: callers use the
-# blocking parameter on run_dreaming() rather than pre-acquiring here.
-_sweep_lock = threading.Lock()
+# Serializes concurrent sweeps within the asyncio event loop.
+_sweep_lock: asyncio.Lock | None = None
 
 
-def run_dreaming(
+def _get_sweep_lock() -> asyncio.Lock:
+    global _sweep_lock
+    if _sweep_lock is None:
+        _sweep_lock = asyncio.Lock()
+    return _sweep_lock
+
+
+async def run_dreaming(
     workspace_dir: str,
     config: DreamingConfig,
     model: str,
@@ -531,9 +537,11 @@ def run_dreaming(
     """
     import time
 
-    acquired = _sweep_lock.acquire(blocking=blocking)
-    if not acquired:
-        return None  # another sweep is in progress; caller requested non-blocking
+    lock = _get_sweep_lock()
+    if not blocking and lock.locked():
+        return None  # another sweep is running; skip (no await between check and acquire)
+    await lock.acquire()
+
     try:
         start = time.monotonic()
 
@@ -542,7 +550,7 @@ def run_dreaming(
 
         if config.diary and api_client is not None:
             try:
-                generate_dream_diary(workspace_dir, promoted, candidates, config, model, api_client)
+                await generate_dream_diary(workspace_dir, promoted, candidates, config, model, api_client)
             except Exception:
                 pass
 
@@ -551,7 +559,7 @@ def run_dreaming(
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return DreamingResult(candidates=candidates, promoted=promoted, elapsed_ms=elapsed_ms)
     finally:
-        _sweep_lock.release()
+        lock.release()
 
 
 # ============================================================================

@@ -19,9 +19,9 @@ Event mapping:
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any, AsyncIterator
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from ._stream_events import (
     MessageEnd,
@@ -35,16 +35,16 @@ from ._stream_events import (
 )
 
 
-def stream_response(
+async def stream_response(
     *,
-    client: Anthropic,
+    client: AsyncAnthropic,
     model: str,
     system: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
     thinking_budget_tokens: int | None = None,
-) -> Iterator[StreamEvent]:
+) -> AsyncIterator[StreamEvent]:
     request: dict[str, Any] = {
         "model": model,
         "system": system,
@@ -71,8 +71,8 @@ def stream_response(
     # Per thinking-block accumulator: index -> {thinking: str, signature: str}
     thinking_bufs: dict[int, dict[str, str]] = {}
 
-    with client.messages.stream(**request) as stream:
-        for event in stream:
+    async with client.messages.stream(**request) as stream:
+        async for event in stream:
             etype = event.type
 
             if etype == "content_block_start":

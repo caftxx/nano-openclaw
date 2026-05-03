@@ -290,7 +290,7 @@ class RecallBackend(ABC):
     """
 
     @abstractmethod
-    def run(
+    async def run(
         self,
         prompt: str,
         system: str,
@@ -308,7 +308,7 @@ class AnthropicRecallBackend(RecallBackend):
         self._client = client
         self._model = model
 
-    def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
+    async def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
         tools = _anthropic_tools_schema()
         messages: list[dict] = [{"role": "user", "content": prompt}]
 
@@ -321,7 +321,7 @@ class AnthropicRecallBackend(RecallBackend):
                 thinking_params = {"thinking": {"type": "enabled", "budget_tokens": budget}}
 
         for _ in range(_MAX_TOOL_ITERS):
-            response = self._client.messages.create(
+            response = await self._client.messages.create(
                 model=self._model,
                 max_tokens=300,
                 system=system,
@@ -368,7 +368,7 @@ class OpenAIRecallBackend(RecallBackend):
         self._client = client
         self._model = model
 
-    def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
+    async def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
         tools = _openai_tools_schema()
         messages: list[dict] = [
             {"role": "system", "content": system},
@@ -376,7 +376,7 @@ class OpenAIRecallBackend(RecallBackend):
         ]
 
         for _ in range(_MAX_TOOL_ITERS):
-            response = self._client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._model,
                 max_tokens=300,
                 messages=messages,
@@ -421,8 +421,8 @@ class OpenAIRecallBackend(RecallBackend):
 def _create_backend(client: Any, model: str) -> RecallBackend:
     """Return the appropriate backend based on the client type."""
     try:
-        from anthropic import Anthropic
-        if isinstance(client, Anthropic):
+        from anthropic import AsyncAnthropic
+        if isinstance(client, AsyncAnthropic):
             return AnthropicRecallBackend(client, model)
     except ImportError:
         pass
@@ -431,7 +431,7 @@ def _create_backend(client: Any, model: str) -> RecallBackend:
 
 # ──────────────────────────── Sub-agent entry point ────────────────────────────
 
-def run_recall_subagent(
+async def run_recall_subagent(
     client: Any,
     model: str,
     query: str,
@@ -458,7 +458,7 @@ def run_recall_subagent(
 
     try:
         backend = _create_backend(client, effective_model)
-        result_text = backend.run(prompt, system, workspace_dir, config)
+        result_text = await backend.run(prompt, system, workspace_dir, config)
     except Exception:  # noqa: BLE001 — errors become NONE result
         result_text = None
 
@@ -511,7 +511,7 @@ class ActiveMemoryManager:
     def set_prompt_style(self, style: PromptStyle) -> None:
         self.config.prompt_style = style
 
-    def run(self, messages: list[dict[str, Any]]) -> ActiveMemoryResult | None:
+    async def run(self, messages: list[dict[str, Any]]) -> ActiveMemoryResult | None:
         """Run Active Memory recall if enabled.
 
         Returns None if disabled or no relevant memories found.
@@ -534,7 +534,7 @@ class ActiveMemoryManager:
             # expired — fall through to fresh recall
             del self._cache[cache_key]
 
-        result = run_recall_subagent(
+        result = await run_recall_subagent(
             self.client,
             self.model,
             query,

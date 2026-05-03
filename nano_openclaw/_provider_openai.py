@@ -32,7 +32,7 @@ Extended thinking (OpenAI-compatible providers):
 from __future__ import annotations
 
 import json
-from typing import Any, Iterator
+from typing import Any, AsyncIterator
 
 from ._stream_events import (
     MessageEnd,
@@ -46,16 +46,16 @@ from ._stream_events import (
 )
 
 
-def stream_response(
+async def stream_response(
     *,
-    client: Any,  # openai.OpenAI — typed as Any to avoid hard import at module level
+    client: Any,  # openai.AsyncOpenAI — typed as Any to avoid hard import at module level
     model: str,
     system: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
     thinking_budget_tokens: int | None = None,
-) -> Iterator[StreamEvent]:
+) -> AsyncIterator[StreamEvent]:
     oai_messages = [{"role": "system", "content": system}] + _to_openai_messages(messages)
 
     kwargs: dict[str, Any] = {
@@ -76,8 +76,8 @@ def stream_response(
     cur_index = -1
     thinking_buf = ""
 
-    response = client.chat.completions.create(**kwargs)
-    for chunk in response:
+    response = await client.chat.completions.create(**kwargs)
+    async for chunk in response:
         if not chunk.choices:
             continue
         choice = chunk.choices[0]

@@ -131,7 +131,7 @@ def _extract_html(html: str, extract_mode: ExtractMode) -> tuple[str, str | None
     return text, title, "readability"
 
 
-def web_fetch(
+async def web_fetch(
     url: str,
     extract_mode: ExtractMode = "markdown",
     max_chars: int = _DEFAULT_MAX_CHARS,
@@ -139,14 +139,14 @@ def web_fetch(
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Fetch URL and extract readable content.
-    
+
     Args:
         url: HTTP/HTTPS URL to fetch
         extract_mode: "markdown" or "text"
         max_chars: Maximum characters to return
         max_redirects: Maximum redirect hops
         timeout_seconds: Request timeout
-    
+
     Returns:
         Dict with url, status, contentType, title, text, extractor, truncated, etc.
     """
@@ -155,7 +155,7 @@ def web_fetch(
     cached = _read_cache(key)
     if cached:
         return cached
-    
+
     # SSRF check
     try:
         assert_public_url(url)
@@ -173,12 +173,12 @@ def web_fetch(
             "error": str(e),
             "text": f"[Invalid URL: {e}]",
         }
-    
+
     start = time.time()
-    
-    # Fetch with httpx
+
+    # Fetch with async httpx
     try:
-        with httpx.Client(
+        async with httpx.AsyncClient(
             follow_redirects=True,
             max_redirects=max_redirects,
             timeout=timeout_seconds,
@@ -188,7 +188,7 @@ def web_fetch(
                 "Accept-Language": "en-US,en;q=0.9",
             },
         ) as client:
-            resp = client.get(url)
+            resp = await client.get(url)
     except httpx.TimeoutException:
         return {
             "url": url,

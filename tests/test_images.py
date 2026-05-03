@@ -271,44 +271,49 @@ def test_to_anthropic_image_block():
 
 def test_describe_image_anthropic():
     """Test image description with Anthropic API."""
+    import asyncio
+    from unittest.mock import AsyncMock
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_text_block = MagicMock()
     mock_text_block.type = "text"
     mock_text_block.text = "A beautiful sunset"
     mock_response.content = [mock_text_block]
-    mock_client.messages.create.return_value = mock_response
-    
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
+
     b64 = base64.b64encode(b"fake_image_data").decode()
-    result = describe_image(b64, "image/png", client=mock_client, model="claude-3-sonnet", api="anthropic")
-    
+    result = asyncio.run(describe_image(b64, "image/png", client=mock_client, model="claude-3-sonnet", api="anthropic"))
+
     assert result == "A beautiful sunset"
     mock_client.messages.create.assert_called_once()
 
 
 def test_describe_image_openai():
     """Test image description with OpenAI API."""
+    import asyncio
+    from unittest.mock import AsyncMock
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_message = MagicMock()
     mock_message.content = "A mountain landscape"
     mock_response.choices = [MagicMock(message=mock_message)]
-    mock_client.chat.completions.create.return_value = mock_response
-    
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
     b64 = base64.b64encode(b"fake_image_data").decode()
-    result = describe_image(b64, "image/jpeg", client=mock_client, model="gpt-4-vision", api="openai")
-    
+    result = asyncio.run(describe_image(b64, "image/jpeg", client=mock_client, model="gpt-4-vision", api="openai"))
+
     assert result == "A mountain landscape"
     mock_client.chat.completions.create.assert_called_once()
 
 
 def test_describe_image_unsupported_api():
     """Test that unsupported API raises ValueError."""
+    import asyncio
     mock_client = MagicMock()
     b64 = base64.b64encode(b"fake_image_data").decode()
-    
+
     with pytest.raises(ValueError, match="unsupported api"):
-        describe_image(b64, "image/png", client=mock_client, model="model", api="unsupported")
+        asyncio.run(describe_image(b64, "image/png", client=mock_client, model="model", api="unsupported"))
 
 
 # =============================================================================

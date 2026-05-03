@@ -6,7 +6,8 @@ Mock LLM client is used for summarization tests.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -153,14 +154,14 @@ def test_compact_not_needed_under_budget():
     original_len = len(history)
     
     mock_client = MagicMock()
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=1000,
         client=mock_client,
         model="test-model",
         api="anthropic",
-    )
-    
+    ))
+
     assert summary is None
     assert len(result) == original_len
     # No LLM call should have been made
@@ -177,15 +178,15 @@ def test_compact_not_enough_history_to_preserve():
     
     mock_client = MagicMock()
     # Even with very low budget, can't compact with 3 recent_turns default
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=10,  # Very low budget, will exceed threshold
         client=mock_client,
         model="test-model",
         api="anthropic",
         recent_turns=3,  # Need 6 messages to preserve
-    )
-    
+    ))
+
     # Not enough messages to compact
     assert summary is None
     mock_client.messages.create.assert_not_called()
@@ -208,16 +209,16 @@ def test_compact_preserves_recent_turns_count():
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text="Summary")]
-    mock_client.messages.create.return_value = mock_response
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=50,  # threshold = 40, older 6 messages have ~45+ tokens
         client=mock_client,
         model="test-model",
         api="anthropic",
         recent_turns=2,  # Keep 4 messages (2 turns)
-    )
+    ))
 
     assert summary is not None
     assert summary == "Summary"
@@ -248,16 +249,16 @@ def test_compact_triggers_secondary_compaction():
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text="Old conversation summary")]
-    mock_client.messages.create.return_value = mock_response
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=50,  # threshold = 40
         client=mock_client,
         model="test-model",
         api="anthropic",
         recent_turns=2,  # First compaction keeps 4 messages
-    )
+    ))
 
     assert summary is not None
     # Secondary compaction: summary + last 2 messages (1 turn)
@@ -278,17 +279,17 @@ def test_compact_modifies_history_in_place():
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text="Summary")]
-    mock_client.messages.create.return_value = mock_response
-    
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
+
     original_id = id(history)
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=50,
         client=mock_client,
         model="test-model",
         api="anthropic",
         recent_turns=2,
-    )
+    ))
     
     # Should return the same list object (modified in place)
     assert id(result) == original_id
@@ -302,7 +303,7 @@ def test_compact_modifies_history_in_place():
 def test_summarize_history_empty_returns_empty():
     """Summarizing empty history should return empty string."""
     mock_client = MagicMock()
-    result = summarize_history([], client=mock_client, model="test", api="anthropic")
+    result = asyncio.run(summarize_history([], client=mock_client, model="test", api="anthropic"))
     assert result == ""
     mock_client.messages.create.assert_not_called()
 
@@ -310,14 +311,14 @@ def test_summarize_history_empty_returns_empty():
 def test_summarize_history_anthropic_api():
     """Summarize should call Anthropic API correctly."""
     history = [make_text_message("user", "Hello world")]
-    
+
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text="Brief summary")]
-    mock_client.messages.create.return_value = mock_response
-    
-    result = summarize_history(history, client=mock_client, model="claude-3", api="anthropic")
-    
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
+
+    result = asyncio.run(summarize_history(history, client=mock_client, model="claude-3", api="anthropic"))
+
     assert result == "Brief summary"
     mock_client.messages.create.assert_called_once()
     call_args = mock_client.messages.create.call_args
@@ -328,16 +329,16 @@ def test_summarize_history_anthropic_api():
 def test_summarize_history_openai_api():
     """Summarize should call OpenAI API correctly."""
     history = [make_text_message("user", "Hello world")]
-    
+
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_choice = MagicMock()
     mock_choice.message.content = "OpenAI summary"
     mock_response.choices = [mock_choice]
-    mock_client.chat.completions.create.return_value = mock_response
-    
-    result = summarize_history(history, client=mock_client, model="gpt-4", api="openai")
-    
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+    result = asyncio.run(summarize_history(history, client=mock_client, model="gpt-4", api="openai"))
+
     assert result == "OpenAI summary"
     mock_client.chat.completions.create.assert_called_once()
 
@@ -346,9 +347,9 @@ def test_summarize_history_unsupported_api_raises():
     """Unsupported API should raise ValueError."""
     history = [make_text_message("user", "Hello")]
     mock_client = MagicMock()
-    
+
     with pytest.raises(ValueError, match="Unsupported api"):
-        summarize_history(history, client=mock_client, model="test", api="unknown")
+        asyncio.run(summarize_history(history, client=mock_client, model="test", api="unknown"))
 
 
 # =============================================================================
@@ -374,17 +375,17 @@ def test_compaction_preserves_tool_use_result_pairs():
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text="Summary")]
-    mock_client.messages.create.return_value = mock_response
-    
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
+
     # Compact with 2 recent turns (4 messages) - should include tool pair
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=50,
         client=mock_client,
         model="test",
         api="anthropic",
         recent_turns=2,  # Will preserve last 4 messages
-    )
+    ))
     
     # Tool pair should be in preserved section
     # Last 4 messages: assistant(tool_use) + user(tool_result) + 2 earlier
@@ -417,20 +418,20 @@ def test_full_compaction_workflow():
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text="The user discussed topics A and B. Decided to pursue option C.")]
-    mock_client.messages.create.return_value = mock_response
-    
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
+
     # Verify initial state exceeds threshold
     assert should_compact(history, budget=100)
-    
+
     # Run compaction
-    result, summary = compact_if_needed(
+    result, summary = asyncio.run(compact_if_needed(
         history,
         budget=100,
         client=mock_client,
         model="test-model",
         api="anthropic",
         recent_turns=2,
-    )
+    ))
     
     # Verify compaction happened
     assert summary is not None

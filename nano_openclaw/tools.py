@@ -11,6 +11,7 @@ OpenClaw's ``isError: true`` convention.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,7 +76,7 @@ class ToolRegistry:
             for t in self._tools.values()
         ]
 
-    def dispatch(
+    async def dispatch(
         self,
         tool_use_id: str,
         name: str,
@@ -86,15 +87,14 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             return _error_result(tool_use_id, f"unknown tool: {name!r}")
-        
-        # Check approval if manager is configured
+
+        # Check approval if manager is configured (sync, fast)
         if self.approval_manager:
             eval_result = self.approval_manager.check_request(name, args)
-            
+
             if eval_result.requires_approval:
-                # Need approval - create request and prompt user
                 request = self.approval_manager.create_request(name, args)
-                
+
                 if self.console:
                     from nano_openclaw.approvals.ui import ApprovalUI
                     ui = ApprovalUI(self.console)
@@ -103,33 +103,36 @@ class ToolRegistry:
                         request,
                         cancellation_token=cancellation_token,
                     )
-                    
+
                     self.approval_manager.record_decision(request.request_id, decision)
-                    
+
                     if decision == ApprovalDecision.DENY:
                         ui.render_denied(request)
                         return _error_result(
                             tool_use_id,
                             f"approval denied for {name}: {request.reason}"
                         )
-                    
+
                     ui.render_allowed(request, decision)
-        
-        # Execute tool
+
+        # Execute tool — async-native tools are awaited directly; sync tools run
+        # in a thread pool to avoid blocking the event loop.
         try:
             if name == "Skill":
-                output = tool.run(args, eligible_skills=self._eligible_skills)
+                raw = tool.run(args, eligible_skills=self._eligible_skills)
             elif name == "session_status":
-                output = tool.run(args, **self._session_status_context)
+                raw = tool.run(args, **self._session_status_context)
             elif name in ("read_file", "write_file", "list_dir", "bash"):
-                output = tool.run(args, workspace_dir=self._workspace_dir)
+                raw = tool.run(args, workspace_dir=self._workspace_dir)
             elif name in ("memory_get", "memory_search"):
-                output = tool.run(args, workspace_dir=self._workspace_dir)
+                raw = tool.run(args, workspace_dir=self._workspace_dir)
             else:
-                output = tool.run(args)
+                raw = tool.run(args)
+
+            output = await raw if asyncio.iscoroutine(raw) else raw
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
             return _error_result(tool_use_id, f"{type(exc).__name__}: {exc}")
-        
+
         content: list[dict[str, Any]] = (
             output if isinstance(output, list) else [{"type": "text", "text": output or "(no output)"}]
         )
@@ -224,23 +227,29 @@ def _list_dir(args: dict[str, Any], workspace_dir: str | None = None) -> str:
     return "\n".join(entries) if entries else "(empty)"
 
 
-def _bash(args: dict[str, Any], workspace_dir: str | None = None) -> str:
+async def _bash(args: dict[str, Any], workspace_dir: str | None = None) -> str:
     command = args["command"]
     timeout = int(args.get("timeout") or 30)
     workdir = args.get("workdir")
     cwd = workdir if workdir else (workspace_dir if workspace_dir else None)
-    result = subprocess.run(
+    proc = await asyncio.create_subprocess_shell(
         command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
     )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
+    stdout = stdout_b.decode(errors="replace")
+    stderr = stderr_b.decode(errors="replace")
     return (
-        f"exit={result.returncode}\n"
-        f"--- stdout ---\n{result.stdout}"
-        f"--- stderr ---\n{result.stderr}"
+        f"exit={proc.returncode}\n"
+        f"--- stdout ---\n{stdout}"
+        f"--- stderr ---\n{stderr}"
     )
 
 
@@ -466,6 +475,23 @@ def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool
         default_max_chars = fetch_config.maxChars if fetch_config else 20_000
         default_max_redirects = fetch_config.maxRedirects if fetch_config else 3
         default_timeout_seconds = fetch_config.timeoutSeconds if fetch_config else 30
+
+        async def _run_web_fetch(
+            args: dict[str, Any],
+            _em: str = default_extract_mode,
+            _mc: int = default_max_chars,
+            _mr: int = default_max_redirects,
+            _ts: int = default_timeout_seconds,
+        ) -> str:
+            result = await web_fetch(
+                args["url"],
+                extract_mode=args.get("extractMode", _em),
+                max_chars=args.get("maxChars", _mc),
+                max_redirects=_mr,
+                timeout_seconds=_ts,
+            )
+            return result.get("text", "[fetch failed]")
+
         tools.append(
             Tool(
                 name="web_fetch",
@@ -487,13 +513,7 @@ def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool
                     },
                     "required": ["url"],
                 },
-                run=lambda args: web_fetch(
-                    args["url"],
-                    extract_mode=args.get("extractMode", default_extract_mode),
-                    max_chars=args.get("maxChars", default_max_chars),
-                    max_redirects=default_max_redirects,
-                    timeout_seconds=default_timeout_seconds,
-                ).get("text", "[fetch failed]"),
+                run=_run_web_fetch,
             )
         )
 

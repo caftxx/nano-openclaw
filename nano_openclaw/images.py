@@ -138,7 +138,7 @@ def to_anthropic_image_block(b64: str, mime: str) -> dict[str, Any]:
     }
 
 
-def describe_image(b64: str, mime: str, *, client: Any, model: str, api: str) -> str:
+async def describe_image(b64: str, mime: str, *, client: Any, model: str, api: str) -> str:
     """Call the image model to describe an image (Media Understanding path).
 
     Mirrors openclaw runner.entries.ts:528-564 describeImage call:
@@ -157,7 +157,7 @@ def describe_image(b64: str, mime: str, *, client: Any, model: str, api: str) ->
     ]
 
     if api == "anthropic":
-        response = client.messages.create(
+        response = await client.messages.create(
             model=model,
             max_tokens=512,
             messages=messages,
@@ -179,7 +179,7 @@ def describe_image(b64: str, mime: str, *, client: Any, model: str, api: str) ->
                 ],
             }
         ]
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             max_tokens=512,
             messages=oai_messages,

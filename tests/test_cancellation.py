@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from rich.console import Console
@@ -21,14 +22,14 @@ def test_agent_loop_cancellation_during_stream_discards_turn(monkeypatch):
     token = CancellationToken()
     token.cancel()
 
-    def fake_stream_response(**_kwargs):
+    async def fake_stream_response(**_kwargs):
         yield TextDelta(text="partial")
         yield MessageEnd(stop_reason="end_turn")
 
     monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
     with pytest.raises(TurnCancelled):
-        agent_loop(
+        asyncio.run(agent_loop(
             user_input="hello",
             history=history,
             registry=registry,
@@ -36,7 +37,7 @@ def test_agent_loop_cancellation_during_stream_discards_turn(monkeypatch):
             client=object(),
             cfg=LoopConfig(),
             cancellation_token=token,
-        )
+        ))
 
     assert history == [Message("user", [{"type": "text", "text": "earlier"}])]
 
@@ -72,7 +73,7 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
             if isinstance(event, ToolUseStart):
                 token.cancel()
 
-        def fake_stream_response(**_kwargs):
+        async def fake_stream_response(**_kwargs):
             yield ToolUseStart(id="tool-1", name="demo")
             yield ToolUseEnd()
             yield MessageEnd(stop_reason="tool_use")
@@ -80,7 +81,7 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
         monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
         with pytest.raises(TurnCancelled):
-            agent_loop(
+            asyncio.run(agent_loop(
                 user_input="run tool",
                 history=history,
                 registry=registry,
@@ -89,7 +90,7 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
                 cfg=LoopConfig(),
                 transcript_writer=writer,
                 cancellation_token=token,
-            )
+            ))
 
         assert tool_called is False
         assert history == []
@@ -107,12 +108,15 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
 
     inputs = iter(["hello", "/quit"])
 
-    monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
-    monkeypatch.setattr("nano_openclaw.cli._repl_input", lambda _console: next(inputs))
-    monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("nano_openclaw.cli.agent_loop", MagicMock(side_effect=TurnCancelled()))
+    async def mock_repl_input(_console):
+        return next(inputs)
 
-    repl(registry, client=MagicMock(), cfg=cfg)
+    monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
+    monkeypatch.setattr("nano_openclaw.cli._repl_input", mock_repl_input)
+    monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("nano_openclaw.cli.agent_loop", AsyncMock(side_effect=TurnCancelled()))
+
+    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg))
 
     output = console.export_text()
     assert "turn cancelled" in output.lower()
