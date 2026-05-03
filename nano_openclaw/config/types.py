@@ -377,6 +377,42 @@ class McpConfig(BaseModel):
     sessionIdleTtlMs: Optional[int] = Field(default=None)
 
 
+class WebSearchConfig(BaseModel):
+    """Web search tool configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    enabled: bool = Field(default=True)
+    maxResults: int = Field(default=10, ge=1, le=50)
+    region: str = Field(default="wt-wt", description="DuckDuckGo region code")
+
+
+class WebFetchConfig(BaseModel):
+    """Web fetch tool configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    enabled: bool = Field(default=True)
+    maxChars: int = Field(default=20_000, ge=100, le=500_000)
+    maxRedirects: int = Field(default=3, ge=0, le=10)
+    timeoutSeconds: int = Field(default=30, ge=1, le=120)
+    extractMode: Literal["markdown", "text"] = "markdown"
+
+
+class ToolsWebConfig(BaseModel):
+    """Web tools configuration (tools.web.*)."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
+
+
+class ToolsConfig(BaseModel):
+    """Full tools configuration (mirrors openclaw tools.*)."""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
+    web: ToolsWebConfig = Field(default_factory=ToolsWebConfig)
+
+
 # ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
@@ -389,6 +425,7 @@ class NanoOpenClawConfig(BaseModel):
     - agents: { defaults, list[] }
     - models: { mode, providers{} }
     - session: { idleMinutes, reset }
+    - tools: { noTools, web }
     - Custom fields: maxIterations, context
     """
     model_config = ConfigDict(populate_by_name=True)
@@ -398,6 +435,7 @@ class NanoOpenClawConfig(BaseModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
     
     # nano-openclaw custom fields
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")

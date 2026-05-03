@@ -384,6 +384,44 @@ def test_ui_render_allowed():
     ui.render_allowed(req, ApprovalDecision.ALLOW_ALWAYS)
 
 
+def test_ui_prompt_decision_pauses_input_capture(monkeypatch):
+    """Approval prompt should pause background key capture before reading input."""
+    from rich.console import Console
+    from nano_openclaw.approvals.ui import ApprovalUI
+
+    console = Console()
+    ui = ApprovalUI(console)
+    req = ApprovalRequest(
+        request_id="abc123",
+        tool_name="bash",
+        tool_args={"command": "rm -rf /"},
+        risk_level="high",
+        reason="destructive command",
+    )
+
+    class StubToken:
+        def __init__(self) -> None:
+            self.entered = 0
+
+        def pause_input_capture(self):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _ctx():
+                self.entered += 1
+                yield
+
+            return _ctx()
+
+    token = StubToken()
+    monkeypatch.setattr(console, "input", lambda _prompt: "y")
+
+    decision = ui.prompt_decision(req, cancellation_token=token)
+
+    assert decision == ApprovalDecision.ALLOW_ONCE
+    assert token.entered == 1
+
+
 # ---------------------------------------------------------------------------
 # exec_approvals loader tests
 # ---------------------------------------------------------------------------

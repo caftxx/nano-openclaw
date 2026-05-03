@@ -124,11 +124,12 @@ def main() -> None:
     api = "anthropic" if api_type == "anthropic-messages" else "openai"
 
     client = _build_client(api, api_key, base_url)
-    registry = ToolRegistry() if config.noTools else build_default_registry()
+    no_tools = config.noTools or config.tools.noTools
+    registry = ToolRegistry() if no_tools else build_default_registry(config.tools)
     
     # Initialize MCP runtime and register MCP tools
     mcp_runtime = None
-    if not config.noTools and config.mcp.servers:
+    if not no_tools and config.mcp.servers:
         from nano_openclaw.mcp.runtime import McpRuntime
         from nano_openclaw.mcp.materialize import materialize_mcp_tools
         mcp_runtime = McpRuntime()

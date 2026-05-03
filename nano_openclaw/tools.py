@@ -99,7 +99,10 @@ class ToolRegistry:
                     from nano_openclaw.approvals.ui import ApprovalUI
                     ui = ApprovalUI(self.console)
                     ui.render_request(request)
-                    decision = ui.prompt_decision(request)
+                    decision = ui.prompt_decision(
+                        request,
+                        cancellation_token=cancellation_token,
+                    )
                     
                     self.approval_manager.record_decision(request.request_id, decision)
                     
@@ -314,118 +317,191 @@ def _invoke_skill(
 
 
 from nano_openclaw.memory.tools import memory_get, memory_search
+from nano_openclaw.web_fetch import web_fetch
+from nano_openclaw.web_search import web_search
 
-BUILTIN_TOOLS: list[Tool] = [
-    Tool(
-        name="read_file",
-        description="Read a UTF-8 text file from disk and return its contents. Binary/media files (images, video, audio, PDF) return a metadata summary only — attach image paths directly in the user message to analyse them.",
-        input_schema={
-            "type": "object",
-            "properties": {"path": {"type": "string", "description": "File path to read."}},
-            "required": ["path"],
-        },
-        run=_read_file,
-    ),
-    Tool(
-        name="write_file",
-        description="Write text to a file, creating parent directories. Overwrites existing files.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Destination file path."},
-                "content": {"type": "string", "description": "UTF-8 text content."},
+
+def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool]:
+    web_config = tools_config.web if tools_config else None
+    search_config = web_config.search if web_config else None
+    fetch_config = web_config.fetch if web_config else None
+
+    tools: list[Tool] = [
+        Tool(
+            name="read_file",
+            description="Read a UTF-8 text file from disk and return its contents. Binary/media files (images, video, audio, PDF) return a metadata summary only — attach image paths directly in the user message to analyse them.",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "File path to read."}},
+                "required": ["path"],
             },
-            "required": ["path", "content"],
-        },
-        run=_write_file,
-    ),
-    Tool(
-        name="list_dir",
-        description="List entries in a directory. Directories are suffixed with '/'.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Directory path. Defaults to '.'."}
-            },
-        },
-        run=_list_dir,
-    ),
-    Tool(
-        name="bash",
-        description="Run a shell command via /bin/sh -c (or cmd on Windows). Returns exit code, stdout, and stderr. Defaults to workspace directory.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "Shell command to execute."},
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds. Default 30.",
-                    "default": 30,
+            run=_read_file,
+        ),
+        Tool(
+            name="write_file",
+            description="Write text to a file, creating parent directories. Overwrites existing files.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Destination file path."},
+                    "content": {"type": "string", "description": "UTF-8 text content."},
                 },
-                "workdir": {
-                    "type": "string",
-                    "description": "Working directory for the command. Defaults to workspace directory.",
+                "required": ["path", "content"],
+            },
+            run=_write_file,
+        ),
+        Tool(
+            name="list_dir",
+            description="List entries in a directory. Directories are suffixed with '/'.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path. Defaults to '.'."}
                 },
             },
-            "required": ["command"],
-        },
-        run=_bash,
-    ),
-    Tool(
-        name="session_status",
-        description="Show current session status: date/time, model, session ID, context usage (tokens/compactions), and message count. Use for current time or session state.",
-        input_schema={
-            "type": "object",
-            "properties": {},
-        },
-        run=_session_status,
-    ),
-    Tool(
-        name="Skill",
-        description="Invoke a skill by name to load its specialized instructions. Use when the task matches a skill's description from the available_skills list in the system prompt.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "skill": {"type": "string", "description": "Skill name to invoke (must match a name from available_skills)."},
-                "args": {"type": "string", "description": "Optional arguments for the skill task."},
+            run=_list_dir,
+        ),
+        Tool(
+            name="bash",
+            description="Run a shell command via /bin/sh -c (or cmd on Windows). Returns exit code, stdout, and stderr. Defaults to workspace directory.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute."},
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds. Default 30.",
+                        "default": 30,
+                    },
+                    "workdir": {
+                        "type": "string",
+                        "description": "Working directory for the command. Defaults to workspace directory.",
+                    },
+                },
+                "required": ["command"],
             },
-            "required": ["skill"],
-        },
-        run=_invoke_skill,
-    ),
-    Tool(
-        name="memory_get",
-        description="Read a specific memory file (MEMORY.md or memory/*.md). Use to retrieve exact content by path.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path relative to workspace (e.g., MEMORY.md or memory/2026-05-02.md)"},
-                "from": {"type": "integer", "description": "Starting line number (1-indexed)"},
-                "lines": {"type": "integer", "description": "Number of lines to read"},
+            run=_bash,
+        ),
+        Tool(
+            name="session_status",
+            description="Show current session status: date/time, model, session ID, context usage (tokens/compactions), and message count. Use for current time or session state.",
+            input_schema={
+                "type": "object",
+                "properties": {},
             },
-            "required": ["path"],
-        },
-        run=lambda args, workspace_dir=None: memory_get(args, workspace_dir),
-    ),
-    Tool(
-        name="memory_search",
-        description="Search memory files (MEMORY.md + memory/*.md) for keywords. Use before answering questions about prior work or decisions.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "maxResults": {"type": "integer", "description": "Max results (default 10)"},
-                "minScore": {"type": "number", "description": "Min match score 0-1 (default 0.1)"},
+            run=_session_status,
+        ),
+        Tool(
+            name="Skill",
+            description="Invoke a skill by name to load its specialized instructions. Use when the task matches a skill's description from the available_skills list in the system prompt.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Skill name to invoke (must match a name from available_skills)."},
+                    "args": {"type": "string", "description": "Optional arguments for the skill task."},
+                },
+                "required": ["skill"],
             },
-            "required": ["query"],
-        },
-        run=lambda args, workspace_dir=None: memory_search(args, workspace_dir),
-    ),
-]
+            run=_invoke_skill,
+        ),
+        Tool(
+            name="memory_get",
+            description="Read a specific memory file (MEMORY.md or memory/*.md). Use to retrieve exact content by path.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to workspace (e.g., MEMORY.md or memory/2026-05-02.md)"},
+                    "from": {"type": "integer", "description": "Starting line number (1-indexed)"},
+                    "lines": {"type": "integer", "description": "Number of lines to read"},
+                },
+                "required": ["path"],
+            },
+            run=lambda args, workspace_dir=None: memory_get(args, workspace_dir),
+        ),
+        Tool(
+            name="memory_search",
+            description="Search memory files (MEMORY.md + memory/*.md) for keywords. Use before answering questions about prior work or decisions.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "maxResults": {"type": "integer", "description": "Max results (default 10)"},
+                    "minScore": {"type": "number", "description": "Min match score 0-1 (default 0.1)"},
+                },
+                "required": ["query"],
+            },
+            run=lambda args, workspace_dir=None: memory_search(args, workspace_dir),
+        ),
+    ]
+
+    if search_config is None or search_config.enabled:
+        default_max_results = search_config.maxResults if search_config else 10
+        default_region = search_config.region if search_config else "wt-wt"
+        tools.append(
+            Tool(
+                name="web_search",
+                description="Search the web using DuckDuckGo. Returns titles, URLs, and snippets. Use before web_fetch to find relevant pages.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "maxResults": {
+                            "type": "integer",
+                            "description": f"Max results (default {default_max_results})",
+                            "default": default_max_results,
+                        },
+                    },
+                    "required": ["query"],
+                },
+                run=lambda args: web_search(
+                    args["query"],
+                    max_results=args.get("maxResults", default_max_results),
+                    region=default_region,
+                ).get("text", "[no results]"),
+            )
+        )
+
+    if fetch_config is None or fetch_config.enabled:
+        default_extract_mode = fetch_config.extractMode if fetch_config else "markdown"
+        default_max_chars = fetch_config.maxChars if fetch_config else 20_000
+        default_max_redirects = fetch_config.maxRedirects if fetch_config else 3
+        default_timeout_seconds = fetch_config.timeoutSeconds if fetch_config else 30
+        tools.append(
+            Tool(
+                name="web_fetch",
+                description="Fetch and extract readable content from a URL (HTML→markdown/text). Use after web_search to read specific pages.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "HTTP/HTTPS URL"},
+                        "extractMode": {
+                            "type": "string",
+                            "enum": ["markdown", "text"],
+                            "default": default_extract_mode,
+                        },
+                        "maxChars": {
+                            "type": "integer",
+                            "description": f"Max chars to return (default {default_max_chars})",
+                            "default": default_max_chars,
+                        },
+                    },
+                    "required": ["url"],
+                },
+                run=lambda args: web_fetch(
+                    args["url"],
+                    extract_mode=args.get("extractMode", default_extract_mode),
+                    max_chars=args.get("maxChars", default_max_chars),
+                    max_redirects=default_max_redirects,
+                    timeout_seconds=default_timeout_seconds,
+                ).get("text", "[fetch failed]"),
+            )
+        )
+
+    return tools
 
 
-def build_default_registry() -> ToolRegistry:
+def build_default_registry(tools_config: "ToolsConfig | None" = None) -> ToolRegistry:
     registry = ToolRegistry()
-    for tool in BUILTIN_TOOLS:
+    for tool in _build_builtin_tools(tools_config):
         registry.register(tool)
     return registry

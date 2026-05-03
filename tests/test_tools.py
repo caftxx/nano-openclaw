@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
+from nano_openclaw.approvals import ApprovalDecision, ApprovalPolicy
+from nano_openclaw.config.types import ToolsConfig
 from nano_openclaw.tools import build_default_registry
 
 
@@ -65,7 +68,8 @@ def test_schemas_have_required_anthropic_fields(registry):
     schemas = registry.schemas()
     assert {s["name"] for s in schemas} == {
         "read_file", "write_file", "list_dir", "bash",
-        "session_status", "Skill", "memory_get", "memory_search"
+        "session_status", "Skill", "memory_get", "memory_search",
+        "web_search", "web_fetch"
     }
     for s in schemas:
         assert "description" in s and isinstance(s["description"], str)
@@ -269,3 +273,111 @@ def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
     text = out["content"][0]["text"]
     assert "Load Skill" in text
     assert "loaded from file" in text
+
+
+def test_dispatch_passes_cancellation_token_to_approval_ui(monkeypatch):
+    registry = build_default_registry()
+    registry.console = Console()
+    policy = ApprovalPolicy(ask_mode="always", dangerous_tools=["bash"], allowlist=[])
+    registry.approval_manager = __import__(
+        "nano_openclaw.approvals", fromlist=["ApprovalManager"]
+    ).ApprovalManager(policy)
+
+    class StubToken:
+        pass
+
+    captured = {}
+
+    from nano_openclaw.approvals.ui import ApprovalUI
+
+    monkeypatch.setattr(ApprovalUI, "render_request", lambda self, request: None)
+
+    def fake_prompt(self, request, cancellation_token=None):
+        captured["token"] = cancellation_token
+        return ApprovalDecision.DENY
+
+    monkeypatch.setattr(ApprovalUI, "prompt_decision", fake_prompt)
+
+    out = registry.dispatch(
+        "id-b",
+        "bash",
+        {"command": "rm -rf /"},
+        cancellation_token=StubToken(),
+    )
+
+    assert out["is_error"] is True
+    assert isinstance(captured["token"], StubToken)
+
+
+def test_build_default_registry_respects_disabled_web_tools():
+    cfg = ToolsConfig.model_validate(
+        {
+            "web": {
+                "search": {"enabled": False},
+                "fetch": {"enabled": False},
+            }
+        }
+    )
+
+    registry = build_default_registry(cfg)
+
+    assert "web_search" not in registry.names()
+    assert "web_fetch" not in registry.names()
+
+
+def test_build_default_registry_uses_web_tool_defaults_from_config(monkeypatch):
+    cfg = ToolsConfig.model_validate(
+        {
+            "web": {
+                "search": {"maxResults": 7, "region": "us-en"},
+                "fetch": {
+                    "maxChars": 1234,
+                    "maxRedirects": 2,
+                    "timeoutSeconds": 9,
+                    "extractMode": "text",
+                },
+            }
+        }
+    )
+    registry = build_default_registry(cfg)
+    captured = {}
+
+    def fake_search(query, max_results=10, region="wt-wt"):
+        captured["search"] = {
+            "query": query,
+            "max_results": max_results,
+            "region": region,
+        }
+        return {"text": "ok"}
+
+    def fake_fetch(url, extract_mode="markdown", max_chars=20_000, max_redirects=3, timeout_seconds=30):
+        captured["fetch"] = {
+            "url": url,
+            "extract_mode": extract_mode,
+            "max_chars": max_chars,
+            "max_redirects": max_redirects,
+            "timeout_seconds": timeout_seconds,
+        }
+        return {"text": "ok"}
+
+    monkeypatch.setattr("nano_openclaw.tools.web_search", fake_search)
+    monkeypatch.setattr("nano_openclaw.tools.web_fetch", fake_fetch)
+
+    assert registry.get("web_search") is not None
+    assert registry.get("web_fetch") is not None
+
+    registry.dispatch("id-1", "web_search", {"query": "python"})
+    registry.dispatch("id-2", "web_fetch", {"url": "https://example.com"})
+
+    assert captured["search"] == {
+        "query": "python",
+        "max_results": 7,
+        "region": "us-en",
+    }
+    assert captured["fetch"] == {
+        "url": "https://example.com",
+        "extract_mode": "text",
+        "max_chars": 1234,
+        "max_redirects": 2,
+        "timeout_seconds": 9,
+    }
