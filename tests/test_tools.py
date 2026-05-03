@@ -321,6 +321,24 @@ def test_dispatch_passes_cancellation_token_to_approval_ui(monkeypatch):
     assert isinstance(captured["token"], StubToken)
 
 
+def test_dispatch_rejects_approval_without_interactive_console():
+    registry = build_default_registry()
+    policy = ApprovalPolicy(ask_mode="always", dangerous_tools=["write_file"], allowlist=[])
+    registry.approval_manager = __import__(
+        "nano_openclaw.approvals", fromlist=["ApprovalManager"]
+    ).ApprovalManager(policy)
+
+    out = registry.dispatch(
+        "id-w",
+        "write_file",
+        {"path": "report.md", "content": "content"},
+    )
+
+    assert out["is_error"] is True
+    assert "approval denied for write_file" in out["content"][0]["text"]
+    assert "non-interactive background execution cannot request approval" in out["content"][0]["text"]
+
+
 def test_build_default_registry_respects_disabled_web_tools():
     cfg = ToolsConfig.model_validate(
         {

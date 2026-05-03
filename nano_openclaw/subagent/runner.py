@@ -342,7 +342,8 @@ class SubagentRunner:
         # Inherit environment from parent so file tools resolve paths correctly
         # and MCP tools are available in the subagent.
         registry.approval_manager = parent_registry.approval_manager
-        registry.console = parent_registry.console
+        # Background subagents cannot safely prompt on the foreground TUI.
+        registry.console = None
         registry._eligible_skills = dict(parent_registry._eligible_skills)
         if parent_registry._workspace_dir:
             registry.set_workspace_dir(parent_registry._workspace_dir)
@@ -382,7 +383,9 @@ class SubagentRunner:
             "3. **Don't initiate** — No heartbeats, no proactive side actions, no unrequested follow-ups.\n"
             "4. **Be ephemeral** — You may be terminated after task completion. That is fine.\n"
             "5. **Recover from truncated output** — If tool output is cut off, re-read with smaller "
-            "chunks (offset/limit) instead of repeating the full call.\n\n"
+            "chunks (offset/limit) instead of repeating the full call.\n"
+            "6. **Approvals default to denied** — If a tool says approval is required or denied, "
+            "do not ask the requester to approve it and do not retry that action.\n\n"
             "## What You Do NOT Do\n"
             "- NO user conversations — that is the main agent's job.\n"
             "- NO external messages (email, Slack, etc.) unless explicitly part of your task.\n"

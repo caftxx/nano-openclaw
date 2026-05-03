@@ -99,25 +99,30 @@ class ToolRegistry:
             if eval_result.requires_approval:
                 request = self.approval_manager.create_request(name, args)
 
-                if self.console:
-                    from nano_openclaw.approvals.ui import ApprovalUI
-                    ui = ApprovalUI(self.console)
-                    ui.render_request(request)
-                    decision = ui.prompt_decision(
-                        request,
-                        cancellation_token=cancellation_token,
+                if self.console is None:
+                    return _error_result(
+                        tool_use_id,
+                        f"approval denied for {name}: non-interactive background execution cannot request approval ({request.reason})",
                     )
 
-                    self.approval_manager.record_decision(request.request_id, decision)
+                from nano_openclaw.approvals.ui import ApprovalUI
+                ui = ApprovalUI(self.console)
+                ui.render_request(request)
+                decision = ui.prompt_decision(
+                    request,
+                    cancellation_token=cancellation_token,
+                )
 
-                    if decision == ApprovalDecision.DENY:
-                        ui.render_denied(request)
-                        return _error_result(
-                            tool_use_id,
-                            f"approval denied for {name}: {request.reason}"
-                        )
+                self.approval_manager.record_decision(request.request_id, decision)
 
-                    ui.render_allowed(request, decision)
+                if decision == ApprovalDecision.DENY:
+                    ui.render_denied(request)
+                    return _error_result(
+                        tool_use_id,
+                        f"approval denied for {name}: {request.reason}"
+                    )
+
+                ui.render_allowed(request, decision)
 
         # Execute tool — async-native tools are awaited directly; sync tools run
         # in a thread pool to avoid blocking the event loop.
