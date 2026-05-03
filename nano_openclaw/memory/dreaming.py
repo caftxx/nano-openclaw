@@ -170,7 +170,10 @@ def track_recall(
             first_recalled_at=now,
         )
 
-    _save_dreaming_state(workspace_dir, state)
+    try:
+        _save_dreaming_state(workspace_dir, state)
+    except (OSError, PermissionError):
+        pass
 
 
 # ============================================================================
