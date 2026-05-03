@@ -220,6 +220,52 @@ Active Memory 是可选插件，启用后在每次用户消息前自动搜索 `M
 | `"precision-heavy"` | 高精度召回：只返回高度置信的结果 |
 | `"preference-only"` | 偏好搜索：只搜索用户偏好（代码风格、工具选择等） |
 
+### dreaming — Dreaming 插件配置
+
+Dreaming 是可选插件，启用后追踪 memory_search 的召回记录，定期将高频、高质量的记忆片段自动提升到 MEMORY.md（长期记忆），并生成叙事性的 Dream Diary 写入 DREAMS.md。
+
+状态存储在 `workspace/memory/.dreams/short-term-recall.json`。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | `false` | 是否启用 Dreaming |
+| `frequency` | string | `"0 3 * * *"` | 调度频率（cron 格式，见下方说明） |
+| `minScore` | number | `0.5` | 提升门槛：综合评分（范围 0.0-1.0） |
+| `minRecallCount` | int | `2` | 提升门槛：最少召回次数（范围 ≥1） |
+| `minUniqueQueries` | int | `1` | 提升门槛：最少不同查询数（范围 ≥1） |
+| `maxPromotions` | int | `10` | 每次最多提升条目数（范围 1-50） |
+| `diary` | boolean | `true` | 是否生成 Dream Diary 日记（需要额外 API 调用） |
+| `model` | string \| null | `null` | Dream Diary 生成模型（null = 复用主模型） |
+
+#### frequency 说明
+
+支持 `"minute hour * * *" 格式的 cron 表达式：
+
+| 示例 | 说明 |
+|------|------|
+| `"0 3 * * *"` | 每天凌晨 3:00（默认） |
+| `"*/30 * * * *"` | 每 30 分钟 |
+| `"0 */6 * * *"` | 每 6 小时 |
+| `"*/5 */2 * * *"` | 每 2 小时的第 5、10、15...分钟 |
+
+不支持 day-of-month、month、day-of-week 字段（必须为 `*`）。
+
+#### 评分机制
+
+综合评分基于三个信号（权重：频率 40% + 多样性 35% + 新鲜度 25%）：
+
+- **频率分数**：召回次数越多，分数越高
+- **多样性分数**：不同查询越多，分数越高
+- **新鲜度分数**：最近召回的时间越近，分数越高
+
+#### 工作流程
+
+1. **Light Phase**：收集候选记忆片段（最多 50 个）
+2. **Deep Phase**：评分并提升符合条件的片段到 MEMORY.md
+3. **Dream Diary**：生成叙事性摘要写入 DREAMS.md（可选）
+
+提升的内容会带有注释标记：`<!-- dreaming:promoted DATE score=X recalls=Y -->`
+
 ### skills — Skills 技能配置
 
 Skills 配置管理技能加载和过滤行为，对齐 openclaw 的 `skills.*` 配置。
@@ -379,6 +425,42 @@ Skills 配置管理技能加载和过滤行为，对齐 openclaw 的 `skills.*` 
   },
 }
 ```
+
+### Dreaming 配置示例
+
+```json5
+{
+  agents: {
+    defaults: {
+      model: "anthropic/claude-sonnet-4-5-20250929",
+      workspace: "./workspace",
+    },
+  },
+  dreaming: {
+    enabled: true,
+    // 每天凌晨 3 点运行
+    frequency: "0 3 * * *",
+    // 提升门槛：综合评分 >= 0.5
+    minScore: 0.5,
+    // 提升门槛：最少被召回 2 次
+    minRecallCount: 2,
+    // 提升门槛：最少来自 1 个不同查询
+    minUniqueQueries: 1,
+    // 每次最多提升 10 条记忆
+    maxPromotions: 10,
+    // 生成 Dream Diary 日记
+    diary: true,
+    // Dream Diary 使用快速小模型
+    model: "anthropic/claude-haiku-4-5-20251001",
+  },
+}
+```
+
+状态文件位置：`workspace/memory/.dreams/short-term-recall.json`
+
+提升结果写入：`workspace/MEMORY.md`（带 `<!-- dreaming:promoted -->` 注释）
+
+Dream Diary 写入：`workspace/DREAMS.md`
 
 ### Skills 配置示例
 

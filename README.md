@@ -174,6 +174,8 @@ uv run python -m nano_openclaw --agent coder
 | `memory/tools.py::memory_search`           | `extensions/memory-core/src/tools.ts:memory_search`（搜索记忆文件，nano 用词法匹配）    |
 | `memory/active.py::ActiveMemoryManager`    | `extensions/active-memory/index.ts`（before_prompt_build hook + 子 agent 召回）       |
 | `memory/active.py::QueryMode/PromptStyle`  | `extensions/active-memory/index.ts:17-34`（查询模式和召回风格枚举）                     |
+| `memory/dreaming.py::track_recall`         | `extensions/memory-core/src/dreaming.ts`（记忆召回追踪 + cron 调度）                   |
+| `memory/dreaming.py::run_light/deep_phase` | `extensions/memory-core/src/dreaming-phases.ts`（Light/Deep Phase 评分 + 提升）        |
 | `cli.py::repl`                             | `src/cli/tui-cli.ts:8-63` → `src/tui/tui.ts:1-52`                                    |
 | `cli.py::_render_tool_result`              | `src/tui/components/tool-execution.ts:55-137`                                        |
 | `session/types.py`                         | `src/config/sessions/types.ts`（SessionEntry 数据结构）                               |
@@ -194,8 +196,9 @@ uv run python -m nano_openclaw --agent coder
 7. **`memory/daily.py`** — Daily Memory 加载。理解如何扫描 `memory/` 目录，按日期加载每日记忆文件，生成 startup context prelude。
 8. **`memory/tools.py`** — Memory 工具。`memory_get` 读取指定记忆文件，`memory_search` 搜索相关内容（nano 用词法匹配而非 embedding）。
 9. **`memory/active.py`** — Active Memory 自动召回。理解 `before_prompt_build` hook 模式、子 agent 执行、QueryMode 和 PromptStyle 的含义。
-10. **`tools.py`** — 模型能干什么。看 `Tool` 形状、5 个内置工具、`dispatch` 永不抛异常的契约。包含 `session_status` 工具用于查询日期时间和会话上下文。
-11. **`approvals/`** — 危险命令门禁。`policy.py` 评估风险，`manager.py` 管理审批请求和 per-agent allowlist 持久化，`ui.py` 渲染 Rich 提示。`check_request()` 镜像 openclaw 的 `requiresExecApproval()`：`on-miss + allowlist + 未命中 = 提示用户`。
+10. **`memory/dreaming.py`** — Dreaming 后台记忆整合。理解 `track_recall` 追踪机制、cron 调度频率、Light/Deep Phase 评分逻辑、MEMORY.md 提升、Dream Diary 生成。状态存储在 `memory/.dreams/short-term-recall.json`。
+11. **`tools.py`** — 模型能干什么。看 `Tool` 形状、5 个内置工具、`dispatch` 永不抛异常的契约。包含 `session_status` 工具用于查询日期时间和会话上下文。
+12. **`approvals/`** — 危险命令门禁。`policy.py` 评估风险，`manager.py` 管理审批请求和 per-agent allowlist 持久化，`ui.py` 渲染 Rich 提示。`check_request()` 镜像 openclaw 的 `requiresExecApproval()`：`on-miss + allowlist + 未命中 = 提示用户`。
 12. **`images.py`** — 图片怎么处理。`parse_image_refs` 检测引用 → `load_image` 加载 → `describe_image` 双路径架构。
 13. **`_stream_events.py`** — provider 协议契约。5 个 dataclass 是两个 transport 共同说的语言 + thinking 事件。
 14. **`_provider_anthropic.py`** — Anthropic transport：SDK SSE 事件 → 5 个 dataclass + 原生 thinking 支持。
@@ -224,10 +227,11 @@ Thinking 支持：通过 `agents.defaults.thinkingDefault` 配置思考等级（
 
 Workspace 引导文件：从 `workspaceDir`（默认为当前工作目录）加载 8 个标准引导文件（AGENTS.md、SOUL.md、IDENTITY.md、USER.md、MEMORY.md、TOOLS.md、BOOTSTRAP.md、HEARTBEAT.md），应用安全防护（路径遍历检查、文件大小限制）和预算截断（`bootstrapBudget` 字段控制总 token 预算），注入到系统提示的项目上下文部分。支持 session-scoped 缓存，避免重复加载。配置文件的 `workspaceDir` 字段可自定义工作目录。
 
-Memory 系统：包含三层机制：
+Memory 系统：包含四层机制：
 - **Daily Memory**：启动时自动加载 `workspace/memory/*.md` 中最近 N 天的记忆文件（默认 2 天），生成日期戳 prelude 注入系统提示，让 agent 知道"最近发生了什么"。
 - **Memory Tools**：提供 `memory_get`（读取指定记忆文件）和 `memory_search`（搜索记忆内容）两个工具，agent 可主动查询记忆。nano 用词法匹配而非 embedding 搜索。
 - **Active Memory**：可选插件，启用后在每次用户消息前自动执行子 agent 搜索记忆，将相关结果注入系统提示，实现"自动记住偏好和历史"的效果。通过 `activeMemory` 配置字段启用。
+- **Dreaming**：可选插件，启用后追踪 memory_search 的召回记录，定期将高频、高质量的记忆片段自动提升到 MEMORY.md（长期记忆），并生成叙事性的 Dream Diary 写入 DREAMS.md。通过 `dreaming` 配置字段启用。
 
 Session Status 工具：内置 `session_status` 工具用于查询当前日期时间（避免模型凭空猜测）和会话上下文信息（模型 ID、session ID、上下文预算、token 使用量、压缩次数、消息计数）。工具结果由 `ToolRegistry` 注入会话上下文，模型可据此了解当前状态。
 
@@ -328,11 +332,12 @@ nano-openclaw/
 │   │   ├── manager.py        审批管理器（请求生命周期 + per-agent allowlist 持久化）
 │   │   └── ui.py             Rich 审批提示 UI
 │   ├── images.py             parse_image_refs / load_image / describe_image（双路径）
-│   ├── memory/               Memory 模块（记忆文件加载 + 工具 + 自动召回）
+│   ├── memory/               Memory 模块（记忆文件加载 + 工具 + 自动召回 + 后台整合）
 │   │   ├── __init__.py       公开接口
 │   │   ├── daily.py          每日记忆文件加载（扫描 memory/ 目录 + 日期戳生成 + prelude 构建）
 │   │   ├── tools.py          memory_get / memory_search 工具（词法搜索版本）
-│   │   └── active.py         Active Memory 自动召回（before_prompt_build hook + 子 agent）
+│   │   ├── active.py         Active Memory 自动召回（before_prompt_build hook + 子 agent）
+│   │   └── dreaming.py       Dreaming 后台整合（track_recall + Light/Deep Phase + MEMORY.md 提升 + DREAMS.md）
 │   ├── workspace/            Workspace 引导文件管理模块
 │   │   ├── __init__.py       公开接口
 │   │   ├── constants.py      引导文件常量定义（8 个标准文件名、预算配置）
@@ -363,7 +368,8 @@ nano-openclaw/
     ├── test_session_paths.py   Session 路径隔离单测
     ├── test_env_substitution.py 环境变量替换单测
     ├── test_session.py         会话持久化单测
-    └── test_workspace.py       Workspace 引导文件加载、缓存、预算截断单测
+    ├── test_workspace.py       Workspace 引导文件加载、缓存、预算截断单测
+    └── test_memory_dreaming.py Dreaming 后台整合单测（track_recall、cron 调度、Light/Deep Phase）
 ```
 
 ## License
