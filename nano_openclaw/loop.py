@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
@@ -55,6 +56,27 @@ if TYPE_CHECKING:
     from nano_openclaw.session import TranscriptWriter
 
 EventCallback = Callable[[Any], None]
+
+
+class TurnCancelled(Exception):
+    """Raised when the current user turn is cancelled by the operator."""
+
+
+@dataclass
+class CancellationToken:
+    _cancelled: Event = field(default_factory=Event)
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+
+def _check_cancelled(token: "CancellationToken | None") -> None:
+    if token and token.is_cancelled:
+        raise TurnCancelled()
 
 
 @dataclass
@@ -181,6 +203,7 @@ def agent_loop(
     client: Any,  # anthropic.Anthropic | openai.OpenAI
     cfg: LoopConfig,
     transcript_writer: "TranscriptWriter | None" = None,
+    cancellation_token: "CancellationToken | None" = None,
 ) -> list[Message]:
     """Drive one user turn to completion (possibly through many tool rounds).
 
@@ -191,6 +214,12 @@ def agent_loop(
     Skills are loaded from cfg each turn (cached per session) and used for
     both slash command dispatch and system prompt injection.
     """
+    # The turn is built against a scratch history and committed only on success.
+    scratch_history = list(history)
+    pending_transcript_ops: list[tuple[str, Message | str]] = []
+
+    _check_cancelled(cancellation_token)
+
     # 1. Load skills early (needed for slash commands + prompt injection)
     eligible_entries: list[SkillEntry] = []
     visible_skills: list[Skill] | None = None
@@ -264,9 +293,8 @@ def agent_loop(
     elif not any(b.get("type") == "text" for b in content):
         content.append({"type": "text", "text": "(see attached image)"})
 
-    history.append(Message("user", content))
-    if transcript_writer:
-        transcript_writer.append_message(history[-1])
+    scratch_history.append(Message("user", content))
+    pending_transcript_ops.append(("message", scratch_history[-1]))
 
     # Load workspace bootstrap files (AGENTS.md, SOUL.md, etc.) for prompt injection
     bootstrap_files: list[WorkspaceBootstrapFile] | None = None
@@ -287,7 +315,7 @@ def agent_loop(
             workspace_dir=str(cfg.workspace_dir),
             config=cfg.active_memory_config,
         )
-        wire_messages = [{"role": m.role, "content": m.content} for m in history]
+        wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
         recall_result = manager.run(wire_messages)
         if recall_result:
             on_event(ActiveMemoryRecall(result=recall_result))
@@ -310,9 +338,10 @@ def agent_loop(
     tools_schema = registry.schemas()
 
     for _ in range(cfg.max_iterations):
+        _check_cancelled(cancellation_token)
         # Check context budget and compact if needed (mirrors OpenClaw's compaction)
         _, summary = compact_if_needed(
-            history,
+            scratch_history,
             budget=cfg.context_budget,
             client=client,
             model=cfg.model,
@@ -322,9 +351,8 @@ def agent_loop(
         )
         if summary:
             on_event(Compaction(summary=summary))
-            if transcript_writer:
-                transcript_writer.append_compaction(summary)
-        wire_messages = [{"role": m.role, "content": m.content} for m in history]
+            pending_transcript_ops.append(("compaction", summary))
+        wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
         assistant_blocks, stop_reason = _consume_one_assistant_turn(
             client=client,
@@ -336,13 +364,21 @@ def agent_loop(
             max_tokens=cfg.max_tokens,
             thinking_budget_tokens=cfg.thinking_budget_tokens,
             on_event=on_event,
+            cancellation_token=cancellation_token,
         )
 
-        history.append(Message("assistant", assistant_blocks))
-        if transcript_writer:
-            transcript_writer.append_message(history[-1])
+        _check_cancelled(cancellation_token)
+        scratch_history.append(Message("assistant", assistant_blocks))
+        pending_transcript_ops.append(("message", scratch_history[-1]))
 
         if stop_reason != "tool_use":
+            history[:] = scratch_history
+            if transcript_writer:
+                for op, payload in pending_transcript_ops:
+                    if op == "message":
+                        transcript_writer.append_message(payload)  # type: ignore[arg-type]
+                    else:
+                        transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
             return history  # end_turn / max_tokens / stop_sequence — terminal
 
         # Dispatch every tool_use; package all results into ONE user message.
@@ -350,9 +386,9 @@ def agent_loop(
             model=cfg.model,
             session_id=transcript_writer.session_id if transcript_writer else "",
             context_budget=cfg.context_budget,
-            current_tokens=estimate_tokens(history),
+            current_tokens=estimate_tokens(scratch_history),
             compaction_count=transcript_writer.compaction_count if transcript_writer else 0,
-            message_count=len(history),
+            message_count=len(scratch_history),
         )
         tool_results: list[dict[str, Any]] = []
         for block in assistant_blocks:
@@ -369,18 +405,27 @@ def agent_loop(
                     skill = skill_registry[skill_name]
                     on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
 
+            _check_cancelled(cancellation_token)
             result = registry.dispatch(block["id"], tool_name, tool_args)
+            _check_cancelled(cancellation_token)
             tool_results.append(result)
             on_event(ToolResult(name=tool_name, args=tool_args, result=result))
 
-        history.append(Message("user", tool_results))
-        if transcript_writer:
-            transcript_writer.append_message(history[-1])
+        scratch_history.append(Message("user", tool_results))
+        pending_transcript_ops.append(("message", scratch_history[-1]))
         # next iteration sends history (now including tool_results) back to the model
 
-    history.append(
+    scratch_history.append(
         Message("assistant", [{"type": "text", "text": "[max_iterations reached]"}])
     )
+    pending_transcript_ops.append(("message", scratch_history[-1]))
+    history[:] = scratch_history
+    if transcript_writer:
+        for op, payload in pending_transcript_ops:
+            if op == "message":
+                transcript_writer.append_message(payload)  # type: ignore[arg-type]
+            else:
+                transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
     return history
 
 
@@ -421,6 +466,7 @@ def _consume_one_assistant_turn(
     max_tokens: int,
     thinking_budget_tokens: int | None,
     on_event: EventCallback,
+    cancellation_token: "CancellationToken | None" = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Stream one model response, accumulating mixed text + tool_use blocks."""
     blocks: list[dict[str, Any]] = []
@@ -452,7 +498,9 @@ def _consume_one_assistant_turn(
         max_tokens=max_tokens,
         thinking_budget_tokens=thinking_budget_tokens,
     ):
+        _check_cancelled(cancellation_token)
         on_event(ev)
+        _check_cancelled(cancellation_token)
 
         if isinstance(ev, ThinkingDelta):
             pass  # display only — ThinkingBlockComplete carries the full content

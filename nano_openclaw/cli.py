@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from anthropic import Anthropic
 from rich import markup
@@ -34,8 +36,10 @@ from nano_openclaw.loop import (
     ImageSkip,
     LoopConfig,
     Message,
+    CancellationToken,
     SkillInvoked,
     ToolResult,
+    TurnCancelled,
     agent_loop,
 )
 from nano_openclaw.provider import (
@@ -208,15 +212,20 @@ def repl(
 
         on_event = _make_event_handler(console)
         try:
-            agent_loop(
-                user_input=user_input,
-                history=history,
-                registry=registry,
-                on_event=on_event,
-                client=client,
-                cfg=cfg,
-                transcript_writer=transcript_writer,
-            )
+            with _escape_cancellation_token() as cancellation_token:
+                agent_loop(
+                    user_input=user_input,
+                    history=history,
+                    registry=registry,
+                    on_event=on_event,
+                    client=client,
+                    cfg=cfg,
+                    transcript_writer=transcript_writer,
+                    cancellation_token=cancellation_token,
+                )
+        except TurnCancelled:
+            console.print("\n[dim](turn cancelled)[/]")
+            continue
         except Exception as exc:  # noqa: BLE001 — surface model/network errors to user
             console.print(f"\n[red]error:[/] {type(exc).__name__}: {markup.escape(str(exc))}")
             continue
@@ -565,6 +574,49 @@ def _load_input_history(messages: list[Message]) -> None:
 def _repl_input(_console: Console) -> str:
     """Input prompt with full readline editing and history via prompt_toolkit."""
     return _pt_prompt(">>> ", history=_pt_history)
+
+
+@contextmanager
+def _escape_cancellation_token() -> Iterator[CancellationToken]:
+    """Listen for Esc during a turn and flip a cancellation token when pressed."""
+    token = CancellationToken()
+
+    try:
+        from prompt_toolkit.input import create_input
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        yield token
+        return
+
+    stop_event = threading.Event()
+    input_handle = create_input()
+
+    def watch_for_escape() -> None:
+        try:
+            with input_handle.raw_mode():
+                while not stop_event.is_set() and not token.is_cancelled:
+                    for kp in input_handle.read_keys():
+                        if kp.key == Keys.Escape:
+                            token.cancel()
+                            return
+                        if stop_event.is_set() or token.is_cancelled:
+                            return
+        except Exception:
+            return
+
+    watcher = threading.Thread(target=watch_for_escape, name="nano-openclaw-esc-watch", daemon=True)
+    watcher.start()
+    try:
+        yield token
+    finally:
+        stop_event.set()
+        close = getattr(input_handle, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        watcher.join(timeout=0.2)
 
 
 
