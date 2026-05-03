@@ -87,10 +87,11 @@ uv run python -m nano_openclaw --agent coder
 
 ## REPL 斜杠命令
 
-支持的斜杠命令：`/quit`、`/clear`、`/new`、`/help`、`/context`、`/compact`、`/sessions`、`/save`。
+支持的斜杠命令：`/quit`、`/clear`、`/new`、`/help`、`/context`、`/compact`、`/sessions`、`/save`、`/skills`、`/subagents`。
 
 - `/new` — 硬重置：生成全新 session ID，创建新 .jsonl transcript 文件，更新 session store（匹配 OpenClaw 语义）
 - `/clear` — 仅清空内存历史，重置 transcript 文件保留 session header，立即更新 session metadata
+- `/subagents` — 查看当前 session 启动的后台子 agent；支持 `/subagents all`、`/subagents kill <run_id>` 和 `/subagents kill all`
 
 ### 操作提示
 
@@ -114,6 +115,7 @@ uv run python -m nano_openclaw --agent coder
                 │  compact.py  │  │  tools.dispatch()    │
                 │  token est.  │  │  read/write/list/bash│
                 │  summarize   │  │  memory_get/search   │
+                │              │  │  sessions_spawn      │
                 └──────┬───────┘  │  web_search/fetch    │
         history shrunk │          └────────┬─────────────┘
                        ▼                   ▼
@@ -134,6 +136,7 @@ uv run python -m nano_openclaw --agent coder
                       identity + cwd/platform/date + 工具清单 + daily memory prelude
    compact.py        = estimate_tokens → compact_if_needed → summarize_history
    approvals/        = requiresExecApproval() 门禁 → Rich 审批提示 → per-agent allowlist 持久化
+   subagent/         = 后台子 agent runner + registry + completion auto-announce
    images.py         = parse_image_refs → load_image → describe_image（双路径架构）
     mcp/              = MCP 服务器连接管理（stdio/SSE/streamable-http）→ 工具注册
     session/          = transcript 持久化（.jsonl）+ sessions.json 索引 + 8KB 截断 + store-first 初始化
@@ -174,6 +177,10 @@ uv run python -m nano_openclaw --agent coder
 | `approvals/policy.py`                      | `src/infra/exec-approvals-allowlist.ts`（危险模式匹配 + allowlist 评估）                |
 | `approvals/manager.py`                     | `src/gateway/exec-approval-manager.ts` + `src/infra/exec-approvals.ts`（请求生命周期 + allowlist 持久化） |
 | `approvals/ui.py`                          | 审批提示 Rich UI（openclaw TUI 审批弹窗的简化版）                                       |
+| `subagent/runner.py`                       | `src/agents/subagent/runner` / session orchestration（后台子 agent 生命周期的简化版）      |
+| `subagent/registry.py`                     | OpenClaw 子 agent run registry（run 状态、session key、requester 关联）                   |
+| `subagent/tools.py::sessions_spawn`        | OpenClaw `sessions_spawn` 子 agent 派生工具（nano 版只支持 isolated context）             |
+| `subagent/announce.py`                     | 子 agent completion auto-announce（完成后作为 user message 回灌父 session）              |
 | `prompt.py::build_system_prompt`           | `src/agents/system-prompt.ts:189+` & `pi-embedded-runner/system-prompt.ts:12-95`     |
 | `workspace/loader.py`                      | `src/agents/workspace.ts`（bootstrap 文件加载 + budget 截断）                         |
 | `workspace/cache.py`                       | `src/agents/workspace.ts`（session-scoped 缓存）                                      |
@@ -221,19 +228,20 @@ uv run python -m nano_openclaw --agent coder
 15. **`external_content.py`** — 外部内容安全包装。理解 `<EXTERNAL_UNTRUSTED_CONTENT>` 边界标记和 LLM 特殊 token 清洗，防止 prompt injection。
 16. **`tools.py`** — 模型能干什么。看 `Tool` 形状、内置工具（含 web_search/web_fetch 条件注册）、`dispatch` 永不抛异常的契约。包含 `session_status` 工具用于查询日期时间和会话上下文。
 17. **`approvals/`** — 危险命令门禁。`policy.py` 评估风险，`manager.py` 管理审批请求和 per-agent allowlist 持久化，`ui.py` 渲染 Rich 提示（输入捕获暂停以避免与后台 Esc watcher 冲突）。`check_request()` 镜像 openclaw 的 `requiresExecApproval()`：`on-miss + allowlist + 未命中 = 提示用户`。
-18. **`images.py`** — 图片怎么处理。`parse_image_refs` 检测引用 → `load_image` 加载 → `describe_image` 双路径架构。
-19. **`_stream_events.py`** — provider 协议契约。5 个 dataclass 是两个 transport 共同说的语言 + thinking 事件。
-20. **`_provider_anthropic.py`** — Anthropic transport：SDK SSE 事件 → 5 个 dataclass + 原生 thinking 支持。
-21. **`_provider_openai.py`** — OpenAI transport：同样翻译到 5 个 dataclass，顺带做消息格式转换 + reasoning_content 支持。
-22. **`provider.py`** — 路由层：`switch(api)` 派发给正确的 transport，对外只暴露一个 `stream_response`。
-23. **`compact.py`** — 上下文压缩：`estimate_tokens` → `compact_if_needed` → `summarize_history`。
-24. **`loop.py`** — 把上面全部粘起来。这一步最关键，看完你就懂 agent 了。
-25. **`session/paths.py`** — Session 路径解析。按 agent 隔离的 session 存储结构。
-26. **`session/store.py`** — sessions.json 管理。
-27. **`session/transcript.py`** — JSONL 转录文件读写。
-28. **`session/truncate.py`** — tool_result 截断。
-29. **`cli.py`** — 给人看的部分。理解 `on_event` 回调如何把"loop 内部状态"暴露给"渲染层"。包含 Windows msvcrt 原生 Esc watcher 作为 prompt_toolkit 不可用时的降级方案。
-30. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL。
+18. **`subagent/`** — 后台子 agent 编排。先看 `types.py` 理解 run/session key/status，再看 `registry.py` 的内存 run 表，接着看 `tools.py` 如何暴露 `sessions_spawn` 和 `subagents`，最后看 `runner.py` 如何用过滤后的 ToolRegistry 启动 isolated 子会话并把结果 auto-announce 回父会话。
+19. **`images.py`** — 图片怎么处理。`parse_image_refs` 检测引用 → `load_image` 加载 → `describe_image` 双路径架构。
+20. **`_stream_events.py`** — provider 协议契约。5 个 dataclass 是两个 transport 共同说的语言 + thinking 事件。
+21. **`_provider_anthropic.py`** — Anthropic transport：SDK SSE 事件 → 5 个 dataclass + 原生 thinking 支持。
+22. **`_provider_openai.py`** — OpenAI transport：同样翻译到 5 个 dataclass，顺带做消息格式转换 + reasoning_content 支持。
+23. **`provider.py`** — 路由层：`switch(api)` 派发给正确的 transport，对外只暴露一个 `stream_response`。
+24. **`compact.py`** — 上下文压缩：`estimate_tokens` → `compact_if_needed` → `summarize_history`。
+25. **`loop.py`** — 把上面全部粘起来。这一步最关键，看完你就懂 agent 了。
+26. **`session/paths.py`** — Session 路径解析。按 agent 隔离的 session 存储结构。
+27. **`session/store.py`** — sessions.json 管理。
+28. **`session/transcript.py`** — JSONL 转录文件读写。
+29. **`session/truncate.py`** — tool_result 截断。
+30. **`cli.py`** — 给人看的部分。理解 `on_event` 回调如何把"loop 内部状态"暴露给"渲染层"。包含 Windows msvcrt 原生 Esc watcher 作为 prompt_toolkit 不可用时的降级方案。
+31. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL。
 
 ## 三条不变量
 
@@ -242,6 +250,8 @@ uv run python -m nano_openclaw --agent coder
 1. 每一轮把**完整 history** 发回模型——若超出 token 预算，`compact_if_needed` 会先把旧消息替换成一条摘要，再发送压缩后的 history。
 2. 多个 `tool_use` 并存时，所有结果合并成**一条** user 消息回灌。
 3. 循环只在 `stop_reason != "tool_use"` 时终止；其它都是中间态。
+
+Subagent 编排：模型可调用 `sessions_spawn` 启动 isolated 后台子 agent，适合复杂、慢、可并行的任务。子 agent 继承 workspace、模型和 thinking 默认值，可通过顶层 `subagents` 配置限制并发、超时和默认模型；它不会继承 `sessions_spawn` 等会话管理工具，避免递归派生。完成、失败或超时后，结果会自动作为一条 user message 注入父 session，模型不需要轮询；`subagents` 工具和 `/subagents` 命令只用于按需查看或 kill。后台子 agent 不能弹出前台审批 UI，任何需要交互审批的工具调用会默认拒绝，避免后台任务卡住 REPL。
 
 图片处理遵循**双路径架构**：未配置 `image_model` 时走 Native Vision（图片直接发给主模型）；配置后走 Media Understanding（图片模型先描述，文字注入 prompt）。若主模型无视觉能力且未配置 `image_model`，图片会被跳过并显示警告。`parse_image_refs` 在循环入口处统一处理用户输入中的 `@file.png`、Markdown `![]()` 和 URL 引用。
 
@@ -260,6 +270,20 @@ Memory 系统：包含四层机制：
 - **Dreaming**：可选插件，启用后追踪 memory_search 的召回记录，定期将高频、高质量的记忆片段自动提升到 MEMORY.md（长期记忆），并生成叙事性的 Dream Diary 写入 DREAMS.md。通过 `dreaming` 配置字段启用。
 
 Session Status 工具：内置 `session_status` 工具用于查询当前日期时间（避免模型凭空猜测）和会话上下文信息（模型 ID、session ID、上下文预算、token 使用量、压缩次数、消息计数）。工具结果由 `ToolRegistry` 注入会话上下文，模型可据此了解当前状态。
+
+Subagent 试试：
+
+```
+>>> 让一个子 agent 单独阅读 README.md，总结这个项目的核心模块；你继续在当前会话里等待它完成即可
+```
+
+如果模型决定派生任务，会看到 `sessions_spawn` 工具面板；子 agent 完成后，CLI 会显示 completion announcement，并把结果回灌给当前会话。需要人工查看或停止后台任务时：
+
+```bash
+/subagents
+/subagents all
+/subagents kill <run_id>
+```
 
 ## 端到端验证
 
@@ -395,6 +419,13 @@ nano-openclaw/
 │   ├── _provider_openai.py   OpenAI Chat Completions transport + reasoning_content
 │   ├── provider.py           路由层：switch(api) → 对应 transport
 │   ├── compact.py            上下文压缩：estimate_tokens / summarize_history / compact_if_needed
+│   ├── subagent/             后台子 agent 编排模块
+│   │   ├── __init__.py       公开接口
+│   │   ├── types.py          SpawnParams / SubagentRunRecord / status / session key
+│   │   ├── registry.py       内存 run registry（active/all/requester 查询）
+│   │   ├── tools.py          sessions_spawn / subagents 工具定义和执行入口
+│   │   ├── runner.py         后台 isolated 子会话运行、工具过滤、auto-announce
+│   │   └── announce.py       子 agent 完成消息构造和显示格式
 │   ├── loop.py               agent_loop（spine）
 │   ├── cli.py                rich REPL + 工具面板 + 会话管理
 │   └── session/              会话持久化模块（按 agent 隔离）
@@ -423,7 +454,11 @@ nano-openclaw/
     ├── test_web_search.py      Web 搜索单测（DDGS 搜索 + 缓存 + 外部内容包装）
     ├── test_web_fetch.py       Web 抓取单测（HTML 提取 + markdown 转换 + SSRF 防护 + 缓存）
     ├── test_ssrf_guard.py      SSRF 防护单测（预 DNS 黑名单 + 后 DNS 私有 IP 验证）
-    └── test_external_content.py 外部内容包装单测（边界标记 + LLM token 清洗）
+    ├── test_external_content.py 外部内容包装单测（边界标记 + LLM token 清洗）
+    ├── test_subagent_types.py   Subagent 类型和 session key 单测
+    ├── test_subagent_registry.py Subagent registry 单测
+    ├── test_subagent_announce.py Subagent auto-announce 单测
+    └── test_subagent_approvals.py 后台子 agent 审批拒绝语义单测
 ```
 
 ## License

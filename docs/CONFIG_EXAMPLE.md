@@ -180,6 +180,7 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `context.budget` | number | `100000` | 上下文 token 预算 |
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
+| `subagents` | object | 见下方 | 后台子 agent 编排配置 |
 
 ### tools — 工具配置
 
@@ -260,6 +261,27 @@ Active Memory 是可选插件，启用后在每次用户消息前自动搜索 `M
 | `"recall-heavy"` | 广泛召回：搜索所有可能相关信息 |
 | `"precision-heavy"` | 高精度召回：只返回高度置信的结果 |
 | `"preference-only"` | 偏好搜索：只搜索用户偏好（代码风格、工具选择等） |
+
+### subagents — 后台子 agent 编排配置
+
+Subagent 能力会注册两个模型工具：`sessions_spawn` 用于派生 isolated 后台子会话，`subagents` 用于按需查看当前 session 的 run 状态。CLI 也提供 `/subagents`、`/subagents all`、`/subagents kill <run_id>` 和 `/subagents kill all`。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `maxConcurrent` | number | `3` | 同时运行的子 agent 上限（范围 1-10） |
+| `maxSpawnDepth` | number | `1` | 最大派生深度；nano 固定只允许 1，避免子 agent 再派生子 agent |
+| `runTimeoutSeconds` | number | `0` | 单个子 agent 运行超时秒数；`0` 表示不超时 |
+| `archiveAfterMinutes` | number | `60` | 终态 run 保留多久后可清理；`0` 表示可立即清理 |
+| `model` | string \| null | `null` | 子 agent 默认模型；`null` 表示复用父会话模型 |
+| `thinking` | string \| null | `null` | 子 agent 默认思考等级；`null` 表示沿用模型/agent 默认解析结果 |
+
+#### 运行语义
+
+- 子 agent 继承父会话 workspace，但拥有独立 transcript/session key。
+- 目前只支持 `context: "isolated"`；`fork` 预留给未来实现。
+- 子 agent 的工具集会过滤掉 `sessions_spawn` 和 `subagents`，避免递归派生和后台会话管理。
+- 完成、失败或超时后，结果自动作为一条 user message 注入父 session；模型不需要循环调用 `subagents` 轮询。
+- 后台子 agent 不能弹出前台审批 UI；需要交互审批的工具调用会被默认拒绝。
 
 ### dreaming — Dreaming 插件配置
 
@@ -533,6 +555,37 @@ Skills 配置管理技能加载和过滤行为，对齐 openclaw 的 `skills.*` 
 提升结果写入：`workspace/MEMORY.md`（带 `<!-- dreaming:promoted -->` 注释）
 
 Dream Diary 写入：`workspace/DREAMS.md`
+
+### Subagents 配置示例
+
+```json5
+{
+  subagents: {
+    maxConcurrent: 3,
+    maxSpawnDepth: 1,
+    runTimeoutSeconds: 600,
+    archiveAfterMinutes: 60,
+    // 复用父会话模型；也可指定快速模型节省成本
+    model: null,
+    // null = 使用模型/agent 默认 thinking 解析结果
+    thinking: null,
+  },
+}
+```
+
+模型可调用的派生参数示例：
+
+```json5
+{
+  task: "阅读 README.md 并总结核心模块",
+  label: "readme-summary",
+  model: "anthropic/claude-haiku-4-5-20251001",
+  thinking: "off",
+  runTimeoutSeconds: 300,
+  cleanup: "keep",
+  context: "isolated",
+}
+```
 
 ### Skills 配置示例
 
