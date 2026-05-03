@@ -39,6 +39,9 @@ from nano_openclaw.loop import (
     Message,
     CancellationToken,
     SkillInvoked,
+    SubagentSpawned,
+    SubagentAnnounced,
+    SubagentKilled,
     ToolResult,
     TurnCancelled,
     agent_loop,
@@ -71,7 +74,7 @@ from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
 _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /active-memory \\[status|on|off|mode|style]  /dreaming \\[status|on|off|run]  — /sessions launches interactive picker"
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /subagents \\[list|kill|all]  /active-memory \\[status|on|off|mode|style]  /dreaming \\[status|on|off|run]  — /sessions launches interactive picker"
 
 
 async def repl(
@@ -90,6 +93,25 @@ async def repl(
     history: list[Message] = list(initial_history) if initial_history else []
     _load_input_history(history)
 
+    # Wire spawn context so sessions_spawn / subagents tools are callable and
+    # lifecycle events (SubagentSpawned, SubagentAnnounced, SubagentKilled) reach
+    # the console.  The stable handler lasts across turns; it receives only
+    # lifecycle events (subagent internal events are suppressed in the runner).
+    # _spawn_ctx is kept in scope so session switches can update requester_session_key.
+    _spawn_ctx: Any = None
+    if registry.get("sessions_spawn") is not None:
+        from nano_openclaw.subagent.tools import SpawnToolContext
+        _spawn_ctx = SpawnToolContext(
+            requester_session_key=session_id or cfg.session_key or "main",
+            session_dir=session_dir or Path("."),
+            workspace_dir=cfg.workspace_dir or Path("."),
+            client=client,
+            base_cfg=cfg,
+            on_event=_make_event_handler(console),
+            parent_registry=registry,
+        )
+        registry.set_spawn_tool_context(_spawn_ctx)
+
     _print_banner(console, cfg.model, registry, session_id)
 
     while True:
@@ -101,6 +123,21 @@ async def repl(
 
         if not user_input:
             continue
+
+        # Drain completed subagent results as early as possible — before any
+        # slash command handling — so results are persisted even when the user
+        # runs /save, /new, /session, /quit, etc. instead of normal input.
+        if _spawn_ctx is not None:
+            from nano_openclaw.subagent.runner import get_runner
+            _pending = get_runner().drain_announcements(_spawn_ctx.requester_session_key)
+            if _pending:
+                history.extend(_pending)
+                if transcript_writer:
+                    for _msg in _pending:
+                        transcript_writer.append_message(_msg)
+                n = len(_pending)
+                console.print(f"[dim]({n} subagent result{'s' if n > 1 else ''} added to context)[/]")
+
         if user_input in {"/quit", "/exit", "/q"}:
             console.print("[dim]bye.[/]")
             return
@@ -124,6 +161,8 @@ async def repl(
                 store = load_session_store(store_path)
                 update_session(store, session_id, model=cfg.model, message_count=0, compaction_count=0)
                 save_session_store(store_path, store)
+                if _spawn_ctx is not None:
+                    _spawn_ctx.requester_session_key = session_id
                 console.print(f"[dim]new session: {session_id[:8]}…[/]")
             else:
                 console.print("[dim](history cleared)[/]")
@@ -159,6 +198,8 @@ async def repl(
                         history.extend(new_history)
                         transcript_writer = new_writer
                         session_id = target_id
+                        if _spawn_ctx is not None:
+                            _spawn_ctx.requester_session_key = session_id
                         _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
                         _load_input_history(history)
                         _replay_history(console, history, session_id)
@@ -198,6 +239,8 @@ async def repl(
                             history.extend(new_history)
                             transcript_writer = new_writer
                             session_id = new_sid
+                            if _spawn_ctx is not None:
+                                _spawn_ctx.requester_session_key = session_id
                             _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
                             _load_input_history(history)
                             _replay_history(console, history, session_id)
@@ -209,6 +252,9 @@ async def repl(
             continue
         if user_input.startswith("/dreaming"):
             await _handle_dreaming_command(console, user_input, cfg, client)
+            continue
+        if user_input.startswith("/subagents"):
+            await _handle_subagents_command(console, user_input, cfg, client)
             continue
 
         on_event = _make_event_handler(console)
@@ -446,6 +492,34 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             if result.context:
                 cached_str = ", cached" if result.cached else ""
                 console.print(f"[dim]Active Memory: {result.elapsed_ms}ms{cached_str}[/]")
+
+        elif isinstance(event, SubagentSpawned):
+            label = event.label or event.task[:50]
+            if len(event.task) > 50 and not event.label:
+                label += "..."
+            console.print(f"[magenta]subagent spawned:[/] {markup.escape(label)} (run: {event.run_id})")
+
+        elif isinstance(event, SubagentAnnounced):
+            status_icon = {"completed": "✓", "error": "✗", "timeout": "⏱", "killed": "💀"}.get(event.status, "?")
+            elapsed_str = f" ({event.elapsed_ms / 1000:.1f}s)" if event.elapsed_ms else ""
+            label = event.task[:50]
+            if len(event.task) > 50:
+                label += "..."
+            console.print(
+                Panel.fit(
+                    Text.from_markup(
+                        f"[bold]Subagent {status_icon}[/] {markup.escape(label)}{elapsed_str}\n"
+                        f"Run ID: [dim]{event.run_id}[/]\n"
+                        f"Status: [cyan]{event.status}[/]"
+                        + (f"\nResult: {markup.escape(event.result_text[:200])}{'...' if event.result_text and len(event.result_text) > 200 else ''}" if event.result_text else "")
+                        + (f"\n[red]Error: {markup.escape(event.error_message)}[/]" if event.error_message else ""),
+                    ),
+                    border_style="magenta",
+                )
+            )
+
+        elif isinstance(event, SubagentKilled):
+            console.print(f"[yellow]subagent killed:[/] run {event.run_id} - {markup.escape(event.task[:40])}")
 
     return handle
 
@@ -1218,4 +1292,143 @@ async def _handle_dreaming_command(
         "  /dreaming off - Disable\n"
         "  /dreaming run - Run sweep now\n"
         "  /dreaming status - Detailed candidate list[/]"
+    )
+
+
+async def _handle_subagents_command(
+    console: Console,
+    user_input: str,
+    cfg: LoopConfig,
+    client: Any,
+) -> None:
+    """Handle /subagents command for listing and controlling subagent runs."""
+    from nano_openclaw.subagent import get_runner, SubagentStatus
+
+    parts = user_input.strip().split()
+    runner = get_runner()
+
+    if len(parts) == 1 or parts[1].lower() == "list":
+        runs = runner.registry.list_active()
+        if not runs:
+            console.print("[dim]No active subagent runs[/]")
+            return
+
+        table = Table(title="Active Subagent Runs", border_style="magenta")
+        table.add_column("Run ID", style="cyan", width=10)
+        table.add_column("Task", style="white", width=40)
+        table.add_column("Status", style="yellow", width=10)
+        table.add_column("Elapsed", style="dim", width=12)
+
+        for run in runs:
+            elapsed = ""
+            if run.elapsed_ms:
+                elapsed_sec = run.elapsed_ms / 1000
+                if elapsed_sec < 60:
+                    elapsed = f"{elapsed_sec:.1f}s"
+                else:
+                    elapsed = f"{int(elapsed_sec / 60)}m {int(elapsed_sec % 60)}s"
+
+            task_preview = run.label or run.task[:40]
+            if len(run.task) > 40 and not run.label:
+                task_preview += "..."
+
+            status_icon = {
+                SubagentStatus.PENDING: "⏳",
+                SubagentStatus.RUNNING: "🔄",
+                SubagentStatus.COMPLETED: "✓",
+                SubagentStatus.ERROR: "✗",
+                SubagentStatus.TIMEOUT: "⏱",
+                SubagentStatus.KILLED: "💀",
+            }.get(run.status, "?")
+
+            table.add_row(
+                run.run_id,
+                markup.escape(task_preview),
+                f"{status_icon} {run.status.value}",
+                elapsed,
+            )
+
+        console.print(table)
+        console.print("[dim]Use /subagents kill <run_id> to stop a run[/]")
+        return
+
+    if parts[1].lower() == "all":
+        runs = runner.registry.list_all()
+        if not runs:
+            console.print("[dim]No subagent runs (including terminated)[/]")
+            return
+
+        table = Table(title="All Subagent Runs", border_style="magenta")
+        table.add_column("Run ID", style="cyan", width=10)
+        table.add_column("Task", style="white", width=40)
+        table.add_column("Status", style="yellow", width=12)
+        table.add_column("Elapsed", style="dim", width=12)
+        table.add_column("Ended", style="dim", width=16)
+
+        for run in runs:
+            elapsed = ""
+            if run.elapsed_ms:
+                elapsed_sec = run.elapsed_ms / 1000
+                if elapsed_sec < 60:
+                    elapsed = f"{elapsed_sec:.1f}s"
+                else:
+                    elapsed = f"{int(elapsed_sec / 60)}m {int(elapsed_sec % 60)}s"
+
+            task_preview = run.label or run.task[:40]
+            if len(run.task) > 40 and not run.label:
+                task_preview += "..."
+
+            ended = ""
+            if run.ended_at:
+                ended = run.ended_at.strftime("%H:%M:%S")
+
+            status_icon = {
+                SubagentStatus.PENDING: "⏳",
+                SubagentStatus.RUNNING: "🔄",
+                SubagentStatus.COMPLETED: "✓",
+                SubagentStatus.ERROR: "✗",
+                SubagentStatus.TIMEOUT: "⏱",
+                SubagentStatus.KILLED: "💀",
+            }.get(run.status, "?")
+
+            table.add_row(
+                run.run_id,
+                markup.escape(task_preview),
+                f"{status_icon} {run.status.value}",
+                elapsed,
+                ended,
+            )
+
+        console.print(table)
+        return
+
+    if parts[1].lower() == "kill":
+        if len(parts) < 3:
+            console.print("[dim]Usage: /subagents kill <run_id|all>[/]")
+            return
+
+        target = parts[2].lower()
+
+        if target == "all":
+            killed = await runner.kill_all()
+            if killed:
+                console.print(f"[dim]Killed {len(killed)} subagent run(s): {', '.join(killed)}[/]")
+            else:
+                console.print("[dim]No active subagent runs to kill[/]")
+            return
+
+        success = await runner.kill(target)
+        if success:
+            console.print(f"[dim]Killed subagent run: {target}[/]")
+        else:
+            console.print(f"[dim]Run {target} not found or already terminated[/]")
+        return
+
+    console.print(
+        "[dim]Usage:\n"
+        "  /subagents - List active runs\n"
+        "  /subagents list - List active runs\n"
+        "  /subagents all - List all runs (including terminated)\n"
+        "  /subagents kill <run_id> - Kill a specific run\n"
+        "  /subagents kill all - Kill all active runs[/]"
     )

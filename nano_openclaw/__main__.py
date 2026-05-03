@@ -47,7 +47,7 @@ from nano_openclaw.session import (
     resolve_agent_sessions_dir,
     resolve_session_store_path,
 )
-from nano_openclaw.tools import ToolRegistry, build_default_registry
+from nano_openclaw.tools import ToolRegistry, build_default_registry, build_registry_with_subagent_tools
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.exec_approvals import load_exec_approvals
 from rich.console import Console
@@ -162,7 +162,7 @@ async def _async_main(
 ) -> None:
     client = _build_client(api, api_key, base_url)
     no_tools = config.noTools or config.tools.noTools
-    registry = ToolRegistry() if no_tools else build_default_registry(config.tools)
+    registry = ToolRegistry() if no_tools else build_registry_with_subagent_tools(config.tools)
 
     # Initialize MCP runtime (now async)
     mcp_runtime = None
@@ -294,6 +294,19 @@ async def _async_main(
     dreaming_task = None
     if dreaming_cfg.enabled and workspace_dir:
         dreaming_task = start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, _dreaming_stop)
+
+    # Wire config.subagents to the global SubagentRunner before the REPL starts.
+    if not no_tools:
+        from nano_openclaw.subagent.runner import get_runner
+        from nano_openclaw.subagent.types import SubagentConfig as _SubagentConfig
+        get_runner(_SubagentConfig(
+            max_concurrent=config.subagents.maxConcurrent,
+            max_spawn_depth=config.subagents.maxSpawnDepth,
+            run_timeout_seconds=config.subagents.runTimeoutSeconds,
+            archive_after_minutes=config.subagents.archiveAfterMinutes,
+            model=config.subagents.model,
+            thinking=config.subagents.thinking.value if config.subagents.thinking else None,
+        ))
 
     try:
         await repl(

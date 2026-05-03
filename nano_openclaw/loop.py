@@ -140,6 +140,33 @@ class SkillInvoked:
     skill_path: str
 
 
+@dataclass
+class SubagentSpawned:
+    """Event when a subagent is spawned."""
+    run_id: str
+    task: str
+    label: Optional[str] = None
+    model: Optional[str] = None
+
+
+@dataclass
+class SubagentAnnounced:
+    """Event when a subagent completes and announces result."""
+    run_id: str
+    status: str
+    task: str
+    result_text: Optional[str] = None
+    elapsed_ms: Optional[int] = None
+    error_message: Optional[str] = None
+
+
+@dataclass
+class SubagentKilled:
+    """Event when a subagent is killed."""
+    run_id: str
+    task: str
+
+
 # Thinking level type (mirrors openclaw ThinkLevel)
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]
 
@@ -197,6 +224,8 @@ class LoopConfig:
     active_memory_config: ActiveMemoryConfig | None = None  # None = disabled
     # Dreaming configuration (mirrors openclaw memory-core dreaming)
     dreaming_config: DreamingConfig | None = None  # None = disabled
+    # If set, bypasses build_system_prompt() entirely (used by subagent runner)
+    system_prompt_override: str | None = None
 
     @property
     def model_has_vision(self) -> bool:
@@ -337,14 +366,17 @@ async def agent_loop(
             if recall_result.context:
                 active_memory_context = recall_result.context
 
-    system = build_system_prompt(
-        registry,
-        cfg.workspace_dir,
-        bootstrap_files,
-        visible_skills,
-        max_skills_in_prompt=cfg.max_skills_in_prompt,
-        max_skills_prompt_chars=cfg.max_skills_prompt_chars,
-    )
+    if cfg.system_prompt_override is not None:
+        system = cfg.system_prompt_override
+    else:
+        system = build_system_prompt(
+            registry,
+            cfg.workspace_dir,
+            bootstrap_files,
+            visible_skills,
+            max_skills_in_prompt=cfg.max_skills_in_prompt,
+            max_skills_prompt_chars=cfg.max_skills_prompt_chars,
+        )
 
     # Inject Active Memory context if available
     if active_memory_context:

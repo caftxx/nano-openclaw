@@ -59,6 +59,50 @@ Constraints: never load more than one skill up front; only load after selecting.
 """
 
 
+def _build_subagent_section(registry: ToolRegistry) -> str:
+    """Dynamically build the sub-agent orchestration section.
+
+    Mirrors openclaw system-prompt.ts buildMessagingSection() and the Tooling
+    paragraph that says 'If a task is more complex or takes longer, spawn a
+    sub-agent. Completion is push-based: it will auto-announce when done.'
+
+    Only injected when sessions_spawn and/or subagents tools are present.
+    """
+    has_spawn = registry.get("sessions_spawn") is not None
+    has_manage = registry.get("subagents") is not None
+
+    if not has_spawn and not has_manage:
+        return ""
+
+    lines = ["## Sub-Agent Orchestration"]
+
+    if has_spawn and has_manage:
+        lines.append(
+            "- Sub-agent orchestration → use `sessions_spawn(...)` to delegate complex, "
+            "slow, or parallelizable work to a fresh isolated child session; "
+            "use `subagents` only for on-demand status checks, debugging, or to kill a run."
+        )
+    elif has_spawn:
+        lines.append(
+            "- Use `sessions_spawn(...)` to delegate complex, slow, or parallelizable work "
+            "to a fresh isolated child session."
+        )
+    else:
+        lines.append("- Use `subagents` for on-demand status checks, debugging, or to kill a run.")
+
+    lines += [
+        "- **When to spawn**: task is complex, slow, or can run in parallel with the current session.",
+        "- **Completion is push-based**: results arrive as a user message automatically — "
+        "do NOT poll `subagents` in a loop; only check on-demand.",
+        "- **Default context is isolated** (fresh transcript). "
+        "Sub-agents inherit the workspace directory.",
+        "- After spawning, continue other work or wait; the completion message will arrive in "
+        "the next user turn.",
+    ]
+
+    return "\n".join(lines)
+
+
 def _build_project_context_section(
     files: list[WorkspaceBootstrapFile],
 ) -> str:
@@ -180,6 +224,10 @@ def build_system_prompt(
         prompt += project_context + "\n"
 
     prompt += tools_block + "\n"
+
+    subagent_section = _build_subagent_section(registry)
+    if subagent_section:
+        prompt += "\n" + subagent_section + "\n"
 
     # Memory tool guidance (after tools section)
     prompt += _MEMORY_TOOL_GUIDANCE + "\n"

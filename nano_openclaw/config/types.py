@@ -350,6 +350,18 @@ class DreamingConfigInput(BaseModel):
     model: Optional[str] = Field(default=None, description="Model override for Dream Diary generation")
 
 
+class SubagentConfigInput(BaseModel):
+    """Subagent configuration, aligns with openclaw agents.defaults.subagents."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    maxConcurrent: int = Field(default=3, ge=1, le=10, description="Max concurrent subagent runs")
+    maxSpawnDepth: int = Field(default=1, ge=1, le=1, description="Max nesting depth (always 1 for nano)")
+    runTimeoutSeconds: int = Field(default=0, ge=0, description="Run timeout in seconds (0 = no timeout)")
+    archiveAfterMinutes: int = Field(default=60, ge=0, description="Auto-archive delay in minutes")
+    model: Optional[str] = Field(default=None, description="Default model for subagents")
+    thinking: Optional[ThinkingLevel] = Field(default=None, description="Default thinking level for subagents")
+
+
 # ============================================================================
 # MCP Types (aligns with openclaw types.mcp.ts)
 # ============================================================================
@@ -448,6 +460,10 @@ class NanoOpenClawConfig(BaseModel):
     dreaming: DreamingConfigInput = Field(
         default_factory=DreamingConfigInput,
         description="Dreaming plugin configuration (background memory consolidation)"
+    )
+    subagents: SubagentConfigInput = Field(
+        default_factory=SubagentConfigInput,
+        description="Subagent configuration (background agent runs)"
     )
 
     def resolve_primary_model(self, agent_id: Optional[str] = None) -> str:

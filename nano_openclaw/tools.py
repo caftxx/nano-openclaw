@@ -45,6 +45,7 @@ class ToolRegistry:
     approval_manager: Optional[ApprovalManager] = field(default=None)
     console: Optional[Console] = field(default=None)
     _workspace_dir: str | None = field(default=None)
+    _spawn_tool_context: Optional[Any] = field(default=None)  # SpawnToolContext
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -58,6 +59,9 @@ class ToolRegistry:
 
     def set_workspace_dir(self, workspace_dir: str | Path) -> None:
         self._workspace_dir = str(workspace_dir)
+
+    def set_spawn_tool_context(self, context: Any) -> None:
+        self._spawn_tool_context = context
 
     def names(self) -> list[str]:
         return list(self._tools.keys())
@@ -126,6 +130,10 @@ class ToolRegistry:
                 raw = tool.run(args, workspace_dir=self._workspace_dir)
             elif name in ("memory_get", "memory_search"):
                 raw = tool.run(args, workspace_dir=self._workspace_dir)
+            elif name in ("sessions_spawn", "subagents"):
+                if self._spawn_tool_context is None:
+                    return _error_result(tool_use_id, f"tool {name!r} requires spawn context (not configured)")
+                raw = tool.run(args, context=self._spawn_tool_context)
             else:
                 raw = tool.run(args)
 
@@ -524,4 +532,17 @@ def build_default_registry(tools_config: "ToolsConfig | None" = None) -> ToolReg
     registry = ToolRegistry()
     for tool in _build_builtin_tools(tools_config):
         registry.register(tool)
+    return registry
+
+
+def build_registry_with_subagent_tools(
+    tools_config: "ToolsConfig | None" = None,
+) -> ToolRegistry:
+    """Build registry including subagent tools (sessions_spawn, subagents)."""
+    registry = build_default_registry(tools_config)
+    
+    from nano_openclaw.subagent.tools import build_spawn_tool, build_subagents_tool
+    registry.register(build_spawn_tool())
+    registry.register(build_subagents_tool())
+    
     return registry
