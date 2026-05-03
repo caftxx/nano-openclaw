@@ -181,6 +181,47 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
 
+### tools — 工具配置
+
+`tools` 配置控制内置工具的启用和参数，对齐 openclaw 的 `tools.*` 配置。
+
+#### tools.noTools
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `noTools` | boolean | `false` | 禁用所有工具，纯对话模式（与顶层 `noTools` 等效） |
+
+#### tools.web — Web 工具配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `web.search` | object | — | web_search 工具配置（见下方说明） |
+| `web.fetch` | object | — | web_fetch 工具配置（见下方说明） |
+
+#### tools.web.search — Web 搜索配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `search.enabled` | boolean | `true` | 是否启用 web_search 工具 |
+| `search.maxResults` | number | `10` | 最大搜索结果数（范围 1-50） |
+| `search.region` | string | `"wt-wt"` | DuckDuckGo 区域代码 |
+
+**常见 region 值**：`wt-wt`（全球）、`us-en`（美国）、`uk-en`（英国）、`de-de`（德国）、`fr-fr`（法国）、`zh-cn`（中国）、`ja-jp`（日本）。
+
+#### tools.web.fetch — Web 抓取配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `fetch.enabled` | boolean | `true` | 是否启用 web_fetch 工具 |
+| `fetch.maxChars` | number | `20000` | 最大返回字符数（范围 100-500000） |
+| `fetch.maxRedirects` | number | `3` | 最大重定向次数（范围 0-10） |
+| `fetch.timeoutSeconds` | number | `30` | 请求超时秒数（范围 1-120） |
+| `fetch.extractMode` | string | `"markdown"` | 提取模式：`markdown` \| `text` |
+
+**SSRF 防护**：web_fetch 内置两阶段 SSRF 防护。Phase 1（预 DNS）：检查字面私有 IP 和已知黑名单 hostname（localhost、*.local、*.internal）。Phase 2（后 DNS）：DNS 解析后验证所有返回 IP 不是私有/内部地址。任何违规都会返回错误而非访问。
+
+**外部内容安全**：web_search 和 web_fetch 的返回内容都通过 `wrap_external_content()` 包装，添加 `<EXTERNAL_UNTRUSTED_CONTENT>` 边界标记并清洗 LLM 特殊 token（如 `<antThinking>`、`</think>`、`[INST]` 等），防止 prompt injection 攻击。
+
 ### activeMemory — Active Memory 插件配置
 
 Active Memory 是可选插件，启用后在每次用户消息前自动搜索 `MEMORY.md` 和 `memory/*.md`，将相关记忆注入系统提示，让 agent 自动记住偏好和历史。
@@ -548,6 +589,52 @@ Dream Diary 写入：`workspace/DREAMS.md`
     },
     // 会话空闲超时（可选）
     // sessionIdleTtlMs: 300000, // 5 分钟
+  },
+}
+```
+
+### Web 工具配置示例
+
+```json5
+{
+  agents: {
+    defaults: {
+      model: "anthropic/claude-sonnet-4-5-20250929",
+      workspace: "./workspace",
+    },
+  },
+  tools: {
+    // 禁用所有工具（等效于顶层 noTools）
+    // noTools: false,
+
+    web: {
+      // Web 搜索配置
+      search: {
+        enabled: true,
+        maxResults: 15,        // 最多返回 15 条结果
+        region: "zh-cn",       // 中文搜索结果
+      },
+      // Web 抓取配置
+      fetch: {
+        enabled: true,
+        maxChars: 30000,       // 最多返回 30K 字符
+        maxRedirects: 5,       // 最多跟随 5 次重定向
+        timeoutSeconds: 45,    // 45 秒超时
+        extractMode: "markdown", // 提取为 markdown 格式（可选 text）
+      },
+    },
+  },
+}
+```
+
+**禁用特定 Web 工具**：
+
+```json5
+{
+  tools: {
+    web: {
+      search: { enabled: false },  // 禁用搜索，但保留 fetch
+    },
   },
 }
 ```

@@ -155,6 +155,7 @@
   // ==========================================
 
   // 禁用工具，纯对话模式（默认 false）
+  // 等效于 tools.noTools
   noTools: false,
 
   // 每轮用户输入最大工具调用次数（默认 12）
@@ -280,6 +281,31 @@
   //   },
   //   // 会话空闲超时（可选）
   //   // sessionIdleTtlMs: 300000,
+  // },
+
+  // ==========================================
+  // Web 工具配置（默认启用）
+  // ==========================================
+  // web_search（DuckDuckGo 搜索）和 web_fetch（URL 内容抓取）默认启用。
+  // 可通过 tools.web 单独控制或禁用。
+  // 外部内容带有 <EXTERNAL_UNTRUSTED_CONTENT> 安全包装，web_fetch 内置 SSRF 防护。
+  //
+  // 取消注释并修改以自定义：
+  // tools: {
+  //   web: {
+  //     search: {
+  //       enabled: true,
+  //       maxResults: 10,       // 最多搜索结果数（1-50）
+  //       region: "wt-wt",      // 搜索区域：wt-wt=全球, zh-cn=中国, us-en=美国
+  //     },
+  //     fetch: {
+  //       enabled: true,
+  //       maxChars: 20000,      // 最大返回字符数（100-500000）
+  //       maxRedirects: 3,      // 最大重定向次数（0-10）
+  //       timeoutSeconds: 30,   // 请求超时秒数（1-120）
+  //       extractMode: "markdown", // 提取模式：markdown | text
+  //     },
+  //   },
   // },
 
 }
