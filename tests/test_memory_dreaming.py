@@ -21,6 +21,9 @@ from nano_openclaw.memory.dreaming import (
     DreamingConfig,
     DreamingState,
     ShortTermRecallEntry,
+    _last_cron_occurrence,
+    _next_cron_occurrence,
+    _parse_cron_field,
     get_dreaming_status,
     is_dreaming_due,
     load_dreaming_state,
@@ -152,14 +155,84 @@ class TestIsDreamingDue:
         # Instead test with a past last_run (yesterday) and hour=0, minute=0 (always past)
         assert is_dreaming_due("0 0 * * *", yesterday) is True
 
-    def test_unsupported_cron_format(self):
-        assert is_dreaming_due("*/5 * * * *", None) is False
+    def test_step_minute_never_run(self):
+        # */5 * * * * is now supported — always due when never run
+        assert is_dreaming_due("*/5 * * * *", None) is True
+
+    def test_step_hour_never_run(self):
+        assert is_dreaming_due("0 */3 * * *", None) is True
+
+    def test_step_both_never_run(self):
+        assert is_dreaming_due("*/5 */3 * * *", None) is True
+
+    def test_step_minute_just_ran(self):
+        # ran less than 5 minutes ago — should not be due
+        just_now = datetime.now().isoformat()
+        assert is_dreaming_due("*/5 * * * *", just_now) is False
+
+    def test_unsupported_cron_format_with_day_field(self):
+        # day-of-month field set — not supported, should return False
+        assert is_dreaming_due("0 3 1 * *", None) is False
 
     def test_malformed_last_run_treated_as_never(self):
         assert is_dreaming_due("0 0 * * *", "not-a-date") is True
 
     def test_invalid_cron_fields(self):
         assert is_dreaming_due("abc def * * *", None) is False
+
+
+# ============================================================================
+# _parse_cron_field / _last_cron_occurrence / _next_cron_occurrence tests
+# ============================================================================
+
+class TestCronHelpers:
+    def test_parse_wildcard(self):
+        assert _parse_cron_field("*", 0, 5) == [0, 1, 2, 3, 4, 5]
+
+    def test_parse_step(self):
+        assert _parse_cron_field("*/5", 0, 59) == list(range(0, 60, 5))
+
+    def test_parse_exact(self):
+        assert _parse_cron_field("3", 0, 23) == [3]
+
+    def test_last_occurrence_exact(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _last_cron_occurrence("0 3 * * *", now)
+        assert result == datetime(2026, 5, 3, 3, 0)
+
+    def test_last_occurrence_step_minute(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _last_cron_occurrence("*/5 * * * *", now)
+        assert result == datetime(2026, 5, 3, 14, 35)
+
+    def test_last_occurrence_step_hour(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _last_cron_occurrence("0 */3 * * *", now)
+        assert result == datetime(2026, 5, 3, 12, 0)
+
+    def test_last_occurrence_step_both(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _last_cron_occurrence("*/5 */3 * * *", now)
+        assert result == datetime(2026, 5, 3, 12, 55)
+
+    def test_next_occurrence_exact(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _next_cron_occurrence("0 3 * * *", now)
+        assert result == datetime(2026, 5, 4, 3, 0)
+
+    def test_next_occurrence_step_minute(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _next_cron_occurrence("*/5 * * * *", now)
+        assert result == datetime(2026, 5, 3, 14, 40)
+
+    def test_next_occurrence_step_hour(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        result = _next_cron_occurrence("0 */3 * * *", now)
+        assert result == datetime(2026, 5, 3, 15, 0)
+
+    def test_next_occurrence_unsupported_returns_none(self):
+        now = datetime(2026, 5, 3, 14, 37)
+        assert _next_cron_occurrence("0 3 1 * *", now) is None
 
 
 # ============================================================================

@@ -177,35 +177,82 @@ def track_recall(
 # Scheduling
 # ============================================================================
 
+def _parse_cron_field(field: str, min_val: int, max_val: int) -> list[int]:
+    """Parse a single cron field into a sorted list of matching integers.
+
+    Supports: '*' (all), '*/n' (step), 'n' (exact value).
+    """
+    if field == "*":
+        return list(range(min_val, max_val + 1))
+    if field.startswith("*/"):
+        step = int(field[2:])
+        return list(range(min_val, max_val + 1, step))
+    return [int(field)]
+
+
+def _last_cron_occurrence(frequency: str, now: datetime) -> datetime | None:
+    """Return the most recent scheduled datetime at or before now.
+
+    Only supports "minute hour * * *" format (day/month/weekday must be '*').
+    """
+    parts = frequency.strip().split()
+    if len(parts) < 5 or parts[2] != "*" or parts[3] != "*" or parts[4] != "*":
+        return None
+    try:
+        hours = _parse_cron_field(parts[1], 0, 23)
+        minutes = _parse_cron_field(parts[0], 0, 59)
+    except (ValueError, IndexError):
+        return None
+
+    for days_back in range(2):
+        check_date = (now - timedelta(days=days_back)).date()
+        for h in reversed(hours):
+            for m in reversed(minutes):
+                candidate = datetime(check_date.year, check_date.month, check_date.day, h, m)
+                if candidate <= now:
+                    return candidate
+    return None
+
+
+def _next_cron_occurrence(frequency: str, now: datetime) -> datetime | None:
+    """Return the next scheduled datetime strictly after now."""
+    parts = frequency.strip().split()
+    if len(parts) < 5 or parts[2] != "*" or parts[3] != "*" or parts[4] != "*":
+        return None
+    try:
+        hours = _parse_cron_field(parts[1], 0, 23)
+        minutes = _parse_cron_field(parts[0], 0, 59)
+    except (ValueError, IndexError):
+        return None
+
+    for days_ahead in range(2):
+        check_date = (now + timedelta(days=days_ahead)).date()
+        for h in hours:
+            for m in minutes:
+                candidate = datetime(check_date.year, check_date.month, check_date.day, h, m)
+                if candidate > now:
+                    return candidate
+    return None
+
+
 def is_dreaming_due(frequency: str, last_run_at: str | None) -> bool:
     """Return True if a dreaming sweep is due.
 
-    Supports "minute hour * * *" cron format (openclaw default: "0 3 * * *").
-    Triggers when last_run_at is from a prior day AND current time >= scheduled time.
+    Supports "minute hour * * *" cron format including step expressions
+    (e.g. "*/5 * * * *", "0 */3 * * *", "*/5 */3 * * *").
+    Triggers when the most recent scheduled occurrence has not yet been run.
     """
     now = datetime.now()
-
-    if last_run_at:
-        try:
-            last = datetime.fromisoformat(last_run_at)
-            if last.date() >= now.date():
-                return False
-        except (ValueError, TypeError):
-            pass
-
-    parts = frequency.strip().split()
-    if len(parts) >= 5 and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
-        try:
-            scheduled_min = int(parts[0])
-            scheduled_hour = int(parts[1])
-            scheduled_time = now.replace(
-                hour=scheduled_hour, minute=scheduled_min, second=0, microsecond=0
-            )
-            return now >= scheduled_time
-        except (ValueError, IndexError):
-            pass
-
-    return False
+    last_occurrence = _last_cron_occurrence(frequency, now)
+    if last_occurrence is None:
+        return False
+    if last_run_at is None:
+        return True
+    try:
+        last = datetime.fromisoformat(last_run_at)
+        return last < last_occurrence
+    except (ValueError, TypeError):
+        return True
 
 
 def update_last_run_at(workspace_dir: str) -> None:
@@ -217,26 +264,14 @@ def update_last_run_at(workspace_dir: str) -> None:
 def next_scheduled_seconds(frequency: str) -> float:
     """Return seconds until next scheduled run based on cron frequency.
 
-    Supports "minute hour * * *" format only. If the scheduled time for today
-    has already passed, returns seconds until tomorrow's scheduled time.
+    Supports "minute hour * * *" format including step expressions like */5.
     Falls back to 86400 (24h) for unsupported formats.
     """
     now = datetime.now()
-    parts = frequency.strip().split()
-    if len(parts) >= 5 and parts[2] == "*" and parts[3] == "*" and parts[4] == "*":
-        try:
-            scheduled_min = int(parts[0])
-            scheduled_hour = int(parts[1])
-            today_run = now.replace(
-                hour=scheduled_hour, minute=scheduled_min, second=0, microsecond=0
-            )
-            if now < today_run:
-                return (today_run - now).total_seconds()
-            else:
-                return (today_run + timedelta(days=1) - now).total_seconds()
-        except (ValueError, IndexError):
-            pass
-    return 86400.0
+    next_occ = _next_cron_occurrence(frequency, now)
+    if next_occ is None:
+        return 86400.0
+    return (next_occ - now).total_seconds()
 
 
 def start_dreaming_scheduler(
