@@ -545,9 +545,10 @@ def _save_session_now(
 
 def _load_input_history(messages: list[Message]) -> None:
     """Populate prompt_toolkit history from session's user messages."""
-    # InMemoryHistory has no clear(); rebuild by replacing the internal list
-    strings = _pt_history.get_strings()
-    strings.clear()
+    global _pt_history
+    # get_strings() returns a reversed copy, not the internal list; create a
+    # fresh instance instead so the old session's history is fully replaced.
+    texts: list[str] = []
     for msg in messages:
         if msg.role != "user":
             continue
@@ -557,7 +558,8 @@ def _load_input_history(messages: list[Message]) -> None:
             if b.get("type") == "text"
         ).strip()
         if text:
-            strings.append(text)
+            texts.append(text)
+    _pt_history = _InMemoryHistory(history_strings=texts)
 
 
 def _repl_input(_console: Console) -> str:
