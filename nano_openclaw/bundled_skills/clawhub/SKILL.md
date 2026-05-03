@@ -14,6 +14,7 @@ Search, install, and uninstall skills from the ClawHub registry (https://clawhub
 ## CLI Tool
 
 This skill includes `scripts/clawhub_api.py` — a CLI tool to manage ClawHub skills.
+The CLI is non-interactive: if overwrite or removal confirmation is needed, it tells you to ask the user first, then rerun with the required flag only after the user confirms.
 
 ### Usage
 
@@ -36,7 +37,7 @@ python scripts/clawhub_api.py <command> [options]
 Search for skills matching a query:
 
 ```bash
-python bundled_skills/clawhub/scripts/clawhub_api.py search "calendar"
+python scripts/clawhub_api.py search "calendar"
 ```
 
 Output shows: `slug`, `displayName`, `summary`
@@ -48,38 +49,36 @@ Display results to user and ask which skill to install.
 Install selected skill to workspace:
 
 ```bash
-python bundled_skills/clawhub/scripts/clawhub_api.py install <slug> --workspace <workspace_dir>
+python scripts/clawhub_api.py install <slug> --workspace <workspace_dir>
 ```
 
 **Behavior:**
-- If skill already installed → CLI prompts: `Overwrite? [y/N]:`
-- User confirms → skill downloads and extracts
+- If skill already installed without `--overwrite` → CLI exits and tells you to ask the user whether replacement is OK
 - Installs to `<workspace>/skills/<slug>/`
-- Use `--overwrite` flag to skip confirmation
+- Use `--overwrite` only after the user confirms replacement
 
 ### 3. Uninstall Skill
 
 Remove an installed skill:
 
 ```bash
-python bundled_skills/clawhub/scripts/clawhub_api.py uninstall <slug> --workspace <workspace_dir>
+python scripts/clawhub_api.py uninstall <slug> --workspace <workspace_dir>
 ```
 
 **Behavior:**
-- CLI prompts: `Remove? [y/N]:`
-- User confirms → skill directory deleted
-- Use `--yes` or `-y` to skip confirmation
+- Without `--yes` or `-y` → CLI exits and tells you to ask the user whether removal is OK
+- With `--yes` → skill directory deleted
 
-## User Confirmations
+## Non-Interactive Confirmations
 
-Both install (overwrite) and uninstall require user confirmation:
+Install overwrite and uninstall are explicit, non-interactive operations:
 
 | Command | Prompt | Skip Flag |
 |---------|--------|-----------|
-| `install` | `Overwrite? [y/N]:` | `--overwrite` |
-| `uninstall` | `Remove? [y/N]:` | `--yes` or `-y` |
+| `install` | exits with rerun instruction | `--overwrite` |
+| `uninstall` | exits with rerun instruction | `--yes` or `-y` |
 
-**The CLI handles prompts automatically.** Just run the command and let user respond.
+**The CLI never waits for stdin.** Agents should inspect the output, ask the user for confirmation, and rerun with the requested flag only after the user agrees.
 
 ## Installation Path
 

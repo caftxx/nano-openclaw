@@ -1,5 +1,9 @@
 """ClawHub CLI tool.
 
+This CLI is intentionally non-interactive. When a destructive action needs
+confirmation, it prints the required retry flag and exits instead of waiting
+for stdin.
+
 Usage:
     python clawhub_api.py search <query> [--limit 10]
     python clawhub_api.py install <slug> --workspace <dir> [--overwrite]
@@ -177,16 +181,14 @@ def cmd_install(args: argparse.Namespace) -> None:
     target = ws / "skills" / args.slug
 
     if target.exists() and not args.overwrite:
-        print(f"Skill '{args.slug}' already installed at {target}")
-        try:
-            resp = input("Overwrite? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\nCancelled.")
-            return
-        if resp != "y":
-            print("Cancelled.")
-            return
-        args.overwrite = True
+        print(f"Skill '{args.slug}' already installed at {target}", file=sys.stderr)
+        print("User confirmation required before replacing the existing skill.", file=sys.stderr)
+        print(
+            f"If the user confirms, re-run with --overwrite: "
+            f"install {args.slug} --workspace {ws} --overwrite",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     print(f"Installing '{args.slug}'...")
     success, msg = install_skill(args.slug, ws, overwrite=args.overwrite)
@@ -211,15 +213,14 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         return
 
     if not args.yes:
-        print(f"Skill '{args.slug}' is installed at {target}")
-        try:
-            resp = input("Remove? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\nCancelled.")
-            return
-        if resp != "y":
-            print("Cancelled.")
-            return
+        print(f"Skill '{args.slug}' is installed at {target}", file=sys.stderr)
+        print("User confirmation required before removing the installed skill.", file=sys.stderr)
+        print(
+            f"If the user confirms, re-run with --yes: "
+            f"uninstall {args.slug} --workspace {ws} --yes",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     success, msg = uninstall_skill(args.slug, ws)
     if success:
