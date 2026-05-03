@@ -86,6 +86,8 @@ def build_slash_command_context(command: SlashCommand) -> str:
         f"[Skill invoked: {command.name}]",
         "",
         f"Skill file location: {command.skill.filePath}",
+        f"Skill directory: {command.skill.baseDir}",
+        "Resolve any relative paths mentioned by the skill against the skill directory.",
         "",
         "Skill instructions:",
     ]

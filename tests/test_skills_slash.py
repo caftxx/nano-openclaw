@@ -97,6 +97,8 @@ def test_build_slash_command_context():
     
     assert "[Skill invoked: github]" in context
     assert "/skills/github/SKILL.md" in context
+    assert "Skill directory: /skills/github" in context
+    assert "Resolve any relative paths mentioned by the skill against the skill directory." in context
     assert "Use gh CLI for GitHub operations." in context
     assert "User arguments: create PR" in context
 
