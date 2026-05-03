@@ -351,6 +351,33 @@ class DreamingConfigInput(BaseModel):
 
 
 # ============================================================================
+# MCP Types (aligns with openclaw types.mcp.ts)
+# ============================================================================
+
+class McpServerConfig(BaseModel):
+    """MCP server 配置（对应 openclaw types.mcp.ts McpServerConfig）。"""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, Union[str, int, bool]]] = None
+    cwd: Optional[str] = None
+    workingDirectory: Optional[str] = None
+    url: Optional[str] = None
+    transport: Optional[Literal["sse", "streamable-http"]] = None
+    headers: Optional[Dict[str, Union[str, int, bool]]] = None
+    connectionTimeoutMs: Optional[int] = Field(default=None)
+
+
+class McpConfig(BaseModel):
+    """MCP 全局配置（对应 openclaw McpConfig）。"""
+    model_config = ConfigDict(populate_by_name=True)
+    
+    servers: Dict[str, McpServerConfig] = Field(default_factory=dict)
+    sessionIdleTtlMs: Optional[int] = Field(default=None)
+
+
+# ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
 
@@ -370,6 +397,7 @@ class NanoOpenClawConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
     
     # nano-openclaw custom fields
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")

@@ -126,6 +126,18 @@ def main() -> None:
     client = _build_client(api, api_key, base_url)
     registry = ToolRegistry() if config.noTools else build_default_registry()
     
+    # Initialize MCP runtime and register MCP tools
+    mcp_runtime = None
+    if not config.noTools and config.mcp.servers:
+        from nano_openclaw.mcp.runtime import McpRuntime
+        from nano_openclaw.mcp.materialize import materialize_mcp_tools
+        mcp_runtime = McpRuntime()
+        mcp_runtime.initialize(config.mcp.servers)
+        mcp_tools = materialize_mcp_tools(mcp_runtime, existing_names=set(registry.names()))
+        for tool in mcp_tools:
+            registry.register(tool)
+        print(f"MCP: loaded {len(mcp_tools)} tools from {len(config.mcp.servers)} server(s)", file=sys.stderr)
+    
     # Build approval manager and pass to registry
     state_dir = resolve_state_dir()
     console = Console()
@@ -260,16 +272,25 @@ def main() -> None:
     if dreaming_cfg.enabled and workspace_dir:
         start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, _dreaming_stop)
 
-    repl(
-        registry,
-        client=client,
-        cfg=cfg,
-        session_dir=session_dir,
-        transcript_writer=transcript_writer,
-        session_id=session_id,
-        store_path=store_path,
-        initial_history=history if history else None,
-    )
+    try:
+        repl(
+            registry,
+            client=client,
+            cfg=cfg,
+            session_dir=session_dir,
+            transcript_writer=transcript_writer,
+            session_id=session_id,
+            store_path=store_path,
+            initial_history=history if history else None,
+        )
+    finally:
+        # Cleanup dreaming scheduler
+        if _dreaming_stop.is_set() is False and dreaming_cfg.enabled:
+            _dreaming_stop.set()
+        
+        # Cleanup MCP runtime
+        if mcp_runtime:
+            mcp_runtime.close()
 
 
 def _print_sessions_list(store_path: Path) -> None:
