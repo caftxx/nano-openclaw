@@ -476,6 +476,16 @@ async def agent_loop(
 
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
+
+        if any(block["name"] == "sessions_spawn" for block in tool_use_blocks):
+            announced = await _wait_for_subagent_announcements(
+                registry,
+                cfg,
+                cancellation_token=cancellation_token,
+            )
+            if announced:
+                scratch_history.extend(announced)
+                pending_transcript_ops.extend(("message", msg) for msg in announced)
         # next iteration sends history (now including tool_results) back to the model
 
     scratch_history.append(
@@ -490,6 +500,30 @@ async def agent_loop(
             else:
                 transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
     return history
+
+
+async def _wait_for_subagent_announcements(
+    registry: ToolRegistry,
+    cfg: LoopConfig,
+    *,
+    cancellation_token: "CancellationToken | None" = None,
+) -> list[Message]:
+    """Wait for spawned subagents from this session and return their messages."""
+    spawn_context = getattr(registry, "_spawn_tool_context", None)
+    requester_session_key = getattr(spawn_context, "requester_session_key", None) or cfg.session_key
+    if not requester_session_key:
+        return []
+
+    from nano_openclaw.subagent.runner import get_runner
+
+    runner = get_runner()
+    try:
+        await runner.wait_for_requester(requester_session_key, cancellation_token=cancellation_token)
+    except asyncio.CancelledError as exc:
+        raise TurnCancelled() from exc
+
+    _check_cancelled(cancellation_token)
+    return runner.drain_announcements(requester_session_key)
 
 
 def _maybe_dump_payload(

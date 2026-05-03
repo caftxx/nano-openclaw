@@ -442,6 +442,23 @@ class SubagentRunner:
             return result
         except asyncio.TimeoutError:
             return None
+
+    async def wait_for_requester(self, requester_session_key: str, cancellation_token: CancellationToken | None = None) -> None:
+        """Wait until all active runs for a requester session have finished."""
+        while True:
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise asyncio.CancelledError()
+
+            run_ids = {run.run_id for run in self.registry.list_for_requester(requester_session_key)}
+            tasks = [
+                task
+                for run_id, task in self._running_tasks.items()
+                if run_id in run_ids and not task.done()
+            ]
+            if not tasks:
+                return
+
+            await asyncio.wait(tasks, timeout=0.1, return_when=asyncio.ALL_COMPLETED)
     
     def get_status(self, run_id: str) -> Optional[SubagentStatus]:
         """Get current status of a run."""
