@@ -216,4 +216,37 @@
   //   logging: false,
   // },
 
+  // ==========================================
+  // Dreaming 配置（后台记忆整合，默认关闭）
+  // ==========================================
+  // Dreaming 会追踪 memory_search 的召回记录，定期将高频、高质量的记忆
+  // 自动提升到 MEMORY.md（长期记忆），并生成 DREAMS.md 日记。
+  //
+  // 取消注释并修改以启用：
+  // dreaming: {
+  //   enabled: true,
+  //
+  //   // 调度频率（cron 格式，默认每天凌晨 3 点）
+  //   // 支持 "minute hour * * *" 格式，与 openclaw 保持一致
+  //   frequency: "0 3 * * *",
+  //
+  //   // 提升门槛：综合评分（0.0-1.0，默认 0.5）
+  //   minScore: 0.5,
+  //
+  //   // 提升门槛：最少召回次数（默认 2）
+  //   minRecallCount: 2,
+  //
+  //   // 提升门槛：最少不同查询数（默认 1）
+  //   minUniqueQueries: 1,
+  //
+  //   // 每次最多提升条目数（默认 10）
+  //   maxPromotions: 10,
+  //
+  //   // 是否生成 Dream Diary 日记（需要额外 API 调用，默认 true）
+  //   diary: true,
+  //
+  //   // Dream Diary 生成模型（null = 复用主模型）
+  //   // model: "anthropic/claude-haiku-4-5-20251001",
+  // },
+
 }

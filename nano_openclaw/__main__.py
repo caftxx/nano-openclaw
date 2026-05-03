@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 
 from nano_openclaw.cli import repl
 from nano_openclaw.loop import LoopConfig, Message, agent_loop
 from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
+from nano_openclaw.memory.dreaming import DreamingConfig, start_dreaming_scheduler
 from nano_openclaw.config import (
     load_config,
     resolve_model_config,
@@ -213,6 +215,19 @@ def main() -> None:
             logging=am.logging,
         )
 
+    # Build Dreaming config from JSON config
+    d = config.dreaming
+    dreaming_cfg = DreamingConfig(
+        enabled=d.enabled,
+        frequency=d.frequency,
+        min_score=d.minScore,
+        min_recall_count=d.minRecallCount,
+        min_unique_queries=d.minUniqueQueries,
+        max_promotions=d.maxPromotions,
+        diary=d.diary,
+        model=d.model,
+    )
+
     cfg = LoopConfig(
         model=model_id,
         api=api,
@@ -237,7 +252,13 @@ def main() -> None:
         max_skills_in_prompt=config.skills.load.maxSkillsInPrompt,
         max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
         active_memory_config=active_mem_cfg,
+        dreaming_config=dreaming_cfg,
     )
+
+    # Start periodic dreaming scheduler (independent of user interaction)
+    _dreaming_stop = threading.Event()
+    if dreaming_cfg.enabled and workspace_dir:
+        start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, _dreaming_stop)
 
     repl(
         registry,

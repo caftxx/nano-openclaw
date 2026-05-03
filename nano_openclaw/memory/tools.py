@@ -116,6 +116,10 @@ def memory_search(args: dict[str, Any], workspace_dir: str | None = None) -> str
     results.sort(key=lambda r: r.score, reverse=True)
     results = results[:max_results]
 
+    # Track recall events for dreaming (always, regardless of dreaming.enabled)
+    if results and workspace_dir:
+        _track_results(results, query, workspace_dir)
+
     # Format output
     if not results:
         return "Memory search: no matches found."
@@ -127,6 +131,16 @@ def memory_search(args: dict[str, Any], workspace_dir: str | None = None) -> str
         output_lines.append(f"  {snippet_preview}")
 
     return "\n".join(output_lines)
+
+
+def _track_results(results: list[MemorySearchResult], query: str, workspace_dir: str) -> None:
+    """Record search hits to the dreaming short-term recall store."""
+    try:
+        from nano_openclaw.memory.dreaming import track_recall
+        for r in results:
+            track_recall(r.path, r.start_line, r.end_line, r.snippet, query, workspace_dir)
+    except Exception:
+        pass  # Never block the search result on tracking failure
 
 
 def _search_file(

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
 from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
+from nano_openclaw.memory.dreaming import DreamingConfig
 from nano_openclaw.prompt import build_system_prompt
 from nano_openclaw.provider import (
     MessageEnd,
@@ -157,6 +158,8 @@ class LoopConfig:
     max_skills_prompt_chars: int = 18_000  # Max chars for skills section
     # Active Memory configuration (mirrors openclaw active-memory plugin)
     active_memory_config: ActiveMemoryConfig | None = None  # None = disabled
+    # Dreaming configuration (mirrors openclaw memory-core dreaming)
+    dreaming_config: DreamingConfig | None = None  # None = disabled
 
     @property
     def model_has_vision(self) -> bool:

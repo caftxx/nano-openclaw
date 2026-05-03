@@ -333,6 +333,24 @@ class ActiveMemoryConfigInput(BaseModel):
 
 
 # ============================================================================
+# Dreaming Config (mirrors openclaw memory-core dreaming config)
+# ============================================================================
+
+class DreamingConfigInput(BaseModel):
+    """Dreaming plugin configuration, aligns with openclaw memory-core dreaming schema."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = False
+    frequency: str = Field(default="0 3 * * *", description="Cron schedule for dreaming sweep")
+    minScore: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum score to promote")
+    minRecallCount: int = Field(default=2, ge=1, description="Minimum recall count to qualify")
+    minUniqueQueries: int = Field(default=1, ge=1, description="Minimum unique queries to qualify")
+    maxPromotions: int = Field(default=10, ge=1, le=50, description="Max promotions per sweep")
+    diary: bool = Field(default=True, description="Generate Dream Diary narrative (requires API call)")
+    model: Optional[str] = Field(default=None, description="Model override for Dream Diary generation")
+
+
+# ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
 
@@ -360,6 +378,10 @@ class NanoOpenClawConfig(BaseModel):
     activeMemory: Optional[ActiveMemoryConfigInput] = Field(
         default=None,
         description="Active Memory plugin configuration (automatic memory recall)"
+    )
+    dreaming: DreamingConfigInput = Field(
+        default_factory=DreamingConfigInput,
+        description="Dreaming plugin configuration (background memory consolidation)"
     )
 
     def resolve_primary_model(self, agent_id: Optional[str] = None) -> str:

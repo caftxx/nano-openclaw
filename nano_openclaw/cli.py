@@ -66,7 +66,7 @@ from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
 _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /active-memory \\[status|on|off|mode|style]  — /sessions launches interactive picker"
+_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /active-memory \\[status|on|off|mode|style]  /dreaming \\[status|on|off|run]  — /sessions launches interactive picker"
 
 
 def repl(
@@ -201,6 +201,9 @@ def repl(
             continue
         if user_input.startswith("/active-memory"):
             _handle_active_memory_command(console, user_input, cfg)
+            continue
+        if user_input.startswith("/dreaming"):
+            _handle_dreaming_command(console, user_input, cfg, client)
             continue
 
         on_event = _make_event_handler(console)
@@ -1014,4 +1017,109 @@ def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopCo
         "  /active-memory off - Disable\n"
         "  /active-memory mode <message|recent|full>\n"
         "  /active-memory style <balanced|strict|contextual|recall-heavy|precision-heavy|preference-only>[/]"
+    )
+
+
+def _handle_dreaming_command(
+    console: Console, user_input: str, cfg: "LoopConfig", client: Any
+) -> None:
+    """Handle /dreaming command for toggling and running Dreaming.
+
+    Usage:
+        /dreaming            - Show current status
+        /dreaming on         - Enable Dreaming
+        /dreaming off        - Disable Dreaming
+        /dreaming run        - Run a dreaming sweep now (blocking)
+        /dreaming status     - Show detailed candidate list
+    """
+    from nano_openclaw.memory.dreaming import (
+        DreamingConfig,
+        get_dreaming_status,
+        run_dreaming,
+    )
+    from rich.panel import Panel
+    from rich.text import Text
+
+    parts = user_input.strip().split()
+
+    # Lazily init dreaming config on LoopConfig
+    if cfg.dreaming_config is None:
+        cfg.dreaming_config = DreamingConfig(enabled=False)
+
+    dc = cfg.dreaming_config
+    workspace_dir = str(cfg.workspace_dir) if cfg.workspace_dir else None
+
+    if len(parts) == 1 or (len(parts) > 1 and parts[1].lower() == "status"):
+        detailed = len(parts) > 1 and parts[1].lower() == "status"
+        if not workspace_dir:
+            console.print("[dim]Dreaming: no workspace directory configured[/]")
+            return
+
+        st = get_dreaming_status(workspace_dir, dc)
+        state_color = "green" if st["enabled"] else "red"
+        state_text = "enabled" if st["enabled"] else "disabled"
+        last_run = st["last_run_at"] or "never"
+        due_text = " [yellow](due)[/]" if st["due"] else ""
+
+        lines = [
+            f"[bold]Dreaming Status[/]",
+            f"State: [{state_color}]{state_text}[/]",
+            f"Frequency: [cyan]{st['frequency']}[/]",
+            f"Last Run: [cyan]{last_run}[/]{due_text}",
+            f"Tracked: {st['total_tracked']} entries | Active: {st['active_candidates']} | Promoted: {st['promoted_total']}",
+        ]
+
+        if detailed and st["top_candidates"]:
+            lines.append("")
+            lines.append("[bold]Top candidates:[/]")
+            for c in st["top_candidates"]:
+                lines.append(
+                    f"  [cyan]{c['path']}:{c['start_line']}[/] "
+                    f"score={c['score']:.2f} recalls={c['recall_count']} "
+                    f"queries={c['unique_queries']}"
+                )
+
+        console.print(Panel.fit(Text.from_markup("\n".join(lines)), border_style="magenta"))
+        return
+
+    cmd = parts[1].lower()
+
+    if cmd == "on":
+        dc.enabled = True
+        console.print("[dim]Dreaming: enabled[/]")
+        return
+
+    if cmd == "off":
+        dc.enabled = False
+        console.print("[dim]Dreaming: disabled[/]")
+        return
+
+    if cmd == "run":
+        if not workspace_dir:
+            console.print("[dim]Dreaming: no workspace directory configured[/]")
+            return
+        console.print("[dim]Running dreaming sweep...[/]")
+        try:
+            result = run_dreaming(workspace_dir, dc, cfg.model, api_client=client)
+            console.print(
+                f"[dim]Dreaming complete in {result.elapsed_ms}ms — "
+                f"candidates: {len(result.candidates)}, promoted: {len(result.promoted)}[/]"
+            )
+            for entry, score, content in result.promoted:
+                preview = content[:60].replace("\n", " ")
+                console.print(
+                    f"  [green]↑[/] {entry.path}:{entry.start_line} "
+                    f"(score={score:.2f}) {preview}..."
+                )
+        except Exception as exc:
+            console.print(f"[red]Dreaming error:[/] {exc}")
+        return
+
+    console.print(
+        "[dim]Usage:\n"
+        "  /dreaming - Show status\n"
+        "  /dreaming on - Enable\n"
+        "  /dreaming off - Disable\n"
+        "  /dreaming run - Run sweep now\n"
+        "  /dreaming status - Detailed candidate list[/]"
     )
