@@ -106,6 +106,7 @@ def format_daily_memory_block(filename: str, content: str) -> str:
 def build_daily_memory_prelude(
     workspace_dir: Path,
     days: int = DEFAULT_DAILY_MEMORY_DAYS,
+    now: datetime | None = None,
 ) -> str | None:
     """Build the startup context prelude with daily memory files.
 
@@ -114,11 +115,12 @@ def build_daily_memory_prelude(
     Args:
         workspace_dir: Workspace directory path
         days: Number of days to load (default 2)
+        now: Current datetime override, primarily for deterministic tests
 
     Returns:
         Prelude string with loaded daily memory files, or None if no files found
     """
-    now = datetime.now()
+    now = now or datetime.now()
     stamps = build_date_stamps(now, days)
     files_by_stamp = list_daily_memory_files(workspace_dir, stamps)
 

@@ -157,11 +157,13 @@ class TestFormatDailyMemoryBlock:
 class TestBuildDailyMemoryPrelude:
     """Tests for build_daily_memory_prelude function."""
 
+    now = datetime(2026, 5, 2, 10, 30)
+
     def test_returns_none_when_no_files(self):
         """Should return None when no daily memory files exist."""
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Path(tmpdir)
-            result = build_daily_memory_prelude(ws)
+            result = build_daily_memory_prelude(ws, now=self.now)
 
             assert result is None
 
@@ -170,7 +172,7 @@ class TestBuildDailyMemoryPrelude:
         ws = workspace_with_memory
         (ws / "memory" / "2026-05-02.md").write_text("Today's work:\n- Implemented memory feature")
 
-        result = build_daily_memory_prelude(ws)
+        result = build_daily_memory_prelude(ws, now=self.now)
 
         assert result is not None
         assert "[Startup context: daily memory loaded]" in result
@@ -183,7 +185,7 @@ class TestBuildDailyMemoryPrelude:
         long_content = "A" * 2000
         (ws / "memory" / "2026-05-02.md").write_text(long_content)
 
-        result = build_daily_memory_prelude(ws)
+        result = build_daily_memory_prelude(ws, now=self.now)
 
         assert result is not None
         # Content should be truncated
@@ -197,7 +199,7 @@ class TestBuildDailyMemoryPrelude:
         (ws / "memory" / "2026-05-01.md").write_text("B" * 1000)
         (ws / "memory" / "2026-04-30.md").write_text("C" * 1000)
 
-        result = build_daily_memory_prelude(ws, days=3)
+        result = build_daily_memory_prelude(ws, days=3, now=self.now)
 
         assert result is not None
         # Total should not exceed budget significantly
@@ -208,7 +210,7 @@ class TestBuildDailyMemoryPrelude:
         ws = workspace_with_memory
         (ws / "memory" / "2026-05-02.md").write_text("Notes")
 
-        result = build_daily_memory_prelude(ws)
+        result = build_daily_memory_prelude(ws, now=self.now)
 
         assert "untrusted" in result.lower()
 
@@ -216,10 +218,18 @@ class TestBuildDailyMemoryPrelude:
 class TestIntegration:
     """Integration tests for daily memory in system prompt."""
 
-    def test_prelude_in_system_prompt(self, workspace_with_memory):
+    def test_prelude_in_system_prompt(self, workspace_with_memory, monkeypatch):
         """Daily memory prelude should appear in system prompt."""
+        import nano_openclaw.memory.daily as daily
         from nano_openclaw.prompt import build_system_prompt
         from nano_openclaw.tools import build_default_registry
+
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls):
+                return cls(2026, 5, 2, 10, 30)
+
+        monkeypatch.setattr(daily, "datetime", FixedDatetime)
 
         ws = workspace_with_memory
         (ws / "memory" / "2026-05-02.md").write_text("Memory test content")
