@@ -631,10 +631,10 @@ def _escape_cancellation_token() -> Iterator[CancellationToken]:
 
     def watch_for_escape() -> None:
         try:
-            with input_handle.raw_mode():
-                while not stop_event.is_set() and not token.is_cancelled:
-                    if _wait_if_input_paused():
-                        continue
+            while not stop_event.is_set() and not token.is_cancelled:
+                if _wait_if_input_paused():
+                    continue
+                with input_handle.raw_mode():
                     for kp in input_handle.read_keys():
                         if kp.key == Keys.Escape:
                             token.cancel()
