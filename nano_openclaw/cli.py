@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -581,6 +582,44 @@ def _escape_cancellation_token() -> Iterator[CancellationToken]:
     """Listen for Esc during a turn and flip a cancellation token when pressed."""
     token = CancellationToken()
 
+    stop_event = threading.Event()
+
+    def _wait_if_input_paused() -> bool:
+        if not token._input_pause_requested.is_set():
+            return False
+        token._input_pause_ack.set()
+        while (
+            token._input_pause_requested.is_set()
+            and not stop_event.is_set()
+            and not token.is_cancelled
+        ):
+            time.sleep(0.01)
+        token._input_pause_ack.clear()
+        return True
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        def watch_for_escape() -> None:
+            while not stop_event.is_set() and not token.is_cancelled:
+                if _wait_if_input_paused():
+                    continue
+                if msvcrt.kbhit():
+                    if msvcrt.getwch() == "\x1b":
+                        token.cancel()
+                        return
+                else:
+                    time.sleep(0.01)
+
+        watcher = threading.Thread(target=watch_for_escape, name="nano-openclaw-esc-watch", daemon=True)
+        watcher.start()
+        try:
+            yield token
+        finally:
+            stop_event.set()
+            watcher.join(timeout=0.2)
+        return
+
     try:
         from prompt_toolkit.input import create_input
         from prompt_toolkit.keys import Keys
@@ -588,19 +627,22 @@ def _escape_cancellation_token() -> Iterator[CancellationToken]:
         yield token
         return
 
-    stop_event = threading.Event()
     input_handle = create_input()
 
     def watch_for_escape() -> None:
         try:
             with input_handle.raw_mode():
                 while not stop_event.is_set() and not token.is_cancelled:
+                    if _wait_if_input_paused():
+                        continue
                     for kp in input_handle.read_keys():
                         if kp.key == Keys.Escape:
                             token.cancel()
                             return
                         if stop_event.is_set() or token.is_cancelled:
                             return
+                        if token._input_pause_requested.is_set():
+                            break
         except Exception:
             return
 

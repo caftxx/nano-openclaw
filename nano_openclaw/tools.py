@@ -22,6 +22,7 @@ from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision
 
 if TYPE_CHECKING:
+    from nano_openclaw.config.types import ToolsConfig
     from nano_openclaw.skills.types import Skill
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
@@ -74,7 +75,13 @@ class ToolRegistry:
             for t in self._tools.values()
         ]
 
-    def dispatch(self, tool_use_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    def dispatch(
+        self,
+        tool_use_id: str,
+        name: str,
+        args: dict[str, Any],
+        cancellation_token: Any | None = None,
+    ) -> dict[str, Any]:
         """Dispatch tool with approval check if manager is set."""
         tool = self._tools.get(name)
         if tool is None:

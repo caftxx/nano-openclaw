@@ -4,7 +4,9 @@ Uses rich.Panel to create an overlay-style approval prompt
 that interrupts the streaming output.
 """
 
+from contextlib import nullcontext
 import json
+from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -43,7 +45,11 @@ class ApprovalUI:
             )
         )
     
-    def prompt_decision(self, request: ApprovalRequest) -> ApprovalDecision:
+    def prompt_decision(
+        self,
+        request: ApprovalRequest,
+        cancellation_token: Any | None = None,
+    ) -> ApprovalDecision:
         """Prompt user for decision and return it.
         
         Shows three options:
@@ -56,21 +62,25 @@ class ApprovalUI:
         self.console.print(
             "[dim]y[/] = allow once  |  [dim]Y[/] = allow always  |  [dim]n[/] = deny"
         )
-        
-        while True:
-            try:
-                response = self.console.input("[bold cyan]?[/] ").strip()
-            except (EOFError, KeyboardInterrupt):
-                return ApprovalDecision.DENY
-            
-            if response == "y":
-                return ApprovalDecision.ALLOW_ONCE
-            elif response == "Y":
-                return ApprovalDecision.ALLOW_ALWAYS
-            elif response == "n":
-                return ApprovalDecision.DENY
-            else:
-                self.console.print("[red]invalid choice: y/Y/n[/]")
+
+        pause_input_capture = getattr(cancellation_token, "pause_input_capture", None)
+        context = pause_input_capture() if callable(pause_input_capture) else nullcontext()
+
+        with context:
+            while True:
+                try:
+                    response = self.console.input("[bold cyan]?[/] ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    return ApprovalDecision.DENY
+
+                if response == "y":
+                    return ApprovalDecision.ALLOW_ONCE
+                elif response == "Y":
+                    return ApprovalDecision.ALLOW_ALWAYS
+                elif response == "n":
+                    return ApprovalDecision.DENY
+                else:
+                    self.console.print("[red]invalid choice: y/Y/n[/]")
     
     def render_denied(self, request: ApprovalRequest) -> None:
         """Render denial message."""

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,8 @@ class TurnCancelled(Exception):
 @dataclass
 class CancellationToken:
     _cancelled: Event = field(default_factory=Event)
+    _input_pause_requested: Event = field(default_factory=Event)
+    _input_pause_ack: Event = field(default_factory=Event)
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -72,6 +75,17 @@ class CancellationToken:
     @property
     def is_cancelled(self) -> bool:
         return self._cancelled.is_set()
+
+    @contextmanager
+    def pause_input_capture(self):
+        """Temporarily pause background key capture so foreground prompts can read stdin."""
+        self._input_pause_requested.set()
+        self._input_pause_ack.wait(timeout=0.2)
+        try:
+            yield
+        finally:
+            self._input_pause_requested.clear()
+            self._input_pause_ack.clear()
 
 
 def _check_cancelled(token: "CancellationToken | None") -> None:
@@ -406,7 +420,12 @@ def agent_loop(
                     on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
 
             _check_cancelled(cancellation_token)
-            result = registry.dispatch(block["id"], tool_name, tool_args)
+            result = registry.dispatch(
+                block["id"],
+                tool_name,
+                tool_args,
+                cancellation_token=cancellation_token,
+            )
             _check_cancelled(cancellation_token)
             tool_results.append(result)
             on_event(ToolResult(name=tool_name, args=tool_args, result=result))
