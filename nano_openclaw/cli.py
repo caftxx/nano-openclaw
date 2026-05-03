@@ -51,6 +51,7 @@ from nano_openclaw.provider import (
     TextDelta,
     ThinkingBlockComplete,
     ThinkingDelta,
+    ToolUseDelta,
     ToolUseEnd,
     ToolUseStart,
 )
@@ -427,7 +428,18 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
     call as a Panel after dispatch (via the ``("ToolResult", ...)`` tuple
     emitted by ``loop.agent_loop``).
     """
-    state = {"text_in_flight": False, "thinking_in_flight": False}
+    state = {
+        "text_in_flight": False,
+        "thinking_in_flight": False,
+        "tool_slots": {},
+        "tool_name_counts": {},
+        "rendered_tool_results": set(),
+    }
+
+    def reset_tool_batch() -> None:
+        state["tool_slots"].clear()
+        state["tool_name_counts"].clear()
+        state["rendered_tool_results"].clear()
 
     def handle(event: Any) -> None:
         if isinstance(event, ThinkingDelta):
@@ -453,10 +465,26 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             if state["text_in_flight"]:
                 console.print()  # finish text line
                 state["text_in_flight"] = False
-            console.print(f"\n[bold yellow]>> {markup.escape(event.name)}[/]", end="")
+            tool_slots = state["tool_slots"]
+            if tool_slots and all(slot["done"] for slot in tool_slots.values()):
+                reset_tool_batch()
+                tool_slots = state["tool_slots"]
+            if event.id not in tool_slots:
+                count = state["tool_name_counts"].get(event.name, 0) + 1
+                state["tool_name_counts"][event.name] = count
+                display_name = event.name if count == 1 else f"{event.name} #{count}"
+                tool_slots[event.id] = {"display_name": display_name, "args_buf": "", "done": False}
+                console.print(f"\n[bold yellow]>> {markup.escape(display_name)}[/]", end="")
+
+        elif isinstance(event, ToolUseDelta):
+            slot = state["tool_slots"].get(event.id)
+            if slot is not None:
+                slot["args_buf"] += event.partial_json
 
         elif isinstance(event, ToolUseEnd):
-            console.print()  # newline after tool_use header
+            slot = state["tool_slots"].get(event.id)
+            if slot is not None:
+                console.print()  # newline after tool_use header
 
         elif isinstance(event, MessageEnd):
             if state["text_in_flight"]:
@@ -464,7 +492,19 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
                 state["text_in_flight"] = False
 
         elif isinstance(event, ToolResult):
-            _render_tool_result(console, name=event.name, args=event.args, result=event.result)
+            if event.tool_use_id in state["rendered_tool_results"]:
+                return
+            state["rendered_tool_results"].add(event.tool_use_id)
+            slot = state["tool_slots"].get(event.tool_use_id)
+            if slot is not None:
+                slot["done"] = True
+            _render_tool_result(
+                console,
+                name=event.name,
+                args=event.args,
+                result=event.result,
+                title_name=slot["display_name"] if slot is not None else event.name,
+            )
 
         elif isinstance(event, Compaction):
             _render_compaction(console, summary=event.summary)
@@ -550,6 +590,7 @@ def _render_tool_result(
     name: str,
     args: dict[str, Any],
     result: dict[str, Any],
+    title_name: str | None = None,
 ) -> None:
     is_error = bool(result.get("is_error"))
     border = "red" if is_error else "green"
@@ -572,7 +613,7 @@ def _render_tool_result(
         body = markup.escape("\n".join(lines))
 
     args_repr = _short_args(args)
-    title = f"{markup.escape(name)}({markup.escape(args_repr)})"
+    title = f"{markup.escape(title_name or name)}({markup.escape(args_repr)})"
     if is_error:
         title = f"{title} [red](error)[/]"
 

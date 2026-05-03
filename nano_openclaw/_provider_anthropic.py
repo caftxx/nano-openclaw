@@ -68,6 +68,7 @@ async def stream_response(
     pending_stop_reason = "end_turn"
     pending_usage: dict[str, Any] = {}
     block_kinds: dict[int, str] = {}
+    tool_ids: dict[int, str] = {}
     # Per thinking-block accumulator: index -> {thinking: str, signature: str}
     thinking_bufs: dict[int, dict[str, str]] = {}
 
@@ -79,6 +80,7 @@ async def stream_response(
                 block = event.content_block
                 block_kinds[event.index] = block.type
                 if block.type == "tool_use":
+                    tool_ids[event.index] = block.id
                     yield ToolUseStart(id=block.id, name=block.name)
                 elif block.type == "thinking":
                     thinking_bufs[event.index] = {"thinking": "", "signature": ""}
@@ -92,7 +94,7 @@ async def stream_response(
                 if dtype == "text_delta":
                     yield TextDelta(text=delta.text)
                 elif dtype == "input_json_delta":
-                    yield ToolUseDelta(partial_json=delta.partial_json)
+                    yield ToolUseDelta(id=tool_ids.get(event.index, ""), partial_json=delta.partial_json)
                 elif dtype == "thinking_delta":
                     text = getattr(delta, "thinking", "")
                     if event.index in thinking_bufs:
@@ -107,7 +109,7 @@ async def stream_response(
                 idx = event.index
                 kind = block_kinds.get(idx)
                 if kind == "tool_use":
-                    yield ToolUseEnd()
+                    yield ToolUseEnd(id=tool_ids.pop(idx, ""))
                 elif kind == "thinking" and idx in thinking_bufs:
                     buf = thinking_bufs.pop(idx)
                     yield ThinkingBlockComplete(

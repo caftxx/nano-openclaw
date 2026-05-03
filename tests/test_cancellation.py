@@ -75,7 +75,7 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
 
         async def fake_stream_response(**_kwargs):
             yield ToolUseStart(id="tool-1", name="demo")
-            yield ToolUseEnd()
+            yield ToolUseEnd(id="tool-1")
             yield MessageEnd(stop_reason="tool_use")
 
         monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)

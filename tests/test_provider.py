@@ -6,13 +6,15 @@ layer are exercised here.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from nano_openclaw._provider_openai import _to_openai_messages, _to_openai_tools
 from nano_openclaw.loop import LoopConfig
-from nano_openclaw.provider import stream_response
+from nano_openclaw.provider import MessageEnd, ToolUseEnd, ToolUseStart, stream_response
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +195,6 @@ def test_multiple_tools_conversion():
 
 
 def test_unsupported_api_raises():
-    import asyncio
-
     async def _collect():
         async for _ in stream_response(api="bogus", client=None, model="x", system="s",
                                        messages=[], tools=[]):
@@ -202,6 +202,71 @@ def test_unsupported_api_raises():
 
     with pytest.raises(ValueError, match="unsupported api"):
         asyncio.run(_collect())
+
+
+def test_openai_stream_generates_distinct_ids_for_idless_parallel_tools():
+    class AsyncChunks:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def __aiter__(self):
+            self._iter = iter(self._chunks)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._iter)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    def chunk(tool_calls=None, finish_reason=None):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=None, tool_calls=tool_calls or []),
+                    finish_reason=finish_reason,
+                )
+            ]
+        )
+
+    def tool_call(index, name=None, arguments=""):
+        return SimpleNamespace(
+            index=index,
+            id=None,
+            function=SimpleNamespace(name=name, arguments=arguments),
+        )
+
+    async def create(**_kwargs):
+        return AsyncChunks([
+            chunk([
+                tool_call(0, "web_search", '{"query": "rust"}'),
+                tool_call(1, "web_search", '{"query": "cpp"}'),
+            ]),
+            chunk(finish_reason="tool_calls"),
+        ])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    async def collect():
+        return [
+            event
+            async for event in stream_response(
+                api="openai",
+                client=client,
+                model="test",
+                system="system",
+                messages=[],
+                tools=[{"name": "web_search", "description": "", "input_schema": {"type": "object"}}],
+            )
+        ]
+
+    events = asyncio.run(collect())
+    starts = [event for event in events if isinstance(event, ToolUseStart)]
+    ends = [event for event in events if isinstance(event, ToolUseEnd)]
+
+    assert [event.id for event in starts] == ["tool-call-0", "tool-call-1"]
+    assert [event.id for event in ends] == ["tool-call-0", "tool-call-1"]
+    assert isinstance(events[-1], MessageEnd)
 
 
 # ---------------------------------------------------------------------------

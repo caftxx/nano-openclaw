@@ -96,6 +96,7 @@ def _check_cancelled(token: "CancellationToken | None") -> None:
 
 @dataclass
 class ToolResult:
+    tool_use_id: str
     name: str
     args: dict[str, Any]
     result: dict[str, Any]
@@ -466,7 +467,12 @@ async def agent_loop(
 
         _check_cancelled(cancellation_token)
         for block, result in zip(tool_use_blocks, tool_results):
-            on_event(ToolResult(name=block["name"], args=block.get("input") or {}, result=result))
+            on_event(ToolResult(
+                tool_use_id=block["id"],
+                name=block["name"],
+                args=block.get("input") or {},
+                result=result,
+            ))
 
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
@@ -528,7 +534,8 @@ async def _consume_one_assistant_turn(
     """Stream one model response, accumulating mixed text + tool_use blocks."""
     blocks: list[dict[str, Any]] = []
     text_buf = ""
-    cur_tool: dict[str, Any] | None = None
+    tool_bufs: dict[str, dict[str, Any]] = {}
+    tool_order: list[str] = []
     stop_reason: str | None = None
 
     def _flush_text():
@@ -574,13 +581,19 @@ async def _consume_one_assistant_turn(
 
         elif isinstance(ev, ToolUseStart):
             _flush_text()
-            cur_tool = {"id": ev.id, "name": ev.name, "buf": ""}
+            tool_id = ev.id or f"tool-call-{len(tool_order)}"
+            if tool_id not in tool_bufs:
+                tool_bufs[tool_id] = {"id": tool_id, "name": ev.name, "buf": ""}
+                tool_order.append(tool_id)
 
         elif isinstance(ev, ToolUseDelta):
-            if cur_tool is not None:
-                cur_tool["buf"] += ev.partial_json
+            tool_id = ev.id or (tool_order[-1] if tool_order else "")
+            if tool_id in tool_bufs:
+                tool_bufs[tool_id]["buf"] += ev.partial_json
 
         elif isinstance(ev, ToolUseEnd):
+            tool_id = ev.id or (tool_order[-1] if tool_order else "")
+            cur_tool = tool_bufs.pop(tool_id, None)
             if cur_tool is not None:
                 args = json.loads(cur_tool["buf"] or "{}")
                 blocks.append(
@@ -591,7 +604,6 @@ async def _consume_one_assistant_turn(
                         "input": args,
                     }
                 )
-                cur_tool = None
 
         elif isinstance(ev, MessageEnd):
             _flush_text()

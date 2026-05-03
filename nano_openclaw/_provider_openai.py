@@ -73,7 +73,8 @@ async def stream_response(
         }
 
     pending_stop_reason = "end_turn"
-    cur_index = -1
+    tool_ids_by_index: dict[int, str] = {}
+    started_tool_indices: set[int] = set()
     thinking_buf = ""
 
     response = await client.chat.completions.create(**kwargs)
@@ -95,14 +96,15 @@ async def stream_response(
 
         if delta.tool_calls:
             for tc in delta.tool_calls:
-                if tc.index != cur_index:
-                    # New tool call starting — close the previous one first.
-                    if cur_index >= 0:
-                        yield ToolUseEnd()
-                    cur_index = tc.index
-                    yield ToolUseStart(id=tc.id or "", name=(tc.function.name or "") if tc.function else "")
+                tool_id = tool_ids_by_index.get(tc.index)
+                if not tool_id:
+                    tool_id = tc.id or f"tool-call-{tc.index}"
+                    tool_ids_by_index[tc.index] = tool_id
+                if tc.index not in started_tool_indices:
+                    started_tool_indices.add(tc.index)
+                    yield ToolUseStart(id=tool_id, name=(tc.function.name or "") if tc.function else "")
                 if tc.function and tc.function.arguments:
-                    yield ToolUseDelta(partial_json=tc.function.arguments)
+                    yield ToolUseDelta(id=tool_id, partial_json=tc.function.arguments)
 
         fr = choice.finish_reason
         if fr is not None:
@@ -110,8 +112,8 @@ async def stream_response(
                 yield ThinkingBlockComplete(thinking=thinking_buf, signature="")
                 thinking_buf = ""
             if fr == "tool_calls":
-                if cur_index >= 0:
-                    yield ToolUseEnd()
+                for idx in sorted(started_tool_indices):
+                    yield ToolUseEnd(id=tool_ids_by_index[idx])
                 pending_stop_reason = "tool_use"
             elif fr == "stop":
                 pending_stop_reason = "end_turn"

@@ -24,12 +24,13 @@ class ToolUseStart:
 
 @dataclass
 class ToolUseDelta:
+    id: str
     partial_json: str
 
 
 @dataclass
 class ToolUseEnd:
-    pass
+    id: str
 
 
 @dataclass
