@@ -194,6 +194,35 @@ name: only-name
     assert len(found) == 0
 
 
+def test_load_skills_from_dir_skips_broken_subdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Skip one unreadable subdir without dropping valid sibling skills."""
+    skills_dir = tmp_path / "skills"
+    good_dir = skills_dir / "good-skill"
+    bad_dir = skills_dir / "broken-junction"
+    good_dir.mkdir(parents=True)
+    bad_dir.mkdir()
+
+    (good_dir / SKILL_FILE_NAME).write_text("""---
+name: good-skill
+description: Good skill
+---
+# Good Skill
+""")
+
+    original_is_dir = Path.is_dir
+
+    def fake_is_dir(path: Path) -> bool:
+        if path == bad_dir:
+            raise OSError("broken junction")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+
+    skills = load_skills_from_dir(skills_dir, "workspace")
+
+    assert [skill.name for skill in skills] == ["good-skill"]
+
+
 def test_skill_entry_structure():
     """SkillEntry has all expected fields."""
     skill = Skill(

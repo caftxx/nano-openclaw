@@ -210,6 +210,10 @@ def load_skill_from_file(
     if not skill_file.exists():
         return None
 
+    # match openclaw: reject symlinked SKILL.md
+    if skill_file.is_symlink():
+        return None
+
     # Path escape check
     if not is_path_inside(base_dir, skill_file):
         return None
@@ -281,12 +285,23 @@ def load_skills_from_dir(
 
     # Scan immediate subdirs
     try:
-        entries = sorted(
-            [e for e in skill_dir.iterdir() if e.is_dir() and not e.name.startswith(".")],
-            key=lambda e: e.name,
-        )
+        dir_entries = list(skill_dir.iterdir())
     except OSError:
         return []
+
+    entries: list[Path] = []
+    for entry in dir_entries:
+        if entry.name.startswith("."):
+            continue
+        try:
+            if entry.is_dir():
+                entries.append(entry)
+        except OSError:
+            # Broken junctions/reparse points on Windows should not prevent
+            # loading valid sibling skills from the same source.
+            continue
+
+    entries = sorted(entries, key=lambda e: e.name)
 
     if len(entries) > max_candidates:
         entries = entries[:max_candidates]
