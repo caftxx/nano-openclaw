@@ -167,8 +167,10 @@ def memory_search(
 def _track_results(results: list[MemorySearchResult], query: str, workspace_dir: str) -> None:
     """Record search hits to the dreaming short-term recall store."""
     try:
-        from nano_openclaw.memory.dreaming import track_recall
+        from nano_openclaw.memory.dreaming import is_short_term_memory_path, track_recall
         for r in results:
+            if not is_short_term_memory_path(r.path):
+                continue
             track_recall(r.path, r.start_line, r.end_line, r.snippet, query, workspace_dir)
     except Exception:
         pass  # Never block the search result on tracking failure

@@ -26,6 +26,7 @@ from nano_openclaw.memory.dreaming import (
     _next_cron_occurrence,
     _parse_cron_field,
     get_dreaming_status,
+    is_short_term_memory_path,
     is_dreaming_due,
     load_dreaming_state,
     run_deep_phase,
@@ -240,6 +241,20 @@ class TestCronHelpers:
 # run_light_phase tests
 # ============================================================================
 
+class TestShortTermMemoryPath:
+    def test_accepts_dated_memory_files(self):
+        assert is_short_term_memory_path("memory/2026-05-01.md") is True
+        assert is_short_term_memory_path("memory\\2026-05-01.md") is True
+        assert is_short_term_memory_path("memory/projects/2026-05-01.md") is True
+        assert is_short_term_memory_path("memory/.dreams/session-corpus/2026-05-01.md") is True
+
+    def test_rejects_long_term_and_dreaming_files(self):
+        assert is_short_term_memory_path("MEMORY.md") is False
+        assert is_short_term_memory_path("memory/projects.md") is False
+        assert is_short_term_memory_path("memory/.dreams/short-term-recall.json") is False
+        assert is_short_term_memory_path("memory/dreaming/2026-05-01.md") is False
+
+
 class TestRunLightPhase:
     def test_returns_empty_when_no_state(self, workspace):
         candidates = run_light_phase(workspace)
@@ -270,6 +285,11 @@ class TestRunLightPhase:
         candidates = run_light_phase(workspace)
         assert candidates == []
 
+    def test_skips_root_memory_md(self, workspace):
+        track_recall("MEMORY.md", 1, 1, "# Long-term Memory", "memory", workspace)
+        candidates = run_light_phase(workspace)
+        assert candidates == []
+
     def test_sorts_by_recall_count_descending(self, workspace_with_daily):
         ws = workspace_with_daily
         for _ in range(5):
@@ -280,11 +300,11 @@ class TestRunLightPhase:
 
     def test_limits_to_50_candidates(self, workspace):
         ws_path = Path(workspace)
-        (ws_path / "MEMORY.md").write_text(
+        (ws_path / "memory" / "2026-05-01.md").write_text(
             "\n".join(f"line {i}" for i in range(60))
         )
         for i in range(60):
-            track_recall("MEMORY.md", i + 1, i + 1, f"line {i}", f"q{i}", workspace)
+            track_recall("memory/2026-05-01.md", i + 1, i + 1, f"line {i}", f"q{i}", workspace)
         candidates = run_light_phase(workspace)
         assert len(candidates) <= 50
 
@@ -294,6 +314,14 @@ class TestRunLightPhase:
 # ============================================================================
 
 class TestRunDeepPhase:
+    def test_does_not_promote_root_memory_md(self, workspace, default_config):
+        track_recall("MEMORY.md", 1, 1, "# Long-term Memory", "q1", workspace)
+        candidates = list(load_dreaming_state(workspace).entries.values())
+        promoted = run_deep_phase(workspace, default_config, candidates)
+        content = (Path(workspace) / "MEMORY.md").read_text()
+        assert promoted == []
+        assert "dreaming:promoted" not in content
+
     def test_promotes_qualified_entry(self, workspace_with_daily, default_config):
         ws = workspace_with_daily
         # Add multiple recalls to qualify
@@ -305,6 +333,23 @@ class TestRunDeepPhase:
         # Check MEMORY.md was updated
         memory_content = (Path(ws) / "MEMORY.md").read_text()
         assert "dreaming:promoted" in memory_content
+        assert "key=memory/2026-05-01.md:3-3" in memory_content
+
+    def test_reconciles_existing_promotion_marker(self, workspace_with_daily, default_config):
+        ws = workspace_with_daily
+        memory_path = Path(ws) / "MEMORY.md"
+        memory_path.write_text(
+            "# Long-term Memory\n\n"
+            "<!-- dreaming:promoted 2026-05-04 score=0.80 recalls=2 key=memory/2026-05-01.md:3-3 -->\n"
+            "- Prefer TypeScript for frontend code\n"
+        )
+        track_recall("memory/2026-05-01.md", 3, 3, "Prefer TypeScript", "q1", ws)
+        candidates = run_light_phase(ws)
+        promoted = run_deep_phase(ws, default_config, candidates)
+        memory_content = memory_path.read_text()
+        assert len(promoted) == 1
+        assert memory_content.count("dreaming:promoted") == 1
+        assert load_dreaming_state(ws).entries["memory/2026-05-01.md:3-3"].promoted_at
 
     def test_skips_below_threshold(self, workspace_with_daily):
         ws = workspace_with_daily

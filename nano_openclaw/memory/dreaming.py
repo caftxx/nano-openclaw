@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -74,10 +75,36 @@ class DreamingResult:
 
 _DREAMS_DIR = "memory/.dreams"
 _STATE_FILE = "short-term-recall.json"
+_SHORT_TERM_MEMORY_RE = re.compile(r"(?:^|/)memory/(?:[^/]+/)*\d{4}-\d{2}-\d{2}\.md$")
+_SHORT_TERM_SESSION_CORPUS_RE = re.compile(
+    r"(?:^|/)memory/\.dreams/session-corpus/\d{4}-\d{2}-\d{2}\.(?:md|txt)$"
+)
+_SHORT_TERM_BASENAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 
 def _state_path(workspace_dir: str) -> Path:
     return Path(workspace_dir) / _DREAMS_DIR / _STATE_FILE
+
+
+def normalize_memory_path(raw_path: str) -> str:
+    """Normalize memory paths to the portable slash-separated form."""
+    return raw_path.replace("\\", "/").lstrip("./")
+
+
+def is_short_term_memory_path(raw_path: str) -> bool:
+    """Return True for short-term memory files that may feed promotion."""
+    normalized = normalize_memory_path(raw_path)
+    if normalized.startswith("memory/dreaming/"):
+        return False
+    if _SHORT_TERM_SESSION_CORPUS_RE.match(normalized):
+        return True
+    if normalized.startswith("memory/.dreams/"):
+        return False
+    return bool(_SHORT_TERM_MEMORY_RE.match(normalized) or _SHORT_TERM_BASENAME_RE.match(normalized))
+
+
+def _workspace_file(workspace_dir: str, relative_path: str) -> Path:
+    return Path(workspace_dir).joinpath(*normalize_memory_path(relative_path).split("/"))
 
 
 def load_dreaming_state(workspace_dir: str) -> DreamingState:
@@ -323,14 +350,14 @@ def start_dreaming_scheduler(
 def run_light_phase(workspace_dir: str) -> list[ShortTermRecallEntry]:
     """Collect and filter recall candidates. No writes."""
     state = load_dreaming_state(workspace_dir)
-    workspace = Path(workspace_dir)
 
     candidates = [
         e
         for e in state.entries.values()
         if not e.promoted_at
+        and is_short_term_memory_path(e.path)
         and e.recall_count >= 1
-        and (workspace / e.path).exists()
+        and _workspace_file(workspace_dir, e.path).exists()
     ]
 
     candidates.sort(key=lambda e: e.recall_count, reverse=True)
@@ -363,7 +390,7 @@ def _compute_score(entry: ShortTermRecallEntry, max_recall: int) -> float:
 def _rehydrate_snippet(entry: ShortTermRecallEntry, workspace_dir: str) -> str | None:
     """Read current content of the entry's source lines. Returns None if stale."""
     try:
-        file_path = Path(workspace_dir) / entry.path
+        file_path = _workspace_file(workspace_dir, entry.path)
         if not file_path.exists():
             return None
         lines = file_path.read_text(encoding="utf-8").split("\n")
@@ -388,12 +415,16 @@ def run_deep_phase(
     if not candidates:
         return []
 
-    max_recall = max(e.recall_count for e in candidates)
+    eligible_candidates = [e for e in candidates if is_short_term_memory_path(e.path)]
+    if not eligible_candidates:
+        return []
+
+    max_recall = max(e.recall_count for e in eligible_candidates)
     today = date.today().isoformat()
 
     scored = [
         (e, _compute_score(e, max_recall))
-        for e in candidates
+        for e in eligible_candidates
         if _compute_score(e, max_recall) >= config.min_score
         and e.recall_count >= config.min_recall_count
         and len(e.query_hashes) >= config.min_unique_queries
@@ -405,6 +436,7 @@ def run_deep_phase(
         return []
 
     memory_path = Path(workspace_dir) / "MEMORY.md"
+    existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
     promoted: list[tuple[ShortTermRecallEntry, float, str]] = []
     promotion_blocks: list[str] = []
 
@@ -412,14 +444,17 @@ def run_deep_phase(
         content = _rehydrate_snippet(entry, workspace_dir)
         if content is None:
             continue
+        key = f"{normalize_memory_path(entry.path)}:{entry.start_line}-{entry.end_line}"
+        if f"key={key}" in existing:
+            promoted.append((entry, score, content))
+            continue
         promotion_blocks.append(
-            f"<!-- dreaming:promoted {today} score={score:.2f} recalls={entry.recall_count} -->\n"
+            f"<!-- dreaming:promoted {today} score={score:.2f} recalls={entry.recall_count} key={key} -->\n"
             f"{content}\n"
         )
         promoted.append((entry, score, content))
 
     if promotion_blocks:
-        existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
         with memory_path.open("a", encoding="utf-8") as f:
             if existing and not existing.endswith("\n"):
                 f.write("\n")
@@ -427,6 +462,7 @@ def run_deep_phase(
             for block in promotion_blocks:
                 f.write(block + "\n")
 
+    if promoted:
         state = load_dreaming_state(workspace_dir)
         now_iso = datetime.now().isoformat()
         for entry, score, content in promoted:
