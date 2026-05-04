@@ -217,6 +217,30 @@ class ContextConfig(BaseModel):
     recent_turns: int = Field(default=3, ge=1, alias="recent_turns", description="Recent turns to preserve during compaction")
 
 
+class MemoryFlushConfig(BaseModel):
+    """Pre-compaction memory flush settings."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=True, description="Enable silent memory flush before compaction")
+    softThresholdTokens: int = Field(default=4000, ge=0, description="Soft threshold before compaction")
+    reserveTokensFloor: int = Field(default=20000, ge=0, description="Minimum tokens to reserve")
+    prompt: str = Field(
+        default=(
+            "Pre-compaction memory flush.\n"
+            "Store durable memories only in memory/YYYY-MM-DD.md (create memory/ if needed). "
+            "Treat workspace bootstrap/reference files such as MEMORY.md, DREAMS.md, SOUL.md, "
+            "TOOLS.md, and AGENTS.md as read-only during this flush; never overwrite, replace, "
+            "or edit them. "
+            "If memory/YYYY-MM-DD.md already exists, APPEND new content only and do not overwrite "
+            "existing entries. "
+            "Do NOT create timestamped variant files (e.g., YYYY-MM-DD-HHMM.md); always use the "
+            "canonical YYYY-MM-DD.md filename. "
+            "If nothing to store, reply with NO_REPLY."
+        ),
+        description="Prompt for silent memory flush turn",
+    )
+
+
 # ============================================================================
 # Skills Types (aligns with src/config/types.openclaw.ts skills.*)
 # ============================================================================
@@ -493,6 +517,10 @@ class NanoOpenClawConfig(BaseModel):
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
     maxIterations: int = Field(default=12, ge=1, description="Max tool-use rounds per user turn")
     context: ContextConfig = Field(default_factory=ContextConfig)
+    memoryFlush: MemoryFlushConfig = Field(
+        default_factory=MemoryFlushConfig,
+        description="Pre-compaction silent memory flush configuration",
+    )
     activeMemory: Optional[ActiveMemoryConfigInput] = Field(
         default=None,
         description="Active Memory plugin configuration (automatic memory recall)"

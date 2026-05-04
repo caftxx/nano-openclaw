@@ -24,7 +24,8 @@ from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
-from nano_openclaw.compact import compact_if_needed, estimate_tokens
+from nano_openclaw.compact import compact_if_needed, estimate_tokens, should_run_memory_flush
+from nano_openclaw.config.types import MemoryFlushConfig
 from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
 from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
 from nano_openclaw.memory.dreaming import DreamingConfig
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from nano_openclaw.session import TranscriptWriter
 
 EventCallback = Callable[[Any], None]
+MEMORY_FLUSH_ALLOWED_TOOLS = frozenset({"read_file", "write_file"})
 
 
 class TurnCancelled(Exception):
@@ -236,6 +238,8 @@ class LoopConfig:
     max_skills_prompt_chars: int = 18_000  # Max chars for skills section
     # Active Memory configuration (mirrors openclaw active-memory plugin)
     active_memory_config: ActiveMemoryConfig | None = None  # None = disabled
+    # Pre-compaction memory flush configuration
+    memory_flush_config: MemoryFlushConfig = field(default_factory=MemoryFlushConfig)
     # Dreaming configuration (mirrors openclaw memory-core dreaming)
     dreaming_config: DreamingConfig | None = None  # None = disabled
     # If set, bypasses build_system_prompt() entirely (used by subagent runner)
@@ -435,9 +439,29 @@ async def agent_loop(
         system = f"{active_memory_context}\n\n{system}"
 
     tools_schema = registry.schemas()
+    already_flushed_for_compaction = False
 
     for _ in range(cfg.max_iterations):
         await check_cancelled()
+        current_tokens = estimate_tokens(scratch_history)
+        if should_run_memory_flush(
+            current_tokens,
+            cfg.context_window or cfg.context_budget,
+            cfg.memory_flush_config,
+            already_flushed_for_compaction,
+        ):
+            if cfg.workspace_dir and _has_memory_flush_write_tool(tools_schema):
+                await _run_memory_flush_turn(
+                    client=client,
+                    cfg=cfg,
+                    history=scratch_history,
+                    registry=registry,
+                    system=system,
+                    tools_schema=tools_schema,
+                    cancellation_token=cancellation_token,
+                )
+            already_flushed_for_compaction = True
+
         # Check context budget and compact if needed (mirrors OpenClaw's compaction)
         _, summary = await compact_if_needed(
             scratch_history,
@@ -612,6 +636,162 @@ async def agent_loop(
                 transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
     await drain_loop_event_hooks()
     return history
+
+
+async def _run_memory_flush_turn(
+    *,
+    client: Any,
+    cfg: LoopConfig,
+    history: list[Message],
+    registry: ToolRegistry,
+    system: str,
+    tools_schema: list[dict[str, Any]],
+    cancellation_token: "CancellationToken | None" = None,
+) -> None:
+    """Run a silent model turn that can save context before compaction.
+
+    The temporary conversation is intentionally not committed to user-visible
+    history or transcript. Tool calls still execute so memory/file writes can
+    persist the important state before the following compaction summarizes it.
+    """
+    temp_history = list(history)
+    target_path = _memory_flush_target_path()
+    temp_history.append(Message(
+        "user",
+        [{"type": "text", "text": _build_memory_flush_prompt(cfg.memory_flush_config.prompt)}],
+    ))
+    memory_flush_tools = [
+        schema for schema in tools_schema if schema.get("name") in MEMORY_FLUSH_ALLOWED_TOOLS
+    ]
+
+    def silent_on_event(_event: Any) -> None:
+        return None
+
+    for _ in range(cfg.max_iterations):
+        _check_cancelled(cancellation_token)
+        wire_messages = [{"role": m.role, "content": m.content} for m in temp_history]
+        assistant_blocks, stop_reason = await _consume_one_assistant_turn(
+            client=client,
+            api=cfg.api,
+            model=cfg.model,
+            system=system,
+            messages=wire_messages,
+            tools=memory_flush_tools,
+            max_tokens=cfg.max_tokens,
+            thinking_budget_tokens=cfg.thinking_budget_tokens,
+            on_event=silent_on_event,
+            cancellation_token=cancellation_token,
+        )
+        _check_cancelled(cancellation_token)
+        temp_history.append(Message("assistant", assistant_blocks))
+        if stop_reason != "tool_use":
+            return
+
+        tool_use_blocks = [b for b in assistant_blocks if b.get("type") == "tool_use"]
+        if not tool_use_blocks:
+            return
+
+        tool_results = list(
+            await asyncio.gather(*[
+                _dispatch_memory_flush_tool(
+                    registry,
+                    cfg,
+                    tool_use_id=b["id"],
+                    name=b["name"],
+                    args=b.get("input") or {},
+                    target_path=target_path,
+                    cancellation_token=cancellation_token,
+                )
+                for b in tool_use_blocks
+            ])
+        )
+        _check_cancelled(cancellation_token)
+        for result in tool_results:
+            result.pop("_denied", None)
+        temp_history.append(Message("user", tool_results))
+
+
+async def _dispatch_memory_flush_tool(
+    registry: ToolRegistry,
+    cfg: LoopConfig,
+    *,
+    tool_use_id: str,
+    name: str,
+    args: dict[str, Any],
+    target_path: str,
+    cancellation_token: "CancellationToken | None" = None,
+) -> dict[str, Any]:
+    """Dispatch only the narrow, append-only tool surface used by memory flush."""
+    if name not in MEMORY_FLUSH_ALLOWED_TOOLS:
+        return _tool_error_result(tool_use_id, f"memory flush cannot use tool: {name!r}")
+
+    if name != "write_file":
+        return await registry.dispatch(
+            tool_use_id,
+            name,
+            args,
+            cancellation_token=cancellation_token,
+        )
+
+    content = args.get("content")
+    if not isinstance(content, str):
+        return _tool_error_result(tool_use_id, "write_file requires string content")
+    if cfg.workspace_dir is None:
+        return _tool_error_result(tool_use_id, "memory flush requires a workspace directory")
+
+    rel_path = args.get("path")
+    if not isinstance(rel_path, str) or not rel_path.strip():
+        return _tool_error_result(tool_use_id, "write_file requires path")
+
+    workspace = cfg.workspace_dir.resolve()
+    requested = (workspace / rel_path).resolve()
+    target = (workspace / target_path).resolve()
+    try:
+        requested.relative_to(workspace)
+    except ValueError:
+        return _tool_error_result(tool_use_id, f"path escapes workspace: {rel_path}")
+    if requested != target:
+        return _tool_error_result(
+            tool_use_id,
+            f"memory flush writes are restricted to {target_path}; use that path only",
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    separator = "" if not existing or existing.endswith("\n") or not content else "\n"
+    target.write_text(f"{existing}{separator}{content}", encoding="utf-8")
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": [{"type": "text", "text": f"Appended content to {target_path}."}],
+    }
+
+
+def _tool_error_result(tool_use_id: str, message: str) -> dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "is_error": True,
+        "content": [{"type": "text", "text": message}],
+    }
+
+
+def _memory_flush_target_path() -> str:
+    return f"memory/{datetime.now().strftime('%Y-%m-%d')}.md"
+
+
+def _has_memory_flush_write_tool(tools_schema: list[dict[str, Any]]) -> bool:
+    return any(schema.get("name") == "write_file" for schema in tools_schema)
+
+
+def _build_memory_flush_prompt(prompt: str) -> str:
+    """Resolve date placeholders in the memory flush prompt."""
+    date_stamp = datetime.now().strftime("%Y-%m-%d")
+    resolved = prompt.replace("YYYY-MM-DD", date_stamp)
+    if "Current time:" in resolved:
+        return resolved
+    current_time = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    return f"{resolved}\nCurrent time: {current_time}"
 
 
 async def _wait_for_subagent_announcements(

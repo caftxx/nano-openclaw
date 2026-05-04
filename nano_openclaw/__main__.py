@@ -304,6 +304,7 @@ async def _async_main(
         max_skills_in_prompt=config.skills.load.maxSkillsInPrompt,
         max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
         active_memory_config=active_mem_cfg,
+        memory_flush_config=config.memoryFlush,
         dreaming_config=dreaming_cfg,
         hook_registry=hook_registry,
     )

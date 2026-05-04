@@ -10,6 +10,7 @@ from nano_openclaw.config.types import (
     AgentModelListConfig,
     AgentsConfig,
     ContextConfig,
+    MemoryFlushConfig,
     ModelCost,
     ModelDefinition,
     ModelProvider,
@@ -39,6 +40,31 @@ class TestContextConfig:
             ContextConfig(threshold=1.5)
         with pytest.raises(Exception):
             ContextConfig(threshold=0.05)
+
+
+class TestMemoryFlushConfig:
+    def test_default_values(self):
+        cfg = MemoryFlushConfig()
+        assert cfg.enabled is True
+        assert cfg.softThresholdTokens == 4000
+        assert cfg.reserveTokensFloor == 20000
+        assert "Pre-compaction memory flush." in cfg.prompt
+        assert "memory/YYYY-MM-DD.md" in cfg.prompt
+        assert "APPEND" in cfg.prompt
+        assert "timestamped variant" in cfg.prompt
+        assert "NO_REPLY" in cfg.prompt
+
+    def test_custom_values(self):
+        cfg = MemoryFlushConfig(
+            enabled=False,
+            softThresholdTokens=1000,
+            reserveTokensFloor=5000,
+            prompt="flush now",
+        )
+        assert cfg.enabled is False
+        assert cfg.softThresholdTokens == 1000
+        assert cfg.reserveTokensFloor == 5000
+        assert cfg.prompt == "flush now"
 
 
 class TestAgentModelListConfig:
@@ -141,6 +167,7 @@ class TestNanoOpenClawConfig:
         cfg = NanoOpenClawConfig()
         assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
         assert cfg.maxIterations == 12
+        assert cfg.memoryFlush.enabled is True
     
     def test_agents_structure(self):
         cfg = NanoOpenClawConfig()

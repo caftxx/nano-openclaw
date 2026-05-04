@@ -16,10 +16,12 @@ from nano_openclaw.compact import (
     DEFAULT_RECENT_TURNS,
     DEFAULT_THRESHOLD_RATIO,
     estimate_tokens,
+    should_run_memory_flush,
     should_compact,
     summarize_history,
     compact_if_needed,
 )
+from nano_openclaw.config.types import MemoryFlushConfig
 from nano_openclaw.loop import Message
 
 
@@ -142,6 +144,46 @@ def test_should_compact_custom_threshold():
     assert not should_compact(history, budget=budget, threshold_ratio=DEFAULT_THRESHOLD_RATIO)
     # Lower threshold (0.4): 80 tokens -> 100 >= 80, should compact
     assert should_compact(history, budget=budget, threshold_ratio=0.4)
+
+
+def test_should_run_memory_flush_threshold():
+    """Memory flush should trigger at contextWindow - reserve - soft threshold."""
+    cfg = MemoryFlushConfig(reserveTokensFloor=20000, softThresholdTokens=4000)
+
+    assert not should_run_memory_flush(
+        current_tokens=103999,
+        context_window=128000,
+        config=cfg,
+        already_flushed=False,
+    )
+    assert should_run_memory_flush(
+        current_tokens=104000,
+        context_window=128000,
+        config=cfg,
+        already_flushed=False,
+    )
+
+
+def test_should_run_memory_flush_respects_disabled_and_already_flushed():
+    """Disabled config and per-compaction guard should prevent repeat flushes."""
+    cfg = MemoryFlushConfig(enabled=True, reserveTokensFloor=20, softThresholdTokens=10)
+    disabled = MemoryFlushConfig(enabled=False, reserveTokensFloor=20, softThresholdTokens=10)
+
+    assert not should_run_memory_flush(120, 150, cfg, already_flushed=True)
+    assert not should_run_memory_flush(120, 150, disabled, already_flushed=False)
+    assert not should_run_memory_flush(120, 0, cfg, already_flushed=False)
+
+
+def test_should_run_memory_flush_skips_non_positive_threshold():
+    """OpenClaw skips flush when reserve + soft threshold consumes the window."""
+    cfg = MemoryFlushConfig(reserveTokensFloor=20000, softThresholdTokens=4000)
+
+    assert not should_run_memory_flush(
+        current_tokens=100,
+        context_window=8000,
+        config=cfg,
+        already_flushed=False,
+    )
 
 
 # =============================================================================

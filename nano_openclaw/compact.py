@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .config.types import MemoryFlushConfig
     from .loop import Message
 
 # Approximation: 4 characters ≈ 1 token (rough average across models)
@@ -259,4 +260,19 @@ def should_compact(
     """Check if compaction should be triggered without actually compacting."""
     current_tokens = estimate_tokens(history)
     threshold = int(budget * threshold_ratio)
+    return current_tokens >= threshold
+
+
+def should_run_memory_flush(
+    current_tokens: int,
+    context_window: int,
+    config: "MemoryFlushConfig",
+    already_flushed: bool,
+) -> bool:
+    """Check if a pre-compaction memory flush should run."""
+    if already_flushed or not config.enabled or context_window <= 0:
+        return False
+    threshold = max(0, context_window - config.reserveTokensFloor - config.softThresholdTokens)
+    if threshold <= 0:
+        return False
     return current_tokens >= threshold
