@@ -180,12 +180,12 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `context.budget` | number | `100000` | 上下文 token 预算 |
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
-| `plugins` | object | `{ enabled: true, load: [] }` | 轻量插件加载配置 |
+| `plugins` | object | `{ enabled: true, load: ["memory", "web", "subagent", "mcp"] }` | 轻量插件加载配置 |
 | `subagents` | object | 见下方 | 后台子 agent 编排配置 |
 
 ### plugins — Plugin / Hook 系统
 
-`plugins.load` 显式声明要加载的插件。字符串是内置插件名；对象可以按 Python 模块或文件路径加载外部插件。
+默认加载内置插件 `memory`、`web`、`subagent`、`mcp`，无需配置。`plugins.load` 可用于覆盖默认列表；字符串是内置插件名或 Python 模块名，对象可以按 Python 模块或文件路径加载外部插件。
 
 内置插件：
 
@@ -196,25 +196,29 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `"subagent"` | `sessions_spawn` / `subagents` 工具 |
 | `"mcp"` | 在 `session_start` hook 初始化 MCP server 并注册 MCP 工具 |
 
-示例：
+覆盖默认列表示例：
 
 ```json5
 plugins: {
   enabled: true,
   load: [
-    "memory",
-    "web",
-    "subagent",
-    "mcp",
     { module: "my_pkg.my_plugin", config: { key: "val" } },
     { path: "./plugins/custom.py", config: { key: "val" } },
   ],
 }
 ```
 
+关闭所有插件：
+
+```json5
+plugins: {
+  load: [],
+}
+```
+
 ### tools — 工具配置
 
-`tools` 配置控制工具参数，对齐 openclaw 的 `tools.*` 配置。Web 工具只有在加载 `"web"` 插件后才会注册。
+`tools` 配置控制工具参数，对齐 openclaw 的 `tools.*` 配置。Web 工具默认通过内置 `"web"` 插件注册；如果覆盖 `plugins.load` 且未包含 `"web"`，则不会注册。
 
 #### tools.noTools
 

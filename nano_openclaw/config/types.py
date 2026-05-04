@@ -444,7 +444,7 @@ class PluginsConfig(BaseModel):
 
     enabled: bool = Field(default=True, description="Enable plugin loading")
     load: List[Union[str, PluginEntryConfig]] = Field(
-        default_factory=list,
+        default_factory=lambda: ["memory", "web", "subagent", "mcp"],
         description="Plugin entries to load; strings reference built-in plugins",
     )
 

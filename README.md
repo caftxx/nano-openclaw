@@ -49,7 +49,7 @@ uv run python -m nano_openclaw --sessions
 uv run python -m nano_openclaw --agent coder
 ```
 
-**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。memory/web/subagent/MCP 现在通过 `plugins.load` 显式启用，详见下方配置说明。
+**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。memory/web/subagent/MCP 内置插件默认启用，详见下方配置说明。
 
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 

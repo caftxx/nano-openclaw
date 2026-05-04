@@ -21,6 +21,31 @@ def test_builtin_web_plugin_registers_web_tools():
     assert "web_fetch" in registry.names()
 
 
+def test_default_config_loads_builtin_plugins():
+    config = NanoOpenClawConfig()
+    registry = build_core_registry()
+
+    load_plugins(config.plugins, registry, config)
+
+    assert "memory_get" in registry.names()
+    assert "memory_search" in registry.names()
+    assert "web_search" in registry.names()
+    assert "web_fetch" in registry.names()
+    assert "sessions_spawn" in registry.names()
+    assert "subagents" in registry.names()
+
+
+def test_explicit_empty_plugin_load_disables_builtin_plugins():
+    config = NanoOpenClawConfig(plugins=PluginsConfig(load=[]))
+    registry = build_core_registry()
+
+    load_plugins(config.plugins, registry, config)
+
+    assert "memory_get" not in registry.names()
+    assert "web_search" not in registry.names()
+    assert "sessions_spawn" not in registry.names()
+
+
 def test_tool_hooks_can_modify_args_and_result():
     registry = build_core_registry()
     registry.register(Tool(
