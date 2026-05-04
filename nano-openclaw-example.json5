@@ -190,6 +190,22 @@
   // },
 
   // ==========================================
+  // Memory Search 配置（默认关闭 temporal decay）
+  // ==========================================
+  // memory_search 默认搜索 MEMORY.md 和 memory/*.md。
+  // temporal decay 与 openclaw 保持一致：默认关闭；开启后
+  // memory/YYYY-MM-DD.md 按日期逐渐降权，MEMORY.md 和 memory/projects.md
+  // 这类 evergreen 文件不会衰减。
+  //
+  // 取消注释并修改以启用：
+  // memorySearch: {
+  //   temporalDecay: {
+  //     enabled: true,
+  //     halfLifeDays: 30,
+  //   },
+  // },
+
+  // ==========================================
   // Subagents 配置（后台子 agent 编排）
   // ==========================================
   // 模型可通过 sessions_spawn 工具派生 isolated 后台子 agent，

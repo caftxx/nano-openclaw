@@ -7,7 +7,9 @@ Uses context-window search (like ripgrep -C) instead of single-line matching.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+import math
 import re
 from typing import Any
 
@@ -23,6 +25,8 @@ _STOPWORDS = frozenset({
     "那", "有", "没", "与", "及", "为", "从", "到", "把",
 })
 
+_DATED_MEMORY_PATH_RE = re.compile(r"^memory/(\d{4})-(\d{2})-(\d{2})\.md$")
+
 
 @dataclass
 class MemorySearchResult:
@@ -32,6 +36,11 @@ class MemorySearchResult:
     score: float
     start_line: int
     end_line: int
+    raw_score: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.raw_score is None:
+            self.raw_score = self.score
 
 
 def memory_get(args: dict[str, Any], workspace_dir: str | None = None) -> str:
@@ -82,7 +91,12 @@ def memory_get(args: dict[str, Any], workspace_dir: str | None = None) -> str:
         return f"[error reading {rel_path}: {e}]"
 
 
-def memory_search(args: dict[str, Any], workspace_dir: str | None = None) -> str:
+def memory_search(
+    args: dict[str, Any],
+    workspace_dir: str | None = None,
+    config: Any | None = None,
+    now: datetime | None = None,
+) -> str:
     """Lexical search across memory files.
 
     Mirrors openclaw memory_search but uses keyword matching instead of embedding.
@@ -126,6 +140,8 @@ def memory_search(args: dict[str, Any], workspace_dir: str | None = None) -> str
     if memory_dir.exists():
         for entry in sorted(memory_dir.glob("*.md")):
             results.extend(_search_file(entry, keywords, min_score, workspace))
+
+    results = _apply_temporal_decay(results, config, now=now)
 
     # Sort by score descending
     results.sort(key=lambda r: r.score, reverse=True)
@@ -175,7 +191,7 @@ def _search_file(
     if not lines:
         return []
 
-    rel_path = str(file_path.relative_to(workspace))
+    rel_path = file_path.relative_to(workspace).as_posix()
 
     # Precompile whole-word patterns; fall back to substring for CJK (no \b boundary)
     kw_patterns = {kw: re.compile(r"\b" + re.escape(kw) + r"\b") for kw in keywords}
@@ -240,8 +256,96 @@ def _search_file(
                 path=rel_path,
                 snippet=snippet,
                 score=round(score, 4),
+                raw_score=round(score, 4),
                 start_line=win_start + 1,
                 end_line=win_end + 1,
             ))
 
     return results
+
+
+def _apply_temporal_decay(
+    results: list[MemorySearchResult],
+    config: Any | None,
+    now: datetime | None = None,
+) -> list[MemorySearchResult]:
+    """Apply optional temporal decay to dated daily memory results."""
+    enabled, half_life_days = _resolve_temporal_decay_config(config)
+    if not enabled:
+        return results
+
+    current = now or datetime.now(timezone.utc)
+    current_utc = _as_utc(current)
+
+    decayed: list[MemorySearchResult] = []
+    for result in results:
+        memory_date = _parse_dated_memory_path(result.path)
+        if memory_date is None:
+            decayed.append(result)
+            continue
+
+        age_days = max(0.0, (current_utc - memory_date).total_seconds() / 86400)
+        decayed_score = result.score * _temporal_decay_multiplier(age_days, half_life_days)
+        decayed.append(MemorySearchResult(
+            path=result.path,
+            snippet=result.snippet,
+            score=round(decayed_score, 4),
+            raw_score=result.raw_score,
+            start_line=result.start_line,
+            end_line=result.end_line,
+        ))
+
+    return decayed
+
+
+def _resolve_temporal_decay_config(config: Any | None) -> tuple[bool, float]:
+    temporal_decay: Any | None = None
+    if isinstance(config, dict):
+        temporal_decay = config.get("temporalDecay")
+    elif config is not None:
+        temporal_decay = getattr(config, "temporalDecay", None)
+
+    if temporal_decay is None:
+        return False, 30.0
+
+    if isinstance(temporal_decay, dict):
+        enabled = bool(temporal_decay.get("enabled", False))
+        half_life_days = temporal_decay.get("halfLifeDays", 30)
+    else:
+        enabled = bool(getattr(temporal_decay, "enabled", False))
+        half_life_days = getattr(temporal_decay, "halfLifeDays", 30)
+
+    try:
+        half_life_float = float(half_life_days)
+    except (TypeError, ValueError):
+        half_life_float = 30.0
+
+    return enabled, half_life_float
+
+
+def _temporal_decay_multiplier(age_days: float, half_life_days: float) -> float:
+    if not math.isfinite(half_life_days) or half_life_days <= 0:
+        return 1.0
+    clamped_age = max(0.0, age_days)
+    if not math.isfinite(clamped_age):
+        return 1.0
+    decay_lambda = math.log(2) / half_life_days
+    return math.exp(-decay_lambda * clamped_age)
+
+
+def _parse_dated_memory_path(path: str) -> datetime | None:
+    normalized = path.replace("\\", "/").removeprefix("./")
+    match = _DATED_MEMORY_PATH_RE.match(normalized)
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    try:
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

@@ -241,6 +241,30 @@ class MemoryFlushConfig(BaseModel):
     )
 
 
+class TemporalDecayConfig(BaseModel):
+    """Temporal decay settings for memory_search ranking."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=False, description="Enable recency-based score decay")
+    halfLifeDays: float = Field(
+        default=30,
+        alias="halfLifeDays",
+        gt=0,
+        description="Number of days after which dated memory scores are halved",
+    )
+
+
+class MemorySearchConfig(BaseModel):
+    """Memory search ranking configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    temporalDecay: TemporalDecayConfig = Field(
+        default_factory=TemporalDecayConfig,
+        alias="temporalDecay",
+        description="Optional temporal decay for dated daily memory files",
+    )
+
+
 # ============================================================================
 # Skills Types (aligns with src/config/types.openclaw.ts skills.*)
 # ============================================================================
@@ -520,6 +544,10 @@ class NanoOpenClawConfig(BaseModel):
     memoryFlush: MemoryFlushConfig = Field(
         default_factory=MemoryFlushConfig,
         description="Pre-compaction silent memory flush configuration",
+    )
+    memorySearch: MemorySearchConfig = Field(
+        default_factory=MemorySearchConfig,
+        description="Memory search ranking configuration",
     )
     activeMemory: Optional[ActiveMemoryConfigInput] = Field(
         default=None,

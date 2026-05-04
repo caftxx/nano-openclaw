@@ -165,6 +165,27 @@ class TestLoadConfig:
             cfg, warnings = load_config(env=env)
             assert cfg.agents.defaults.model == "anthropic/claude-sonnet"
 
+    def test_memory_search_temporal_decay_config(self):
+        content = '''
+        {
+            memorySearch: {
+                temporalDecay: {
+                    enabled: true,
+                    halfLifeDays: 14,
+                },
+            },
+        }
+        '''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
+            config_path.write_text(content)
+            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            cfg, warnings = load_config(env=env)
+
+            assert cfg.memorySearch.temporalDecay.enabled is True
+            assert cfg.memorySearch.temporalDecay.halfLifeDays == 14
+            assert len(warnings) == 0
+
 
 class TestResolveModelConfig:
     def test_builtin_anthropic(self):

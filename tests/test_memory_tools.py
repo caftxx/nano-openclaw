@@ -7,6 +7,9 @@ Mirrors openclaw's memory-core/src/tools.ts behavior:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+from datetime import datetime, timezone
 import tempfile
 from pathlib import Path
 
@@ -16,10 +19,18 @@ from nano_openclaw.memory.tools import (
     memory_get,
     memory_search,
     MemorySearchResult,
+    _apply_temporal_decay,
 )
-from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig
+from nano_openclaw.config.types import MemorySearchConfig, NanoOpenClawConfig, PluginsConfig
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.tools import build_core_registry
+
+
+def _dispatch_result(registry, *args):
+    result = registry.dispatch(*args)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 @pytest.fixture
@@ -164,6 +175,83 @@ class TestMemorySearch:
         # Line numbers format: path:start-end
         assert ":" in result  # Should have line separator
 
+    def test_temporal_decay_disabled_by_default(self):
+        """Temporal decay should not apply unless explicitly configured."""
+        results = [
+            MemorySearchResult("memory/2026-01-01.md", "old", 1.0, 1, 1),
+        ]
+
+        decayed = _apply_temporal_decay(
+            results,
+            MemorySearchConfig(),
+            now=datetime(2026, 1, 31, tzinfo=timezone.utc),
+        )
+
+        assert decayed[0].score == 1.0
+
+    def test_temporal_decay_halves_score_at_half_life(self):
+        """A dated daily note 30 days old should score at roughly 50%."""
+        results = [
+            MemorySearchResult("memory/2026-01-01.md", "old", 0.8, 1, 1),
+        ]
+
+        decayed = _apply_temporal_decay(
+            results,
+            {"temporalDecay": {"enabled": True, "halfLifeDays": 30}},
+            now=datetime(2026, 1, 31, tzinfo=timezone.utc),
+        )
+
+        assert decayed[0].score == pytest.approx(0.4, abs=0.01)
+        assert decayed[0].raw_score == 0.8
+
+    def test_temporal_decay_can_change_search_ranking(self, tmp_path):
+        """An older stronger raw lexical hit can rank below a newer daily note."""
+        memory_dir = tmp_path / "memory"
+        memory_dir.mkdir()
+        (memory_dir / "2026-01-01.md").write_text("# alpha beta\nalpha beta\n", encoding="utf-8")
+        (memory_dir / "2026-01-31.md").write_text("alpha beta\n", encoding="utf-8")
+
+        result = memory_search(
+            {"query": "alpha beta", "maxResults": 2},
+            str(tmp_path),
+            config={"temporalDecay": {"enabled": True, "halfLifeDays": 30}},
+            now=datetime(2026, 1, 31, tzinfo=timezone.utc),
+        )
+
+        result_lines = [line for line in result.splitlines() if line.startswith("- ")]
+        assert result_lines[0].startswith("- memory/2026-01-31.md")
+        assert result_lines[1].startswith("- memory/2026-01-01.md")
+
+    def test_temporal_decay_does_not_decay_evergreen_memory_paths(self):
+        """MEMORY.md and non-dated memory/*.md files are evergreen."""
+        results = [
+            MemorySearchResult("MEMORY.md", "root", 1.0, 1, 1),
+            MemorySearchResult("memory/projects.md", "topic", 0.75, 1, 1),
+        ]
+
+        decayed = _apply_temporal_decay(
+            results,
+            {"temporalDecay": {"enabled": True, "halfLifeDays": 30}},
+            now=datetime(2026, 1, 31, tzinfo=timezone.utc),
+        )
+
+        assert decayed[0].score == 1.0
+        assert decayed[1].score == 0.75
+
+    def test_temporal_decay_future_dates_do_not_boost_or_decay(self):
+        """Future dated daily notes are treated as age zero."""
+        results = [
+            MemorySearchResult("memory/2099-01-01.md", "future", 0.9, 1, 1),
+        ]
+
+        decayed = _apply_temporal_decay(
+            results,
+            {"temporalDecay": {"enabled": True, "halfLifeDays": 30}},
+            now=datetime(2026, 1, 31, tzinfo=timezone.utc),
+        )
+
+        assert decayed[0].score == 0.9
+
 
 class TestMemorySearchResult:
     """Tests for MemorySearchResult dataclass."""
@@ -181,6 +269,7 @@ class TestMemorySearchResult:
         assert result.path == "MEMORY.md"
         assert result.snippet == "test snippet"
         assert result.score == 0.8
+        assert result.raw_score == 0.8
         assert result.start_line == 5
         assert result.end_line == 5
 
@@ -206,7 +295,8 @@ class TestToolIntegration:
         registry = self._registry()
         registry.set_workspace_dir(workspace_with_memory_files)
 
-        result = registry.dispatch(
+        result = _dispatch_result(
+            registry,
             "test-id",
             "memory_get",
             {"path": "MEMORY.md"}
@@ -221,7 +311,8 @@ class TestToolIntegration:
         registry = self._registry()
         registry.set_workspace_dir(workspace_with_memory_files)
 
-        result = registry.dispatch(
+        result = _dispatch_result(
+            registry,
             "test-id",
             "memory_search",
             {"query": "decisions"}

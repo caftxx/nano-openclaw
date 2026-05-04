@@ -487,7 +487,7 @@ def _build_core_tools() -> list[Tool]:
     return tools
 
 
-def build_memory_tools() -> list[Tool]:
+def build_memory_tools(memory_search_config: Any | None = None) -> list[Tool]:
     from nano_openclaw.memory.tools import memory_get, memory_search
 
     return [
@@ -517,7 +517,11 @@ def build_memory_tools() -> list[Tool]:
                 },
                 "required": ["query"],
             },
-            run=lambda args, workspace_dir=None: memory_search(args, workspace_dir),
+            run=lambda args, workspace_dir=None: memory_search(
+                args,
+                workspace_dir,
+                config=memory_search_config,
+            ),
         ),
     ]
 

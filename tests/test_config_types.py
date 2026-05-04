@@ -10,6 +10,7 @@ from nano_openclaw.config.types import (
     AgentModelListConfig,
     AgentsConfig,
     ContextConfig,
+    MemorySearchConfig,
     MemoryFlushConfig,
     ModelCost,
     ModelDefinition,
@@ -65,6 +66,23 @@ class TestMemoryFlushConfig:
         assert cfg.softThresholdTokens == 1000
         assert cfg.reserveTokensFloor == 5000
         assert cfg.prompt == "flush now"
+
+
+class TestMemorySearchConfig:
+    def test_default_temporal_decay_disabled(self):
+        cfg = MemorySearchConfig()
+        assert cfg.temporalDecay.enabled is False
+        assert cfg.temporalDecay.halfLifeDays == 30
+
+    def test_custom_temporal_decay(self):
+        cfg = MemorySearchConfig(
+            temporalDecay={
+                "enabled": True,
+                "halfLifeDays": 14,
+            },
+        )
+        assert cfg.temporalDecay.enabled is True
+        assert cfg.temporalDecay.halfLifeDays == 14
 
 
 class TestAgentModelListConfig:
@@ -168,6 +186,8 @@ class TestNanoOpenClawConfig:
         assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
         assert cfg.maxIterations == 12
         assert cfg.memoryFlush.enabled is True
+        assert cfg.memorySearch.temporalDecay.enabled is False
+        assert cfg.memorySearch.temporalDecay.halfLifeDays == 30
     
     def test_agents_structure(self):
         cfg = NanoOpenClawConfig()

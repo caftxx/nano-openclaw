@@ -180,6 +180,7 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `context.budget` | number | `100000` | 上下文 token 预算 |
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
+| `memorySearch` | object | 见下方 | memory_search 排序配置 |
 | `plugins` | object | `{ enabled: true, load: ["memory", "web", "subagent", "mcp"] }` | 轻量插件加载配置 |
 | `subagents` | object | 见下方 | 后台子 agent 编排配置 |
 
@@ -250,6 +251,28 @@ plugins: {
 **SSRF 防护**：web_fetch 内置两阶段 SSRF 防护。Phase 1（预 DNS）：检查字面私有 IP 和已知黑名单 hostname（localhost、*.local、*.internal）。Phase 2（后 DNS）：DNS 解析后验证所有返回 IP 不是私有/内部地址。任何违规都会返回错误而非访问。
 
 **外部内容安全**：web_search 和 web_fetch 的返回内容都通过 `wrap_external_content()` 包装，添加 `<EXTERNAL_UNTRUSTED_CONTENT>` 边界标记并清洗 LLM 特殊 token（如 `<antThinking>`、`</think>`、`[INST]` 等），防止 prompt injection 攻击。
+
+### memorySearch — 记忆搜索配置
+
+`memorySearch` 控制 `memory_search` 的排序行为。默认与 openclaw 保持一致：temporal decay 支持存在但不自动开启。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `temporalDecay.enabled` | boolean | `false` | 是否启用按时间衰减的排序 |
+| `temporalDecay.halfLifeDays` | number | `30` | 半衰期天数；开启后 dated daily note 每 N 天分数减半 |
+
+启用后，`memory/YYYY-MM-DD.md` 会按文件名日期衰减；`MEMORY.md` 和 `memory/projects.md` 这类非日期 evergreen 文件不会衰减。
+
+```json5
+{
+  memorySearch: {
+    temporalDecay: {
+      enabled: true,
+      halfLifeDays: 30,
+    },
+  },
+}
+```
 
 ### activeMemory — Active Memory 插件配置
 

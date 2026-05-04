@@ -13,7 +13,7 @@ class MemoryPlugin:
     name = "Memory"
 
     def register(self, api: PluginApi) -> None:
-        for tool in build_memory_tools():
+        for tool in build_memory_tools(api.config.memorySearch):
             api.register_tool(tool)
 
         def inject_daily_memory(payload: dict[str, Any]) -> dict[str, Any] | None:

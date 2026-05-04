@@ -266,7 +266,7 @@ Workspace 引导文件：从 `workspaceDir`（默认为当前工作目录）加�
 
 Memory 系统：包含四层机制：
 - **Daily Memory**：启动时自动加载 `workspace/memory/*.md` 中最近 N 天的记忆文件（默认 2 天），生成日期戳 prelude 注入系统提示，让 agent 知道"最近发生了什么"。
-- **Memory Tools**：提供 `memory_get`（读取指定记忆文件）和 `memory_search`（搜索记忆内容）两个工具，agent 可主动查询记忆。nano 用词法匹配而非 embedding 搜索。
+- **Memory Tools**：提供 `memory_get`（读取指定记忆文件）和 `memory_search`（搜索记忆内容）两个工具，agent 可主动查询记忆。nano 用词法匹配而非 embedding 搜索。`memorySearch.temporalDecay` 可显式开启按时间衰减；默认关闭以对齐 openclaw。
 - **Active Memory**：可选插件，启用后在每次用户消息前自动执行子 agent 搜索记忆，将相关结果注入系统提示，实现"自动记住偏好和历史"的效果。通过 `activeMemory` 配置字段启用。
 - **Dreaming**：可选插件，启用后追踪 memory_search 的召回记录，定期将高频、高质量的记忆片段自动提升到 MEMORY.md（长期记忆），并生成叙事性的 Dream Diary 写入 DREAMS.md。通过 `dreaming` 配置字段启用。
 
