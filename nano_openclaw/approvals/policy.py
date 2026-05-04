@@ -8,6 +8,7 @@ Mirrors openclaw's exec-approvals-allowlist.ts:
 
 import fnmatch
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Dict, List
 
 from nano_openclaw.approvals.types import ApprovalPolicy
@@ -40,6 +41,37 @@ DEFAULT_DANGEROUS_WRITE_PATTERNS: List[str] = [
     ".pem",
     ".key",
 ]
+
+
+def is_safe_memory_write_path(path_arg: object) -> bool:
+    """Return True for workspace-relative memory markdown writes.
+
+    The approval bypass is intentionally narrow: daily/evergreen memory files
+    are expected to be written as relative paths like ``memory/2026-05-05.md``
+    or ``MEMORY.md``. Absolute paths and traversal are still reviewed.
+    """
+    raw = str(path_arg or "").strip()
+    if not raw:
+        return False
+
+    if PureWindowsPath(raw).is_absolute() or PurePosixPath(raw).is_absolute():
+        return False
+
+    normalized = raw.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        return False
+
+    if len(parts) == 1:
+        return parts[0] == "MEMORY.md"
+
+    if len(parts) != 2:
+        return False
+
+    parent, filename = parts
+    if parent != "memory" or filename.startswith("."):
+        return False
+    return PurePosixPath(filename).suffix.lower() == ".md"
 
 
 @dataclass

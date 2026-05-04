@@ -303,6 +303,55 @@ def test_on_miss_no_approval_when_allowlist_hit():
     assert result.requires_approval is False
 
 
+def test_memory_markdown_writes_do_not_require_approval():
+    """Memory markdown writes are trusted workspace-local bookkeeping."""
+    from nano_openclaw.approvals import ApprovalManager
+
+    policy = ApprovalPolicy(
+        ask_mode="on-miss",
+        security_mode="allowlist",
+        dangerous_tools=["write_file"],
+        allowlist=[],
+    )
+    manager = ApprovalManager(policy)
+
+    daily = manager.check_request(
+        "write_file",
+        {"path": "memory/2026-05-05.md", "content": "note"},
+    )
+    evergreen = manager.check_request(
+        "write_file",
+        {"path": "MEMORY.md", "content": "note"},
+    )
+
+    assert daily.requires_approval is False
+    assert daily.reason == "workspace memory markdown write"
+    assert evergreen.requires_approval is False
+
+
+def test_memory_write_approval_bypass_rejects_escape_paths():
+    """Only direct workspace memory markdown files bypass approval."""
+    from nano_openclaw.approvals import ApprovalManager
+
+    policy = ApprovalPolicy(
+        ask_mode="on-miss",
+        security_mode="allowlist",
+        dangerous_tools=["write_file"],
+        allowlist=[],
+    )
+    manager = ApprovalManager(policy)
+
+    for path in [
+        "memory/../outside.md",
+        "memory/nested/2026-05-05.md",
+        "memory/.dreams.md",
+        "/tmp/workspace/memory/2026-05-05.md",
+        "C:/workspace/memory/2026-05-05.md",
+    ]:
+        result = manager.check_request("write_file", {"path": path, "content": "note"})
+        assert result.requires_approval is True
+
+
 def test_ask_off_never_requires_approval():
     """ask_mode=off -> never require approval, even for dangerous commands."""
     from nano_openclaw.approvals import ApprovalManager

@@ -20,7 +20,11 @@ from nano_openclaw.approvals.types import (
     AllowlistEntry,
     DEFAULT_AGENT_ID,
 )
-from nano_openclaw.approvals.policy import ApprovalPolicyEvaluator, EvaluationResult
+from nano_openclaw.approvals.policy import (
+    ApprovalPolicyEvaluator,
+    EvaluationResult,
+    is_safe_memory_write_path,
+)
 
 
 APPROVALS_FILE_VERSION = 1
@@ -82,6 +86,13 @@ class ApprovalManager:
                 requires_approval=False,
                 risk_level="low",
                 reason=f"tool {tool_name} not in dangerous_tools",
+            )
+
+        if tool_name == "write_file" and is_safe_memory_write_path(tool_args.get("path")):
+            return EvaluationResult(
+                requires_approval=False,
+                risk_level="low",
+                reason="workspace memory markdown write",
             )
 
         patterns = [e.pattern for e in self._allowlist]
