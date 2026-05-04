@@ -450,16 +450,17 @@ async def agent_loop(
             cfg.memory_flush_config,
             already_flushed_for_compaction,
         ):
-            if cfg.workspace_dir and _has_memory_flush_write_tool(tools_schema):
-                await _run_memory_flush_turn(
-                    client=client,
-                    cfg=cfg,
-                    history=scratch_history,
-                    registry=registry,
-                    system=system,
-                    tools_schema=tools_schema,
-                    cancellation_token=cancellation_token,
-                )
+            await run_pre_compaction_memory_flush(
+                client=client,
+                cfg=cfg,
+                history=scratch_history,
+                registry=registry,
+                system=system,
+                tools_schema=tools_schema,
+                force=True,
+                already_flushed=already_flushed_for_compaction,
+                cancellation_token=cancellation_token,
+            )
             already_flushed_for_compaction = True
 
         # Check context budget and compact if needed (mirrors OpenClaw's compaction)
@@ -709,6 +710,90 @@ async def _run_memory_flush_turn(
         for result in tool_results:
             result.pop("_denied", None)
         temp_history.append(Message("user", tool_results))
+
+
+async def run_pre_compaction_memory_flush(
+    *,
+    client: Any,
+    cfg: LoopConfig,
+    history: list[Message],
+    registry: ToolRegistry,
+    system: str | None = None,
+    tools_schema: list[dict[str, Any]] | None = None,
+    force: bool = False,
+    already_flushed: bool = False,
+    cancellation_token: "CancellationToken | None" = None,
+) -> bool:
+    """Run the silent memory flush used immediately before context compaction.
+
+    ``force=True`` is for explicit manual compaction: it bypasses the token
+    threshold check while still respecting config and tool/workspace gates.
+    """
+    current_tokens = estimate_tokens(history)
+    context_window = cfg.context_window or cfg.context_budget
+    if not force and not should_run_memory_flush(
+        current_tokens,
+        context_window,
+        cfg.memory_flush_config,
+        already_flushed,
+    ):
+        return False
+    if already_flushed or not cfg.memory_flush_config.enabled:
+        return False
+
+    if not cfg.workspace_dir:
+        return False
+
+    if tools_schema is None:
+        tools_schema = registry.schemas()
+    if not _has_memory_flush_write_tool(tools_schema):
+        return False
+
+    if system is None:
+        system = _build_memory_flush_system(registry, cfg)
+
+    await _run_memory_flush_turn(
+        client=client,
+        cfg=cfg,
+        history=history,
+        registry=registry,
+        system=system,
+        tools_schema=tools_schema,
+        cancellation_token=cancellation_token,
+    )
+    return True
+
+
+def _build_memory_flush_system(registry: ToolRegistry, cfg: LoopConfig) -> str:
+    bootstrap_files: list[WorkspaceBootstrapFile] | None = None
+    visible_skills: list[Skill] | None = None
+    if cfg.workspace_dir:
+        bootstrap_files = get_or_load_bootstrap_files(
+            cfg.workspace_dir,
+            cfg.session_key,
+            cfg.bootstrap_max_chars,
+            cfg.bootstrap_total_max_chars,
+        )
+        skill_entries = get_or_load_skills(
+            cfg.workspace_dir,
+            cfg.session_key,
+            extra_dirs=cfg.extra_skill_dirs,
+            max_bytes=cfg.max_skill_file_bytes,
+        )
+        if skill_entries:
+            eligible_entries = filter_eligible_skills(skill_entries, skill_filter=cfg.skill_filter)
+            visible_skills = filter_visible_skills(eligible_entries)
+
+    if cfg.system_prompt_override is not None:
+        return cfg.system_prompt_override
+    return build_system_prompt(
+        registry,
+        cfg.workspace_dir,
+        bootstrap_files,
+        visible_skills,
+        max_skills_in_prompt=cfg.max_skills_in_prompt,
+        max_skills_prompt_chars=cfg.max_skills_prompt_chars,
+    )
 
 
 async def _dispatch_memory_flush_tool(

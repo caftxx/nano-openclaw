@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from rich.console import Console
 
-from nano_openclaw.cli import repl
+from nano_openclaw.cli import _manual_compact, repl
 from nano_openclaw.config.types import MemoryFlushConfig
 from nano_openclaw.loop import (
     CancellationToken,
@@ -222,6 +222,74 @@ def test_agent_loop_skips_memory_flush_without_write_tool(monkeypatch):
 
     assert stream_calls == 1
     assert history[1].content == [{"type": "text", "text": "main reply"}]
+
+
+def test_manual_compact_runs_silent_memory_flush(monkeypatch):
+    history = [
+        Message("user", [{"type": "text", "text": "older"}]),
+        Message("assistant", [{"type": "text", "text": "reply"}]),
+    ]
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="write_file",
+            description="write file",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+            run=lambda _args: "should not overwrite",
+        )
+    )
+    tmp_dir = Path("tests") / f".tmp-manual-memory-flush-{uuid.uuid4().hex}"
+    target = tmp_dir / "memory" / "2026-05-04.md"
+    stream_calls = 0
+
+    async def fake_stream_response(**kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        assert [tool["name"] for tool in kwargs["tools"]] == ["write_file"]
+        if stream_calls == 1:
+            yield ToolUseStart(id="tool-1", name="write_file")
+            yield ToolUseDelta(
+                id="tool-1",
+                partial_json='{"path":"memory/2026-05-04.md","content":"manual note"}',
+            )
+            yield ToolUseEnd(id="tool-1")
+            yield MessageEnd(stop_reason="tool_use", usage={})
+        else:
+            yield MessageEnd(stop_reason="end_turn", usage={})
+
+    async def fake_compact_if_needed(history_arg, **_kwargs):
+        return history_arg, "manual summary"
+
+    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.loop.datetime", _fixed_datetime())
+    monkeypatch.setattr("nano_openclaw.cli.compact_if_needed", fake_compact_if_needed)
+
+    try:
+        console = Console(record=True)
+        asyncio.run(_manual_compact(
+            console,
+            history,
+            LoopConfig(
+                context_recent_turns=1,
+                workspace_dir=tmp_dir,
+                memory_flush_config=MemoryFlushConfig(prompt="flush memory/YYYY-MM-DD.md now"),
+            ),
+            object(),
+            registry,
+        ))
+
+        assert stream_calls == 2
+        assert target.read_text(encoding="utf-8") == "manual note"
+        assert "flush memory" not in str(history)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_build_memory_flush_prompt_replaces_date_and_adds_time(monkeypatch):

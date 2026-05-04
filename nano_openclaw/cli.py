@@ -47,6 +47,7 @@ from nano_openclaw.loop import (
     ToolResult,
     TurnCancelled,
     agent_loop,
+    run_pre_compaction_memory_flush,
 )
 from nano_openclaw.provider import (
     MessageEnd,
@@ -192,7 +193,7 @@ async def repl(
             _show_context(console, history, cfg)
             continue
         if user_input == "/compact":
-            await _manual_compact(console, history, cfg, client)
+            await _manual_compact(console, history, cfg, client, registry)
             continue
         if user_input == "/skills":
             _list_skills(console, cfg)
@@ -360,6 +361,7 @@ async def _manual_compact(
     history: list[Message],
     cfg: LoopConfig,
     client: Any,
+    registry: ToolRegistry,
 ) -> None:
     """Manually trigger context compaction."""
     if len(history) < cfg.context_recent_turns * 2:
@@ -369,6 +371,14 @@ async def _manual_compact(
     console.print("[dim]compacting context...[/]")
 
     try:
+        await run_pre_compaction_memory_flush(
+            client=client,
+            cfg=cfg,
+            history=history,
+            registry=registry,
+            force=True,
+        )
+
         _, summary = await compact_if_needed(
             history,
             budget=1,  # Force compaction by setting very low budget
