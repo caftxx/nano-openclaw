@@ -576,6 +576,7 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
                     "display_name": display_name,
                     "args_buf": "",
                     "done": False,
+                    "is_error": False,
                     "result_preview": None,
                 }
                 if event.name == "sessions_spawn":
@@ -587,6 +588,7 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
                             "display_name": display_name,
                             "args_buf": "",
                             "done": False,
+                            "is_error": False,
                             "result_preview": None,
                         }
                 else:
@@ -614,6 +616,7 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             slot = state["tool_slots"].get(event.tool_use_id)
             if slot is not None:
                 slot["done"] = True
+                slot["is_error"] = bool(event.result.get("is_error"))
                 slot["result_preview"] = _extract_tool_preview(event.result)
                 update_tool_live()
                 stop_tool_live_if_done()
@@ -728,7 +731,12 @@ def _build_tool_tree(tool_slots: dict[str, dict[str, Any]], start_time: float) -
         branch = "└" if is_last else "├"
         args_preview = _short_tool_args(slot["args_buf"])
         name_str = f"{slot['display_name']}({args_preview})"
-        if slot["done"] and slot["result_preview"]:
+        if slot["done"] and slot.get("is_error"):
+            if slot["result_preview"]:
+                status = f"[red]✗[/] {markup.escape(slot['result_preview'])}"
+            else:
+                status = "[red]✗[/]"
+        elif slot["done"] and slot["result_preview"]:
             status = f"[green]✓[/] {markup.escape(slot['result_preview'])}"
         elif slot["done"]:
             status = "[green]✓[/]"
@@ -775,9 +783,6 @@ def _short_tool_args(args_buf: str, limit: int = 40) -> str:
 
 
 def _extract_tool_preview(result: dict[str, Any]) -> str | None:
-    if result.get("is_error"):
-        return "error"
-
     content = result.get("content")
     text_parts: list[str] = []
     if isinstance(content, str):
@@ -790,6 +795,16 @@ def _extract_tool_preview(result: dict[str, Any]) -> str | None:
                 text = item.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)
+
+    if result.get("is_error"):
+        for key in ("error", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return _truncate_one_line(value, 80)
+        text = "\n".join(part for part in text_parts if part.strip())
+        if text:
+            return _truncate_one_line(text, 80)
+        return None
 
     text = "\n".join(part for part in text_parts if part.strip())
     if not text:
@@ -851,9 +866,20 @@ def _format_subagent_status(info: dict[str, Any]) -> str:
 def _render_compaction(console: Console, *, summary: str) -> None:
     """Render a compaction notification showing the conversation was summarized."""
     lines = summary.splitlines() or [""]
-    preview = _truncate_one_line(lines[0], 120) if lines and lines[0] else "summary updated"
-    extra = f"{len(lines)} line{'s' if len(lines) != 1 else ''}"
-    _render_status_tree(console, "Context Compacted", [(preview, extra)])
+    if len(lines) > _PREVIEW_LINES:
+        escaped_content = markup.escape("\n".join(lines[:_PREVIEW_LINES]))
+        body = escaped_content + f"\n[dim](... +{len(lines) - _PREVIEW_LINES} more lines)[/]"
+    else:
+        body = markup.escape("\n".join(lines))
+
+    console.print(
+        Panel(
+            Text.from_markup(body),
+            title=Text.from_markup("[yellow]Context Compacted[/]"),
+            title_align="left",
+            border_style="yellow",
+        )
+    )
 
 
 def _update_session_metadata(

@@ -102,12 +102,14 @@ def test_build_tool_tree_shows_running_and_done_items():
             "display_name": "Glob",
             "args_buf": '{"pattern": "**/*.py"}',
             "done": True,
+            "is_error": False,
             "result_preview": "23 lines",
         },
         "tool-2": {
             "display_name": "Read",
             "args_buf": '{"file": "cli.py"}',
             "done": False,
+            "is_error": False,
             "result_preview": None,
         },
     }
@@ -118,6 +120,27 @@ def test_build_tool_tree_shows_running_and_done_items():
     assert "● 2 tool calls..." in output
     assert 'Glob({"pattern": "**/*.py"}) · ✓ 23 lines' in output
     assert 'Read({"file": "cli.py"}) · running...' in output
+
+
+def test_event_handler_renders_tool_errors_as_failures():
+    console = Console(record=True, width=120)
+    handler = _make_event_handler(console)
+
+    handler(ToolUseStart(id="tool-1", name="Read"))
+    handler(ToolUseEnd(id="tool-1"))
+    handler(ToolResult(
+        tool_use_id="tool-1",
+        name="Read",
+        args={"file": "missing.py"},
+        result={
+            "is_error": True,
+            "content": [{"type": "text", "text": "File not found: missing.py"}],
+        },
+    ))
+
+    output = console.export_text()
+    assert "Read() · ✗ File not found: missing.py" in output
+    assert "Read() · ✓ error" not in output
 
 
 def test_event_handler_prints_tracked_subagent_killed_notice():
@@ -195,15 +218,25 @@ def test_event_handler_renders_status_events_as_trees():
 
     handler(SkillInvoked(skill_name="review", skill_path="C:/skills/review/SKILL.md"))
     handler(ImageAttached(refs=["diagram.png"], via_model=False))
-    handler(Compaction(summary="Conversation summary\nmore detail"))
 
     output = console.export_text()
     assert "● Skill" in output
     assert "review · C:/skills/review/SKILL.md" in output
     assert "● Image" in output
     assert "diagram.png · attached" in output
-    assert "● Context Compacted" in output
-    assert "Conversation summary · 2 lines" in output
+
+
+def test_event_handler_renders_compaction_summary_panel():
+    console = Console(record=True, width=120)
+    handler = _make_event_handler(console)
+
+    handler(Compaction(summary="Conversation summary\nmore detail\nimportant retained fact"))
+
+    output = console.export_text()
+    assert "Context Compacted" in output
+    assert "Conversation summary" in output
+    assert "more detail" in output
+    assert "important retained fact" in output
 
 
 def test_consume_assistant_turn_keeps_interleaved_tool_calls(monkeypatch):
