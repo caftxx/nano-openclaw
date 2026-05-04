@@ -288,7 +288,7 @@ async def repl(
             await _handle_subagents_command(console, user_input, cfg, client)
             continue
 
-        on_event = _make_event_handler(console)
+        on_event = _make_event_handler(console, registry=registry)
         try:
             with _escape_cancellation_token() as cancellation_token:
                 await agent_loop(
@@ -474,7 +474,7 @@ def _replay_history(console: Console, history: list[Message], session_id: str) -
     console.rule(style="dim cyan")
 
 
-def _make_event_handler(console: Console) -> Callable[[Any], None]:
+def _make_event_handler(console: Console, registry: ToolRegistry | None = None) -> Callable[[Any], None]:
     """Return a per-turn callback that renders streaming events live.
 
     Strategy: print assistant text deltas inline, render long-running
@@ -502,6 +502,9 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
         state["tool_slots"].clear()
         state["tool_name_counts"].clear()
         state["rendered_tool_results"].clear()
+
+    if registry is not None:
+        registry.approval_live_stopper = reset_tool_batch
 
     def update_tool_live() -> None:
         live = state["tool_live"]

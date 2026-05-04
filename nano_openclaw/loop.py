@@ -521,6 +521,8 @@ async def agent_loop(
         )
 
         await check_cancelled()
+        # Strip denial markers before persisting (keeps history clean for the API).
+        has_denial = any(r.pop("_denied", False) for r in tool_results)
         for block, result in zip(tool_use_blocks, tool_results):
             on_event(ToolResult(
                 tool_use_id=block["id"],
@@ -531,6 +533,19 @@ async def agent_loop(
 
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
+
+        if has_denial:
+            # User denied at least one tool — stop immediately so the model
+            # cannot retry with a different approach in the same turn.
+            history[:] = scratch_history
+            if transcript_writer:
+                for op, payload in pending_transcript_ops:
+                    if op == "message":
+                        transcript_writer.append_message(payload)  # type: ignore[arg-type]
+                    else:
+                        transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+            await drain_loop_event_hooks()
+            return history
 
         if any(block["name"] == "sessions_spawn" for block in tool_use_blocks):
             try:

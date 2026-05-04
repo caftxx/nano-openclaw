@@ -48,6 +48,7 @@ class ToolRegistry:
     _workspace_dir: str | None = field(default=None)
     _spawn_tool_context: Optional[Any] = field(default=None)  # SpawnToolContext
     _hook_registry: Optional["HookRegistry"] = field(default=None)
+    approval_live_stopper: Optional[Callable[[], None]] = field(default=None)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -113,6 +114,9 @@ class ToolRegistry:
                         f"approval denied for {name}: non-interactive background execution cannot request approval ({request.reason})",
                     )
 
+                if callable(self.approval_live_stopper):
+                    self.approval_live_stopper()
+
                 from nano_openclaw.approvals.ui import ApprovalUI
                 ui = ApprovalUI(self.console)
                 ui.render_request(request)
@@ -125,10 +129,12 @@ class ToolRegistry:
 
                 if decision == ApprovalDecision.DENY:
                     ui.render_denied(request)
-                    return _error_result(
+                    result = _error_result(
                         tool_use_id,
-                        f"approval denied for {name}: {request.reason}"
+                        f"approval denied for {name}: {request.reason}",
                     )
+                    result["_denied"] = True
+                    return result
 
                 ui.render_allowed(request, decision)
 
