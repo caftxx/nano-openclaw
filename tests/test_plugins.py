@@ -25,7 +25,7 @@ def test_default_config_loads_builtin_plugins():
     config = NanoOpenClawConfig()
     registry = build_core_registry()
 
-    load_plugins(config.plugins, registry, config)
+    hooks = load_plugins(config.plugins, registry, config)
 
     assert "memory_get" in registry.names()
     assert "memory_search" in registry.names()
@@ -33,6 +33,13 @@ def test_default_config_loads_builtin_plugins():
     assert "web_fetch" in registry.names()
     assert "sessions_spawn" in registry.names()
     assert "subagents" in registry.names()
+    assert [plugin.id for plugin in hooks.plugins()] == [
+        "nano-memory",
+        "nano-web",
+        "nano-subagent",
+        "nano-mcp",
+    ]
+    assert [plugin.entry for plugin in hooks.plugins()] == ["memory", "web", "subagent", "mcp"]
 
 
 def test_explicit_empty_plugin_load_still_loads_builtin_plugins():
@@ -229,3 +236,43 @@ class Plugin:
     result = asyncio.run(hooks.run("before_prompt_build", {"system": "base"}))
 
     assert result["append"] == "module hook"
+
+
+def test_loaded_plugin_metadata_includes_registered_tools_and_hooks(tmp_path):
+    plugin_file = tmp_path / "custom_plugin.py"
+    plugin_file.write_text(
+        """
+from nano_openclaw.tools import Tool
+
+class Plugin:
+    id = "custom"
+    name = "Custom"
+
+    def register(self, api):
+        api.register_tool(Tool(
+            name="custom_tool",
+            description="Custom tool",
+            input_schema={"type": "object"},
+            run=lambda _args: "custom",
+        ))
+        api.register_hook("before_prompt_build", lambda payload: {"append": "custom"})
+""",
+        encoding="utf-8",
+    )
+    registry = build_core_registry()
+
+    hooks = load_plugins(
+        PluginsConfig(load=[PluginEntryConfig(path=str(plugin_file))]),
+        registry,
+        NanoOpenClawConfig(),
+    )
+
+    custom = next(plugin for plugin in hooks.plugins() if plugin.id == "custom")
+    assert custom.name == "Custom"
+    assert custom.source == "path"
+    assert custom.entry == str(plugin_file)
+    assert custom.tools == ("custom_tool",)
+    assert custom.hooks == ("before_prompt_build (+1)",)
+    prompt_hooks = hooks.hooks_by_event()["before_prompt_build"]
+    assert any(hook.plugin_id == "custom" for hook in prompt_hooks)
+    assert any(hook.plugin_name == "Custom" for hook in prompt_hooks)

@@ -22,7 +22,19 @@ if TYPE_CHECKING:
 
 
 BUILTIN_COMMANDS: frozenset[str] = frozenset(
-    {"quit", "clear", "help", "new", "context", "compact", "sessions", "save"}
+    {
+        "quit",
+        "clear",
+        "help",
+        "new",
+        "context",
+        "compact",
+        "sessions",
+        "save",
+        "skills",
+        "plugins",
+        "hooks",
+    }
 )
 
 

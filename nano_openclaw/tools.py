@@ -68,6 +68,9 @@ class ToolRegistry:
     def set_hook_registry(self, hook_registry: "HookRegistry") -> None:
         self._hook_registry = hook_registry
 
+    def hook_registry(self) -> "HookRegistry | None":
+        return self._hook_registry
+
     def names(self) -> list[str]:
         return list(self._tools.keys())
 

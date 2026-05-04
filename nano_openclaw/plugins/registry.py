@@ -12,14 +12,54 @@ from nano_openclaw.plugins.types import HookHandler
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class LoadedPlugin:
+    id: str
+    name: str
+    source: str
+    entry: str
+    tools: tuple[str, ...] = ()
+    hooks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LoadedHook:
+    event: str
+    plugin_id: str
+    plugin_name: str
+    priority: int
+
+
 @dataclass
 class HookRegistry:
     _handlers: dict[str, list[tuple[int, HookHandler]]] = field(default_factory=dict)
+    _plugins: list[LoadedPlugin] = field(default_factory=list)
+    _hooks: list[LoadedHook] = field(default_factory=list)
 
     def register(self, event: str, handler: HookHandler, priority: int = 0) -> None:
         bucket = self._handlers.setdefault(event, [])
         bucket.append((priority, handler))
         bucket.sort(key=lambda item: item[0])
+
+    def handler_counts(self) -> dict[str, int]:
+        return {event: len(handlers) for event, handlers in self._handlers.items()}
+
+    def record_plugin(self, plugin: LoadedPlugin) -> None:
+        self._plugins.append(plugin)
+
+    def plugins(self) -> list[LoadedPlugin]:
+        return list(self._plugins)
+
+    def record_plugin_hooks(self, hooks: list[LoadedHook]) -> None:
+        self._hooks.extend(hooks)
+
+    def hooks_by_event(self) -> dict[str, list[LoadedHook]]:
+        by_event: dict[str, list[LoadedHook]] = {}
+        for hook in self._hooks:
+            by_event.setdefault(hook.event, []).append(hook)
+        for hooks in by_event.values():
+            hooks.sort(key=lambda h: (h.priority, h.plugin_id))
+        return by_event
 
     async def run(self, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Run hooks in priority order.

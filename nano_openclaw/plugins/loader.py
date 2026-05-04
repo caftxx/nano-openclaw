@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from nano_openclaw.config.types import NanoOpenClawConfig, PluginEntryConfig, PluginsConfig
-from nano_openclaw.plugins.registry import HookRegistry
+from nano_openclaw.plugins.registry import HookRegistry, LoadedHook, LoadedPlugin
 from nano_openclaw.plugins.types import PluginApi
 from nano_openclaw.tools import ToolRegistry
 
@@ -34,6 +34,12 @@ def load_plugins(
 
     for entry in config.load:
         plugin = _resolve_plugin(entry)
+        before_tools = set(tool_registry.names())
+        before_hooks = hook_registry.handler_counts()
+        before_hook_ids = {
+            event: {id(handler) for _priority, handler in handlers}
+            for event, handlers in hook_registry._handlers.items()
+        }
         plugin_config = entry.config if isinstance(entry, PluginEntryConfig) else {}
         api = PluginApi(
             id=plugin.id,
@@ -43,8 +49,55 @@ def load_plugins(
             _hook_registry=hook_registry,
         )
         plugin.register(api)
+        after_hooks = hook_registry.handler_counts()
+        registered_hooks = [
+            LoadedHook(
+                event=event,
+                plugin_id=plugin.id,
+                plugin_name=getattr(plugin, "name", plugin.id),
+                priority=priority,
+            )
+            for event, handlers in hook_registry._handlers.items()
+            for priority, handler in handlers
+            if id(handler) not in before_hook_ids.get(event, set())
+        ]
+        hook_registry.record_plugin(
+            LoadedPlugin(
+                id=plugin.id,
+                name=getattr(plugin, "name", plugin.id),
+                source=_entry_source(entry),
+                entry=_entry_label(entry),
+                tools=tuple(sorted(set(tool_registry.names()) - before_tools)),
+                hooks=tuple(
+                    f"{event} (+{after_hooks[event] - before_hooks.get(event, 0)})"
+                    for event in sorted(after_hooks)
+                    if after_hooks[event] > before_hooks.get(event, 0)
+                ),
+            )
+        )
+        hook_registry.record_plugin_hooks(registered_hooks)
 
     return hook_registry
+
+
+def _entry_source(entry: str | PluginEntryConfig) -> str:
+    if isinstance(entry, str):
+        return "builtin" if entry in BUILTIN_PLUGINS else "module"
+    if entry.module:
+        return "module"
+    if entry.path:
+        return "path"
+    return "unknown"
+
+
+def _entry_label(entry: str | PluginEntryConfig) -> str:
+    if isinstance(entry, str):
+        return entry
+    if entry.module:
+        return entry.module
+    if entry.path:
+        return entry.path
+    return "(unknown)"
 
 
 def _resolve_plugin(entry: str | PluginEntryConfig) -> Any:

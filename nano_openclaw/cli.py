@@ -88,6 +88,8 @@ _BASE_COMMANDS = [
     "/save",
     "/session \\[prefix|#]",
     "/skills",
+    "/plugins",
+    "/hooks",
 ]
 
 
@@ -194,6 +196,12 @@ async def repl(
             continue
         if user_input == "/skills":
             _list_skills(console, cfg)
+            continue
+        if user_input == "/plugins":
+            _list_plugins(console, registry)
+            continue
+        if user_input == "/hooks":
+            _list_hooks(console, registry)
             continue
         if user_input.startswith("/sessions"):
             if store_path:
@@ -1385,6 +1393,78 @@ def _list_skills(console: Console, cfg: LoopConfig) -> None:
         console.print(f"[dim]skill filter: {', '.join(cfg.skill_filter)}[/]")
     else:
         console.print("[dim]skill filter: unrestricted[/]")
+
+
+def _list_plugins(console: Console, registry: ToolRegistry) -> None:
+    """Display loaded plugins and their registered capabilities."""
+    hook_registry = registry.hook_registry()
+    if hook_registry is None:
+        console.print("[dim]no plugins loaded[/]")
+        return
+
+    plugins = hook_registry.plugins()
+    if not plugins:
+        console.print("[dim]no plugins loaded[/]")
+        return
+
+    table = Table(title="Plugins", border_style="cyan")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name", style="white")
+    table.add_column("Source", style="dim")
+    table.add_column("Entry", style="dim", no_wrap=False, max_width=28)
+    table.add_column("Status", style="green")
+    table.add_column("Tools", style="yellow", no_wrap=False, max_width=36)
+    table.add_column("Hooks", style="dim", no_wrap=False, max_width=36)
+
+    for plugin in sorted(plugins, key=lambda p: p.id):
+        tools = ", ".join(plugin.tools) if plugin.tools else "[dim]—[/]"
+        hooks = ", ".join(plugin.hooks) if plugin.hooks else "[dim]—[/]"
+        table.add_row(
+            markup.escape(plugin.id),
+            markup.escape(plugin.name),
+            markup.escape(plugin.source),
+            markup.escape(plugin.entry),
+            "[green]loaded[/]",
+            markup.escape(tools) if plugin.tools else tools,
+            markup.escape(hooks) if plugin.hooks else hooks,
+        )
+
+    console.print(table)
+    console.print(f"[dim]{len(plugins)} loaded plugin{'s' if len(plugins) != 1 else ''}[/]")
+
+
+def _list_hooks(console: Console, registry: ToolRegistry) -> None:
+    """Display registered plugin hooks grouped by hook event."""
+    hook_registry = registry.hook_registry()
+    if hook_registry is None:
+        console.print("[dim]no hooks registered[/]")
+        return
+
+    hooks_by_event = hook_registry.hooks_by_event()
+    if not hooks_by_event:
+        console.print("[dim]no hooks registered[/]")
+        return
+
+    table = Table(title="Hooks", border_style="cyan")
+    table.add_column("Event", style="cyan")
+    table.add_column("Handlers", style="green", justify="right")
+    table.add_column("Plugins", style="yellow", no_wrap=False, max_width=44)
+    table.add_column("Priorities", style="dim", no_wrap=False, max_width=28)
+
+    for event in sorted(hooks_by_event):
+        hooks = hooks_by_event[event]
+        plugins = ", ".join(f"{hook.plugin_name} ({hook.plugin_id})" for hook in hooks)
+        priorities = ", ".join(str(hook.priority) for hook in hooks)
+        table.add_row(
+            markup.escape(event),
+            str(len(hooks)),
+            markup.escape(plugins),
+            markup.escape(priorities),
+        )
+
+    console.print(table)
+    total = sum(len(hooks) for hooks in hooks_by_event.values())
+    console.print(f"[dim]{total} hook handler{'s' if total != 1 else ''} across {len(hooks_by_event)} event{'s' if len(hooks_by_event) != 1 else ''}[/]")
 
 
 def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopConfig) -> None:

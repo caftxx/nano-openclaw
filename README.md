@@ -87,7 +87,7 @@ uv run python -m nano_openclaw --agent coder
 
 ## REPL 斜杠命令
 
-支持的斜杠命令：`/quit`、`/clear`、`/new`、`/help`、`/context`、`/compact`、`/sessions`、`/save`、`/skills`、`/subagents`。
+支持的斜杠命令：`/quit`、`/clear`、`/new`、`/help`、`/context`、`/compact`、`/sessions`、`/save`、`/skills`、`/plugins`、`/hooks`、`/subagents`。
 
 - `/new` — 硬重置：生成全新 session ID，创建新 .jsonl transcript 文件，更新 session store（匹配 OpenClaw 语义）
 - `/clear` — 仅清空内存历史，重置 transcript 文件保留 session header，立即更新 session metadata
