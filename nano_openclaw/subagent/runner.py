@@ -19,8 +19,10 @@ from nano_openclaw.loop import (
     SubagentSpawned,
     SubagentAnnounced,
     SubagentKilled,
+    SubagentProgress,
     agent_loop,
 )
+from nano_openclaw.provider import MessageEnd, ToolUseStart
 from nano_openclaw.subagent.registry import SubagentRegistry, get_registry
 from nano_openclaw.subagent.types import (
     SubagentConfig,
@@ -181,6 +183,31 @@ class SubagentRunner:
         result_text: Optional[str] = None
         input_tokens: Optional[int] = None
         output_tokens: Optional[int] = None
+        progress = {"tool_uses": 0, "input_tokens": 0, "output_tokens": 0, "activity": "starting..."}
+        progress_label = params.label or params.task[:50]
+        if len(params.task) > 50 and not params.label:
+            progress_label += "..."
+
+        def _subagent_on_event(ev: Any) -> None:
+            changed = False
+            if isinstance(ev, ToolUseStart):
+                progress["tool_uses"] += 1
+                progress["activity"] = ev.name
+                changed = True
+            elif isinstance(ev, MessageEnd):
+                progress["input_tokens"] += ev.usage.get("input_tokens", 0)
+                progress["output_tokens"] += ev.usage.get("output_tokens", 0)
+                changed = True
+
+            if changed and parent_on_event:
+                parent_on_event(SubagentProgress(
+                    run_id=record.run_id,
+                    label=progress_label,
+                    tool_uses=progress["tool_uses"],
+                    input_tokens=progress["input_tokens"],
+                    output_tokens=progress["output_tokens"],
+                    current_activity=progress["activity"],
+                ))
         
         system_prompt = self._build_subagent_system_prompt(params.task)
         
@@ -202,7 +229,7 @@ class SubagentRunner:
                             user_input=params.task,
                             history=history,
                             registry=registry,
-                            on_event=lambda _: None,
+                            on_event=_subagent_on_event,
                             client=client,
                             cfg=cfg,
                             transcript_writer=transcript_writer,
@@ -215,7 +242,7 @@ class SubagentRunner:
                         user_input=params.task,
                         history=history,
                         registry=registry,
-                        on_event=lambda _: None,
+                        on_event=_subagent_on_event,
                         client=client,
                         cfg=cfg,
                         transcript_writer=transcript_writer,
@@ -224,6 +251,8 @@ class SubagentRunner:
 
                 result_text = self._extract_result_text(history)
                 elapsed_ms = int((time.time() - start_time) * 1000)
+                input_tokens = progress["input_tokens"]
+                output_tokens = progress["output_tokens"]
 
                 self.registry.mark_completed(
                     record.run_id,

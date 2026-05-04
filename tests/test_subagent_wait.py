@@ -4,10 +4,11 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import LoopConfig, Message, agent_loop
+from nano_openclaw.loop import LoopConfig, Message, SubagentProgress, agent_loop
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.subagent.registry import reset_registry
-from nano_openclaw.subagent.runner import get_runner, reset_runner
+from nano_openclaw.subagent.runner import SubagentRunner, get_runner, reset_runner
+from nano_openclaw.subagent.types import SpawnParams
 from nano_openclaw.tools import Tool, ToolRegistry
 
 
@@ -92,3 +93,46 @@ def test_agent_loop_waits_for_spawned_subagent_before_next_model_turn(monkeypatc
         for msg in sent_messages[1]
         for block in msg["content"]
     )
+
+
+def test_subagent_runner_emits_progress_events(monkeypatch, tmp_path):
+    reset_registry()
+
+    async def fake_agent_loop(**kwargs):
+        kwargs["on_event"](ToolUseStart(id="tool-1", name="Read"))
+        kwargs["on_event"](MessageEnd(
+            stop_reason="end_turn",
+            usage={"input_tokens": 1200, "output_tokens": 300},
+        ))
+        kwargs["history"].append(Message("assistant", [{"type": "text", "text": "child done"}]))
+
+    monkeypatch.setattr("nano_openclaw.subagent.runner.agent_loop", fake_agent_loop)
+
+    runner = SubagentRunner()
+    record = runner.registry.register(
+        requester_session_key="agent:default:main",
+        task="inspect child state",
+        label="child",
+    )
+    runner.registry.mark_started(record.run_id)
+
+    events = []
+    result = asyncio.run(runner._run_subagent(
+        record=record,
+        params=SpawnParams(task=record.task, label=record.label),
+        cfg=LoopConfig(session_key=record.child_session_key),
+        registry=ToolRegistry(),
+        client=object(),
+        transcript_writer=SimpleNamespace(path=tmp_path / "child.jsonl"),
+        cancellation_token=runner._cancellation_tokens.setdefault(record.run_id, SimpleNamespace()),
+        parent_on_event=events.append,
+    ))
+
+    progress_events = [event for event in events if isinstance(event, SubagentProgress)]
+    assert len(progress_events) == 2
+    assert progress_events[0].tool_uses == 1
+    assert progress_events[0].current_activity == "Read"
+    assert progress_events[-1].input_tokens == 1200
+    assert progress_events[-1].output_tokens == 300
+    assert result.input_tokens == 1200
+    assert result.output_tokens == 300

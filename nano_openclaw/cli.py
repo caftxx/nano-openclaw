@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from rich import markup
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -42,6 +43,7 @@ from nano_openclaw.loop import (
     SubagentSpawned,
     SubagentAnnounced,
     SubagentKilled,
+    SubagentProgress,
     ToolResult,
     TurnCancelled,
     agent_loop,
@@ -330,7 +332,7 @@ def _print_banner(
     cfg: LoopConfig | None = None,
 ) -> None:
     tools = ", ".join(registry.names()) or "(none)"
-    session_line = f"session: {session_id[:8]}…" if session_id else ""
+    session_line = f"session: {session_id[:8]}..." if session_id else ""
     console.print(
         Panel.fit(
             Text.from_markup(
@@ -372,7 +374,7 @@ async def _manual_compact(
         if summary:
             _render_compaction(console, summary=summary)
             current_tokens = estimate_tokens(history)
-            console.print(f"[dim]context reduced to {current_tokens:,} tokens ({len(history)} messages)[/]")
+            _render_status_tree(console, "Context", [("reduced", f"{current_tokens:,} tokens · {len(history)} messages")])
         else:
             console.print("[dim](compaction not needed — history too short)[/]")
     except Exception as exc:  # noqa: BLE001
@@ -467,10 +469,9 @@ def _replay_history(console: Console, history: list[Message], session_id: str) -
 def _make_event_handler(console: Console) -> Callable[[Any], None]:
     """Return a per-turn callback that renders streaming events live.
 
-    Strategy: print text deltas inline (no Live overlay), draw a clear
-    header line when a tool_use begins, and render the completed tool
-    call as a Panel after dispatch (via the ``("ToolResult", ...)`` tuple
-    emitted by ``loop.agent_loop``).
+    Strategy: print assistant text deltas inline, render long-running
+    tool/subagent activity as retained Live trees, and keep one-off status
+    events in the same compact tree style.
     """
     state = {
         "text_in_flight": False,
@@ -478,12 +479,65 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
         "tool_slots": {},
         "tool_name_counts": {},
         "rendered_tool_results": set(),
+        "tool_live": None,
+        "tool_live_start": None,
+        "subagent_progress": {},
+        "subagent_live": None,
     }
 
     def reset_tool_batch() -> None:
+        live = state["tool_live"]
+        if live is not None:
+            live.stop()
+            state["tool_live"] = None
+        state["tool_live_start"] = None
         state["tool_slots"].clear()
         state["tool_name_counts"].clear()
         state["rendered_tool_results"].clear()
+
+    def update_tool_live() -> None:
+        live = state["tool_live"]
+        start_time = state["tool_live_start"]
+        if live is not None and start_time is not None:
+            live.update(_build_tool_tree(state["tool_slots"], start_time))
+
+    def start_or_update_tool_live() -> None:
+        if state["tool_live"] is None:
+            state["tool_live_start"] = time.monotonic()
+            state["tool_live"] = Live(
+                _build_tool_tree(state["tool_slots"], state["tool_live_start"]),
+                console=console,
+                refresh_per_second=8,
+                transient=False,
+            )
+            state["tool_live"].start()
+        else:
+            update_tool_live()
+
+    def stop_tool_live_if_done() -> None:
+        tool_slots = state["tool_slots"]
+        if tool_slots and all(slot["done"] for slot in tool_slots.values()):
+            update_tool_live()
+            live = state["tool_live"]
+            if live is not None:
+                live.stop()
+                state["tool_live"] = None
+            state["tool_live_start"] = None
+
+    def update_subagent_live() -> None:
+        live = state["subagent_live"]
+        if live is not None:
+            live.update(_build_subagent_tree(state["subagent_progress"]))
+
+    def stop_subagent_live_if_done() -> None:
+        progress = state["subagent_progress"]
+        if progress and all(info["done"] for info in progress.values()):
+            update_subagent_live()
+            live = state["subagent_live"]
+            if live is not None:
+                live.stop()
+                state["subagent_live"] = None
+            progress.clear()
 
     def handle(event: Any) -> None:
         if isinstance(event, ThinkingDelta):
@@ -517,18 +571,36 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
                 count = state["tool_name_counts"].get(event.name, 0) + 1
                 state["tool_name_counts"][event.name] = count
                 display_name = event.name if count == 1 else f"{event.name} #{count}"
-                tool_slots[event.id] = {"display_name": display_name, "args_buf": "", "done": False}
-                console.print(f"\n[bold yellow]>> {markup.escape(display_name)}[/]", end="")
+                tool_slots[event.id] = {
+                    "name": event.name,
+                    "display_name": display_name,
+                    "args_buf": "",
+                    "done": False,
+                    "result_preview": None,
+                }
+                if event.name == "sessions_spawn":
+                    if state["tool_live"] is not None:
+                        reset_tool_batch()
+                        tool_slots = state["tool_slots"]
+                        tool_slots[event.id] = {
+                            "name": event.name,
+                            "display_name": display_name,
+                            "args_buf": "",
+                            "done": False,
+                            "result_preview": None,
+                        }
+                else:
+                    start_or_update_tool_live()
 
         elif isinstance(event, ToolUseDelta):
             slot = state["tool_slots"].get(event.id)
             if slot is not None:
                 slot["args_buf"] += event.partial_json
+                if slot.get("name") != "sessions_spawn":
+                    update_tool_live()
 
         elif isinstance(event, ToolUseEnd):
-            slot = state["tool_slots"].get(event.id)
-            if slot is not None:
-                console.print()  # newline after tool_use header
+            update_tool_live()
 
         elif isinstance(event, MessageEnd):
             if state["text_in_flight"]:
@@ -542,143 +614,246 @@ def _make_event_handler(console: Console) -> Callable[[Any], None]:
             slot = state["tool_slots"].get(event.tool_use_id)
             if slot is not None:
                 slot["done"] = True
-            _render_tool_result(
-                console,
-                name=event.name,
-                args=event.args,
-                result=event.result,
-                title_name=slot["display_name"] if slot is not None else event.name,
-            )
+                slot["result_preview"] = _extract_tool_preview(event.result)
+                update_tool_live()
+                stop_tool_live_if_done()
 
         elif isinstance(event, Compaction):
             _render_compaction(console, summary=event.summary)
 
         elif isinstance(event, ImageDescribe):
-            console.print(f"[dim]describing: {markup.escape(event.ref)}[/]")
+            _render_status_tree(console, "Image", [(event.ref, "describing")])
 
         elif isinstance(event, ImageAttached):
             # "described" = Media Understanding path; "attached" = Native Vision path
             mode = "described" if event.via_model else "attached"
-            for ref in event.refs:
-                console.print(f"[dim]{mode}: {markup.escape(ref)}[/]")
+            _render_status_tree(console, "Image", [(ref, mode) for ref in event.refs])
 
         elif isinstance(event, ImageError):
-            console.print(f"[red]image error:[/] {markup.escape(event.ref)}: {markup.escape(event.error)}")
+            _render_status_tree(console, "Image", [(event.ref, f"[red]error[/] {markup.escape(event.error)}")])
 
         elif isinstance(event, ImageSkip):
-            console.print(f"[yellow]image skipped:[/] {markup.escape(event.ref)}: {markup.escape(event.reason)}")
+            _render_status_tree(console, "Image", [(event.ref, f"[yellow]skipped[/] {markup.escape(event.reason)}")])
 
         elif isinstance(event, SkillInvoked):
-            console.print(f"[cyan]skill invoked:[/] {markup.escape(event.skill_name)} ({markup.escape(event.skill_path)})")
+            _render_status_tree(console, "Skill", [(event.skill_name, event.skill_path)])
 
         elif isinstance(event, ActiveMemoryRecall):
             result = event.result
             if result.context:
                 cached_str = ", cached" if result.cached else ""
-                console.print(f"[dim]Active Memory: {result.elapsed_ms}ms{cached_str}[/]")
+                _render_status_tree(console, "Active Memory", [("recall", f"{result.elapsed_ms}ms{cached_str}")])
 
         elif isinstance(event, SubagentSpawned):
+            if state["tool_live"] is not None:
+                reset_tool_batch()
             label = event.label or event.task[:50]
             if len(event.task) > 50 and not event.label:
                 label += "..."
-            console.print(f"[magenta]subagent spawned:[/] {markup.escape(label)} (run: {event.run_id})")
+            state["subagent_progress"][event.run_id] = {
+                "label": label,
+                "tool_uses": 0,
+                "tokens": 0,
+                "activity": "starting...",
+                "done": False,
+            }
+            if state["subagent_live"] is None:
+                state["subagent_live"] = Live(
+                    _build_subagent_tree(state["subagent_progress"]),
+                    console=console,
+                    refresh_per_second=8,
+                    transient=False,
+                )
+                state["subagent_live"].start()
+            else:
+                update_subagent_live()
+
+        elif isinstance(event, SubagentProgress):
+            info = state["subagent_progress"].setdefault(event.run_id, {
+                "label": event.label,
+                "tool_uses": 0,
+                "tokens": 0,
+                "activity": "starting...",
+                "done": False,
+            })
+            info.update({
+                "label": event.label,
+                "tool_uses": event.tool_uses,
+                "tokens": event.input_tokens + event.output_tokens,
+                "activity": event.current_activity,
+            })
+            update_subagent_live()
 
         elif isinstance(event, SubagentAnnounced):
-            status_icon = {"completed": "✓", "error": "✗", "timeout": "⏱", "killed": "💀"}.get(event.status, "?")
-            elapsed_str = f" ({event.elapsed_ms / 1000:.1f}s)" if event.elapsed_ms else ""
-            label = event.task[:50]
-            if len(event.task) > 50:
-                label += "..."
-            console.print(
-                Panel.fit(
-                    Text.from_markup(
-                        f"[bold]Subagent {status_icon}[/] {markup.escape(label)}{elapsed_str}\n"
-                        f"Run ID: [dim]{event.run_id}[/]\n"
-                        f"Status: [cyan]{event.status}[/]"
-                        + (f"\nResult: {markup.escape(event.result_text[:200])}{'...' if event.result_text and len(event.result_text) > 200 else ''}" if event.result_text else "")
-                        + (f"\n[red]Error: {markup.escape(event.error_message)}[/]" if event.error_message else ""),
-                    ),
-                    border_style="magenta",
-                )
-            )
+            info = state["subagent_progress"].get(event.run_id)
+            if info is not None:
+                info["done"] = True
+                info["status"] = event.status
+                info["activity"] = event.status
+                info["elapsed_ms"] = event.elapsed_ms
+                info["result_preview"] = _truncate_one_line(event.result_text or "", 120) if event.result_text else None
+                info["error_message"] = event.error_message
+                stop_subagent_live_if_done()
+            else:
+                _render_subagent_summary(console, event)
 
         elif isinstance(event, SubagentKilled):
-            console.print(f"[yellow]subagent killed:[/] run {event.run_id} - {markup.escape(event.task[:40])}")
+            info = state["subagent_progress"].get(event.run_id)
+            if info is not None:
+                info["done"] = True
+                info["status"] = "killed"
+                info["activity"] = "Killed"
+                stop_subagent_live_if_done()
+            else:
+                _render_status_tree(console, "Subagent", [(event.task[:40], f"[yellow]killed[/] {event.run_id}")])
 
     return handle
 
 
+def _build_tool_tree(tool_slots: dict[str, dict[str, Any]], start_time: float) -> Group:
+    total = len(tool_slots)
+    done = sum(1 for slot in tool_slots.values() if slot["done"])
+    elapsed = time.monotonic() - start_time
+
+    noun = "tool call" if total == 1 else "tool calls"
+    if total and done == total:
+        header = f"● {total} {noun} done ({elapsed:.1f}s)"
+    else:
+        header = f"● {total} {noun}..."
+
+    lines = [Text.from_markup(f"[bold]{markup.escape(header)}[/]")]
+    items = list(tool_slots.items())
+    for i, (_, slot) in enumerate(items):
+        is_last = i == len(items) - 1
+        branch = "└" if is_last else "├"
+        args_preview = _short_tool_args(slot["args_buf"])
+        name_str = f"{slot['display_name']}({args_preview})"
+        if slot["done"] and slot["result_preview"]:
+            status = f"[green]✓[/] {markup.escape(slot['result_preview'])}"
+        elif slot["done"]:
+            status = "[green]✓[/]"
+        else:
+            status = "[dim]running...[/]"
+        line = Text(f"   {branch} {name_str} · ")
+        line.append(Text.from_markup(status))
+        lines.append(line)
+    return Group(*lines)
+
+
+def _render_status_tree(console: Console, header: str, items: list[tuple[str, str | None]]) -> None:
+    console.print(_build_status_tree(header, items))
+
+
+def _build_status_tree(header: str, items: list[tuple[str, str | None]]) -> Group:
+    lines = [Text.from_markup(f"[bold]● {markup.escape(header)}[/]")]
+    for i, (label, status) in enumerate(items):
+        is_last = i == len(items) - 1
+        branch = "└" if is_last else "├"
+        line = Text.from_markup(f"   {branch} {markup.escape(label)}")
+        if status:
+            line.append(Text.from_markup(f" · {status}"))
+        lines.append(line)
+    return Group(*lines)
+
+
+def _render_subagent_summary(console: Console, event: SubagentAnnounced) -> None:
+    label = event.task[:50] + ("..." if len(event.task) > 50 else "")
+    status = _format_subagent_status({
+        "status": event.status,
+        "elapsed_ms": event.elapsed_ms,
+        "result_preview": _truncate_one_line(event.result_text or "", 120) if event.result_text else None,
+        "error_message": event.error_message,
+    })
+    _render_status_tree(console, "Subagent", [(label, status), ("run", f"[dim]{event.run_id}[/]")])
+
+
+def _short_tool_args(args_buf: str, limit: int = 40) -> str:
+    text = " ".join(args_buf.split())
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text
+
+
+def _extract_tool_preview(result: dict[str, Any]) -> str | None:
+    if result.get("is_error"):
+        return "error"
+
+    content = result.get("content")
+    text_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+
+    text = "\n".join(part for part in text_parts if part.strip())
+    if not text:
+        return None
+    line_count = len(text.splitlines())
+    return f"{line_count} line{'s' if line_count != 1 else ''}"
+
+
+def _truncate_one_line(text: str, limit: int) -> str:
+    compact = " ".join(text.split())
+    if len(compact) > limit:
+        return compact[:limit].rstrip() + "..."
+    return compact
+
+
+def _build_subagent_tree(progress: dict[str, dict[str, Any]]) -> Group:
+    running = sum(1 for p in progress.values() if not p["done"])
+    total = len(progress)
+    if running:
+        header = f"● Running {running} agent{'s' if running != 1 else ''}..."
+    else:
+        header = f"● {total} agent{'s' if total != 1 else ''} done"
+    lines = [Text.from_markup(f"[bold]{markup.escape(header)}[/]")]
+    items = list(progress.values())
+    for i, info in enumerate(items):
+        is_last = i == len(items) - 1
+        branch = "└" if is_last else "├"
+        tokens = info["tokens"]
+        tok_str = f" · {tokens / 1000:.1f}k tokens" if tokens else ""
+        lines.append(Text.from_markup(
+            f"   {branch} {markup.escape(info['label'])} · {info['tool_uses']} tool uses{tok_str}"
+        ))
+        indent = "  " if is_last else "│ "
+        activity = _format_subagent_status(info) if info["done"] else markup.escape(info.get("activity", ""))
+        lines.append(Text.from_markup(f"   {indent}⎿  {activity}"))
+    return Group(*lines)
+
+
+def _format_subagent_status(info: dict[str, Any]) -> str:
+    status = str(info.get("status") or info.get("activity") or "done")
+    icon = {
+        "completed": "[green]✓[/]",
+        "done": "[green]✓[/]",
+        "error": "[red]✗[/]",
+        "timeout": "[yellow]⏱[/]",
+        "killed": "[yellow]✗[/]",
+        "Killed": "[yellow]✗[/]",
+    }.get(status, "[green]✓[/]")
+    elapsed_ms = info.get("elapsed_ms")
+    elapsed = f" · {elapsed_ms / 1000:.1f}s" if elapsed_ms else ""
+    error = info.get("error_message")
+    if error:
+        return f"{icon} {markup.escape(status)}{elapsed} · [red]{markup.escape(str(error))}[/]"
+    result = info.get("result_preview")
+    result_text = f" · {markup.escape(str(result))}" if result else ""
+    return f"{icon} {markup.escape(status)}{elapsed}{result_text}"
+
+
 def _render_compaction(console: Console, *, summary: str) -> None:
     """Render a compaction notification showing the conversation was summarized."""
-    # Truncate summary for display
     lines = summary.splitlines() or [""]
-    if len(lines) > _PREVIEW_LINES:
-        escaped_content = markup.escape("\n".join(lines[:_PREVIEW_LINES]))
-        body = escaped_content + f"\n[dim](... +{len(lines) - _PREVIEW_LINES} more lines)[/]"
-    else:
-        body = markup.escape("\n".join(lines))
-
-    console.print(
-        Panel(
-            Text.from_markup(body),
-            title=Text.from_markup("[yellow]Context Compacted[/]"),
-            title_align="left",
-            border_style="yellow",
-        )
-    )
-
-
-def _render_tool_result(
-    console: Console,
-    *,
-    name: str,
-    args: dict[str, Any],
-    result: dict[str, Any],
-    title_name: str | None = None,
-) -> None:
-    is_error = bool(result.get("is_error"))
-    border = "red" if is_error else "green"
-    content_blocks: list[dict[str, Any]] = result.get("content") or []
-
-    # Collect text blocks only; image blocks are not displayable as text.
-    image_count = sum(1 for b in content_blocks if b.get("type") == "image")
-    text_block = " ".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
-    if image_count and not text_block:
-        text_block = f"[{image_count} image{'s' if image_count > 1 else ''} returned]"
-    elif image_count:
-        text_block = f"[{image_count} image{'s' if image_count > 1 else ''} + text] " + text_block
-
-    lines = text_block.splitlines() or [""]
-    if len(lines) > _PREVIEW_LINES:
-        # Escape the content, then add markup for the truncation notice
-        escaped_content = markup.escape("\n".join(lines[:_PREVIEW_LINES]))
-        body = escaped_content + f"\n[dim](... +{len(lines) - _PREVIEW_LINES} more lines)[/]"
-    else:
-        body = markup.escape("\n".join(lines))
-
-    args_repr = _short_args(args)
-    title = f"{markup.escape(title_name or name)}({markup.escape(args_repr)})"
-    if is_error:
-        title = f"{title} [red](error)[/]"
-
-    console.print(
-        Panel(
-            Text.from_markup(body),
-            title=Text.from_markup(title),
-            title_align="left",
-            border_style=border,
-        )
-    )
-
-
-def _short_args(args: dict[str, Any]) -> str:
-    try:
-        rendered = json.dumps(args, ensure_ascii=False)
-    except Exception:  # noqa: BLE001
-        rendered = str(args)
-    if len(rendered) > 80:
-        rendered = rendered[:77] + "..."
-    return rendered
+    preview = _truncate_one_line(lines[0], 120) if lines and lines[0] else "summary updated"
+    extra = f"{len(lines)} line{'s' if len(lines) != 1 else ''}"
+    _render_status_tree(console, "Context Compacted", [(preview, extra)])
 
 
 def _update_session_metadata(
@@ -1238,9 +1413,18 @@ def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopCo
     if cmd == "status":
         status_text = "enabled" if config.enabled else "disabled"
         console.print(
-            f"[dim]Active Memory: {status_text}, "
-            f"mode={config.query_mode.value}, "
-            f"style={config.prompt_style.value}[/]"
+            Panel.fit(
+                Text.from_markup(
+                    f"[bold]Active Memory Status[/]\n"
+                    f"State: [{('green' if config.enabled else 'red')}]{status_text}[/]\n"
+                    f"Query Mode: [cyan]{config.query_mode.value}[/]\n"
+                    f"Prompt Style: [cyan]{config.prompt_style.value}[/]\n"
+                    f"Timeout: {config.timeout_ms}ms\n"
+                    f"User Turns: {config.recent_user_turns} / "
+                    f"Assistant Turns: {config.recent_assistant_turns}"
+                ),
+                border_style="cyan",
+            )
         )
         return
 
@@ -1292,8 +1476,6 @@ async def _handle_dreaming_command(
         get_dreaming_status,
         run_dreaming,
     )
-    from rich.panel import Panel
-    from rich.text import Text
 
     parts = user_input.strip().split()
 

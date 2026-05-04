@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
@@ -167,6 +167,17 @@ class SubagentKilled:
     """Event when a subagent is killed."""
     run_id: str
     task: str
+
+
+@dataclass
+class SubagentProgress:
+    """Event emitted during subagent execution with live progress."""
+    run_id: str
+    label: str
+    tool_uses: int
+    input_tokens: int
+    output_tokens: int
+    current_activity: str
 
 
 # Thinking level type (mirrors openclaw ThinkLevel)
