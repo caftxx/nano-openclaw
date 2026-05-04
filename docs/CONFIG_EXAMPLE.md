@@ -185,9 +185,9 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 
 ### plugins — Plugin / Hook 系统
 
-默认加载内置插件 `memory`、`web`、`subagent`、`mcp`，无需配置。`plugins.load` 可用于覆盖默认列表；字符串是内置插件名或 Python 模块名，对象可以按 Python 模块或文件路径加载外部插件。
+内置插件 `memory`、`web`、`subagent`、`mcp` **始终加载**，无法通过配置禁用。`plugins.load` 仅用于加载额外的外部插件。
 
-内置插件：
+内置插件（始终加载）：
 
 | 名称 | 注册内容 |
 |------|----------|
@@ -196,7 +196,7 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `"subagent"` | `sessions_spawn` / `subagents` 工具 |
 | `"mcp"` | 在 `session_start` hook 初始化 MCP server 并注册 MCP 工具 |
 
-覆盖默认列表示例：
+加载外部插件示例：
 
 ```json5
 plugins: {
@@ -208,17 +208,11 @@ plugins: {
 }
 ```
 
-关闭所有插件：
-
-```json5
-plugins: {
-  load: [],
-}
-```
+注意：即使设置 `load: []`，内置插件仍会加载。`plugins.enabled: false` 可完全禁用插件系统（包括内置插件）。
 
 ### tools — 工具配置
 
-`tools` 配置控制工具参数，对齐 openclaw 的 `tools.*` 配置。Web 工具默认通过内置 `"web"` 插件注册；如果覆盖 `plugins.load` 且未包含 `"web"`，则不会注册。
+`tools` 配置控制工具参数，对齐 openclaw 的 `tools.*` 配置。Web 工具通过内置 `"web"` 插件注册（始终加载）。
 
 #### tools.noTools
 

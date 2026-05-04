@@ -177,17 +177,15 @@
   // Plugin / Hook 系统
   // ==========================================
   // core runtime 只内置 read/write/list/bash/session_status/Skill。
-  // 默认加载内置 memory、web、subagent、mcp 插件，无需配置。
-  // 如需关闭全部插件或加载外部插件，可取消注释：
+  // 内置插件 memory、web、subagent、mcp 始终加载，无法通过 load 配置禁用。
+  // plugins.load 仅用于加载外部插件；设置 plugins.enabled: false 可完全禁用。
+  //
+  // 加载外部插件示例（取消注释）：
   // plugins: {
   //   enabled: true,
   //   load: [
-  //     // "memory",
-  //     // "web",
-  //     // "subagent",
-  //     // "mcp",
-  //     // { module: "my_pkg.my_plugin", config: { key: "val" } },
-  //     // { path: "./plugins/custom.py", config: { key: "val" } },
+  //     { module: "my_pkg.my_plugin", config: { key: "val" } },
+  //     { path: "./plugins/custom.py", config: { key: "val" } },
   //   ],
   // },
 

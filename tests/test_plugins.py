@@ -35,15 +35,46 @@ def test_default_config_loads_builtin_plugins():
     assert "subagents" in registry.names()
 
 
-def test_explicit_empty_plugin_load_disables_builtin_plugins():
+def test_explicit_empty_plugin_load_still_loads_builtin_plugins():
     config = NanoOpenClawConfig(plugins=PluginsConfig(load=[]))
     registry = build_core_registry()
 
     load_plugins(config.plugins, registry, config)
 
-    assert "memory_get" not in registry.names()
-    assert "web_search" not in registry.names()
-    assert "sessions_spawn" not in registry.names()
+    assert "memory_get" in registry.names()
+    assert "web_search" in registry.names()
+    assert "sessions_spawn" in registry.names()
+
+
+def test_custom_plugin_load_keeps_builtin_plugins(tmp_path):
+    plugin_file = tmp_path / "custom_plugin.py"
+    plugin_file.write_text(
+        """
+from nano_openclaw.tools import Tool
+
+class Plugin:
+    id = "custom"
+    name = "Custom"
+
+    def register(self, api):
+        api.register_tool(Tool(
+            name="custom_tool",
+            description="Custom tool",
+            input_schema={"type": "object"},
+            run=lambda _args: "custom",
+        ))
+""",
+        encoding="utf-8",
+    )
+    config = NanoOpenClawConfig(plugins=PluginsConfig(load=[PluginEntryConfig(path=str(plugin_file))]))
+    registry = build_core_registry()
+
+    load_plugins(config.plugins, registry, config)
+
+    assert "memory_get" in registry.names()
+    assert "web_search" in registry.names()
+    assert "sessions_spawn" in registry.names()
+    assert "custom_tool" in registry.names()
 
 
 def test_tool_hooks_can_modify_args_and_result():

@@ -89,7 +89,7 @@ def test_schemas_have_required_anthropic_fields(registry):
     assert {s["name"] for s in schemas} == {
         "read_file", "write_file", "list_dir", "bash",
         "session_status", "Skill", "memory_get", "memory_search",
-        "web_search", "web_fetch"
+        "web_search", "web_fetch", "sessions_spawn", "subagents"
     }
     for s in schemas:
         assert "description" in s and isinstance(s["description"], str)

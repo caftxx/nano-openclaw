@@ -429,6 +429,9 @@ class ToolsConfig(BaseModel):
 # Plugin Types (nano-openclaw lightweight plugin loader)
 # ============================================================================
 
+BUILTIN_PLUGIN_IDS = ("memory", "web", "subagent", "mcp")
+
+
 class PluginEntryConfig(BaseModel):
     """Explicit plugin entry for module or file-path plugins."""
     model_config = ConfigDict(populate_by_name=True)
@@ -444,9 +447,21 @@ class PluginsConfig(BaseModel):
 
     enabled: bool = Field(default=True, description="Enable plugin loading")
     load: List[Union[str, PluginEntryConfig]] = Field(
-        default_factory=lambda: ["memory", "web", "subagent", "mcp"],
+        default_factory=lambda: list(BUILTIN_PLUGIN_IDS),
         description="Plugin entries to load; strings reference built-in plugins",
     )
+
+    @field_validator("load", mode="after")
+    @classmethod
+    def include_builtin_plugins(cls, v: List[Union[str, PluginEntryConfig]]) -> List[Union[str, PluginEntryConfig]]:
+        """Built-in plugins are always loaded before user-configured plugins."""
+        configured_builtin_ids = {entry for entry in v if isinstance(entry, str) and entry in BUILTIN_PLUGIN_IDS}
+        custom_entries = [
+            entry
+            for entry in v
+            if not (isinstance(entry, str) and entry in configured_builtin_ids)
+        ]
+        return [*BUILTIN_PLUGIN_IDS, *custom_entries]
 
 
 # ============================================================================

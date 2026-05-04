@@ -49,7 +49,7 @@ uv run python -m nano_openclaw --sessions
 uv run python -m nano_openclaw --agent coder
 ```
 
-**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。memory/web/subagent/MCP 内置插件默认启用，详见下方配置说明。
+**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。内置插件（memory、web、subagent、mcp）始终加载，无法通过 plugins.load 禁用。详见下方配置说明。
 
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 
@@ -136,7 +136,7 @@ uv run python -m nano_openclaw --agent coder
                       identity + cwd/platform/date + 工具清单 + plugin prompt hooks
    compact.py        = estimate_tokens → compact_if_needed → summarize_history
    approvals/        = requiresExecApproval() 门禁 → Rich 审批提示 → per-agent allowlist 持久化
-   plugins/          = 轻量 Plugin Protocol + HookRegistry + builtin wrappers
+   plugins/          = 轻量 Plugin Protocol + HookRegistry + builtin wrappers（始终加载）
    subagent/         = 后台子 agent runner + registry + completion auto-announce
    images.py         = parse_image_refs → load_image → describe_image（双路径架构）
     mcp/              = MCP 服务器连接管理（stdio/SSE/streamable-http）→ 工具注册
