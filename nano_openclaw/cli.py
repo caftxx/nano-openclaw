@@ -404,12 +404,16 @@ def _show_context(console: Console, history: list[Message], cfg: LoopConfig) -> 
     else:
         color = "red"
 
+    window_line = (
+        f"model window: {cfg.context_window:,} tokens\n" if cfg.context_window > 0 else ""
+    )
     console.print(
         Panel.fit(
             Text.from_markup(
                 f"context usage: [{color}]{current_tokens:,}[/] / {budget:,} tokens\n"
                 f"usage: [{color}]{usage_pct:.1f}%[/]\n"
                 f"threshold: {threshold:,} tokens ({cfg.context_threshold * 100:.0f}%)\n"
+                f"{window_line}"
                 f"messages: {len(history)}"
             ),
             title="Context Status",

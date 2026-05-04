@@ -214,6 +214,7 @@ class LoopConfig:
     context_budget: int = 100000  # Maximum token budget for context
     context_threshold: float = 0.8  # Trigger compaction at 80% of budget
     context_recent_turns: int = 3  # Number of recent turns to preserve
+    context_window: int = 0  # Model physical context window (0 = unknown)
     # Image model (mirrors openclaw agents.defaults.imageModel)
     # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
     # str   → Media Understanding: images described to text by this model (apply.ts)
@@ -489,6 +490,7 @@ async def agent_loop(
             model=cfg.model,
             session_id=transcript_writer.session_id if transcript_writer else "",
             context_budget=cfg.context_budget,
+            context_window=cfg.context_window,
             current_tokens=estimate_tokens(scratch_history),
             compaction_count=transcript_writer.compaction_count if transcript_writer else 0,
             message_count=len(scratch_history),

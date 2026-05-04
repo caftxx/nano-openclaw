@@ -211,8 +211,8 @@ class SessionConfig(BaseModel):
 class ContextConfig(BaseModel):
     """Context compaction settings (nano-openclaw specific, mirrors openclaw compaction config)."""
     model_config = ConfigDict(populate_by_name=True)
-    
-    budget: int = Field(default=100000, ge=1000, description="Maximum token budget for context window")
+
+    budget: Optional[int] = Field(default=None, ge=1000, description="Maximum token budget for context window; defaults to model contextWindow when unset")
     threshold: float = Field(default=0.8, ge=0.1, le=1.0, description="Trigger compaction at this fraction of budget")
     recent_turns: int = Field(default=3, ge=1, alias="recent_turns", description="Recent turns to preserve during compaction")
 

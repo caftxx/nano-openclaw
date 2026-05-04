@@ -117,6 +117,14 @@ def main() -> None:
     api_key = resolved["api_key"]
     model_input = resolved["model_input"]
     model_max_tokens = resolved["max_tokens"]
+    model_context_window = resolved["context_window"]
+
+    if model_context_window > 0 and model_max_tokens > model_context_window:
+        print(
+            f"warning: maxTokens ({model_max_tokens}) exceeds contextWindow ({model_context_window}), clamping",
+            file=sys.stderr,
+        )
+        model_max_tokens = model_context_window
 
     api = "anthropic" if api_type == "anthropic-messages" else "openai"
 
@@ -139,6 +147,7 @@ def main() -> None:
         model_ref=model_ref,
         model_input=model_input,
         model_max_tokens=model_max_tokens,
+        model_context_window=model_context_window,
         resolved=resolved,
         state_dir=state_dir,
         session_dir=session_dir,
@@ -157,6 +166,7 @@ async def _async_main(
     model_ref: str,
     model_input,
     model_max_tokens: int,
+    model_context_window: int,
     resolved: dict,
     state_dir: Path,
     session_dir: Path,
@@ -259,6 +269,18 @@ async def _async_main(
         model=d.model,
     )
 
+    _DEFAULT_CONTEXT_BUDGET = 256000
+    if config.context.budget is None:
+        context_budget = model_context_window if model_context_window > 0 else _DEFAULT_CONTEXT_BUDGET
+    else:
+        context_budget = config.context.budget
+        if model_context_window > 0 and context_budget > model_context_window:
+            print(
+                f"warning: context.budget ({context_budget}) exceeds contextWindow ({model_context_window}), clamping",
+                file=sys.stderr,
+            )
+            context_budget = model_context_window
+
     cfg = LoopConfig(
         model=model_id,
         api=api,
@@ -266,7 +288,8 @@ async def _async_main(
         model_input=tuple(model_input),
         max_iterations=config.maxIterations,
         max_tokens=model_max_tokens,
-        context_budget=config.context.budget,
+        context_budget=context_budget,
+        context_window=model_context_window,
         context_threshold=config.context.threshold,
         context_recent_turns=config.context.recent_turns,
         image_model=image_model_id,

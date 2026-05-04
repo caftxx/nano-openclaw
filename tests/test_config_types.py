@@ -24,7 +24,7 @@ from nano_openclaw.config.types import (
 class TestContextConfig:
     def test_default_values(self):
         cfg = ContextConfig()
-        assert cfg.budget == 100000
+        assert cfg.budget is None
         assert cfg.threshold == 0.8
         assert cfg.recent_turns == 3
     

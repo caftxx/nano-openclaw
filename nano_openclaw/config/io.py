@@ -70,8 +70,19 @@ def _resolve_model_max_tokens(provider_id: str, model_id: str, config: NanoOpenC
         for m in provider_config.models:
             if m.id == model_id:
                 return m.maxTokens if m.maxTokens > 0 else DEFAULT_MAX_TOKENS
-    
+
     return DEFAULT_MAX_TOKENS
+
+
+def _resolve_model_context_window(provider_id: str, model_id: str, config: NanoOpenClawConfig) -> int:
+    """Resolve context window size from model config, or 0 if not specified."""
+    provider_config = config.models.providers.get(provider_id)
+    if provider_config:
+        for m in provider_config.models:
+            if m.id == model_id:
+                return m.contextWindow if m.contextWindow > 0 else 0
+
+    return 0
 
 
 def find_config_file(config_path: Optional[str] = None, env: Optional[dict[str, str]] = None) -> Optional[Path]:
@@ -166,7 +177,8 @@ def resolve_model_config(
     api_key = resolve_api_key(provider_id, provider_config, env)
     model_input = _resolve_model_input(provider_id, model_id, config)
     max_tokens = _resolve_model_max_tokens(provider_id, model_id, config)
-    
+    context_window = _resolve_model_context_window(provider_id, model_id, config)
+
     return {
         "provider_id": provider_id,
         "model_id": model_id,
@@ -175,6 +187,7 @@ def resolve_model_config(
         "api_key": api_key,
         "model_input": model_input,
         "max_tokens": max_tokens,
+        "context_window": context_window,
     }
 
 

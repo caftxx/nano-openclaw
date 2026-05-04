@@ -321,6 +321,7 @@ def _session_status(
     model: str = "",
     session_id: str = "",
     context_budget: int = 0,
+    context_window: int = 0,
     current_tokens: int = 0,
     compaction_count: int = 0,
     message_count: int = 0,
@@ -347,9 +348,12 @@ def _session_status(
             return str(n)
         used = format_tokens(current_tokens)
         budget = format_tokens(context_budget)
-        lines.append(f"Context: {used}/{budget} tokens")
+        ctx_line = f"Context: {used}/{budget} tokens"
+        if context_window > 0 and context_window != context_budget:
+            ctx_line += f" (window: {format_tokens(context_window)})"
         if compaction_count > 0:
-            lines[-1] += f" · Compactions: {compaction_count}"
+            ctx_line += f" · Compactions: {compaction_count}"
+        lines.append(ctx_line)
 
     if message_count > 0:
         lines.append(f"Messages: {message_count}")
