@@ -9,8 +9,9 @@ import pytest
 from rich.console import Console
 
 from nano_openclaw.approvals import ApprovalDecision, ApprovalPolicy
-from nano_openclaw.config.types import ToolsConfig
-from nano_openclaw.tools import ToolRegistry, build_default_registry
+from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig, ToolsConfig
+from nano_openclaw.plugins.loader import load_plugins
+from nano_openclaw.tools import ToolRegistry, build_core_registry
 
 # Patch ToolRegistry.dispatch to be synchronous for tests — avoids changing
 # every call site while still exercising the full dispatch logic.
@@ -26,7 +27,14 @@ ToolRegistry.dispatch = _sync_dispatch  # type: ignore[method-assign]
 
 @pytest.fixture
 def registry():
-    return build_default_registry()
+    return _registry_with_plugins("memory", "web")
+
+
+def _registry_with_plugins(*plugins: str, tools_config: ToolsConfig | None = None) -> ToolRegistry:
+    registry = build_core_registry()
+    config = NanoOpenClawConfig(tools=tools_config) if tools_config else NanoOpenClawConfig()
+    load_plugins(PluginsConfig(load=list(plugins)), registry, config)
+    return registry
 
 
 def test_read_write_roundtrip(tmp_path, registry):
@@ -288,7 +296,7 @@ def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
 
 
 def test_dispatch_passes_cancellation_token_to_approval_ui(monkeypatch):
-    registry = build_default_registry()
+    registry = build_core_registry()
     registry.console = Console()
     policy = ApprovalPolicy(ask_mode="always", dangerous_tools=["bash"], allowlist=[])
     registry.approval_manager = __import__(
@@ -322,7 +330,7 @@ def test_dispatch_passes_cancellation_token_to_approval_ui(monkeypatch):
 
 
 def test_dispatch_rejects_approval_without_interactive_console():
-    registry = build_default_registry()
+    registry = build_core_registry()
     policy = ApprovalPolicy(ask_mode="always", dangerous_tools=["write_file"], allowlist=[])
     registry.approval_manager = __import__(
         "nano_openclaw.approvals", fromlist=["ApprovalManager"]
@@ -339,7 +347,7 @@ def test_dispatch_rejects_approval_without_interactive_console():
     assert "non-interactive background execution cannot request approval" in out["content"][0]["text"]
 
 
-def test_build_default_registry_respects_disabled_web_tools():
+def test_web_plugin_respects_disabled_web_tools():
     cfg = ToolsConfig.model_validate(
         {
             "web": {
@@ -349,13 +357,13 @@ def test_build_default_registry_respects_disabled_web_tools():
         }
     )
 
-    registry = build_default_registry(cfg)
+    registry = _registry_with_plugins("web", tools_config=cfg)
 
     assert "web_search" not in registry.names()
     assert "web_fetch" not in registry.names()
 
 
-def test_build_default_registry_uses_web_tool_defaults_from_config(monkeypatch):
+def test_web_plugin_uses_web_tool_defaults_from_config(monkeypatch):
     cfg = ToolsConfig.model_validate(
         {
             "web": {
@@ -369,7 +377,7 @@ def test_build_default_registry_uses_web_tool_defaults_from_config(monkeypatch):
             }
         }
     )
-    registry = build_default_registry(cfg)
+    registry = _registry_with_plugins("web", tools_config=cfg)
     captured = {}
 
     def fake_search(query, max_results=10, region="wt-wt"):

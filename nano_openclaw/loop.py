@@ -55,6 +55,7 @@ from nano_openclaw.tools import ToolRegistry
 from nano_openclaw.workspace import WorkspaceBootstrapFile, get_or_load_bootstrap_files
 
 if TYPE_CHECKING:
+    from nano_openclaw.plugins.registry import HookRegistry
     from nano_openclaw.session import TranscriptWriter
 
 EventCallback = Callable[[Any], None]
@@ -227,6 +228,8 @@ class LoopConfig:
     dreaming_config: DreamingConfig | None = None  # None = disabled
     # If set, bypasses build_system_prompt() entirely (used by subagent runner)
     system_prompt_override: str | None = None
+    # Lightweight plugin hooks, installed by the plugin loader.
+    hook_registry: "HookRegistry | None" = None
 
     @property
     def model_has_vision(self) -> bool:
@@ -262,8 +265,31 @@ async def agent_loop(
     # The turn is built against a scratch history and committed only on success.
     scratch_history = list(history)
     pending_transcript_ops: list[tuple[str, Message | str]] = []
+    loop_event_tasks: list[asyncio.Task] = []
+    original_on_event = on_event
 
-    _check_cancelled(cancellation_token)
+    def hooked_on_event(event: Any) -> None:
+        original_on_event(event)
+        if cfg.hook_registry:
+            loop_event_tasks.append(
+                asyncio.create_task(cfg.hook_registry.run("on_loop_event", {"event": event}))
+            )
+
+    async def drain_loop_event_hooks() -> None:
+        if loop_event_tasks:
+            await asyncio.gather(*loop_event_tasks, return_exceptions=True)
+            loop_event_tasks.clear()
+
+    async def check_cancelled() -> None:
+        try:
+            _check_cancelled(cancellation_token)
+        except TurnCancelled:
+            await drain_loop_event_hooks()
+            raise
+
+    on_event = hooked_on_event
+
+    await check_cancelled()
 
     # 1. Load skills early (needed for slash commands + prompt injection)
     eligible_entries: list[SkillEntry] = []
@@ -379,14 +405,27 @@ async def agent_loop(
             max_skills_prompt_chars=cfg.max_skills_prompt_chars,
         )
 
-    # Inject Active Memory context if available
+    if cfg.hook_registry:
+        hook_result = await cfg.hook_registry.run("before_prompt_build", {
+            "system": system,
+            "user_input": user_input,
+            "workspace_dir": str(cfg.workspace_dir) if cfg.workspace_dir else "",
+        })
+        system = hook_result.get("system", system)
+        if prepend := hook_result.get("prepend"):
+            system = f"{prepend}\n\n{system}"
+        if append := hook_result.get("append"):
+            system = f"{system}\n\n{append}"
+
+    # Inject Active Memory after prompt hooks so custom system replacements do
+    # not accidentally discard recalled context.
     if active_memory_context:
         system = f"{active_memory_context}\n\n{system}"
 
     tools_schema = registry.schemas()
 
     for _ in range(cfg.max_iterations):
-        _check_cancelled(cancellation_token)
+        await check_cancelled()
         # Check context budget and compact if needed (mirrors OpenClaw's compaction)
         _, summary = await compact_if_needed(
             scratch_history,
@@ -402,20 +441,24 @@ async def agent_loop(
             pending_transcript_ops.append(("compaction", summary))
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
-        assistant_blocks, stop_reason = await _consume_one_assistant_turn(
-            client=client,
-            api=cfg.api,
-            model=cfg.model,
-            system=system,
-            messages=wire_messages,
-            tools=tools_schema,
-            max_tokens=cfg.max_tokens,
-            thinking_budget_tokens=cfg.thinking_budget_tokens,
-            on_event=on_event,
-            cancellation_token=cancellation_token,
-        )
+        try:
+            assistant_blocks, stop_reason = await _consume_one_assistant_turn(
+                client=client,
+                api=cfg.api,
+                model=cfg.model,
+                system=system,
+                messages=wire_messages,
+                tools=tools_schema,
+                max_tokens=cfg.max_tokens,
+                thinking_budget_tokens=cfg.thinking_budget_tokens,
+                on_event=on_event,
+                cancellation_token=cancellation_token,
+            )
+        except TurnCancelled:
+            await drain_loop_event_hooks()
+            raise
 
-        _check_cancelled(cancellation_token)
+        await check_cancelled()
         scratch_history.append(Message("assistant", assistant_blocks))
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
@@ -427,6 +470,7 @@ async def agent_loop(
                         transcript_writer.append_message(payload)  # type: ignore[arg-type]
                     else:
                         transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+            await drain_loop_event_hooks()
             return history  # end_turn / max_tokens / stop_sequence — terminal
 
         # Dispatch every tool_use; package all results into ONE user message.
@@ -450,7 +494,7 @@ async def agent_loop(
                     skill = skill_registry[skill_name]
                     on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
 
-        _check_cancelled(cancellation_token)
+        await check_cancelled()
 
         # Dispatch all tool calls in parallel — core benefit of async model.
         tool_results: list[dict[str, Any]] = list(
@@ -465,7 +509,7 @@ async def agent_loop(
             ])
         )
 
-        _check_cancelled(cancellation_token)
+        await check_cancelled()
         for block, result in zip(tool_use_blocks, tool_results):
             on_event(ToolResult(
                 tool_use_id=block["id"],
@@ -478,11 +522,15 @@ async def agent_loop(
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
         if any(block["name"] == "sessions_spawn" for block in tool_use_blocks):
-            announced = await _wait_for_subagent_announcements(
-                registry,
-                cfg,
-                cancellation_token=cancellation_token,
-            )
+            try:
+                announced = await _wait_for_subagent_announcements(
+                    registry,
+                    cfg,
+                    cancellation_token=cancellation_token,
+                )
+            except TurnCancelled:
+                await drain_loop_event_hooks()
+                raise
             if announced:
                 scratch_history.extend(announced)
                 pending_transcript_ops.extend(("message", msg) for msg in announced)
@@ -499,6 +547,7 @@ async def agent_loop(
                 transcript_writer.append_message(payload)  # type: ignore[arg-type]
             else:
                 transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+    await drain_loop_event_hooks()
     return history
 
 

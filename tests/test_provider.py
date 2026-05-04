@@ -178,9 +178,9 @@ def test_tool_schema_conversion():
 
 
 def test_multiple_tools_conversion():
-    from nano_openclaw.tools import build_default_registry
+    from nano_openclaw.tools import build_core_registry
 
-    schemas = build_default_registry().schemas()  # Anthropic format
+    schemas = build_core_registry().schemas()  # Anthropic format
     openai_tools = _to_openai_tools(schemas)
     assert len(openai_tools) == len(schemas)
     for t in openai_tools:

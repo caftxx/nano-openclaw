@@ -31,7 +31,7 @@ from nano_openclaw.subagent.types import (
     build_subagent_session_key,
     parse_session_key,
 )
-from nano_openclaw.tools import ToolRegistry, build_default_registry
+from nano_openclaw.tools import ToolRegistry, build_core_registry
 from nano_openclaw.session import TranscriptWriter
 
 
@@ -329,7 +329,7 @@ class SubagentRunner:
         """Build a tool registry for subagent by inheriting from parent and removing blacklisted tools."""
         if parent_registry is None:
             # Fallback when no parent registry is provided (e.g. in tests)
-            registry = build_default_registry()
+            registry = build_core_registry()
             for name in SUBAGENT_TOOL_BLACKLIST:
                 registry._tools.pop(name, None)
             return registry

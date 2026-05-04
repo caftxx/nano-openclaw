@@ -75,7 +75,18 @@ from nano_openclaw.tools import ToolRegistry
 
 _PREVIEW_LINES = 12
 _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
-_COMMANDS_HELP = "/quit  /clear  /new  /help  /context  /compact  /sessions \\[all]  /save  /session \\[prefix|#]  /skills  /subagents \\[list|kill|all]  /active-memory \\[status|on|off|mode|style]  /dreaming \\[status|on|off|run]  — /sessions launches interactive picker"
+_BASE_COMMANDS = [
+    "/quit",
+    "/clear",
+    "/new",
+    "/help",
+    "/context",
+    "/compact",
+    "/sessions \\[all]",
+    "/save",
+    "/session \\[prefix|#]",
+    "/skills",
+]
 
 
 async def repl(
@@ -113,7 +124,7 @@ async def repl(
         )
         registry.set_spawn_tool_context(_spawn_ctx)
 
-    _print_banner(console, cfg.model, registry, session_id)
+    _print_banner(console, cfg.model, registry, session_id, cfg=cfg)
 
     while True:
         try:
@@ -170,7 +181,7 @@ async def repl(
             continue
         if user_input == "/help":
             console.print(
-                f"[dim]commands: {_COMMANDS_HELP} — anything else is sent to the model[/]"
+                f"[dim]commands: {_commands_help(registry, cfg)} — anything else is sent to the model[/]"
             )
             continue
         if user_input == "/context":
@@ -249,12 +260,21 @@ async def repl(
                     console.print("[dim](no session store configured)[/]")
             continue
         if user_input.startswith("/active-memory"):
+            if not _memory_commands_available(registry):
+                console.print("[dim](/active-memory unavailable; load the memory plugin)[/]")
+                continue
             _handle_active_memory_command(console, user_input, cfg)
             continue
         if user_input.startswith("/dreaming"):
+            if not _memory_commands_available(registry):
+                console.print("[dim](/dreaming unavailable; load the memory plugin)[/]")
+                continue
             await _handle_dreaming_command(console, user_input, cfg, client)
             continue
         if user_input.startswith("/subagents"):
+            if not _subagents_command_available(registry):
+                console.print("[dim](/subagents unavailable; load the subagent plugin)[/]")
+                continue
             await _handle_subagents_command(console, user_input, cfg, client)
             continue
 
@@ -284,7 +304,31 @@ async def repl(
             _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
 
 
-def _print_banner(console: Console, model: str, registry: ToolRegistry, session_id: str = "") -> None:
+def _memory_commands_available(registry: ToolRegistry) -> bool:
+    return registry.get("memory_get") is not None and registry.get("memory_search") is not None
+
+
+def _subagents_command_available(registry: ToolRegistry) -> bool:
+    return registry.get("sessions_spawn") is not None or registry.get("subagents") is not None
+
+
+def _commands_help(registry: ToolRegistry, cfg: LoopConfig | None = None) -> str:
+    commands = list(_BASE_COMMANDS)
+    if _subagents_command_available(registry):
+        commands.append("/subagents \\[list|kill|all]")
+    if _memory_commands_available(registry):
+        commands.append("/active-memory \\[status|on|off|mode|style]")
+        commands.append("/dreaming \\[status|on|off|run]")
+    return "  ".join(commands) + "  — /sessions launches interactive picker"
+
+
+def _print_banner(
+    console: Console,
+    model: str,
+    registry: ToolRegistry,
+    session_id: str = "",
+    cfg: LoopConfig | None = None,
+) -> None:
     tools = ", ".join(registry.names()) or "(none)"
     session_line = f"session: {session_id[:8]}…" if session_id else ""
     console.print(
@@ -294,7 +338,7 @@ def _print_banner(console: Console, model: str, registry: ToolRegistry, session_
                 f"model:  [cyan]{markup.escape(model)}[/]\n"
                 f"tools:  {markup.escape(tools)}"
                 + (f"\n{session_line}" if session_line else "")
-                + f"\ncommands: {_COMMANDS_HELP}"
+                + f"\ncommands: {_commands_help(registry, cfg)}"
             ),
             border_style="cyan",
         )

@@ -17,7 +17,9 @@ from nano_openclaw.memory.tools import (
     memory_search,
     MemorySearchResult,
 )
-from nano_openclaw.tools import build_default_registry
+from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig
+from nano_openclaw.plugins.loader import load_plugins
+from nano_openclaw.tools import build_core_registry
 
 
 @pytest.fixture
@@ -186,9 +188,14 @@ class TestMemorySearchResult:
 class TestToolIntegration:
     """Tests for memory tools in registry."""
 
+    def _registry(self):
+        registry = build_core_registry()
+        load_plugins(PluginsConfig(load=["memory"]), registry, NanoOpenClawConfig())
+        return registry
+
     def test_tools_registered(self):
         """memory_get and memory_search should be registered."""
-        registry = build_default_registry()
+        registry = self._registry()
 
         names = registry.names()
         assert "memory_get" in names
@@ -196,7 +203,7 @@ class TestToolIntegration:
 
     def test_memory_get_via_dispatch(self, workspace_with_memory_files):
         """Should be able to call memory_get via registry.dispatch."""
-        registry = build_default_registry()
+        registry = self._registry()
         registry.set_workspace_dir(workspace_with_memory_files)
 
         result = registry.dispatch(
@@ -211,7 +218,7 @@ class TestToolIntegration:
 
     def test_memory_search_via_dispatch(self, workspace_with_memory_files):
         """Should be able to call memory_search via registry.dispatch."""
-        registry = build_default_registry()
+        registry = self._registry()
         registry.set_workspace_dir(workspace_with_memory_files)
 
         result = registry.dispatch(

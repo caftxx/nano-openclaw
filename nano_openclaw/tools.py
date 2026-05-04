@@ -24,6 +24,7 @@ from nano_openclaw.approvals.types import ApprovalDecision
 
 if TYPE_CHECKING:
     from nano_openclaw.config.types import ToolsConfig
+    from nano_openclaw.plugins.registry import HookRegistry
     from nano_openclaw.skills.types import Skill
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
@@ -46,6 +47,7 @@ class ToolRegistry:
     console: Optional[Console] = field(default=None)
     _workspace_dir: str | None = field(default=None)
     _spawn_tool_context: Optional[Any] = field(default=None)  # SpawnToolContext
+    _hook_registry: Optional["HookRegistry"] = field(default=None)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -62,6 +64,9 @@ class ToolRegistry:
 
     def set_spawn_tool_context(self, context: Any) -> None:
         self._spawn_tool_context = context
+
+    def set_hook_registry(self, hook_registry: "HookRegistry") -> None:
+        self._hook_registry = hook_registry
 
     def names(self) -> list[str]:
         return list(self._tools.keys())
@@ -124,6 +129,16 @@ class ToolRegistry:
 
                 ui.render_allowed(request, decision)
 
+        if self._hook_registry:
+            hook_payload = await self._hook_registry.run("before_tool_call", {
+                "tool_name": name,
+                "tool_args": args,
+                "tool_use_id": tool_use_id,
+            })
+            if hook_payload.get("deny"):
+                return _error_result(tool_use_id, hook_payload.get("reason", "denied by hook"))
+            args = hook_payload.get("tool_args", args)
+
         # Execute tool — async-native tools are awaited directly; sync tools run
         # in a thread pool to avoid blocking the event loop.
         try:
@@ -144,7 +159,32 @@ class ToolRegistry:
 
             output = await raw if asyncio.iscoroutine(raw) else raw
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
-            return _error_result(tool_use_id, f"{type(exc).__name__}: {exc}")
+            output: str | list[dict[str, Any]] = f"{type(exc).__name__}: {exc}"
+            if self._hook_registry:
+                hook_payload = await self._hook_registry.run("after_tool_call", {
+                    "tool_name": name,
+                    "tool_args": args,
+                    "result": output,
+                    "error": True,
+                })
+                output = hook_payload.get("result", output)
+            if isinstance(output, list):
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "is_error": True,
+                    "content": output,
+                }
+            return _error_result(tool_use_id, output)
+
+        if self._hook_registry:
+            hook_payload = await self._hook_registry.run("after_tool_call", {
+                "tool_name": name,
+                "tool_args": args,
+                "result": output,
+                "error": False,
+            })
+            output = hook_payload.get("result", output)
 
         content: list[dict[str, Any]] = (
             output if isinstance(output, list) else [{"type": "text", "text": output or "(no output)"}]
@@ -338,16 +378,19 @@ def _invoke_skill(
     return skill_path.read_text(encoding="utf-8")
 
 
-from nano_openclaw.memory.tools import memory_get, memory_search
-from nano_openclaw.web_fetch import web_fetch
-from nano_openclaw.web_search import web_search
+def web_search(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from nano_openclaw.web_search import web_search as _web_search
+
+    return _web_search(*args, **kwargs)
 
 
-def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool]:
-    web_config = tools_config.web if tools_config else None
-    search_config = web_config.search if web_config else None
-    fetch_config = web_config.fetch if web_config else None
+async def web_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from nano_openclaw.web_fetch import web_fetch as _web_fetch
 
+    return await _web_fetch(*args, **kwargs)
+
+
+def _build_core_tools() -> list[Tool]:
     tools: list[Tool] = [
         Tool(
             name="read_file",
@@ -426,6 +469,15 @@ def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool
             },
             run=_invoke_skill,
         ),
+    ]
+
+    return tools
+
+
+def build_memory_tools() -> list[Tool]:
+    from nano_openclaw.memory.tools import memory_get, memory_search
+
+    return [
         Tool(
             name="memory_get",
             description="Read a specific memory file (MEMORY.md or memory/*.md). Use to retrieve exact content by path.",
@@ -455,6 +507,13 @@ def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool
             run=lambda args, workspace_dir=None: memory_search(args, workspace_dir),
         ),
     ]
+
+
+def build_web_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool]:
+    web_config = tools_config.web if tools_config else None
+    search_config = web_config.search if web_config else None
+    fetch_config = web_config.fetch if web_config else None
+    tools: list[Tool] = []
 
     if search_config is None or search_config.enabled:
         default_max_results = search_config.maxResults if search_config else 10
@@ -533,21 +592,8 @@ def _build_builtin_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool
     return tools
 
 
-def build_default_registry(tools_config: "ToolsConfig | None" = None) -> ToolRegistry:
+def build_core_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    for tool in _build_builtin_tools(tools_config):
+    for tool in _build_core_tools():
         registry.register(tool)
-    return registry
-
-
-def build_registry_with_subagent_tools(
-    tools_config: "ToolsConfig | None" = None,
-) -> ToolRegistry:
-    """Build registry including subagent tools (sessions_spawn, subagents)."""
-    registry = build_default_registry(tools_config)
-    
-    from nano_openclaw.subagent.tools import build_spawn_tool, build_subagents_tool
-    registry.register(build_spawn_tool())
-    registry.register(build_subagents_tool())
-    
     return registry

@@ -1,8 +1,8 @@
 """Entry point.
 
 Mirrors the chain openclaw.mjs -> src/entry.ts -> src/run-main.ts,
-collapsed into one file because nano has no plugin loader, no auth-profile
-resolution, and no telemetry init.
+collapsed into one file because nano skips auth-profile resolution and telemetry
+init while keeping a lightweight plugin loader.
 
 Configuration is loaded using openclaw-aligned path resolution:
 1. OPENCLAW_CONFIG_PATH environment variable
@@ -47,7 +47,9 @@ from nano_openclaw.session import (
     resolve_agent_sessions_dir,
     resolve_session_store_path,
 )
-from nano_openclaw.tools import ToolRegistry, build_default_registry, build_registry_with_subagent_tools
+from nano_openclaw.plugins.loader import load_plugins
+from nano_openclaw.plugins.registry import HookRegistry
+from nano_openclaw.tools import ToolRegistry, build_core_registry
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.exec_approvals import load_exec_approvals
 from rich.console import Console
@@ -162,19 +164,7 @@ async def _async_main(
 ) -> None:
     client = _build_client(api, api_key, base_url)
     no_tools = config.noTools or config.tools.noTools
-    registry = ToolRegistry() if no_tools else build_registry_with_subagent_tools(config.tools)
-
-    # Initialize MCP runtime (now async)
-    mcp_runtime = None
-    if not no_tools and config.mcp.servers:
-        from nano_openclaw.mcp.runtime import McpRuntime
-        from nano_openclaw.mcp.materialize import materialize_mcp_tools
-        mcp_runtime = McpRuntime()
-        await mcp_runtime.initialize(config.mcp.servers)
-        mcp_tools = materialize_mcp_tools(mcp_runtime, existing_names=set(registry.names()))
-        for tool in mcp_tools:
-            registry.register(tool)
-        print(f"MCP: loaded {len(mcp_tools)} tools from {len(config.mcp.servers)} server(s)", file=sys.stderr)
+    registry = ToolRegistry() if no_tools else build_core_registry()
 
     console = Console()
     approval_manager = build_approval_manager(state_dir, args.agent)
@@ -183,6 +173,11 @@ async def _async_main(
 
     workspace_dir = resolve_agent_workspace_dir(config, args.agent)
     registry.set_workspace_dir(workspace_dir)
+    hook_registry = (
+        load_plugins(config.plugins, registry, config)
+        if not no_tools
+        else HookRegistry()
+    )
 
     # Build session: new or resumed
     transcript_writer: TranscriptWriter | None = None
@@ -287,6 +282,7 @@ async def _async_main(
         max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
         active_memory_config=active_mem_cfg,
         dreaming_config=dreaming_cfg,
+        hook_registry=hook_registry,
     )
 
     # Start dreaming scheduler as asyncio task (replaces background thread)
@@ -308,6 +304,12 @@ async def _async_main(
             thinking=config.subagents.thinking.value if config.subagents.thinking else None,
         ))
 
+    await hook_registry.run("session_start", {
+        "session_id": session_id,
+        "agent_id": args.agent,
+        "workspace_dir": str(workspace_dir),
+    })
+
     try:
         await repl(
             registry,
@@ -320,6 +322,11 @@ async def _async_main(
             initial_history=history if history else None,
         )
     finally:
+        await hook_registry.run("session_end", {
+            "session_id": session_id,
+            "agent_id": args.agent,
+            "workspace_dir": str(workspace_dir),
+        })
         _dreaming_stop.set()
         if dreaming_task and not dreaming_task.done():
             dreaming_task.cancel()
@@ -327,10 +334,6 @@ async def _async_main(
                 await dreaming_task
             except (asyncio.CancelledError, Exception):
                 pass
-
-        if mcp_runtime:
-            await mcp_runtime.close()
-
 
 def _print_sessions_list(store_path: Path) -> None:
     """Print saved sessions to stdout."""

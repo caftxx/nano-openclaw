@@ -218,11 +218,14 @@ class TestBuildDailyMemoryPrelude:
 class TestIntegration:
     """Integration tests for daily memory in system prompt."""
 
-    def test_prelude_in_system_prompt(self, workspace_with_memory, monkeypatch):
-        """Daily memory prelude should appear in system prompt."""
+    def test_prelude_injected_by_memory_plugin(self, workspace_with_memory, monkeypatch):
+        """Daily memory prelude should be injected through the memory plugin hook."""
+        import asyncio
         import nano_openclaw.memory.daily as daily
+        from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig
+        from nano_openclaw.plugins.loader import load_plugins
         from nano_openclaw.prompt import build_system_prompt
-        from nano_openclaw.tools import build_default_registry
+        from nano_openclaw.tools import build_core_registry
 
         class FixedDatetime(datetime):
             @classmethod
@@ -235,10 +238,22 @@ class TestIntegration:
         (ws / "memory" / "2026-05-02.md").write_text("Memory test content")
         (ws / "AGENTS.md").write_text("# Rules")
 
-        registry = build_default_registry()
+        registry = build_core_registry()
         registry.set_workspace_dir(str(ws))
 
         prompt = build_system_prompt(registry, ws)
+        hooks = load_plugins(
+            PluginsConfig(load=["memory"]),
+            registry,
+            NanoOpenClawConfig(),
+        )
+        hook_result = asyncio.run(hooks.run("before_prompt_build", {
+            "system": prompt,
+            "user_input": "",
+            "workspace_dir": str(ws),
+        }))
+        if prepend := hook_result.get("prepend"):
+            prompt = f"{prepend}\n\n{prompt}"
 
         assert "[Startup context: daily memory loaded]" in prompt
         assert "[Daily memory: memory/2026-05-02.md]" in prompt

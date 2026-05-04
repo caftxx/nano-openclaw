@@ -426,6 +426,30 @@ class ToolsConfig(BaseModel):
 
 
 # ============================================================================
+# Plugin Types (nano-openclaw lightweight plugin loader)
+# ============================================================================
+
+class PluginEntryConfig(BaseModel):
+    """Explicit plugin entry for module or file-path plugins."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    module: Optional[str] = Field(default=None, description="Python module path containing a plugin")
+    path: Optional[str] = Field(default=None, description="Python file path containing a plugin")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Plugin-specific configuration")
+
+
+class PluginsConfig(BaseModel):
+    """Lightweight plugin loading configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=True, description="Enable plugin loading")
+    load: List[Union[str, PluginEntryConfig]] = Field(
+        default_factory=list,
+        description="Plugin entries to load; strings reference built-in plugins",
+    )
+
+
+# ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
 
@@ -448,6 +472,7 @@ class NanoOpenClawConfig(BaseModel):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     
     # nano-openclaw custom fields
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")

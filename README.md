@@ -49,7 +49,7 @@ uv run python -m nano_openclaw --sessions
 uv run python -m nano_openclaw --agent coder
 ```
 
-**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改，详见下方配置说明。
+**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。memory/web/subagent/MCP 现在通过 `plugins.load` 显式启用，详见下方配置说明。
 
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 
@@ -107,16 +107,16 @@ uv run python -m nano_openclaw --agent coder
                                 ▼
                       ┌──────────────────────┐
     image refs ─────▶ │   loop.agent_loop()  │  parse_image_refs → load_image
-    (@file.png)       │  active_memory_hook  │  before_prompt_build → sub-agent recall
+    (@file.png)       │  plugin hooks        │  before_prompt_build / on_loop_event
                        └──┬──────────────┬────┘
            compact check │              │ tool_use blocks
                          ▼              ▼
                 ┌──────────────┐  ┌──────────────────────┐
                 │  compact.py  │  │  tools.dispatch()    │
                 │  token est.  │  │  read/write/list/bash│
-                │  summarize   │  │  memory_get/search   │
-                │              │  │  sessions_spawn      │
-                └──────┬───────┘  │  web_search/fetch    │
+                │  summarize   │  │  plugin tools        │
+                │              │  │  before/after hooks  │
+                └──────┬───────┘  │                      │
         history shrunk │          └────────┬─────────────┘
                        ▼                   ▼
                      ┌──────────────────────┐
@@ -133,9 +133,10 @@ uv run python -m nano_openclaw --agent coder
   config/           = JSON5 加载 + Pydantic 类型验证 + 环境变量替换 + 模型解析
   _stream_events.py = 5 个共享 dataclass（两个 transport 的协议契约）+ thinking 事件
   system prompt     = prompt.build_system_prompt(registry)
-                      identity + cwd/platform/date + 工具清单 + daily memory prelude
+                      identity + cwd/platform/date + 工具清单 + plugin prompt hooks
    compact.py        = estimate_tokens → compact_if_needed → summarize_history
    approvals/        = requiresExecApproval() 门禁 → Rich 审批提示 → per-agent allowlist 持久化
+   plugins/          = 轻量 Plugin Protocol + HookRegistry + builtin wrappers
    subagent/         = 后台子 agent runner + registry + completion auto-announce
    images.py         = parse_image_refs → load_image → describe_image（双路径架构）
     mcp/              = MCP 服务器连接管理（stdio/SSE/streamable-http）→ 工具注册
