@@ -58,6 +58,12 @@ Constraints: never load more than one skill up front; only load after selecting.
 - When a skill drives external API writes, assume rate limits: prefer fewer larger writes, avoid tight one-item loops, serialize bursts when possible, and respect 429/Retry-After.\
 """
 
+_MEMORY_TOOL_GUIDANCE = """
+## Memory Recall
+Before answering anything about prior work, decisions, dates, people, preferences, or todos:
+run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull needed lines.
+If low confidence after search, say you checked.
+"""
 
 def _build_subagent_section(registry: ToolRegistry) -> str:
     """Dynamically build the sub-agent orchestration section.
@@ -236,11 +242,3 @@ def build_system_prompt(
     prompt += "\nWhen the task is done, stop. Never invent file paths."
 
     return prompt
-
-
-_MEMORY_TOOL_GUIDANCE = """
-## Memory Recall
-Before answering anything about prior work, decisions, dates, people, preferences, or todos:
-run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull needed lines.
-If low confidence after search, say you checked.
-"""
