@@ -507,22 +507,57 @@ async def agent_loop(
 
         await check_cancelled()
 
-        # Dispatch all tool calls in parallel — core benefit of async model.
-        tool_results: list[dict[str, Any]] = list(
-            await asyncio.gather(*[
-                registry.dispatch(
-                    b["id"],
+        batch_requires_approval = False
+        if registry.approval_manager:
+            batch_requires_approval = any(
+                registry.approval_manager.check_request(
                     b["name"],
                     b.get("input") or {},
+                ).requires_approval
+                for b in tool_use_blocks
+            )
+
+        if batch_requires_approval:
+            # Approval prompts are foreground UI. Run this batch sequentially so
+            # a denial can stop later tools before they create side effects.
+            tool_results = []
+            denied_tool_name: str | None = None
+            for block in tool_use_blocks:
+                if denied_tool_name is not None:
+                    tool_results.append(_skipped_after_denial_result(
+                        block["id"],
+                        denied_tool_name,
+                    ))
+                    continue
+
+                result = await registry.dispatch(
+                    block["id"],
+                    block["name"],
+                    block.get("input") or {},
                     cancellation_token=cancellation_token,
                 )
-                for b in tool_use_blocks
-            ])
-        )
+                if result.get("_denied"):
+                    denied_tool_name = block["name"]
+                tool_results.append(result)
+        else:
+            # Dispatch all tool calls in parallel — core benefit of async model.
+            tool_results = list(
+                await asyncio.gather(*[
+                    registry.dispatch(
+                        b["id"],
+                        b["name"],
+                        b.get("input") or {},
+                        cancellation_token=cancellation_token,
+                    )
+                    for b in tool_use_blocks
+                ])
+            )
 
         await check_cancelled()
         # Strip denial markers before persisting (keeps history clean for the API).
-        has_denial = any(r.pop("_denied", False) for r in tool_results)
+        has_denial = False
+        for result in tool_results:
+            has_denial = bool(result.pop("_denied", False)) or has_denial
         for block, result in zip(tool_use_blocks, tool_results):
             on_event(ToolResult(
                 tool_use_id=block["id"],
@@ -599,6 +634,18 @@ async def _wait_for_subagent_announcements(
 
     _check_cancelled(cancellation_token)
     return runner.drain_announcements(requester_session_key)
+
+
+def _skipped_after_denial_result(tool_use_id: str, denied_tool_name: str) -> dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "is_error": True,
+        "content": [{
+            "type": "text",
+            "text": f"skipped because approval was denied for {denied_tool_name}",
+        }],
+    }
 
 
 def _maybe_dump_payload(
