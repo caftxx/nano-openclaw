@@ -110,8 +110,7 @@ function handleEvent(event) {
       state.thinkingText = "";
       state._pendingTextLen = 0;
       state._assistantRawText = "";
-      $("events").innerHTML = "";
-      _eventsFollowBottom = true;
+      document.querySelectorAll(".message.turn-event, .message.approval-card").forEach((el) => el.remove());
       appendMessage("user", formatAcceptedUserText(event));
       if (state.clearAttachmentsOnAccept) {
         state.attachments = [];
@@ -329,56 +328,99 @@ function displayRole(role) {
 }
 
 function renderApprovals() {
-  const root = $("approvals");
-  root.innerHTML = "";
-  if (!state.approvals.size) {
-    root.className = "empty";
-    root.textContent = "No pending approvals";
-    updateApprovalBadge();
-    return;
-  }
-  root.className = "";
+  document.querySelectorAll(".message.approval-card").forEach((card) => {
+    const rid = card.dataset.requestId;
+    if (!state.approvals.has(rid) && !card.classList.contains("is-decided")) {
+      card.classList.add("is-decided");
+      const decision = card.dataset.decision || "decided";
+      card.querySelector(".approval-card-status").textContent =
+        decision === "allow-once" ? "✓ Approved" : "✗ Denied";
+      setTimeout(() => card.remove(), 1500);
+    }
+  });
+
   for (const approval of state.approvals.values()) {
-    const el = document.createElement("div");
-    el.className = "approval";
-    el.innerHTML = `<strong>${escapeHtml(approval.tool_name)}</strong>
-      <div>${escapeHtml(approval.reason || "")}</div>
-      <pre>${escapeHtml(JSON.stringify(approval.tool_args || {}, null, 2))}</pre>
-      <div class="approval-actions">
-        <button data-decision="allow-once">Approve</button>
-        <button data-decision="deny">Deny</button>
+    const existing = $("messages").querySelector(
+      `.approval-card[data-request-id="${CSS.escape(approval.request_id)}"]`
+    );
+    if (existing) continue;
+
+    const el = document.createElement("article");
+    el.className = "message approval-card";
+    el.dataset.requestId = approval.request_id;
+    el.innerHTML = `
+      <div class="approval-card-inner">
+        <div class="approval-card-header">
+          <span class="approval-card-icon" aria-hidden="true">⚠</span>
+          <strong class="approval-card-name">${escapeHtml(approval.tool_name)}</strong>
+          <span class="approval-card-status"></span>
+        </div>
+        <div class="approval-card-reason">${escapeHtml(approval.reason || "")}</div>
+        <pre class="approval-card-args">${escapeHtml(JSON.stringify(approval.tool_args || {}, null, 2))}</pre>
+        <div class="approval-actions">
+          <button data-decision="allow-once">Approve</button>
+          <button data-decision="deny">Deny</button>
+        </div>
       </div>`;
-    el.querySelectorAll("button").forEach((btn) => {
-      btn.onclick = () => send("approval.decide", {
-        request_id: approval.request_id,
-        decision: btn.dataset.decision,
-      });
+
+    el.querySelectorAll("button[data-decision]").forEach((btn) => {
+      btn.onclick = () => {
+        el.dataset.decision = btn.dataset.decision;
+        el.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        send("approval.decide", {
+          request_id: approval.request_id,
+          decision: btn.dataset.decision,
+        });
+      };
     });
-    root.appendChild(el);
+
+    $("messages").appendChild(el);
+    scrollMessages(true);
   }
-  updateApprovalBadge();
 }
 
 function addEvent(kind, text, payload = null) {
-  const el = document.createElement("details");
-  el.className = "event";
+  const SILENT_KINDS = new Set(["connected", "disconnected"]);
+  if (SILENT_KINDS.has(kind)) return null;
+
+  const el = document.createElement("article");
+  el.className = "message turn-event";
+  el.dataset.kind = kind;
+
   const timestamp = new Date().toLocaleTimeString([], { hour12: false });
   const details = payload || { type: kind, message: text };
-  el.innerHTML = `<summary>
-      <span class="event-time">${escapeHtml(timestamp)}</span>
-      <strong>${escapeHtml(labelEvent(kind))}</strong>
-      <span class="event-body"></span>
+
+  const detailsEl = document.createElement("details");
+  detailsEl.className = "turn-event-details";
+  detailsEl.innerHTML = `
+    <summary class="turn-event-summary">
+      <span class="turn-event-icon" aria-hidden="true">${eventIcon(kind)}</span>
+      <span class="turn-event-label">${escapeHtml(labelEvent(kind))}</span>
+      <span class="turn-event-body">${escapeHtml(String(text || ""))}</span>
+      <span class="turn-event-time">${escapeHtml(timestamp)}</span>
     </summary>
-    <pre class="event-detail"></pre>`;
-  el.querySelector(".event-body").textContent = String(text || "");
-  el.querySelector(".event-detail").textContent = JSON.stringify(details, null, 2);
-  $("events").appendChild(el);
-  while ($("events").children.length > 120) $("events").firstChild.remove();
-  if (_eventsFollowBottom) {
-    _eventsProgrammaticScroll = true;
-    $("events").scrollTop = $("events").scrollHeight;
-  }
+    <pre class="turn-event-detail"></pre>`;
+  detailsEl.querySelector(".turn-event-detail").textContent = JSON.stringify(details, null, 2);
+
+  el.appendChild(detailsEl);
+  $("messages").appendChild(el);
+  scrollMessages();
+
+  const allEvents = $("messages").querySelectorAll(".turn-event");
+  if (allEvents.length > 150) allEvents[0].remove();
+
   return el;
+}
+
+function eventIcon(kind) {
+  if (kind === "tool.start") return "⚙";
+  if (kind === "tool.result") return "✓";
+  if (kind === "turn.done") return "◎";
+  if (kind === "turn.error") return "✗";
+  if (kind === "turn.cancelled") return "⊘";
+  if (kind === "thinking.done") return "💭";
+  if (kind === "compaction") return "⌗";
+  return "·";
 }
 
 function flushPendingText() {
@@ -413,8 +455,6 @@ function extractText(msg) {
 }
 
 let _programmaticScroll = false;
-let _eventsFollowBottom = true;
-let _eventsProgrammaticScroll = false;
 
 function scrollMessages(force = false) {
   const el = $("messages");
@@ -657,18 +697,6 @@ function syncDrawerStateForViewport() {
   document.body.classList.remove("drawer-open");
 }
 
-function updateApprovalBadge() {
-  const count = state.approvals.size;
-  ["openInspectorBtn", "openInspectorDesktopBtn"].forEach((id) => {
-    const button = $(id);
-    const badge = button?.querySelector(".approval-badge");
-    if (!badge) return;
-    badge.textContent = String(count);
-    badge.hidden = count === 0;
-    button.classList.toggle("has-approvals", count > 0);
-  });
-}
-
 function renderThinkingToggle() {
   const btn = $("thinkingToggle");
   if (!btn) return;
@@ -778,15 +806,6 @@ $("messages").addEventListener("scroll", () => {
   state._followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 });
 
-$("events").addEventListener("scroll", () => {
-  if (_eventsProgrammaticScroll) {
-    _eventsProgrammaticScroll = false;
-    return;
-  }
-  const el = $("events");
-  _eventsFollowBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-});
-
 $("openSessionDrawerBtn").onclick = () => openDrawer("sessions");
 $("openInspectorBtn").onclick = () => openDrawer("inspector");
 $("openInspectorDesktopBtn").onclick = () => openDrawer("inspector");
@@ -810,4 +829,3 @@ syncDrawerStateForViewport();
 connect();
 $("prompt").focus();
 resizePrompt();
-updateApprovalBadge();

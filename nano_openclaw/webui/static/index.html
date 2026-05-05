@@ -38,11 +38,9 @@
             <button id="openInspectorDesktopBtn" class="topbar-action desktop-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
               <span class="status-dot" aria-hidden="true"></span>
               <span>运行</span>
-              <span class="approval-badge" hidden>0</span>
             </button>
             <button id="openInspectorBtn" class="topbar-icon mobile-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
               <span class="status-dot" aria-hidden="true"></span>
-              <span class="approval-badge" hidden>0</span>
             </button>
           </div>
         </header>
@@ -58,22 +56,14 @@
         </form>
       </main>
 
-      <aside id="inspectorDrawer" class="inspector drawer-panel" aria-label="Runtime and approvals" aria-hidden="true">
+      <aside id="inspectorDrawer" class="inspector drawer-panel" aria-label="Runtime information" aria-hidden="true">
         <div class="inspector-header mobile-only">
           <div>
-            <h2>Activity</h2>
-            <p>Approvals, events, and runtime</p>
+            <h2>Runtime</h2>
+            <p>Runtime information</p>
           </div>
           <button id="closeInspectorBtn" class="icon-btn" title="Close activity" aria-label="Close activity">×</button>
         </div>
-        <section class="panel approval-panel">
-          <h2>Approvals</h2>
-          <div id="approvals" class="empty">No pending approvals</div>
-        </section>
-        <section class="panel events-panel">
-          <h2>Turn Events</h2>
-          <div id="events" class="event-list"></div>
-        </section>
         <section class="panel">
           <h2>Runtime</h2>
           <div id="runtimeInfo" class="runtime-info"></div>

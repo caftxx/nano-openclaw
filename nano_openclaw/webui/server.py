@@ -461,7 +461,12 @@ def _event_to_payload(event: Any, turn_id: str, session_id: str) -> dict[str, An
 
 
 async def _ws_send(websocket: WebSocket, payload: dict[str, Any]) -> None:
-    await websocket.send_text(json.dumps(_jsonable(payload), ensure_ascii=False))
+    try:
+        await websocket.send_text(json.dumps(_jsonable(payload), ensure_ascii=False))
+    except RuntimeError as e:
+        if "websocket.close" in str(e) or "already completed" in str(e):
+            return
+        raise
 
 
 def _jsonable(value: Any) -> Any:

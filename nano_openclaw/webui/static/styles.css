@@ -331,26 +331,6 @@ textarea::placeholder {
   border-radius: 999px;
 }
 
-.status-button.has-approvals .status-dot {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(16, 163, 127, .14);
-}
-
-.approval-badge {
-  position: absolute;
-  top: 0;
-  right: 0;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--danger);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 17px;
-}
-
 .messages {
   width: 100%;
   min-height: 0;
@@ -641,6 +621,151 @@ textarea:focus {
   font-style: italic;
 }
 
+/* ── Turn event 行 ─────────────────────────────────── */
+.message.turn-event {
+  width: min(820px, 100%);
+  margin: 0 auto 4px;
+}
+
+.turn-event-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  color: var(--subtle);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+  transition: background .12s ease;
+}
+
+.turn-event-summary::-webkit-details-marker { display: none; }
+
+.turn-event-summary:hover { background: var(--surface-raised); }
+
+.turn-event-icon {
+  flex: 0 0 18px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.turn-event-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.turn-event-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-event-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: .55;
+}
+
+.turn-event-detail {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px 12px 10px;
+  overflow-x: auto;
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 8px 8px;
+  background: #171717;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+/* ── Approval card ──────────────────────────────────── */
+.message.approval-card {
+  width: min(820px, 100%);
+  margin: 0 auto 12px;
+}
+
+.approval-card-inner {
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklch, var(--accent) 48%, #333);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--accent) 6%, #1e1e1e);
+}
+
+.approval-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.approval-card-icon {
+  color: #f0c040;
+  font-size: 16px;
+}
+
+.approval-card-name {
+  flex: 1;
+  color: #7ee3c3;
+  font-size: 14px;
+}
+
+.approval-card-status {
+  color: var(--subtle);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.approval-card-reason {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.approval-card-args {
+  max-height: 200px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #171717;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.approval-actions button {
+  flex: 1;
+  background: #303030;
+}
+
+.approval-actions button:first-child {
+  background: var(--accent);
+  color: #fff;
+}
+
+.approval-actions button:last-child { color: #ffb4b4; }
+
+.approval-card.is-decided {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .5s ease;
+}
+
 .inspector {
   position: fixed;
   top: 0;
@@ -691,24 +816,10 @@ textarea:focus {
   border-bottom: 1px solid var(--line-soft);
 }
 
-.events-panel {
-  flex: 1 1 0;
-  min-height: 140px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-}
-
 .inspector .panel:last-child {
-  flex: 0 1 auto;
-  max-height: 42%;
+  flex: 1 1 auto;
+  max-height: none;
   overflow: auto;
-}
-
-.event-list {
-  min-height: 0;
-  overflow: auto;
-  padding-right: 2px;
 }
 
 .panel h2 {
@@ -720,8 +831,6 @@ textarea:focus {
   text-transform: uppercase;
 }
 
-.event,
-.approval,
 .runtime-info div {
   margin-bottom: 8px;
   padding: 10px;
@@ -730,76 +839,6 @@ textarea:focus {
   border-radius: 8px;
   background: #222;
   font-size: 12px;
-}
-
-.event strong,
-.approval strong {
-  color: #7ee3c3;
-}
-
-.event summary {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  column-gap: 8px;
-  row-gap: 3px;
-  align-items: baseline;
-  cursor: pointer;
-  list-style: none;
-}
-
-.event summary::-webkit-details-marker { display: none; }
-.event summary::before { content: "+"; color: var(--subtle); font-weight: 700; }
-.event[open] summary::before { content: "-"; }
-
-.event-time {
-  grid-column: 1 / -1;
-  color: var(--subtle);
-  font-size: 11px;
-}
-
-.event-body {
-  grid-column: 2;
-  color: var(--ink);
-  line-height: 1.35;
-}
-
-.event-detail,
-.approval pre {
-  max-height: 260px;
-  margin: 9px 0 0;
-  padding: 8px;
-  overflow: auto;
-  border-top: 1px solid #333;
-  color: var(--muted);
-  font-size: 11px;
-  white-space: pre-wrap;
-}
-
-.approval {
-  border-color: color-mix(in oklch, var(--accent) 48%, #333);
-}
-
-.approval-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.approval-actions button {
-  flex: 1;
-  background: #303030;
-}
-
-.approval-actions button:first-child {
-  background: var(--accent);
-  color: #fff;
-}
-
-.approval-actions button:last-child { color: #ffb4b4; }
-
-.empty {
-  color: var(--subtle);
-  font-size: 13px;
 }
 
 .drawer-backdrop {
@@ -1046,13 +1085,6 @@ textarea:focus {
     padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
 
-  .events-panel {
-    min-height: 180px;
-  }
-
-  .inspector .panel:last-child {
-    max-height: 32%;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
