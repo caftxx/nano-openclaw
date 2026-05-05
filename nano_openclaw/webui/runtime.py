@@ -97,6 +97,8 @@ async def build_agent_runtime(
 
     workspace_dir = resolve_agent_workspace_dir(config, agent_id)
     registry.set_workspace_dir(workspace_dir)
+    registry.set_state_dir(state_dir)
+    registry.set_allow_global_pip(config.skills.install.allowGlobalPip)
     hook_registry = load_plugins(config.plugins, registry, config) if not no_tools else HookRegistry()
 
     image_model_ref = config.resolve_image_model(agent_id)

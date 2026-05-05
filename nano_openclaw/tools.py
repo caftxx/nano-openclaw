@@ -12,6 +12,8 @@ OpenClaw's ``isError: true`` convention.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +48,8 @@ class ToolRegistry:
     approval_manager: Optional[ApprovalManager] = field(default=None)
     console: Optional[Console] = field(default=None)
     _workspace_dir: str | None = field(default=None)
+    _state_dir: str | None = field(default=None)
+    _allow_global_pip: bool = field(default=False)
     _spawn_tool_context: Optional[Any] = field(default=None)  # SpawnToolContext
     _hook_registry: Optional["HookRegistry"] = field(default=None)
     approval_live_stopper: Optional[Callable[[], None]] = field(default=None)
@@ -65,6 +69,12 @@ class ToolRegistry:
 
     def set_workspace_dir(self, workspace_dir: str | Path) -> None:
         self._workspace_dir = str(workspace_dir)
+
+    def set_state_dir(self, state_dir: str | Path) -> None:
+        self._state_dir = str(state_dir)
+
+    def set_allow_global_pip(self, allow: bool) -> None:
+        self._allow_global_pip = bool(allow)
 
     def set_spawn_tool_context(self, context: Any) -> None:
         self._spawn_tool_context = context
@@ -167,12 +177,25 @@ class ToolRegistry:
         # Execute tool — async-native tools are awaited directly; sync tools run
         # in a thread pool to avoid blocking the event loop.
         try:
-            if name == "Skill":
+            if name == "skill":
                 raw = tool.run(args, eligible_skills=self._eligible_skills)
             elif name == "session_status":
                 raw = tool.run(args, **self._session_status_context)
-            elif name in ("read_file", "write_file", "list_dir", "bash"):
+            elif name in ("read_file", "write_file", "list_dir"):
                 raw = tool.run(args, workspace_dir=self._workspace_dir)
+            elif name == "bash":
+                raw = tool.run(
+                    args,
+                    workspace_dir=self._workspace_dir,
+                    state_dir=self._state_dir,
+                    allow_global_pip=self._allow_global_pip,
+                )
+            elif name == "skill_install":
+                raw = tool.run(
+                    args,
+                    workspace_dir=self._workspace_dir,
+                    state_dir=self._state_dir,
+                )
             elif name in ("memory_get", "memory_search"):
                 raw = tool.run(args, workspace_dir=self._workspace_dir)
             elif name in ("sessions_spawn", "subagents"):
@@ -305,16 +328,47 @@ def _list_dir(args: dict[str, Any], workspace_dir: str | None = None) -> str:
     return "\n".join(entries) if entries else "(empty)"
 
 
-async def _bash(args: dict[str, Any], workspace_dir: str | None = None) -> str:
+_PIP_INSTALL_PATTERNS = (
+    re.compile(r"(?i)(^|[;&|]\s*)pip(?:\d+(?:\.\d+)?)?\s+install(?:\s|$)"),
+    re.compile(r"(?i)(^|[;&|]\s*)(?:python|python\d+(?:\.\d+)?|py)\s+-m\s+pip\s+install(?:\s|$)"),
+)
+
+
+def _is_python_package_install_command(command: str) -> bool:
+    return any(pattern.search(command) for pattern in _PIP_INSTALL_PATTERNS)
+
+
+def _pip_isolation_notice(state_dir: str | None) -> str:
+    root = Path(state_dir) / "tools" / "python" / "skills" if state_dir else "{stateDir}/tools/python/skills"
+    return (
+        "\n[nano-openclaw] Bare pip installs are protected with PIP_REQUIRE_VIRTUALENV=true "
+        "so skill dependencies do not install into the global Python environment. "
+        "Declare the dependency in metadata.openclaw.install with kind: uv and run the "
+        f"skill_install tool; isolated environments live under {root}.\n"
+    )
+
+
+async def _bash(
+    args: dict[str, Any],
+    workspace_dir: str | None = None,
+    state_dir: str | None = None,
+    allow_global_pip: bool = False,
+) -> str:
     command = args["command"]
     timeout = int(args.get("timeout") or 30)
     workdir = args.get("workdir")
     cwd = workdir if workdir else (workspace_dir if workspace_dir else None)
+    env = None
+    pip_protected = _is_python_package_install_command(command) and not allow_global_pip
+    if pip_protected:
+        env = dict(os.environ)
+        env["PIP_REQUIRE_VIRTUALENV"] = "true"
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -324,6 +378,8 @@ async def _bash(args: dict[str, Any], workspace_dir: str | None = None) -> str:
         return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
     stdout = stdout_b.decode(errors="replace")
     stderr = stderr_b.decode(errors="replace")
+    if pip_protected:
+        stderr += _pip_isolation_notice(state_dir)
     return (
         f"exit={proc.returncode}\n"
         f"--- stdout ---\n{stdout}"
@@ -407,6 +463,43 @@ def _invoke_skill(
     return skill_path.read_text(encoding="utf-8")
 
 
+async def _skill_install(
+    args: dict[str, Any],
+    workspace_dir: str | None = None,
+    state_dir: str | None = None,
+) -> str:
+    skill_name = str(args.get("skill") or "").strip()
+    install_id = str(args.get("installId") or args.get("install_id") or "").strip()
+    timeout = int(args.get("timeout") or 300)
+    if not skill_name:
+        raise ValueError("skill name required")
+    if not install_id:
+        raise ValueError("installId required")
+    if not workspace_dir:
+        raise ValueError("workspace_dir not configured")
+    if not state_dir:
+        from nano_openclaw.config import resolve_state_dir
+        state_dir = str(resolve_state_dir())
+
+    from nano_openclaw.skills.install import install_skill
+
+    result = await install_skill(
+        workspace_dir=workspace_dir,
+        state_dir=state_dir,
+        skill_name=skill_name,
+        install_id=install_id,
+        timeout=timeout,
+    )
+    parts = [f"ok={str(result.ok).lower()}", f"message={result.message}"]
+    if result.code is not None:
+        parts.append(f"code={result.code}")
+    if result.stdout:
+        parts.append(f"--- stdout ---\n{result.stdout}")
+    if result.stderr:
+        parts.append(f"--- stderr ---\n{result.stderr}")
+    return "\n".join(parts)
+
+
 def web_search(*args: Any, **kwargs: Any) -> dict[str, Any]:
     from nano_openclaw.web_search import web_search as _web_search
 
@@ -485,8 +578,8 @@ def _build_core_tools() -> list[Tool]:
             },
             run=_session_status,
         ),
-        Tool(
-            name="Skill",
+Tool(
+            name="skill",
             description="Invoke a skill by name to load its specialized instructions. Use when the task matches a skill's description from the available_skills list in the system prompt.",
             input_schema={
                 "type": "object",
@@ -497,6 +590,24 @@ def _build_core_tools() -> list[Tool]:
                 "required": ["skill"],
             },
             run=_invoke_skill,
+        ),
+        Tool(
+            name="skill_install",
+            description="Install a skill dependency into an OpenClaw-managed isolated environment. Only Python/uv skill installers are supported in nano-openclaw.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Skill name."},
+                    "installId": {"type": "string", "description": "Installer id from metadata.openclaw.install."},
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds. Default 300.",
+                        "default": 300,
+                    },
+                },
+                "required": ["skill", "installId"],
+            },
+            run=_skill_install,
         ),
     ]
 

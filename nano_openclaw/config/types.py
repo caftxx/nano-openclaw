@@ -320,6 +320,22 @@ class SkillsLoadConfig(BaseModel):
     )
 
 
+class SkillsInstallConfig(BaseModel):
+    """Skill dependency installation policy."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    pythonIsolation: Literal["venv"] = Field(
+        default="venv",
+        alias="pythonIsolation",
+        description="Install Python skill dependencies into isolated virtualenvs"
+    )
+    allowGlobalPip: bool = Field(
+        default=False,
+        alias="allowGlobalPip",
+        description="Allow bare pip install commands to target the global interpreter"
+    )
+
+
 class SkillsConfig(BaseModel):
     """Skills configuration (mirrors openclaw skills.*)."""
     model_config = ConfigDict(populate_by_name=True)
@@ -331,6 +347,10 @@ class SkillsConfig(BaseModel):
     load: SkillsLoadConfig = Field(
         default_factory=SkillsLoadConfig,
         description="Skills loading configuration"
+    )
+    install: SkillsInstallConfig = Field(
+        default_factory=SkillsInstallConfig,
+        description="Skills dependency installation policy"
     )
     allowBundled: Optional[List[str]] = Field(
         default=None,

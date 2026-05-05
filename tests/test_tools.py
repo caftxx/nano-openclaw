@@ -88,7 +88,7 @@ def test_schemas_have_required_anthropic_fields(registry):
     schemas = registry.schemas()
     assert {s["name"] for s in schemas} == {
         "read_file", "write_file", "list_dir", "bash",
-        "session_status", "Skill", "memory_get", "memory_search",
+        "session_status", "skill", "skill_install", "memory_get", "memory_search",
         "web_search", "web_fetch", "sessions_spawn", "subagents"
     }
     for s in schemas:
@@ -194,16 +194,45 @@ def test_bash_workdir_overrides_workspace(tmp_path, registry):
     assert str(override_dir) in text or override_dir.name in text
 
 
+def test_bash_protects_bare_pip_install(registry, tmp_path):
+    registry.set_state_dir(tmp_path / "state")
+
+    out = registry.dispatch("id-pip", "bash", {"command": "pip install --help", "timeout": 20})
+
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert "PIP_REQUIRE_VIRTUALENV=true" in text
+    assert "skill_install tool" in text
+
+
+def test_bash_protects_python_m_pip_install(registry, tmp_path):
+    registry.set_state_dir(tmp_path / "state")
+
+    out = registry.dispatch("id-pip", "bash", {"command": "python -m pip install --help", "timeout": 20})
+
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert "PIP_REQUIRE_VIRTUALENV=true" in text
+    assert "metadata.openclaw.install" in text
+
+
+def test_bash_non_install_python_command_not_protected(registry):
+    out = registry.dispatch("id-py", "bash", {"command": "python --version", "timeout": 20})
+
+    assert out.get("is_error") is None
+    assert "PIP_REQUIRE_VIRTUALENV=true" not in out["content"][0]["text"]
+
+
 def test_skill_tool_requires_skill_name(registry):
     """Skill tool returns error when skill name is missing."""
-    out = registry.dispatch("id-s", "Skill", {})
+    out = registry.dispatch("id-s", "skill", {})
     assert out["is_error"] is True
     assert "skill name required" in out["content"][0]["text"]
 
 
 def test_skill_tool_returns_error_for_unknown_skill(registry):
     """Skill tool returns error for unknown skill."""
-    out = registry.dispatch("id-s", "Skill", {"skill": "unknown-skill"})
+    out = registry.dispatch("id-s", "skill", {"skill": "unknown-skill"})
     assert out["is_error"] is True
     assert "not found" in out["content"][0]["text"]
 
@@ -229,7 +258,7 @@ def test_skill_tool_returns_content_for_known_skill(registry, tmp_path):
 
     registry.set_eligible_skills({"test-skill": skill})
 
-    out = registry.dispatch("id-s", "Skill", {"skill": "test-skill"})
+    out = registry.dispatch("id-s", "skill", {"skill": "test-skill"})
     assert out.get("is_error") is None
     text = out["content"][0]["text"]
     assert "Test Skill" in text
@@ -262,7 +291,7 @@ def test_skill_tool_invokable_when_not_user_invocable(registry, tmp_path):
     # Simulate what the loop does: model_registry built with user_invocable_only=False
     registry.set_eligible_skills({"mockup": skill})
 
-    out = registry.dispatch("id-m", "Skill", {"skill": "mockup"})
+    out = registry.dispatch("id-m", "skill", {"skill": "mockup"})
     assert out.get("is_error") is None
     assert "Mockup Skill" in out["content"][0]["text"]
 
@@ -288,11 +317,38 @@ def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
 
     registry.set_eligible_skills({"load-skill": skill})
 
-    out = registry.dispatch("id-s", "Skill", {"skill": "load-skill"})
+    out = registry.dispatch("id-s", "skill", {"skill": "load-skill"})
     assert out.get("is_error") is None
     text = out["content"][0]["text"]
     assert "Load Skill" in text
     assert "loaded from file" in text
+
+
+def test_skill_install_tool_returns_install_result(registry, tmp_path, monkeypatch):
+    from nano_openclaw.skills.install import SkillInstallResult
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state = tmp_path / "state"
+    registry.set_workspace_dir(workspace)
+    registry.set_state_dir(state)
+
+    async def fake_install_skill(**kwargs):
+        assert kwargs["workspace_dir"] == str(workspace)
+        assert kwargs["state_dir"] == str(state)
+        assert kwargs["skill_name"] == "demo"
+        assert kwargs["install_id"] == "deps"
+        return SkillInstallResult(ok=True, message="Installed", stdout="ok", stderr="", code=0)
+
+    monkeypatch.setattr("nano_openclaw.skills.install.install_skill", fake_install_skill)
+
+    out = registry.dispatch("id-i", "skill_install", {"skill": "demo", "installId": "deps"})
+
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert "ok=true" in text
+    assert "message=Installed" in text
+    assert "--- stdout ---\nok" in text
 
 
 def test_dispatch_passes_cancellation_token_to_approval_ui(monkeypatch):

@@ -435,6 +435,18 @@ Skills 配置管理技能加载和过滤行为，对齐 openclaw 的 `skills.*` 
 | `maxSkillsPromptChars` | number | `18000` | 技能部分最大字符数 |
 | `maxSkillFileBytes` | number | `256000` | 单个 SKILL.md 文件最大字节 |
 
+#### skills.install — 技能依赖安装策略
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `pythonIsolation` | `"venv"` | `"venv"` | Python skill 依赖安装到隔离 virtualenv |
+| `allowGlobalPip` | boolean | `false` | 是否允许裸 `pip install` 写入全局 Python 环境 |
+
+默认情况下，skill 的 Python 依赖通过 `skill_install` 工具安装到：
+`{stateDir}/tools/python/skills/<skill-name>/venv`。
+
+如果需要清理某个 skill 的 Python 依赖，删除对应的 venv 目录即可。普通 `bash` 中的 `pip install` / `python -m pip install` 会被设置 `PIP_REQUIRE_VIRTUALENV=true`，避免依赖误装到全局环境。
+
 #### skills.allowBundled — 内置技能白名单
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -652,6 +664,10 @@ Dream Diary 写入：`workspace/DREAMS.md`
     load: {
       extraDirs: ["~/.skills", "./custom-skills"],
       maxSkillsInPrompt: 100,
+    },
+    install: {
+      pythonIsolation: "venv",
+      allowGlobalPip: false,
     },
     // 限制内置技能
     allowBundled: ["frontend-design", "brainstorming"],

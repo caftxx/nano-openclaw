@@ -587,7 +587,7 @@ async def agent_loop(
         for block in tool_use_blocks:
             tool_name = block["name"]
             tool_args = block.get("input") or {}
-            if tool_name == "Skill" and "skill" in tool_args:
+            if tool_name == "skill" and "skill" in tool_args:
                 skill_name = tool_args["skill"]
                 if skill_registry and skill_name in skill_registry:
                     skill = skill_registry[skill_name]

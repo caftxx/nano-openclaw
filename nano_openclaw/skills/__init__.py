@@ -40,6 +40,12 @@ from nano_openclaw.skills.loader import (
     load_skills_from_dir,
     parse_frontmatter,
 )
+from nano_openclaw.skills.install import (
+    SkillInstallResult,
+    SkillPythonEnv,
+    install_skill,
+    resolve_skill_python_env,
+)
 from nano_openclaw.skills.slash_commands import (
     SlashCommand,
     build_skill_registry_from_entries,
@@ -101,4 +107,9 @@ __all__ = [
     "get_or_load_skills",
     "invalidate_skills_cache",
     "clear_skills_cache",
+    # Install
+    "SkillInstallResult",
+    "SkillPythonEnv",
+    "install_skill",
+    "resolve_skill_python_env",
 ]

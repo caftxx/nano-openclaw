@@ -149,6 +149,13 @@ def test_resolve_skills_config_with_extra_dirs():
     assert result["extra_dirs"] == ["~/.my-skills", "/path/to/skills"]
 
 
+def test_skills_install_defaults():
+    config = NanoOpenClawConfig()
+
+    assert config.skills.install.pythonIsolation == "venv"
+    assert config.skills.install.allowGlobalPip is False
+
+
 def test_skill_filter_priority_chain():
     """Full priority chain test: agent -> defaults -> None."""
     # 1. Unrestricted (no defaults, no agent)

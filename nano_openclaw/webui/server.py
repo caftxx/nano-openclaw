@@ -574,6 +574,8 @@ def _clone_registry(registry: ToolRegistry) -> ToolRegistry:
         approval_manager=registry.approval_manager,
         console=registry.console,
         _workspace_dir=registry._workspace_dir,
+        _state_dir=registry._state_dir,
+        _allow_global_pip=registry._allow_global_pip,
     )
     clone.set_session_status_context(**registry._session_status_context)
     clone.set_eligible_skills(dict(registry._eligible_skills))

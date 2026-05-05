@@ -376,6 +376,9 @@ class SubagentRunner:
         registry._eligible_skills = dict(parent_registry._eligible_skills)
         if parent_registry._workspace_dir:
             registry.set_workspace_dir(parent_registry._workspace_dir)
+        if parent_registry._state_dir:
+            registry.set_state_dir(parent_registry._state_dir)
+        registry.set_allow_global_pip(parent_registry._allow_global_pip)
 
         return registry
     
