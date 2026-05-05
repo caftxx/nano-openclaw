@@ -58,12 +58,12 @@ uv run python -m nano_openclaw --agent coder
 配置文件采用 JSON5 格式（支持注释和尾逗号），路径按优先级查找：
 
 1. `--config <path>` — 命令行显式指定
-2. `$OPENCLAW_CONFIG_PATH` — 环境变量
+2. `$NANO_OPENCLAW_CONFIG_PATH` — 环境变量
 3. `{stateDir}/nano-openclaw.json5` — 状态目录下
 4. `{cwd}/workspace/nano-openclaw.json5` — 项目 workspace 目录
-5. `~/.openclaw/nano-openclaw.json5` — 用户全局配置
+5. `~/.nano-openclaw/nano-openclaw.json5` — 用户全局配置
 
-状态目录 (`stateDir`) 解析：`$OPENCLAW_STATE_DIR` > `{cwd}/.openclaw` > `~/.openclaw`
+状态目录 (`stateDir`) 解析：`$NANO_OPENCLAW_STATE_DIR` > `{cwd}/.nano-openclaw` > `~/.nano-openclaw`
 
 ### 快速开始
 

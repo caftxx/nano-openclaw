@@ -7,8 +7,8 @@
   // 2. 修改下面的配置项（特别是 API key）
   // 3. 将配置文件放在以下任一位置：
   //    - 命令行指定：uv run python -m nano_openclaw --config nano-openclaw.json5
-  //    - 环境变量：export OPENCLAW_CONFIG_PATH=./nano-openclaw.json5
-  //    - 状态目录下：~/.openclaw/nano-openclaw.json5
+  //    - 环境变量：export NANO_OPENCLAW_CONFIG_PATH=./nano-openclaw.json5
+  //    - 状态目录下：~/.nano-openclaw/nano-openclaw.json5
   //    - workspace 目录下：{cwd}/workspace/nano-openclaw.json5
   //
   // 完整字段说明见：docs/CONFIG_EXAMPLE.md

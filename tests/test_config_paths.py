@@ -34,20 +34,20 @@ from nano_openclaw.config.types import (
 
 class TestResolveHome:
     def test_default_home(self):
-        """Without OPENCLAW_HOME, returns system home."""
+        """Without NANO_OPENCLAW_HOME, returns system home."""
         env = {}
         home = resolve_home(env)
         assert home == Path.home()
 
     def test_openclaw_home_override(self):
-        """OPENCLAW_HOME overrides system home."""
-        env = {"OPENCLAW_HOME": "/custom/home"}
+        """NANO_OPENCLAW_HOME overrides system home."""
+        env = {"NANO_OPENCLAW_HOME": "/custom/home"}
         home = resolve_home(env)
         assert home == Path("/custom/home").resolve()
 
     def test_openclaw_home_with_tilde(self):
-        """OPENCLAW_HOME supports ~ expansion."""
-        env = {"OPENCLAW_HOME": "~/custom"}
+        """NANO_OPENCLAW_HOME supports ~ expansion."""
+        env = {"NANO_OPENCLAW_HOME": "~/custom"}
         home = resolve_home(env)
         assert "~" not in str(home)
         assert home.is_absolute()
@@ -59,13 +59,13 @@ class TestResolveHome:
 
 class TestResolveStateDir:
     def test_openclaw_state_dir_override(self):
-        """OPENCLAW_STATE_DIR overrides all other paths."""
-        env = {"OPENCLAW_STATE_DIR": "/custom/state"}
+        """NANO_OPENCLAW_STATE_DIR overrides all other paths."""
+        env = {"NANO_OPENCLAW_STATE_DIR": "/custom/state"}
         state_dir = resolve_state_dir(env)
         assert state_dir == Path("/custom/state").resolve()
 
     def test_project_level_state_dir(self, tmp_path):
-        """Uses {cwd}/.openclaw if it exists."""
+        """Uses {cwd}/.nano-openclaw if it exists."""
         env = {}
         project_dir = tmp_path / "project"
         project_dir.mkdir()
@@ -77,7 +77,7 @@ class TestResolveStateDir:
             assert resolved == state_dir.resolve()
 
     def test_global_state_dir_fallback(self):
-        """Falls back to ~/.openclaw if no project-level dir."""
+        """Falls back to ~/.nano-openclaw if no project-level dir."""
         env = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
@@ -85,8 +85,8 @@ class TestResolveStateDir:
                 assert resolved == Path.home() / STATE_DIRNAME
 
     def test_state_dir_with_openclaw_home(self):
-        """Uses OPENCLAW_HOME/.openclaw when OPENCLAW_HOME is set."""
-        env = {"OPENCLAW_HOME": "/custom/home"}
+        """Uses NANO_OPENCLAW_HOME/.nano-openclaw when NANO_OPENCLAW_HOME is set."""
+        env = {"NANO_OPENCLAW_HOME": "/custom/home"}
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
                 resolved = resolve_state_dir(env)
@@ -107,22 +107,22 @@ class TestResolveConfigPath:
         assert resolved == config_file.resolve()
 
     def test_openclaw_config_path_env(self, tmp_path):
-        """OPENCLAW_CONFIG_PATH environment variable is second priority."""
+        """NANO_OPENCLAW_CONFIG_PATH environment variable is second priority."""
         config_file = tmp_path / "env-config.json5"
         config_file.write_text("{}")
 
-        env = {"OPENCLAW_CONFIG_PATH": str(config_file)}
+        env = {"NANO_OPENCLAW_CONFIG_PATH": str(config_file)}
         resolved = resolve_config_path(env=env)
         assert resolved == config_file.resolve()
 
     def test_state_dir_config(self, tmp_path):
         """Falls back to {stateDir}/nano-openclaw.json5."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         state_dir.mkdir()
         config_file = state_dir / CONFIG_FILENAME
         config_file.write_text("{}")
 
-        env = {"OPENCLAW_STATE_DIR": str(state_dir)}
+        env = {"NANO_OPENCLAW_STATE_DIR": str(state_dir)}
         resolved = resolve_config_path(env=env)
         assert resolved == config_file.resolve()
 
@@ -138,7 +138,7 @@ class TestResolveConfigPath:
             assert resolved == config_file.resolve()
 
     def test_global_config_fallback(self):
-        """Ultimate fallback to ~/.openclaw/nano-openclaw.json5."""
+        """Ultimate fallback to ~/.nano-openclaw/nano-openclaw.json5."""
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
                 resolved = resolve_config_path(env={})
@@ -147,7 +147,7 @@ class TestResolveConfigPath:
 
     def test_priority_state_over_workspace(self, tmp_path):
         """State dir config takes priority over workspace config."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         state_dir.mkdir()
         state_config = state_dir / CONFIG_FILENAME
         state_config.write_text("{}")
@@ -157,7 +157,7 @@ class TestResolveConfigPath:
         workspace_config = workspace_dir / CONFIG_FILENAME
         workspace_config.write_text("{}")
 
-        env = {"OPENCLAW_STATE_DIR": str(state_dir)}
+        env = {"NANO_OPENCLAW_STATE_DIR": str(state_dir)}
         resolved = resolve_config_path(env=env)
         assert resolved == state_config.resolve()
 
@@ -168,32 +168,32 @@ class TestResolveConfigPath:
 
 class TestResolveDefaultAgentWorkspaceDir:
     def test_default_workspace(self):
-        """Returns ~/.openclaw/workspace by default."""
+        """Returns ~/.nano-openclaw/workspace by default."""
         env = {}
         ws = resolve_default_agent_workspace_dir(env)
         assert ws == Path.home() / STATE_DIRNAME / "workspace"
 
     def test_openclaw_profile_dev(self):
-        """OPENCLAW_PROFILE=dev returns ~/.openclaw/workspace-dev."""
-        env = {"OPENCLAW_PROFILE": "dev"}
+        """NANO_OPENCLAW_PROFILE=dev returns ~/.nano-openclaw/workspace-dev."""
+        env = {"NANO_OPENCLAW_PROFILE": "dev"}
         ws = resolve_default_agent_workspace_dir(env)
         assert ws == Path.home() / STATE_DIRNAME / "workspace-dev"
 
     def test_openclaw_profile_staging(self):
-        """OPENCLAW_PROFILE=staging returns ~/.openclaw/workspace-staging."""
-        env = {"OPENCLAW_PROFILE": "staging"}
+        """NANO_OPENCLAW_PROFILE=staging returns ~/.nano-openclaw/workspace-staging."""
+        env = {"NANO_OPENCLAW_PROFILE": "staging"}
         ws = resolve_default_agent_workspace_dir(env)
         assert ws == Path.home() / STATE_DIRNAME / "workspace-staging"
 
     def test_openclaw_profile_default(self):
-        """OPENCLAW_PROFILE=default returns ~/.openclaw/workspace."""
-        env = {"OPENCLAW_PROFILE": "default"}
+        """NANO_OPENCLAW_PROFILE=default returns ~/.nano-openclaw/workspace."""
+        env = {"NANO_OPENCLAW_PROFILE": "default"}
         ws = resolve_default_agent_workspace_dir(env)
         assert ws == Path.home() / STATE_DIRNAME / "workspace"
 
     def test_openclaw_home_affects_workspace(self):
-        """OPENCLAW_HOME affects workspace base path."""
-        env = {"OPENCLAW_HOME": "/custom/home", "OPENCLAW_PROFILE": "prod"}
+        """NANO_OPENCLAW_HOME affects workspace base path."""
+        env = {"NANO_OPENCLAW_HOME": "/custom/home", "NANO_OPENCLAW_PROFILE": "prod"}
         ws = resolve_default_agent_workspace_dir(env)
         assert ws == (Path("/custom/home") / STATE_DIRNAME / "workspace-prod").resolve()
 
@@ -245,15 +245,15 @@ class TestResolveAgentWorkspaceDir:
     def test_fallback_to_state_dir(self, tmp_path):
         """Falls back to {stateDir}/workspace-{agentId} when no config."""
         config = NanoOpenClawConfig()
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         state_dir.mkdir()
 
-        env = {"OPENCLAW_STATE_DIR": str(state_dir)}
+        env = {"NANO_OPENCLAW_STATE_DIR": str(state_dir)}
         ws = resolve_agent_workspace_dir(config, "coder", env)
         assert ws == state_dir / "workspace-coder"
 
     def test_ultimate_fallback_for_default_agent(self):
-        """Ultimate fallback to ~/.openclaw/workspace."""
+        """Ultimate fallback to ~/.nano-openclaw/workspace."""
         config = NanoOpenClawConfig()
         env = {}
 

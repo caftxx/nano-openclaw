@@ -7,10 +7,10 @@ Mirrors openclaw's src/config/io.ts:
 - resolve_api_key: resolve API key with env var priority
 
 Path resolution aligns with openclaw:
-1. OPENCLAW_CONFIG_PATH environment variable
+1. NANO_OPENCLAW_CONFIG_PATH environment variable
 2. {stateDir}/nano-openclaw.json5
 3. {cwd}/workspace/nano-openclaw.json5
-4. ~/.openclaw/nano-openclaw.json5
+4. ~/.nano-openclaw/nano-openclaw.json5
 """
 
 from __future__ import annotations

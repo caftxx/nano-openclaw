@@ -2,21 +2,21 @@
 
 Mirrors openclaw's src/config/paths.ts and src/agents/agent-scope-config.ts:
 - resolve_home: resolve user home directory
-- resolve_state_dir: resolve state directory (.openclaw)
+- resolve_state_dir: resolve state directory (.nano-openclaw)
 - resolve_config_path: resolve config file path
 - resolve_agent_workspace_dir: resolve agent workspace directory
 
 Path resolution priority:
-1. OPENCLAW_HOME / OPENCLAW_STATE_DIR / OPENCLAW_CONFIG_PATH environment variables
-2. Project-level .openclaw/ or workspace/ directory
-3. Global ~/.openclaw/ directory
+1. NANO_OPENCLAW_HOME / NANO_OPENCLAW_STATE_DIR / NANO_OPENCLAW_CONFIG_PATH environment variables
+2. Project-level .nano-openclaw/ or workspace/ directory
+3. Global ~/.nano-openclaw/ directory
 
 Workspace resolution priority (aligns with openclaw agent-scope-config.ts:154-177):
 1. agents.list[<agentId>].workspace (per-agent explicit override)
 2. agents.defaults.workspace (default agent uses directly)
 3. agents.defaults.workspace/<agentId> (non-default agents get subdirectory)
 4. {stateDir}/workspace-<agentId> (fallback to state dir)
-5. ~/.openclaw/workspace (ultimate default)
+5. ~/.nano-openclaw/workspace (ultimate default)
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from .types import NanoOpenClawConfig
 
-STATE_DIRNAME = ".openclaw"
+STATE_DIRNAME = ".nano-openclaw"
 CONFIG_FILENAME = "nano-openclaw.json5"
 DEFAULT_AGENT_ID = "default"
 
@@ -36,43 +36,43 @@ DEFAULT_AGENT_ID = "default"
 def resolve_home(env: Optional[dict[str, str]] = None) -> Path:
     """
     Resolve user home directory.
-    
+
     Priority:
-    1. OPENCLAW_HOME environment variable
+    1. NANO_OPENCLAW_HOME environment variable
     2. System home directory (Path.home())
     """
     if env is None:
         env = os.environ
-    
-    env_home = env.get("OPENCLAW_HOME")
+
+    env_home = env.get("NANO_OPENCLAW_HOME")
     if env_home:
         return Path(env_home).expanduser().resolve()
-    
+
     return Path.home()
 
 
 def resolve_state_dir(env: Optional[dict[str, str]] = None) -> Path:
     """
     Resolve state directory.
-    
+
     Priority:
-    1. OPENCLAW_STATE_DIR environment variable
-    2. {cwd}/.openclaw (project-level, if exists)
-    3. ~/.openclaw (global)
+    1. NANO_OPENCLAW_STATE_DIR environment variable
+    2. {cwd}/.nano-openclaw (project-level, if exists)
+    3. ~/.nano-openclaw (global)
     """
     if env is None:
         env = os.environ
-    
+
     # 1. Environment variable override
-    state_dir = env.get("OPENCLAW_STATE_DIR")
+    state_dir = env.get("NANO_OPENCLAW_STATE_DIR")
     if state_dir:
         return Path(state_dir).expanduser().resolve()
-    
+
     # 2. Project-level state directory
     cwd_state = Path(Path.cwd()) / STATE_DIRNAME
     if cwd_state.exists():
         return cwd_state.resolve()
-    
+
     # 3. Global state directory
     return resolve_home(env) / STATE_DIRNAME
 
@@ -83,40 +83,40 @@ def resolve_config_path(
 ) -> Path:
     """
     Resolve configuration file path.
-    
+
     Priority:
     1. --config explicit argument
-    2. OPENCLAW_CONFIG_PATH environment variable
+    2. NANO_OPENCLAW_CONFIG_PATH environment variable
     3. {stateDir}/nano-openclaw.json5
     4. {cwd}/workspace/nano-openclaw.json5
-    5. ~/.openclaw/nano-openclaw.json5
-    
+    5. ~/.nano-openclaw/nano-openclaw.json5
+
     Returns:
         Path to config file (may not exist yet)
     """
     if env is None:
         env = os.environ
-    
+
     # 1. Explicit path from --config
     if config_path:
         return Path(config_path).expanduser().resolve()
-    
+
     # 2. Environment variable
-    env_path = env.get("OPENCLAW_CONFIG_PATH")
+    env_path = env.get("NANO_OPENCLAW_CONFIG_PATH")
     if env_path:
         return Path(env_path).expanduser().resolve()
-    
+
     # 3. State directory
     state_dir = resolve_state_dir(env)
     state_config = state_dir / CONFIG_FILENAME
     if state_config.exists():
         return state_config
-    
+
     # 4. Project workspace directory
     workspace_config = Path.cwd() / "workspace" / CONFIG_FILENAME
     if workspace_config.exists():
         return workspace_config.resolve()
-    
+
     # 5. Global default location
     return resolve_home(env) / STATE_DIRNAME / CONFIG_FILENAME
 
@@ -124,18 +124,18 @@ def resolve_config_path(
 def resolve_default_agent_workspace_dir(env: Optional[dict[str, str]] = None) -> Path:
     """
     Resolve default agent workspace directory.
-    
+
     Mirrors openclaw's resolveDefaultAgentWorkspaceDir() in workspace-default.ts:
-    - OPENCLAW_PROFILE env var → ~/.openclaw/workspace-{profile}
-    - Otherwise → ~/.openclaw/workspace
+    - NANO_OPENCLAW_PROFILE env var → ~/.nano-openclaw/workspace-{profile}
+    - Otherwise → ~/.nano-openclaw/workspace
     """
     if env is None:
         env = os.environ
-    
-    profile = env.get("OPENCLAW_PROFILE", "").strip().lower()
+
+    profile = env.get("NANO_OPENCLAW_PROFILE", "").strip().lower()
     if profile and profile != "default":
         return resolve_home(env) / STATE_DIRNAME / f"workspace-{profile}"
-    
+
     return resolve_home(env) / STATE_DIRNAME / "workspace"
 
 
@@ -146,15 +146,15 @@ def resolve_agent_workspace_dir(
 ) -> Path:
     """
     Resolve agent workspace directory.
-    
+
     Mirrors openclaw's resolveAgentWorkspaceDir() in agent-scope-config.ts:154-177
-    
+
     Priority:
     1. agents.list[<agentId>].workspace (per-agent explicit override)
     2. agents.defaults.workspace (default agent uses directly)
     3. agents.defaults.workspace/<agentId> (non-default agents get subdirectory)
     4. {stateDir}/workspace-<agentId> (fallback to state dir)
-    5. ~/.openclaw/workspace (ultimate default)
+    5. ~/.nano-openclaw/workspace (ultimate default)
     
     Args:
         config: Parsed configuration
@@ -195,7 +195,7 @@ def resolve_agent_workspace_dir(
     state_dir = resolve_state_dir(env)
 
     if agent_id == DEFAULT_AGENT_ID:
-        # Default agent uses profile-aware workspace (OPENCLAW_PROFILE support),
+        # Default agent uses profile-aware workspace (NANO_OPENCLAW_PROFILE support),
         # mirroring openclaw's resolveDefaultAgentWorkspaceDir().
         return resolve_default_agent_workspace_dir(env)
 

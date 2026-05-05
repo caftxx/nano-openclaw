@@ -32,32 +32,32 @@ class TestConstants:
 class TestResolveAgentSessionsDir:
     def test_default_agent(self, tmp_path):
         """Default agent sessions dir is {stateDir}/agents/default/sessions."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         sessions_dir = resolve_agent_sessions_dir(state_dir)
         assert sessions_dir == state_dir / "agents" / "default" / "sessions"
 
     def test_explicit_agent_id(self, tmp_path):
         """Explicit agent ID creates agent-specific dir."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         sessions_dir = resolve_agent_sessions_dir(state_dir, "coder")
         assert sessions_dir == state_dir / "agents" / "coder" / "sessions"
 
     def test_custom_agent_id(self, tmp_path):
         """Custom agent IDs work correctly."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         for agent_id in ["analyst", "writer", "reviewer"]:
             sessions_dir = resolve_agent_sessions_dir(state_dir, agent_id)
             assert sessions_dir == state_dir / "agents" / agent_id / "sessions"
 
     def test_none_uses_default(self, tmp_path):
         """None agent_id defaults to 'default'."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         sessions_dir = resolve_agent_sessions_dir(state_dir, None)
         assert sessions_dir == state_dir / "agents" / "default" / "sessions"
 
     def test_empty_string_uses_default(self, tmp_path):
         """Empty string agent_id defaults to 'default'."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         sessions_dir = resolve_agent_sessions_dir(state_dir, "")
         # Empty string is falsy, should use default
         assert sessions_dir == state_dir / "agents" / "default" / "sessions"
@@ -137,7 +137,7 @@ class TestResolveSessionTranscriptPath:
 class TestSessionPathsIntegration:
     def test_complete_path_chain(self, tmp_path):
         """Full path resolution chain works correctly."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         agent_id = "coder"
         
         # Step 1: Resolve sessions directory
@@ -159,7 +159,7 @@ class TestSessionPathsIntegration:
 
     def test_multiple_agents_isolated(self, tmp_path):
         """Different agents have isolated session directories."""
-        state_dir = tmp_path / ".openclaw"
+        state_dir = tmp_path / ".nano-openclaw"
         agent_ids = ["default", "coder", "analyst"]
         
         sessions_dirs = {}

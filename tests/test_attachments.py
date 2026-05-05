@@ -72,12 +72,12 @@ def test_agent_loop_persists_non_image_attachment_and_injects_path(monkeypatch):
         ))
 
         assert any(isinstance(event, AttachmentAttached) for event in events)
-        saved = tmp_dir / ".openclaw" / "web-attachments" / "session-1" / "turn-1" / "demo.pdf"
+        saved = tmp_dir / ".nano-openclaw" / "web-attachments" / "session-1" / "turn-1" / "demo.pdf"
         assert saved.read_bytes() == b"%PDF-1.7"
         user_text = "\n".join(
             block["text"] for block in history[0].content if block.get("type") == "text"
         )
-        assert "path: .openclaw/web-attachments/session-1/turn-1/demo.pdf" in user_text
+        assert "path: .nano-openclaw/web-attachments/session-1/turn-1/demo.pdf" in user_text
         assert "If no suitable skill/tool is available" in user_text
         assert "summarize this" in user_text
     finally:

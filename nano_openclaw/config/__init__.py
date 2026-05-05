@@ -5,7 +5,7 @@ Mirrors openclaw's config system:
 - Environment variable substitution with ${VAR_NAME} syntax
 - Provider/model-id format for model references
 - Pydantic validation (similar to openclaw's Zod schema)
-- Path resolution aligns with openclaw (OPENCLAW_CONFIG_PATH, OPENCLAW_STATE_DIR, etc.)
+- Path resolution aligns with openclaw (NANO_OPENCLAW_CONFIG_PATH, NANO_OPENCLAW_STATE_DIR, etc.)
 """
 
 from .types import (

@@ -75,10 +75,10 @@ nano-openclaw 是 OpenClaw agent loop 的最小化 Python 复刻，用于教学�
 
 配置文件查找优先级：
 1. `--config <path>` 命令行
-2. `$OPENCLAW_CONFIG_PATH` 环境变量
+2. `$NANO_OPENCLAW_CONFIG_PATH` 环境变量
 3. `{stateDir}/nano-openclaw.json5`
 4. `{cwd}/workspace/nano-openclaw.json5`
-5. `~/.openclaw/nano-openclaw.json5`
+5. `~/.nano-openclaw/nano-openclaw.json5`
 
 模型引用格式：`provider/model-id`（如 `anthropic/claude-sonnet-4`、`openai/gpt-4o`）
 

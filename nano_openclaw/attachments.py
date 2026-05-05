@@ -114,7 +114,7 @@ def save_non_image_attachment(
 ) -> SavedAttachment:
     """Persist a non-image attachment inside the session attachment directory."""
     safe_name = safe_filename(attachment.name)
-    target_dir = root / ".openclaw" / "web-attachments" / safe_path_part(session_id) / safe_path_part(turn_id)
+    target_dir = root / ".nano-openclaw" / "web-attachments" / safe_path_part(session_id) / safe_path_part(turn_id)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     path = target_dir / safe_name

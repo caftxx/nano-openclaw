@@ -40,11 +40,11 @@ def test_webui_event_serializer_core_stream_events():
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 1},
     }
-    assert _event_to_payload(AttachmentAttached([".openclaw/web-attachments/s/t/demo.pdf"]), turn_id, session_id) == {
+    assert _event_to_payload(AttachmentAttached([".nano-openclaw/web-attachments/s/t/demo.pdf"]), turn_id, session_id) == {
         "type": "attachment.status",
         "turn_id": turn_id,
         "session_id": session_id,
-        "refs": [".openclaw/web-attachments/s/t/demo.pdf"],
+        "refs": [".nano-openclaw/web-attachments/s/t/demo.pdf"],
         "status": "attached",
     }
     assert _event_to_payload(AttachmentError("demo.pdf", "bad"), turn_id, session_id) == {

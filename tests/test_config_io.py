@@ -46,19 +46,19 @@ class TestFindConfigFile:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text('{}')
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             path = find_config_file(env=env)
             assert path is not None
             assert path.name == DEFAULT_CONFIG_FILENAME
-    
+
     def test_default_path_not_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             # Patch cwd to temp dir so workspace/ config isn't found
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
                 path = find_config_file(env=env)
                 assert path is None
-    
+
     def test_workspace_config_fallback(self):
         """Workspace config is found when state dir has no config."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -67,8 +67,8 @@ class TestFindConfigFile:
             workspace_dir.mkdir()
             config_file = workspace_dir / DEFAULT_CONFIG_FILENAME
             config_file.write_text('{"agents":{"defaults":{"model":"test/model"}}}')
-            
-            env = {"OPENCLAW_STATE_DIR": str(tmpdir)}
+
+            env = {"NANO_OPENCLAW_STATE_DIR": str(tmpdir)}
             with patch('pathlib.Path.cwd', return_value=tmpdir):
                 path = find_config_file(env=env)
                 assert path is not None
@@ -78,13 +78,13 @@ class TestFindConfigFile:
 class TestLoadConfig:
     def test_no_config_file_returns_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             # Patch cwd to temp dir so workspace/ config isn't found
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
                 cfg, warnings = load_config(env=env)
                 assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
                 assert len(warnings) == 0
-    
+
     def test_load_simple_config(self):
         content = '''
         {
@@ -98,11 +98,11 @@ class TestLoadConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             cfg, warnings = load_config(env=env)
             assert cfg.agents.defaults.model == "openai/gpt-4o"
             assert len(warnings) == 0
-    
+
     def test_env_var_substitution(self):
         content = '''
         {
@@ -116,15 +116,15 @@ class TestLoadConfig:
             },
         }
         '''
-        env = {"TEST_API_KEY": "secret123", "OPENCLAW_STATE_DIR": tempfile.mkdtemp()}
+        env = {"TEST_API_KEY": "secret123", "NANO_OPENCLAW_STATE_DIR": tempfile.mkdtemp()}
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            env["OPENCLAW_STATE_DIR"] = tmpdir
+            env["NANO_OPENCLAW_STATE_DIR"] = tmpdir
             cfg, warnings = load_config(env=env)
             assert cfg.models.providers["custom"].apiKey == "secret123"
             assert len(warnings) == 0
-    
+
     def test_missing_env_var_warning(self):
         content = '''
         {
@@ -141,11 +141,11 @@ class TestLoadConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             cfg, warnings = load_config(env=env)
             assert len(warnings) == 1
             assert warnings[0][0] == "MISSING_KEY"
-    
+
     def test_comments_and_trailing_commas(self):
         content = '''
         {
@@ -161,7 +161,7 @@ class TestLoadConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             cfg, warnings = load_config(env=env)
             assert cfg.agents.defaults.model == "anthropic/claude-sonnet"
 
@@ -179,7 +179,7 @@ class TestLoadConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            env = {"OPENCLAW_STATE_DIR": tmpdir}
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             cfg, warnings = load_config(env=env)
 
             assert cfg.memorySearch.temporalDecay.enabled is True
@@ -346,7 +346,7 @@ class TestNanoOpenClawConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / DEFAULT_CONFIG_FILENAME
             config_path.write_text(content)
-            env["OPENCLAW_STATE_DIR"] = tmpdir
+            env["NANO_OPENCLAW_STATE_DIR"] = tmpdir
             cfg, warnings = load_config(env=env)
             
             assert cfg.agents.defaults.model == "openrouter/anthropic/claude-sonnet-4"

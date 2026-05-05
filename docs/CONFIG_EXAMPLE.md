@@ -7,15 +7,15 @@
 | 优先级 | 路径 | 说明 |
 |--------|------|------|
 | 1 | `--config <path>` | 命令行显式指定 |
-| 2 | `$OPENCLAW_CONFIG_PATH` | 环境变量 |
+| 2 | `$NANO_OPENCLAW_CONFIG_PATH` | 环境变量 |
 | 3 | `{stateDir}/nano-openclaw.json5` | 状态目录下 |
 | 4 | `{cwd}/workspace/nano-openclaw.json5` | 项目 workspace 目录 |
-| 5 | `~/.openclaw/nano-openclaw.json5` | 用户全局配置 |
+| 5 | `~/.nano-openclaw/nano-openclaw.json5` | 用户全局配置 |
 
 **状态目录** (`stateDir`) 解析优先级：
-1. `$OPENCLAW_STATE_DIR` 环境变量
-2. `{cwd}/.openclaw`（项目级，如果存在）
-3. `~/.openclaw`（全局）
+1. `$NANO_OPENCLAW_STATE_DIR` 环境变量
+2. `{cwd}/.nano-openclaw`（项目级，如果存在）
+3. `~/.nano-openclaw`（全局）
 
 ## Session 存储路径
 
@@ -36,7 +36,7 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 
 1. `agents.list[<agentId>].workspace` — 单个 agent 的显式配置
 2. `agents.defaults.workspace` — 默认 agent 直接使用；非默认 agent 自动追加 `/<agentId>` 子目录
-3. 默认 agent：`~/.openclaw/workspace`（支持 `OPENCLAW_PROFILE`，变为 `~/.openclaw/workspace-<profile>`）
+3. 默认 agent：`~/.nano-openclaw/workspace`（支持 `NANO_OPENCLAW_PROFILE`，变为 `~/.nano-openclaw/workspace-<profile>`）
 4. 非默认 agent：`{stateDir}/workspace-<agentId>`
 
 ---
@@ -459,10 +459,10 @@ Skills 配置管理技能加载和过滤行为，对齐 openclaw 的 `skills.*` 
 
 | 变量 | 说明 |
 |------|------|
-| `OPENCLAW_CONFIG_PATH` | 配置文件路径覆盖 |
-| `OPENCLAW_STATE_DIR` | 状态目录覆盖 |
-| `OPENCLAW_HOME` | 用户 home 目录覆盖 |
-| `OPENCLAW_PROFILE` | 配置 profile（影响默认 workspace 路径） |
+| `NANO_OPENCLAW_CONFIG_PATH` | 配置文件路径覆盖 |
+| `NANO_OPENCLAW_STATE_DIR` | 状态目录覆盖 |
+| `NANO_OPENCLAW_HOME` | 用户 home 目录覆盖 |
+| `NANO_OPENCLAW_PROFILE` | 配置 profile（影响默认 workspace 路径） |
 | `<PROVIDER>_API_KEY` | Provider API 密钥（如 `ANTHROPIC_API_KEY`） |
 
 环境变量替换语法：`"${VAR_NAME}"`

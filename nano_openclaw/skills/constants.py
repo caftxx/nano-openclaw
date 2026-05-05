@@ -8,7 +8,7 @@ Load order (highest precedence first):
 1. workspace skills        - {workspace}/skills/
 2. project agent skills    - {workspace}/.agents/skills/
 3. personal agent skills   - ~/.agents/skills/
-4. managed skills          - ~/.openclaw/skills/
+4. managed skills          - ~/.nano-openclaw/skills/
 5. bundled skills          - package bundled_skills/
 6. extra dirs              - config skills.load.extraDirs
 
@@ -27,7 +27,7 @@ SKILL_LOAD_ORDER: dict[str, int] = {
     "workspace": 10,        # {workspace}/skills/
     "agents-project": 20,   # {workspace}/.agents/skills/
     "agents-personal": 30,  # ~/.agents/skills/
-    "managed": 40,          # ~/.openclaw/skills/
+    "managed": 40,          # ~/.nano-openclaw/skills/
     "bundled": 50,          # package bundled_skills/
     "extra": 60,            # config skills.load.extraDirs
 }
@@ -74,11 +74,11 @@ def resolve_bundled_skills_dir() -> Path | None:
 
 
 def resolve_managed_skills_dir() -> Path:
-    """Resolve managed skills directory (~/.openclaw/skills).
+    """Resolve managed skills directory (~/.nano-openclaw/skills).
 
     Mirrors openclaw managedSkillsDir.
     """
-    return Path.home() / ".openclaw" / "skills"
+    return Path.home() / ".nano-openclaw" / "skills"
 
 
 def resolve_personal_agent_skills_dir() -> Path:
