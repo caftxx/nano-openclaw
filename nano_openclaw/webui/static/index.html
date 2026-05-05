@@ -4,17 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nano-openclaw</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260505-skill" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-thinking-left" />
   </head>
   <body>
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+
     <div class="shell">
-      <aside class="sidebar">
+      <aside id="sessionDrawer" class="sidebar drawer-panel" aria-label="Sessions" aria-hidden="true">
         <div class="brand">
           <div>
             <h1>nano-openclaw</h1>
             <p id="modelLabel">connecting</p>
           </div>
-          <button id="newSessionBtn" title="New session">+</button>
+          <div class="brand-actions">
+            <button id="newSessionBtn" class="icon-btn" title="New session" aria-label="New session">+</button>
+            <button id="closeSessionDrawerBtn" class="icon-btn mobile-only" title="Close sessions" aria-label="Close sessions">×</button>
+          </div>
         </div>
         <input id="sessionSearch" class="search" placeholder="Search sessions" />
         <div id="sessionList" class="session-list"></div>
@@ -22,11 +27,16 @@
 
       <main class="conversation">
         <header class="topbar">
-          <div>
-            <div id="sessionTitle" class="session-title">No session</div>
-            <div id="workspaceLabel" class="workspace"></div>
+          <button id="openSessionDrawerBtn" class="topbar-icon mobile-only" type="button" title="Sessions" aria-label="Open sessions">☰</button>
+          <div class="topbar-title">
+            <button id="thinkingToggle" class="thinking-toggle" type="button" aria-pressed="false">Thinking</button>
           </div>
-          <div class="actions"></div>
+          <div class="actions">
+            <button id="openInspectorBtn" class="topbar-icon mobile-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span class="approval-badge" hidden>0</span>
+            </button>
+          </div>
         </header>
 
         <section id="messages" class="messages"></section>
@@ -37,7 +47,14 @@
         </form>
       </main>
 
-      <aside class="inspector">
+      <aside id="inspectorDrawer" class="inspector drawer-panel" aria-label="Runtime and approvals" aria-hidden="true">
+        <div class="inspector-header mobile-only">
+          <div>
+            <h2>Activity</h2>
+            <p>Approvals, events, and runtime</p>
+          </div>
+          <button id="closeInspectorBtn" class="icon-btn" title="Close activity" aria-label="Close activity">×</button>
+        </div>
         <section class="panel approval-panel">
           <h2>Approvals</h2>
           <div id="approvals" class="empty">No pending approvals</div>
@@ -63,6 +80,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260505-skill"></script>
+    <script src="/static/app.js?v=20260505-thinking-left"></script>
   </body>
 </html>

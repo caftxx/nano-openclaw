@@ -70,6 +70,10 @@ class SessionSelectRequest(BaseModel):
     session_id: str
 
 
+class ThinkingSetRequest(BaseModel):
+    level: str
+
+
 def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> FastAPI:
     static_dir = Path(__file__).with_name("static")
 
@@ -239,6 +243,13 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue
                     await emit({"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()})
+                elif msg_type == "thinking.set":
+                    req = ThinkingSetRequest(**message)
+                    if req.level not in {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}:
+                        await emit({"type": "turn.error", "message": f"invalid thinking level: {req.level}"})
+                        continue
+                    runtime.cfg.thinking_level = req.level
+                    await emit({"type": "state.updated", **_state_payload(runtime)})
                 elif msg_type == "command.run":
                     cmd_text = message.get("command", "")
                     session_id_cmd = message.get("session_id")
@@ -461,6 +472,7 @@ def _state_payload(runtime: AgentRuntime) -> dict[str, Any]:
         "agent_id": runtime.agent_id,
         "model": runtime.model_id,
         "model_ref": runtime.model_ref,
+        "thinking_level": runtime.cfg.thinking_level,
         "assistant_name": _read_assistant_name(runtime.workspace_dir),
         "user_name": _read_user_name(runtime.workspace_dir),
         "workspace_dir": str(runtime.workspace_dir),

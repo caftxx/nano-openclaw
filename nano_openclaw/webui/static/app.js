@@ -14,6 +14,9 @@ const state = {
   _pendingTextLen: 0,
   _assistantRawText: "",
   _followBottom: true,
+  openDrawer: null,
+  thinkingLevel: "off",
+  lastThinkingLevel: "low",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -201,12 +204,16 @@ function handleEvent(event) {
 function renderRuntime(payload) {
   state.assistantName = payload.assistant_name || "Assistant";
   state.userName = payload.user_name || "User";
+  state.thinkingLevel = payload.thinking_level || "off";
+  if (state.thinkingLevel !== "off") state.lastThinkingLevel = state.thinkingLevel;
   $("modelLabel").textContent = payload.model || "model";
-  $("workspaceLabel").textContent = payload.workspace_dir || "";
+  if ($("workspaceLabel")) $("workspaceLabel").textContent = payload.workspace_dir || "";
+  renderThinkingToggle();
   $("runtimeInfo").innerHTML = "";
   [
     ["Agent", payload.agent_id],
     ["Model", payload.model_ref || payload.model],
+    ["Thinking", state.thinkingLevel],
     ["Assistant", state.assistantName],
     ["User", state.userName],
     ["Tools", (payload.tools || []).join(", ") || "none"],
@@ -230,12 +237,17 @@ function renderSessions() {
       btn.innerHTML = `<span class="session-id">${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
         <span class="session-preview">${escapeHtml(session.preview || session.session_id.slice(0, 8))}</span>
         <span class="session-meta">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}</span>`;
-      btn.onclick = () => send("session.select", { session_id: session.session_id });
+      btn.onclick = () => {
+        send("session.select", { session_id: session.session_id });
+        if (isMobileViewport()) closeDrawers();
+      };
       $("sessionList").appendChild(btn);
     });
-  $("sessionTitle").textContent = state.currentSession
-    ? (state.currentSession.title || state.currentSession.session_id.slice(0, 8))
-    : "No session";
+  if ($("sessionTitle")) {
+    $("sessionTitle").textContent = state.currentSession
+      ? (state.currentSession.title || state.currentSession.session_id.slice(0, 8))
+      : "No session";
+  }
 }
 
 function sessionMatches(session, query) {
@@ -297,6 +309,7 @@ function renderApprovals() {
   if (!state.approvals.size) {
     root.className = "empty";
     root.textContent = "No pending approvals";
+    updateApprovalBadge();
     return;
   }
   root.className = "";
@@ -318,6 +331,7 @@ function renderApprovals() {
     });
     root.appendChild(el);
   }
+  updateApprovalBadge();
 }
 
 function addEvent(kind, text, payload = null) {
@@ -410,8 +424,103 @@ function showTokenDialog() {
   $("tokenDialog").classList.remove("hidden");
 }
 
+function isMobileViewport() {
+  return window.innerWidth <= 720;
+}
+
 function isTouchViewport() {
-  return window.matchMedia("(pointer: coarse)").matches || window.innerWidth <= 720;
+  return window.matchMedia("(pointer: coarse)").matches || isMobileViewport();
+}
+
+function resizePrompt() {
+  const prompt = $("prompt");
+  if (!isMobileViewport()) {
+    prompt.style.height = "";
+    prompt.style.overflowY = "";
+    return;
+  }
+
+  prompt.style.height = "44px";
+  const nextHeight = Math.min(Math.max(prompt.scrollHeight, 44), 132);
+  prompt.style.height = `${nextHeight}px`;
+  prompt.style.overflowY = prompt.scrollHeight > 132 ? "auto" : "hidden";
+}
+
+function openDrawer(type) {
+  if (!isMobileViewport()) {
+    syncDrawerStateForViewport();
+    return;
+  }
+  const sessionDrawer = $("sessionDrawer");
+  const inspectorDrawer = $("inspectorDrawer");
+  const backdrop = $("drawerBackdrop");
+  const target = type === "inspector" ? inspectorDrawer : sessionDrawer;
+
+  state.openDrawer = type;
+  sessionDrawer.classList.toggle("is-open", type === "sessions");
+  inspectorDrawer.classList.toggle("is-open", type === "inspector");
+  sessionDrawer.setAttribute("aria-hidden", String(type !== "sessions"));
+  inspectorDrawer.setAttribute("aria-hidden", String(type !== "inspector"));
+  backdrop.hidden = false;
+  requestAnimationFrame(() => backdrop.classList.add("is-visible"));
+  document.body.classList.add("drawer-open");
+  target.querySelector("input, button")?.focus();
+}
+
+function closeDrawers() {
+  const sessionDrawer = $("sessionDrawer");
+  const inspectorDrawer = $("inspectorDrawer");
+  const backdrop = $("drawerBackdrop");
+
+  state.openDrawer = null;
+  sessionDrawer.classList.remove("is-open");
+  inspectorDrawer.classList.remove("is-open");
+  sessionDrawer.setAttribute("aria-hidden", String(isMobileViewport()));
+  inspectorDrawer.setAttribute("aria-hidden", String(isMobileViewport()));
+  backdrop.classList.remove("is-visible");
+  document.body.classList.remove("drawer-open");
+  window.setTimeout(() => {
+    if (!state.openDrawer) backdrop.hidden = true;
+  }, 180);
+}
+
+function syncDrawerStateForViewport() {
+  const sessionDrawer = $("sessionDrawer");
+  const inspectorDrawer = $("inspectorDrawer");
+  const backdrop = $("drawerBackdrop");
+
+  if (isMobileViewport()) {
+    sessionDrawer.setAttribute("aria-hidden", String(state.openDrawer !== "sessions"));
+    inspectorDrawer.setAttribute("aria-hidden", String(state.openDrawer !== "inspector"));
+    return;
+  }
+
+  state.openDrawer = null;
+  sessionDrawer.classList.remove("is-open");
+  inspectorDrawer.classList.remove("is-open");
+  sessionDrawer.setAttribute("aria-hidden", "false");
+  inspectorDrawer.setAttribute("aria-hidden", "false");
+  backdrop.classList.remove("is-visible");
+  backdrop.hidden = true;
+  document.body.classList.remove("drawer-open");
+}
+
+function updateApprovalBadge() {
+  const badge = $("openInspectorBtn")?.querySelector(".approval-badge");
+  if (!badge) return;
+  const count = state.approvals.size;
+  badge.textContent = String(count);
+  badge.hidden = count === 0;
+  $("openInspectorBtn").classList.toggle("has-approvals", count > 0);
+}
+
+function renderThinkingToggle() {
+  const btn = $("thinkingToggle");
+  if (!btn) return;
+  const enabled = state.thinkingLevel !== "off";
+  btn.classList.toggle("is-on", enabled);
+  btn.setAttribute("aria-pressed", String(enabled));
+  btn.title = enabled ? `Thinking: ${state.thinkingLevel}` : "Thinking: off";
 }
 
 $("sendBtn").onclick = (event) => {
@@ -431,6 +540,7 @@ $("composer").onsubmit = (event) => {
   const text = $("prompt").value.trim();
   if (!text) return;
   $("prompt").value = "";
+  resizePrompt();
 
   if (text.startsWith("/")) {
     const verb = text.slice(1).split(/\s+/)[0].toLowerCase();
@@ -462,9 +572,17 @@ $("newSessionBtn").onclick = async () => {
   state.currentSession = data.session;
   renderSessions();
   renderHistory();
+  if (isMobileViewport()) closeDrawers();
 };
 
 $("sessionSearch").oninput = renderSessions;
+$("prompt").oninput = resizePrompt;
+$("thinkingToggle").onclick = () => {
+  const nextLevel = state.thinkingLevel === "off" ? state.lastThinkingLevel : "off";
+  state.thinkingLevel = nextLevel;
+  renderThinkingToggle();
+  send("thinking.set", { level: nextLevel });
+};
 
 $("tokenSave").onclick = () => {
   state.token = $("tokenInput").value.trim();
@@ -492,5 +610,23 @@ $("events").addEventListener("scroll", () => {
   _eventsFollowBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 });
 
+$("openSessionDrawerBtn").onclick = () => openDrawer("sessions");
+$("openInspectorBtn").onclick = () => openDrawer("inspector");
+$("closeSessionDrawerBtn").onclick = closeDrawers;
+$("closeInspectorBtn").onclick = closeDrawers;
+$("drawerBackdrop").onclick = closeDrawers;
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.openDrawer) closeDrawers();
+});
+
+window.addEventListener("resize", () => {
+  syncDrawerStateForViewport();
+  resizePrompt();
+});
+
+syncDrawerStateForViewport();
 connect();
 $("prompt").focus();
+resizePrompt();
+updateApprovalBadge();
