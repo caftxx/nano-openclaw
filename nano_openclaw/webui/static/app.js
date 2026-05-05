@@ -1,5 +1,6 @@
 const state = {
   token: localStorage.getItem("nanoOpenClawToken") || "",
+  themePreference: localStorage.getItem("nanoOpenClawTheme") || "system",
   ws: null,
   reconnectDelay: 1200,
   sessions: [],
@@ -41,6 +42,49 @@ const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/webp",
   "application/pdf",
 ]);
+const THEME_LABELS = {
+  system: "系统",
+  dark: "深色",
+  light: "浅色",
+};
+const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+
+function resolvedTheme() {
+  if (state.themePreference === "dark" || state.themePreference === "light") {
+    return state.themePreference;
+  }
+  return themeMedia.matches ? "dark" : "light";
+}
+
+function applyThemePreference() {
+  const preference = THEME_LABELS[state.themePreference] ? state.themePreference : "system";
+  state.themePreference = preference;
+  document.documentElement.dataset.theme = resolvedTheme();
+  document.documentElement.dataset.themePreference = preference;
+  renderAppearanceMenu();
+}
+
+function setThemePreference(preference) {
+  state.themePreference = THEME_LABELS[preference] ? preference : "system";
+  localStorage.setItem("nanoOpenClawTheme", state.themePreference);
+  applyThemePreference();
+}
+
+function renderAppearanceMenu() {
+  const btn = $("appearanceBtn");
+  if (btn) btn.title = `外观：${THEME_LABELS[state.themePreference] || THEME_LABELS.system}`;
+  document.querySelectorAll("[data-theme-choice]").forEach((option) => {
+    option.setAttribute("aria-checked", String(option.dataset.themeChoice === state.themePreference));
+  });
+}
+
+function closeAppearanceMenu() {
+  const menu = $("appearanceOptions");
+  const btn = $("appearanceBtn");
+  if (!menu || !btn) return;
+  menu.hidden = true;
+  btn.setAttribute("aria-expanded", "false");
+}
 
 function authHeaders() {
   return state.token ? { Authorization: `Bearer ${state.token}` } : {};
@@ -1116,6 +1160,19 @@ $("messages").addEventListener("scroll", () => {
 $("openSessionDrawerBtn").onclick = () => openDrawer("sessions");
 $("openInspectorBtn").onclick = () => openDrawer("inspector");
 $("openInspectorDesktopBtn").onclick = () => openDrawer("inspector");
+$("appearanceBtn").onclick = (event) => {
+  event.stopPropagation();
+  const menu = $("appearanceOptions");
+  const expanded = $("appearanceBtn").getAttribute("aria-expanded") === "true";
+  menu.hidden = expanded;
+  $("appearanceBtn").setAttribute("aria-expanded", String(!expanded));
+};
+$("appearanceOptions").querySelectorAll("[data-theme-choice]").forEach((option) => {
+  option.onclick = () => {
+    setThemePreference(option.dataset.themeChoice);
+    closeAppearanceMenu();
+  };
+});
 $("closeSessionDrawerBtn").onclick = () => {
   if (isMobileViewport()) closeDrawers();
   else setDesktopSidebarCollapsed(true);
@@ -1124,7 +1181,12 @@ $("closeInspectorBtn").onclick = closeDrawers;
 $("drawerBackdrop").onclick = closeDrawers;
 
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeAppearanceMenu();
   if (event.key === "Escape" && state.openDrawer) closeDrawers();
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".appearance-menu")) closeAppearanceMenu();
 });
 
 window.addEventListener("resize", () => {
@@ -1132,6 +1194,11 @@ window.addEventListener("resize", () => {
   resizePrompt();
 });
 
+themeMedia.addEventListener("change", () => {
+  if (state.themePreference === "system") applyThemePreference();
+});
+
+applyThemePreference();
 syncDrawerStateForViewport();
 connect();
 $("prompt").focus();

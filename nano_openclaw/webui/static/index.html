@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nano-openclaw</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐾</text></svg>" />
+    <script>
+      (() => {
+        const preference = localStorage.getItem("nanoOpenClawTheme") || "system";
+        const systemDark = matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme = preference === "dark" || (preference === "system" && systemDark) ? "dark" : "light";
+        document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
+      })();
+    </script>
     <link rel="stylesheet" href="/static/styles.css?v=20260505-activity" />
   </head>
   <body>
@@ -36,6 +44,16 @@
             <button id="thinkingToggle" class="thinking-toggle" type="button" aria-pressed="false">Thinking</button>
           </div>
           <div class="actions">
+            <div class="appearance-menu">
+              <button id="appearanceBtn" class="topbar-action" type="button" title="Appearance" aria-haspopup="menu" aria-expanded="false">
+                <span>外观</span>
+              </button>
+              <div id="appearanceOptions" class="appearance-options" role="menu" hidden>
+                <button type="button" role="menuitemradio" data-theme-choice="system" aria-checked="true">系统</button>
+                <button type="button" role="menuitemradio" data-theme-choice="dark" aria-checked="false">深色</button>
+                <button type="button" role="menuitemradio" data-theme-choice="light" aria-checked="false">浅色</button>
+              </div>
+            </div>
             <button id="openInspectorDesktopBtn" class="topbar-action desktop-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
               <span class="status-dot" aria-hidden="true"></span>
               <span>运行</span>
