@@ -243,11 +243,6 @@ function renderSessions() {
       };
       $("sessionList").appendChild(btn);
     });
-  if ($("sessionTitle")) {
-    $("sessionTitle").textContent = state.currentSession
-      ? (state.currentSession.title || state.currentSession.session_id.slice(0, 8))
-      : "No session";
-  }
 }
 
 function sessionMatches(session, query) {
@@ -262,15 +257,20 @@ function sessionMatches(session, query) {
 
 function renderHistory() {
   $("messages").innerHTML = "";
-  if (!state.currentSession) return;
+  if (!state.currentSession) {
+    updateConversationEmptyState();
+    return;
+  }
   for (const msg of state.currentSession.history || []) {
     const text = extractText(msg).trim();
     if (text) appendMessage(msg.role, text);
   }
+  updateConversationEmptyState();
   scrollMessages(true);
 }
 
 function appendMessage(role, text) {
+  $("conversationRoot")?.classList.remove("is-empty");
   const wrap = document.createElement("article");
   wrap.className = `message ${role}`;
   wrap.innerHTML = `<div class="role">${escapeHtml(displayRole(role))}</div><div class="bubble"></div>`;
@@ -286,6 +286,7 @@ function appendMessage(role, text) {
 }
 
 function appendSlashResult(command, text) {
+  $("conversationRoot")?.classList.remove("is-empty");
   const wrap = document.createElement("article");
   wrap.className = "message command";
   wrap.dataset.command = command;
@@ -295,6 +296,11 @@ function appendSlashResult(command, text) {
   $("messages").appendChild(wrap);
   scrollMessages(true);
   return wrap;
+}
+
+function updateConversationEmptyState() {
+  const hasMessages = $("messages").children.length > 0;
+  $("conversationRoot")?.classList.toggle("is-empty", !hasMessages);
 }
 
 function displayRole(role) {
@@ -434,21 +440,32 @@ function isTouchViewport() {
 
 function resizePrompt() {
   const prompt = $("prompt");
-  if (!isMobileViewport()) {
-    prompt.style.height = "";
-    prompt.style.overflowY = "";
-    return;
-  }
-
-  prompt.style.height = "44px";
-  const nextHeight = Math.min(Math.max(prompt.scrollHeight, 44), 132);
+  const minHeight = 40;
+  const maxHeight = isMobileViewport() ? 132 : 208;
+  prompt.style.height = `${minHeight}px`;
+  const nextHeight = Math.min(Math.max(prompt.scrollHeight, minHeight), maxHeight);
   prompt.style.height = `${nextHeight}px`;
-  prompt.style.overflowY = prompt.scrollHeight > 132 ? "auto" : "hidden";
+  prompt.style.overflowY = prompt.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
 function openDrawer(type) {
   if (!isMobileViewport()) {
-    syncDrawerStateForViewport();
+    if (type === "sessions") {
+      setDesktopSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+      return;
+    }
+    const inspectorDrawer = $("inspectorDrawer");
+    const backdrop = $("drawerBackdrop");
+    if (type !== "inspector") {
+      syncDrawerStateForViewport();
+      return;
+    }
+    const isOpen = inspectorDrawer.classList.contains("is-open");
+    state.openDrawer = isOpen ? null : "inspector";
+    inspectorDrawer.classList.toggle("is-open", !isOpen);
+    inspectorDrawer.setAttribute("aria-hidden", String(isOpen));
+    backdrop.hidden = isOpen;
+    backdrop.classList.toggle("is-visible", !isOpen);
     return;
   }
   const sessionDrawer = $("sessionDrawer");
@@ -484,12 +501,20 @@ function closeDrawers() {
   }, 180);
 }
 
+function setDesktopSidebarCollapsed(collapsed) {
+  if (isMobileViewport()) return;
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  $("sessionDrawer").setAttribute("aria-hidden", String(collapsed));
+  $("openSessionDrawerBtn").setAttribute("aria-expanded", String(!collapsed));
+}
+
 function syncDrawerStateForViewport() {
   const sessionDrawer = $("sessionDrawer");
   const inspectorDrawer = $("inspectorDrawer");
   const backdrop = $("drawerBackdrop");
 
   if (isMobileViewport()) {
+    document.body.classList.remove("sidebar-collapsed");
     sessionDrawer.setAttribute("aria-hidden", String(state.openDrawer !== "sessions"));
     inspectorDrawer.setAttribute("aria-hidden", String(state.openDrawer !== "inspector"));
     return;
@@ -498,20 +523,25 @@ function syncDrawerStateForViewport() {
   state.openDrawer = null;
   sessionDrawer.classList.remove("is-open");
   inspectorDrawer.classList.remove("is-open");
-  sessionDrawer.setAttribute("aria-hidden", "false");
-  inspectorDrawer.setAttribute("aria-hidden", "false");
+  const sidebarCollapsed = document.body.classList.contains("sidebar-collapsed");
+  sessionDrawer.setAttribute("aria-hidden", String(sidebarCollapsed));
+  $("openSessionDrawerBtn").setAttribute("aria-expanded", String(!sidebarCollapsed));
+  inspectorDrawer.setAttribute("aria-hidden", "true");
   backdrop.classList.remove("is-visible");
   backdrop.hidden = true;
   document.body.classList.remove("drawer-open");
 }
 
 function updateApprovalBadge() {
-  const badge = $("openInspectorBtn")?.querySelector(".approval-badge");
-  if (!badge) return;
   const count = state.approvals.size;
-  badge.textContent = String(count);
-  badge.hidden = count === 0;
-  $("openInspectorBtn").classList.toggle("has-approvals", count > 0);
+  ["openInspectorBtn", "openInspectorDesktopBtn"].forEach((id) => {
+    const button = $(id);
+    const badge = button?.querySelector(".approval-badge");
+    if (!badge) return;
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+    button.classList.toggle("has-approvals", count > 0);
+  });
 }
 
 function renderThinkingToggle() {
@@ -566,7 +596,7 @@ $("prompt").onkeydown = (event) => {
   $("composer").requestSubmit();
 };
 
-$("newSessionBtn").onclick = async () => {
+$("newSessionNavBtn").onclick = async () => {
   const data = await api("/api/sessions", { method: "POST", body: "{}" });
   state.sessions = data.sessions;
   state.currentSession = data.session;
@@ -612,7 +642,11 @@ $("events").addEventListener("scroll", () => {
 
 $("openSessionDrawerBtn").onclick = () => openDrawer("sessions");
 $("openInspectorBtn").onclick = () => openDrawer("inspector");
-$("closeSessionDrawerBtn").onclick = closeDrawers;
+$("openInspectorDesktopBtn").onclick = () => openDrawer("inspector");
+$("closeSessionDrawerBtn").onclick = () => {
+  if (isMobileViewport()) closeDrawers();
+  else setDesktopSidebarCollapsed(true);
+};
 $("closeInspectorBtn").onclick = closeDrawers;
 $("drawerBackdrop").onclick = closeDrawers;
 

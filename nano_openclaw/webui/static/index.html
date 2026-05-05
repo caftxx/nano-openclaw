@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nano-openclaw</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260505-thinking-left" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-chatgpt-composer" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -17,21 +17,29 @@
             <p id="modelLabel">connecting</p>
           </div>
           <div class="brand-actions">
-            <button id="newSessionBtn" class="icon-btn" title="New session" aria-label="New session">+</button>
-            <button id="closeSessionDrawerBtn" class="icon-btn mobile-only" title="Close sessions" aria-label="Close sessions">×</button>
+            <button id="closeSessionDrawerBtn" class="icon-btn" title="Close sessions" aria-label="Close sessions">×</button>
           </div>
         </div>
+        <nav class="sidebar-nav" aria-label="Primary">
+          <button type="button" id="newSessionNavBtn" class="nav-item">✎ <span>新聊天</span></button>
+        </nav>
+        <div class="sidebar-section-label">最近</div>
         <input id="sessionSearch" class="search" placeholder="Search sessions" />
         <div id="sessionList" class="session-list"></div>
       </aside>
 
-      <main class="conversation">
+      <main id="conversationRoot" class="conversation">
         <header class="topbar">
-          <button id="openSessionDrawerBtn" class="topbar-icon mobile-only" type="button" title="Sessions" aria-label="Open sessions">☰</button>
+          <button id="openSessionDrawerBtn" class="topbar-icon" type="button" title="Sessions" aria-label="Toggle sessions">☰</button>
           <div class="topbar-title">
             <button id="thinkingToggle" class="thinking-toggle" type="button" aria-pressed="false">Thinking</button>
           </div>
           <div class="actions">
+            <button id="openInspectorDesktopBtn" class="topbar-action desktop-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span>运行</span>
+              <span class="approval-badge" hidden>0</span>
+            </button>
             <button id="openInspectorBtn" class="topbar-icon mobile-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
               <span class="status-dot" aria-hidden="true"></span>
               <span class="approval-badge" hidden>0</span>
@@ -42,7 +50,8 @@
         <section id="messages" class="messages"></section>
 
         <form id="composer" class="composer">
-          <textarea id="prompt" rows="3" placeholder="Ask nano-openclaw"></textarea>
+          <button type="button" class="composer-tool" title="Attach" aria-label="Attach">+</button>
+          <textarea id="prompt" rows="1" placeholder="有问题，尽管问"></textarea>
           <button id="sendBtn" type="submit" title="Send">↑</button>
         </form>
       </main>
@@ -80,6 +89,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260505-thinking-left"></script>
+    <script src="/static/app.js?v=20260505-chatgpt-composer"></script>
   </body>
 </html>
