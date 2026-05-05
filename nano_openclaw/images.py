@@ -130,6 +130,23 @@ def load_image(path_or_url: str) -> tuple[str, str]:
     return _load_local(path_or_url)
 
 
+def load_image_bytes(data: bytes, mime: str) -> tuple[str, str]:
+    """Load uploaded image bytes and return (base64_data, mime_type)."""
+    mime = mime.split(";", 1)[0].strip().lower() or "image/jpeg"
+    if mime not in _MIME_FROM_EXT.values():
+        raise ValueError(f"unsupported image MIME type: {mime}")
+
+    if len(data) > _MAX_IMAGE_BYTES:
+        try:
+            data, mime = _compress_image(data, mime)
+        except Exception as e:
+            raise ValueError(
+                f"图片过大 ({len(data) // 1024 // 1024}MB > {_MAX_IMAGE_BYTES // 1024 // 1024}MB) 且自动压缩失败: {e}"
+            ) from e
+
+    return base64.standard_b64encode(data).decode(), mime
+
+
 def to_anthropic_image_block(b64: str, mime: str) -> dict[str, Any]:
     """Build an Anthropic-format image content block (Native Vision path)."""
     return {

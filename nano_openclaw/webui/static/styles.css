@@ -489,6 +489,69 @@ textarea::placeholder {
   overflow: hidden;
 }
 
+.attachment-input {
+  display: none;
+}
+
+.attachment-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 2px 2px;
+}
+
+.attachment-list[hidden] {
+  display: none;
+}
+
+.attachment-chip {
+  max-width: min(260px, 100%);
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px 4px 10px;
+  border: 1px solid #484848;
+  border-radius: 999px;
+  background: #262626;
+  color: #e9e9e9;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.attachment-chip.is-error {
+  border-color: color-mix(in oklch, var(--danger) 62%, #484848);
+  color: #ffc4c4;
+}
+
+.attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  flex: 0 0 auto;
+  color: var(--subtle);
+}
+
+.attachment-remove {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
 textarea {
   width: 100%;
   min-width: 0;
@@ -915,6 +978,10 @@ textarea:focus {
     border-radius: 28px;
     align-items: center;
     gap: 6px;
+  }
+
+  .attachment-chip {
+    max-width: 100%;
   }
 
   textarea {

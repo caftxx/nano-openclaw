@@ -23,6 +23,7 @@ from nano_openclaw.images import (
     _is_blocked_addr,
     parse_image_refs,
     load_image,
+    load_image_bytes,
     to_anthropic_image_block,
     describe_image,
     _MIME_FROM_EXT,
@@ -194,6 +195,13 @@ def test_load_local_jpeg(sample_jpg):
     b64, mime = load_image(str(sample_jpg))
     assert mime == "image/jpeg"
     assert isinstance(b64, str)
+
+
+def test_load_uploaded_image_bytes(sample_image_bytes):
+    """Test loading uploaded image bytes."""
+    b64, mime = load_image_bytes(sample_image_bytes, "image/png")
+    assert mime == "image/png"
+    assert base64.b64decode(b64) == sample_image_bytes
 
 
 def test_load_local_nonexistent():

@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from nano_openclaw.attachments import AttachmentAttached, AttachmentError, decode_attachment_payloads
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.loop import (
     ActiveMemoryRecall,
@@ -55,6 +56,7 @@ from nano_openclaw.webui.sessions import WebSessionManager, message_text
 class ChatRequest(BaseModel):
     session_id: str | None = None
     text: str
+    attachments: list[dict[str, Any]] = []
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -224,6 +226,7 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                         active_tokens=active_tokens,
                         session_id=req.session_id,
                         text=req.text,
+                        attachments=req.attachments,
                     ))
                 elif msg_type == "turn.cancel":
                     req = TurnCancelRequest(**message)
@@ -264,6 +267,7 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                             active_tokens=active_tokens,
                             session_id=session_id_cmd,
                             text=cmd_text,
+                            attachments=[],
                         ))
                     else:
                         result_text, should_refresh = cmd_result
@@ -301,9 +305,16 @@ async def _run_turn(
     active_tokens: dict[str, CancellationToken],
     session_id: str | None,
     text: str,
+    attachments: list[dict[str, Any]],
 ) -> None:
     session = manager.get_or_load(session_id)
-    if not text.strip():
+    try:
+        decoded_attachments = decode_attachment_payloads(attachments)
+    except Exception as exc:
+        await send({"type": "turn.error", "session_id": session.session_id, "message": f"attachment error: {exc}"})
+        return
+
+    if not text.strip() and not decoded_attachments:
         await send({"type": "turn.error", "session_id": session.session_id, "message": "empty message"})
         return
     if session.active_turn_id:
@@ -349,6 +360,10 @@ async def _run_turn(
         "turn_id": turn_id,
         "session_id": session.session_id,
         "user_text": text,
+        "attachments": [
+            {"name": item.name, "mime": item.mime, "size": item.size}
+            for item in decoded_attachments
+        ],
     })
 
     try:
@@ -362,6 +377,8 @@ async def _run_turn(
                 cfg=cfg,
                 transcript_writer=session.writer,
                 cancellation_token=token,
+                attachments=decoded_attachments,
+                attachment_turn_id=turn_id,
             )
             manager.save_metadata(session)
         await send({
@@ -424,6 +441,10 @@ def _event_to_payload(event: Any, turn_id: str, session_id: str) -> dict[str, An
         return {"type": "image.status", **base, "ref": event.ref, "status": "error", "error": event.error}
     if isinstance(event, ImageSkip):
         return {"type": "image.status", **base, "ref": event.ref, "status": "skipped", "reason": event.reason}
+    if isinstance(event, AttachmentAttached):
+        return {"type": "attachment.status", **base, "refs": event.refs, "status": "attached"}
+    if isinstance(event, AttachmentError):
+        return {"type": "attachment.status", **base, "ref": event.ref, "status": "error", "error": event.error}
     if isinstance(event, SkillInvoked):
         return {"type": "skill.invoked", **base, "skill_name": event.skill_name, "skill_path": event.skill_path}
     if isinstance(event, ActiveMemoryRecall):

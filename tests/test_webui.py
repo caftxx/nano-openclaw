@@ -9,6 +9,7 @@ import pytest
 
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
+from nano_openclaw.attachments import AttachmentAttached, AttachmentError
 from nano_openclaw.loop import CancellationToken
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
@@ -38,6 +39,21 @@ def test_webui_event_serializer_core_stream_events():
         "session_id": session_id,
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 1},
+    }
+    assert _event_to_payload(AttachmentAttached([".openclaw/web-attachments/s/t/demo.pdf"]), turn_id, session_id) == {
+        "type": "attachment.status",
+        "turn_id": turn_id,
+        "session_id": session_id,
+        "refs": [".openclaw/web-attachments/s/t/demo.pdf"],
+        "status": "attached",
+    }
+    assert _event_to_payload(AttachmentError("demo.pdf", "bad"), turn_id, session_id) == {
+        "type": "attachment.status",
+        "turn_id": turn_id,
+        "session_id": session_id,
+        "ref": "demo.pdf",
+        "status": "error",
+        "error": "bad",
     }
 
 

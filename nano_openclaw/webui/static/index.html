@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nano-openclaw</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260505-chatgpt-composer" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-attachments" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -50,6 +50,8 @@
         <section id="messages" class="messages"></section>
 
         <form id="composer" class="composer">
+          <input id="attachmentInput" class="attachment-input" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" />
+          <div id="attachmentList" class="attachment-list" hidden></div>
           <button type="button" class="composer-tool" title="Attach" aria-label="Attach">+</button>
           <textarea id="prompt" rows="1" placeholder="有问题，尽管问"></textarea>
           <button id="sendBtn" type="submit" title="Send">↑</button>
@@ -89,6 +91,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260505-chatgpt-composer"></script>
+    <script src="/static/app.js?v=20260505-attachments"></script>
   </body>
 </html>

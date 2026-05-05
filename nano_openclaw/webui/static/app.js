@@ -17,9 +17,21 @@ const state = {
   openDrawer: null,
   thinkingLevel: "off",
   lastThinkingLevel: "low",
+  attachments: [],
+  clearAttachmentsOnAccept: false,
 };
 
 const $ = (id) => document.getElementById(id);
+const MAX_ATTACHMENTS = 5;
+const MAX_NON_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+]);
 
 function authHeaders() {
   return state.token ? { Authorization: `Bearer ${state.token}` } : {};
@@ -60,8 +72,9 @@ function connect() {
 }
 
 function send(type, payload = {}) {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
   state.ws.send(JSON.stringify({ type, ...payload }));
+  return true;
 }
 
 function updateSendBtn() {
@@ -99,7 +112,12 @@ function handleEvent(event) {
       state._assistantRawText = "";
       $("events").innerHTML = "";
       _eventsFollowBottom = true;
-      appendMessage("user", event.user_text);
+      appendMessage("user", formatAcceptedUserText(event));
+      if (state.clearAttachmentsOnAccept) {
+        state.attachments = [];
+        state.clearAttachmentsOnAccept = false;
+        renderAttachments();
+      }
       state.assistantNode = appendMessage("assistant", "");
       scrollMessages(true);
       addEvent(event.type, "Turn accepted", event);
@@ -173,6 +191,7 @@ function handleEvent(event) {
     case "turn.error":
       state.activeTurnId = null;
       updateSendBtn();
+      state.clearAttachmentsOnAccept = false;
       addEvent(event.type, event.message || "unknown error", event);
       break;
     case "session.error":
@@ -430,6 +449,14 @@ function showTokenDialog() {
   $("tokenDialog").classList.remove("hidden");
 }
 
+function formatAcceptedUserText(event) {
+  const text = String(event.user_text || "").trim();
+  const attachments = event.attachments || [];
+  if (!attachments.length) return text;
+  const names = attachments.map((item) => `${item.name} (${formatBytes(item.size || 0)})`).join(", ");
+  return text ? `${text}\n\nAttached: ${names}` : `Attached: ${names}`;
+}
+
 function isMobileViewport() {
   return window.innerWidth <= 720;
 }
@@ -446,6 +473,104 @@ function resizePrompt() {
   const nextHeight = Math.min(Math.max(prompt.scrollHeight, minHeight), maxHeight);
   prompt.style.height = `${nextHeight}px`;
   prompt.style.overflowY = prompt.scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
+function renderAttachments() {
+  const list = $("attachmentList");
+  list.innerHTML = "";
+  list.hidden = state.attachments.length === 0;
+  for (const item of state.attachments) {
+    const chip = document.createElement("div");
+    chip.className = `attachment-chip ${item.error ? "is-error" : ""}`;
+    chip.title = item.error || item.file.name;
+    chip.innerHTML = `<span class="attachment-name">${escapeHtml(item.file.name)}</span>
+      <span class="attachment-size">${escapeHtml(item.error || formatBytes(item.file.size))}</span>
+      <button type="button" class="attachment-remove" aria-label="Remove ${escapeHtml(item.file.name)}">×</button>`;
+    chip.querySelector("button").onclick = () => {
+      state.attachments = state.attachments.filter((candidate) => candidate.id !== item.id);
+      renderAttachments();
+    };
+    list.appendChild(chip);
+  }
+}
+
+function addAttachmentFiles(files) {
+  for (const file of files) {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const next = { id, file, error: validateAttachment(file) };
+    if (state.attachments.length >= MAX_ATTACHMENTS) {
+      next.error = `最多 ${MAX_ATTACHMENTS} 个文件`;
+    }
+    state.attachments.push(next);
+  }
+  validateAttachmentSet();
+  renderAttachments();
+}
+
+function validateAttachment(file) {
+  if (!ALLOWED_ATTACHMENT_TYPES.has(file.type)) {
+    return "不支持的类型";
+  }
+  if (!file.type.startsWith("image/") && file.size > MAX_NON_IMAGE_BYTES) {
+    return `超过 ${formatBytes(MAX_NON_IMAGE_BYTES)}`;
+  }
+  if (file.size <= 0) {
+    return "空文件";
+  }
+  return "";
+}
+
+function validateAttachmentSet() {
+  const total = state.attachments.reduce((sum, item) => sum + item.file.size, 0);
+  for (const item of state.attachments) {
+    const ownError = validateAttachment(item.file);
+    item.error = ownError;
+    if (!item.error && total > MAX_TOTAL_ATTACHMENT_BYTES) {
+      item.error = `总大小超过 ${formatBytes(MAX_TOTAL_ATTACHMENT_BYTES)}`;
+    }
+  }
+}
+
+function hasAttachmentErrors() {
+  return state.attachments.some((item) => item.error);
+}
+
+async function buildAttachmentPayloads() {
+  const payloads = [];
+  for (const item of state.attachments) {
+    const data = await fileToBase64(item.file);
+    payloads.push({
+      name: item.file.name,
+      mime: item.file.type || "application/octet-stream",
+      size: item.file.size,
+      data,
+    });
+  }
+  return payloads;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      resolve(value.includes(",") ? value.split(",", 2)[1] : value);
+    };
+    reader.onerror = () => reject(reader.error || new Error("failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
 function openDrawer(type) {
@@ -565,14 +690,19 @@ const BUILTIN_COMMANDS = new Set([
   "skills", "plugins", "hooks", "subagents", "active-memory", "dreaming",
 ]);
 
-$("composer").onsubmit = (event) => {
+$("composer").onsubmit = async (event) => {
   event.preventDefault();
   const text = $("prompt").value.trim();
-  if (!text) return;
-  $("prompt").value = "";
-  resizePrompt();
+  if (!text && !state.attachments.length) return;
+  if (hasAttachmentErrors()) {
+    addEvent("attachment.error", "Fix attachment errors before sending", {
+      type: "attachment.error",
+      attachments: state.attachments.map((item) => ({ name: item.file.name, error: item.error })),
+    });
+    return;
+  }
 
-  if (text.startsWith("/")) {
+  if (text.startsWith("/") && !state.attachments.length) {
     const verb = text.slice(1).split(/\s+/)[0].toLowerCase();
     if (BUILTIN_COMMANDS.has(verb)) {
       const msgEl = appendSlashResult(text, "…");
@@ -587,7 +717,19 @@ $("composer").onsubmit = (event) => {
   }
 
   if (!state.currentSession) return;
-  send("chat.send", { session_id: state.currentSession.session_id, text });
+  let attachments = [];
+  try {
+    attachments = await buildAttachmentPayloads();
+  } catch (error) {
+    addEvent("attachment.error", String(error?.message || error), { type: "attachment.error" });
+    return;
+  }
+
+  const didSend = send("chat.send", { session_id: state.currentSession.session_id, text, attachments });
+  if (!didSend) return;
+  $("prompt").value = "";
+  state.clearAttachmentsOnAccept = state.attachments.length > 0;
+  resizePrompt();
 };
 
 $("prompt").onkeydown = (event) => {
@@ -607,6 +749,11 @@ $("newSessionNavBtn").onclick = async () => {
 
 $("sessionSearch").oninput = renderSessions;
 $("prompt").oninput = resizePrompt;
+$("attachmentInput").onchange = (event) => {
+  addAttachmentFiles(Array.from(event.target.files || []));
+  event.target.value = "";
+};
+document.querySelector(".composer-tool").onclick = () => $("attachmentInput").click();
 $("thinkingToggle").onclick = () => {
   const nextLevel = state.thinkingLevel === "off" ? state.lastThinkingLevel : "off";
   state.thinkingLevel = nextLevel;

@@ -26,7 +26,21 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens, should_run_memory_flush
 from nano_openclaw.config.types import MemoryFlushConfig
-from nano_openclaw.images import describe_image, load_image, parse_image_refs, to_anthropic_image_block
+from nano_openclaw.attachments import (
+    AttachmentAttached,
+    AttachmentError,
+    PromptAttachment,
+    attachment_prompt_block,
+    is_image_mime,
+    save_non_image_attachment,
+)
+from nano_openclaw.images import (
+    describe_image,
+    load_image,
+    load_image_bytes,
+    parse_image_refs,
+    to_anthropic_image_block,
+)
 from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
 from nano_openclaw.memory.dreaming import DreamingConfig
 from nano_openclaw.prompt import build_system_prompt
@@ -268,6 +282,8 @@ async def agent_loop(
     cfg: LoopConfig,
     transcript_writer: "TranscriptWriter | None" = None,
     cancellation_token: "CancellationToken | None" = None,
+    attachments: list[PromptAttachment] | None = None,
+    attachment_turn_id: str | None = None,
 ) -> list[Message]:
     """Drive one user turn to completion (possibly through many tool rounds).
 
@@ -371,6 +387,51 @@ async def agent_loop(
 
     if loaded_refs:
         on_event(ImageAttached(refs=loaded_refs, via_model=bool(cfg.image_model)))
+
+    # 4. Handle Web-uploaded attachments. Images reuse the existing image pipeline.
+    # Non-images are persisted and exposed as paths for the model to inspect via skills/tools.
+    attachment_refs: list[str] = []
+    uploaded_image_refs: list[str] = []
+    attachment_root = cfg.workspace_dir or Path(os.getcwd())
+    turn_attachment_id = attachment_turn_id
+    if attachments and not turn_attachment_id:
+        turn_attachment_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    for attachment in attachments or []:
+        if is_image_mime(attachment.mime):
+            try:
+                b64, mime = load_image_bytes(attachment.data, attachment.mime)
+                if cfg.image_model:
+                    on_event(ImageDescribe(ref=attachment.name))
+                    desc = await describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
+                    content.append({"type": "text", "text": f"[Image: {attachment.name} - {desc}]"})
+                elif cfg.model_has_vision:
+                    content.append(to_anthropic_image_block(b64, mime))
+                else:
+                    on_event(ImageSkip(
+                        ref=attachment.name,
+                        reason="model has no vision capability and no image_model configured",
+                    ))
+                uploaded_image_refs.append(attachment.name)
+            except Exception as exc:
+                on_event(ImageError(ref=attachment.name, error=str(exc)))
+            continue
+
+        try:
+            saved = save_non_image_attachment(
+                attachment,
+                root=attachment_root,
+                session_id=cfg.session_key,
+                turn_id=turn_attachment_id or "turn",
+            )
+            content.append({"type": "text", "text": attachment_prompt_block(saved)})
+            attachment_refs.append(saved.display_path)
+        except Exception as exc:
+            on_event(AttachmentError(ref=attachment.name, error=str(exc)))
+
+    if uploaded_image_refs:
+        on_event(ImageAttached(refs=uploaded_image_refs, via_model=bool(cfg.image_model)))
+    if attachment_refs:
+        on_event(AttachmentAttached(refs=attachment_refs))
 
     # Mirror openclaw convertContentBlocks: guarantee at least one text block.
     if cleaned_text:
