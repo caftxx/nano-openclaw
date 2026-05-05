@@ -126,10 +126,15 @@ def test_web_session_manager_create_select_clear():
         session = manager.create()
         assert session.session_id
         assert session.writer.session_id == session.session_id
-        assert load_session_store(store_path)["lastSessionId"] == session.session_id
+        # Session is pending (not yet written to disk), so store has no entry yet.
+        assert load_session_store(store_path)["lastSessionId"] is None
+        # get_or_load(None) must return the same pending session within this process.
+        assert manager.get_or_load(None).session_id == session.session_id
 
+        # select() explicitly saves metadata, so the store is updated at that point.
         loaded = manager.select(session.session_id)
         assert loaded.session_id == session.session_id
+        assert load_session_store(store_path)["lastSessionId"] == session.session_id
 
         cleared = asyncio.run(manager.clear(session.session_id))
         assert cleared.history == []
@@ -150,6 +155,8 @@ def test_web_session_select_uses_store_id_not_transcript_header_id():
         path = session_dir / f"{session_id}.jsonl"
         writer = TranscriptWriter(path)
         writer.start(model="model", session_id=header_id)
+        # Trigger lazy write so the transcript file exists for _load_existing.
+        writer.append_compaction("bootstrap")
         store = load_session_store(store_path)
         update_session(store, session_id, model="model", message_count=0, compaction_count=0)
         save_session_store(store_path, store)
@@ -261,9 +268,9 @@ def test_web_session_select_legacy_header_alias_opens_canonical_file():
         manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         canonical = manager.create()
-        alias_id = canonical.transcript_path.read_text(encoding="utf-8").split('"id": "')[1].split('"', 1)[0]
         canonical.history.append(_message("user", "旧别名 session 内容"))
-        canonical.writer.append_message(canonical.history[0])
+        canonical.writer.append_message(canonical.history[0])  # triggers lazy header write
+        alias_id = canonical.transcript_path.read_text(encoding="utf-8").split('"id": "')[1].split('"', 1)[0]
         manager.save_metadata(canonical)
 
         store = load_session_store(store_path)

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..loop import Message
 from .truncate import truncate_tool_result
@@ -35,6 +35,11 @@ class TranscriptWriter:
     _last_message_id: str = ""
     _message_count: int = 0
     _compaction_count: int = 0
+    # Lazy-write state: header is only written to disk on the first append so
+    # that sessions with no messages leave no files behind.
+    _started: bool = False
+    _lazy_header: Any = field(default=None, repr=False)
+    _on_first_write: Any = field(default=None, repr=False)
 
     @classmethod
     def resume(
@@ -51,6 +56,7 @@ class TranscriptWriter:
         writer._message_count = msg_count
         writer._compaction_count = comp_count
         writer._last_message_id = last_message_id
+        writer._started = path.exists()
         return writer
 
     @property
@@ -58,14 +64,33 @@ class TranscriptWriter:
         return self._session_id
 
     def start(self, *, model: str = "", cwd: str = "", session_id: str | None = None) -> str:
-        """Write header entry and return the session ID."""
+        """Prepare session header for lazy write; return the session ID.
+
+        The header is written to disk only when the first message is appended,
+        so sessions with no messages leave no files behind.
+        """
         header = SessionHeader(model=model, cwd=cwd)
         if session_id:
             header.id = session_id
         self._session_id = header.id
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._append(header)
+        self._lazy_header = header
         return self._session_id
+
+    def _ensure_started(self) -> None:
+        """Write the session header on first call, then fire _on_first_write once."""
+        if self._started:
+            return
+        self._started = True
+        if self._lazy_header is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(asdict(self._lazy_header), ensure_ascii=False)
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            self._lazy_header = None
+        if self._on_first_write is not None:
+            cb = self._on_first_write
+            self._on_first_write = None
+            cb()
 
     def append_message(self, message: Message) -> None:
         """Append a message entry to the transcript."""
@@ -94,6 +119,7 @@ class TranscriptWriter:
             self._message_count = 0
             self._compaction_count = 0
             self._last_message_id = ""
+            # Keep _started=False and _lazy_header intact so next append re-creates the file.
             return
         lines = self.path.read_text(encoding="utf-8").splitlines()
         header_lines = []
@@ -121,6 +147,7 @@ class TranscriptWriter:
         return self._compaction_count
 
     def _append(self, entry: TranscriptEntry) -> None:
+        self._ensure_started()
         line = json.dumps(asdict(entry), ensure_ascii=False)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")

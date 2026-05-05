@@ -94,6 +94,9 @@ class WebSessionManager:
         self.cwd = cwd
         self._loaded: dict[str, WebSession] = {}
         self._summary_cache: dict[str, SessionSummary] = {}
+        # Tracks a session created in memory but not yet written to disk.
+        # Cleared once the session's first message is persisted.
+        self._pending_session_id: str | None = None
 
     def list(self) -> list[dict[str, Any]]:
         store = load_session_store(self.store_path)
@@ -125,11 +128,21 @@ class WebSessionManager:
         session = WebSession(session_id=session_id, transcript_path=path, history=[], writer=writer)
         self._loaded[session_id] = session
         self._summary_cache.pop(session_id, None)
-        self.save_metadata(session)
+        self._pending_session_id = session_id
+        # Persist to sessions.json only when the first message is written.
+        def _on_first_write() -> None:
+            self._pending_session_id = None
+            self.save_metadata(session)
+        writer._on_first_write = _on_first_write
         return session
 
     def get_or_load(self, session_id: str | None = None) -> WebSession:
         if not session_id:
+            # Return the in-memory pending session before consulting the store so
+            # that repeated get_or_load(None) calls within the same process always
+            # return the same session, even before the first message is written.
+            if self._pending_session_id and self._pending_session_id in self._loaded:
+                return self._loaded[self._pending_session_id]
             store = load_session_store(self.store_path)
             session_id = store.get("lastSessionId")
             if not session_id:
@@ -156,6 +169,10 @@ class WebSessionManager:
 
     def select(self, session_id: str) -> WebSession:
         session = self.get_or_load(session_id)
+        # Abandon any pending session that was never written — no file, no store entry.
+        if self._pending_session_id and self._pending_session_id != session.session_id:
+            self._loaded.pop(self._pending_session_id, None)
+            self._pending_session_id = None
         self.save_metadata(session)
         return session
 
@@ -171,6 +188,10 @@ class WebSessionManager:
         return session
 
     def save_metadata(self, session: WebSession) -> None:
+        # If this is the pending session being explicitly saved, promote it now.
+        if self._pending_session_id == session.session_id:
+            self._pending_session_id = None
+            session.writer._on_first_write = None
         store = load_session_store(self.store_path)
         update_session(
             store,

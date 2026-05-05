@@ -103,8 +103,8 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
         assert tool_called is False
         assert history == []
         assert writer.message_count == 0
-        lines = (tmp_dir / "session.jsonl").read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 1
+        # No messages were committed, so the file must not exist (lazy write).
+        assert not (tmp_dir / "session.jsonl").exists()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

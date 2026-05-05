@@ -175,9 +175,7 @@ async def repl(
                 new_path = session_dir / f"{session_id}.jsonl"
                 transcript_writer = TranscriptWriter(new_path)
                 transcript_writer.start(model=cfg.model)
-                store = load_session_store(store_path)
-                update_session(store, session_id, model=cfg.model, message_count=0, compaction_count=0)
-                save_session_store(store_path, store)
+                # No store update here: deferred to first message via _update_session_metadata.
                 if _spawn_ctx is not None:
                     _spawn_ctx.requester_session_key = session_id
                 console.print(f"[dim]new session: {session_id[:8]}…[/]")

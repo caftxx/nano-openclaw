@@ -196,12 +196,15 @@ async def _async_main(
         if last:
             session_id = last.session_id
             transcript_path = session_dir / f"{session_id}.jsonl"
-            reader = TranscriptReader(transcript_path)
-            history, loaded_id, msg_count, comp_count, last_msg_id = reader.load_history()
-            transcript_writer = TranscriptWriter.resume(
-                transcript_path, session_id, msg_count, comp_count, last_msg_id
-            )
-            print(f"resumed session {session_id[:8]}… ({msg_count} messages, {comp_count} compactions)", file=sys.stderr)
+            if transcript_path.exists():
+                reader = TranscriptReader(transcript_path)
+                history, loaded_id, msg_count, comp_count, last_msg_id = reader.load_history()
+                transcript_writer = TranscriptWriter.resume(
+                    transcript_path, session_id, msg_count, comp_count, last_msg_id
+                )
+                print(f"resumed session {session_id[:8]}… ({msg_count} messages, {comp_count} compactions)", file=sys.stderr)
+            else:
+                print("last session has no transcript — starting fresh", file=sys.stderr)
         else:
             print("no previous session to resume — starting fresh", file=sys.stderr)
 
@@ -210,9 +213,14 @@ async def _async_main(
         transcript_path = session_dir / f"{session_id}.jsonl"
         transcript_writer = TranscriptWriter(transcript_path)
         transcript_writer.start(model=model_id, cwd=str(workspace_dir))
-        store = load_session_store(store_path)
-        update_session(store, session_id, model=model_id, message_count=0, compaction_count=0)
-        save_session_store(store_path, store)
+        # Defer the sessions.json entry to the first actual message so sessions
+        # with no messages leave neither a file nor a store entry behind.
+        _sid, _mid, _sp = session_id, model_id, store_path
+        def _persist_new_session() -> None:
+            _store = load_session_store(_sp)
+            update_session(_store, _sid, model=_mid, message_count=0, compaction_count=0)
+            save_session_store(_sp, _store)
+        transcript_writer._on_first_write = _persist_new_session
 
     # Resolve image model
     image_model_ref = config.resolve_image_model(args.agent)
