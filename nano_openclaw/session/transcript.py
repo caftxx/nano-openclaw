@@ -57,9 +57,11 @@ class TranscriptWriter:
     def session_id(self) -> str:
         return self._session_id
 
-    def start(self, *, model: str = "", cwd: str = "") -> str:
+    def start(self, *, model: str = "", cwd: str = "", session_id: str | None = None) -> str:
         """Write header entry and return the session ID."""
         header = SessionHeader(model=model, cwd=cwd)
+        if session_id:
+            header.id = session_id
         self._session_id = header.id
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._append(header)

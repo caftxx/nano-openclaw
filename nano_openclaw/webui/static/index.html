@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nano-openclaw</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-markdown" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div>
+            <h1>nano-openclaw</h1>
+            <p id="modelLabel">connecting</p>
+          </div>
+          <button id="newSessionBtn" title="New session">+</button>
+        </div>
+        <input id="sessionSearch" class="search" placeholder="Search sessions" />
+        <div id="sessionList" class="session-list"></div>
+      </aside>
+
+      <main class="conversation">
+        <header class="topbar">
+          <div>
+            <div id="sessionTitle" class="session-title">No session</div>
+            <div id="workspaceLabel" class="workspace"></div>
+          </div>
+          <div class="actions">
+            <button id="compactBtn">Compact</button>
+            <button id="clearBtn">Clear</button>
+            <button id="stopBtn" disabled>Stop</button>
+          </div>
+        </header>
+
+        <section id="messages" class="messages"></section>
+
+        <form id="composer" class="composer">
+          <textarea id="prompt" rows="3" placeholder="Ask nano-openclaw"></textarea>
+          <button id="sendBtn" type="submit">Send</button>
+        </form>
+      </main>
+
+      <aside class="inspector">
+        <section class="panel approval-panel">
+          <h2>Approvals</h2>
+          <div id="approvals" class="empty">No pending approvals</div>
+        </section>
+        <section class="panel events-panel">
+          <h2>Turn Events</h2>
+          <div id="events" class="event-list"></div>
+        </section>
+        <section class="panel">
+          <h2>Runtime</h2>
+          <div id="runtimeInfo" class="runtime-info"></div>
+        </section>
+      </aside>
+    </div>
+
+    <div id="tokenDialog" class="token-dialog hidden">
+      <div class="token-box">
+        <h2>Access token</h2>
+        <p>Enter the token passed to <code>nano-openclaw web --token</code>.</p>
+        <input id="tokenInput" type="password" autocomplete="current-password" />
+        <button id="tokenSave">Connect</button>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+    <script src="/static/app.js?v=20260505-markdown"></script>
+  </body>
+</html>

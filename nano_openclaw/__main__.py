@@ -50,20 +50,16 @@ from nano_openclaw.session import (
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
 from nano_openclaw.tools import ToolRegistry, build_core_registry
-from nano_openclaw.approvals.manager import ApprovalManager
-from nano_openclaw.approvals.exec_approvals import load_exec_approvals
+from nano_openclaw.webui.runtime import build_approval_manager
 from rich.console import Console
 
 
-def build_approval_manager(state_dir: Path, agent_id: str) -> ApprovalManager | None:
-    """Build ApprovalManager from exec-approvals.json."""
-    policy = load_exec_approvals(state_dir, agent_id)
-    if policy.ask_mode == "off":
-        return None
-    return ApprovalManager(policy)
-
-
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "web":
+        from nano_openclaw.webui.server import main as web_main
+        web_main(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(
         prog="nano-openclaw",
         description="Minimal educational reimplementation of OpenClaw's agent loop.",

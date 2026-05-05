@@ -1,0 +1,246 @@
+"""Session management for the WebUI."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from nano_openclaw.loop import Message
+from nano_openclaw.session import (
+    TranscriptReader,
+    TranscriptWriter,
+    list_sessions,
+    load_session_store,
+    new_session_id,
+    save_session_store,
+    update_session,
+)
+
+
+def message_to_json(message: Message) -> dict[str, Any]:
+    return {"role": message.role, "content": message.content}
+
+
+def message_text(message: Message) -> str:
+    parts = []
+    for block in message.content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+    return "\n".join(part for part in parts if part)
+
+
+def session_title(history: list[Message], fallback: str) -> str:
+    for message in history:
+        if message.role != "user":
+            continue
+        text = _one_line(message_text(message))
+        if text:
+            return _truncate(text, 42)
+    for message in history:
+        text = _one_line(message_text(message))
+        if text:
+            return _truncate(text, 42)
+    return fallback
+
+
+def session_preview(history: list[Message]) -> str:
+    for message in reversed(history):
+        text = _one_line(message_text(message))
+        if text:
+            return _truncate(text, 96)
+    return ""
+
+
+def session_search_text(history: list[Message]) -> str:
+    parts = [_one_line(message_text(message)) for message in history]
+    return "\n".join(part for part in parts if part)[:6000].lower()
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+@dataclass
+class WebSession:
+    session_id: str
+    transcript_path: Path
+    history: list[Message]
+    writer: TranscriptWriter
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_turn_id: str | None = None
+
+
+@dataclass
+class SessionSummary:
+    history: list[Message]
+    msg_count: int
+    comp_count: int
+    mtime_ns: int
+
+
+class WebSessionManager:
+    def __init__(self, *, session_dir: Path, store_path: Path, model: str, cwd: str = "") -> None:
+        self.session_dir = session_dir
+        self.store_path = store_path
+        self.model = model
+        self.cwd = cwd
+        self._loaded: dict[str, WebSession] = {}
+        self._summary_cache: dict[str, SessionSummary] = {}
+
+    def list(self) -> list[dict[str, Any]]:
+        store = load_session_store(self.store_path)
+        last_id = store.get("lastSessionId")
+        result = []
+        for item in list_sessions(store):
+            history, actual_msg_count, actual_comp_count = self._summary_history_and_counts(item.session_id)
+            if actual_msg_count == 0:
+                continue
+            result.append({
+                "session_id": item.session_id,
+                "title": session_title(history, item.session_id[:8]),
+                "preview": session_preview(history),
+                "search_text": session_search_text(history),
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+                "model": item.model,
+                "message_count": actual_msg_count,
+                "compaction_count": actual_comp_count,
+                "current": item.session_id == last_id,
+            })
+        return result
+
+    def create(self) -> WebSession:
+        session_id = new_session_id()
+        path = self.session_dir / f"{session_id}.jsonl"
+        writer = TranscriptWriter(path)
+        writer.start(model=self.model, cwd=self.cwd, session_id=session_id)
+        session = WebSession(session_id=session_id, transcript_path=path, history=[], writer=writer)
+        self._loaded[session_id] = session
+        self._summary_cache.pop(session_id, None)
+        self.save_metadata(session)
+        return session
+
+    def get_or_load(self, session_id: str | None = None) -> WebSession:
+        if not session_id:
+            store = load_session_store(self.store_path)
+            session_id = store.get("lastSessionId")
+            if not session_id:
+                return self.create()
+            if session_id not in self._loaded and self._load_existing(session_id) is None:
+                for item in list_sessions(store):
+                    if item.session_id in self._loaded or self._load_existing(item.session_id) is not None:
+                        session_id = item.session_id
+                        break
+                else:
+                    return self.create()
+        if session_id in self._loaded:
+            return self._loaded[session_id]
+
+        loaded = self._load_existing(session_id)
+        if loaded is None:
+            raise KeyError(f"session not found or transcript is invalid: {session_id}")
+        canonical_id, path, history, msg_count, comp_count, last_msg_id = loaded
+        writer = TranscriptWriter.resume(path, canonical_id, msg_count, comp_count, last_msg_id)
+        session = WebSession(session_id=canonical_id, transcript_path=path, history=history, writer=writer)
+        self._loaded[canonical_id] = session
+        self.save_metadata(session)
+        return session
+
+    def select(self, session_id: str) -> WebSession:
+        session = self.get_or_load(session_id)
+        self.save_metadata(session)
+        return session
+
+    async def clear(self, session_id: str) -> WebSession:
+        session = self.get_or_load(session_id)
+        if session.active_turn_id:
+            raise RuntimeError("cannot clear a session while a turn is running")
+        async with session.lock:
+            session.history.clear()
+            session.writer.clear()
+            self._summary_cache.pop(session.session_id, None)
+            self.save_metadata(session)
+        return session
+
+    def save_metadata(self, session: WebSession) -> None:
+        store = load_session_store(self.store_path)
+        update_session(
+            store,
+            session.session_id,
+            model=self.model,
+            message_count=session.writer.message_count,
+            compaction_count=session.writer.compaction_count,
+        )
+        save_session_store(self.store_path, store)
+        self._summary_cache.pop(session.session_id, None)
+
+    def history_json(self, session: WebSession) -> list[dict[str, Any]]:
+        return [message_to_json(message) for message in session.history]
+
+    def _summary_history_and_counts(self, session_id: str) -> tuple[list[Message], int, int]:
+        if session_id in self._loaded:
+            session = self._loaded[session_id]
+            return session.history, session.writer.message_count, session.writer.compaction_count
+        path = self.session_dir / f"{session_id}.jsonl"
+        summary = self._cached_summary(path)
+        if summary is None:
+            return [], 0, 0
+        return summary.history, summary.msg_count, summary.comp_count
+
+    def _load_existing(
+        self,
+        session_id: str,
+    ) -> tuple[str, Path, list[Message], int, int, str] | None:
+        direct_path = self.session_dir / f"{session_id}.jsonl"
+        direct = self._read_transcript(direct_path)
+        if direct is not None:
+            history, _header_id, msg_count, comp_count, last_msg_id = direct
+            return session_id, direct_path, history, msg_count, comp_count, last_msg_id
+
+        # Compatibility for earlier WebUI builds that accidentally wrote
+        # transcript header IDs into sessions.json. Those IDs have no matching
+        # file, but can be resolved by scanning transcript headers.
+        for path in self.session_dir.glob("*.jsonl"):
+            loaded = self._read_transcript(path)
+            if loaded is None:
+                continue
+            history, header_id, msg_count, comp_count, last_msg_id = loaded
+            if header_id == session_id:
+                return path.stem, path, history, msg_count, comp_count, last_msg_id
+        return None
+
+    def _read_transcript(self, path: Path) -> tuple[list[Message], str, int, int, str] | None:
+        history, loaded_id, msg_count, comp_count, last_msg_id = TranscriptReader(path).load_history()
+        if not loaded_id:
+            return None
+        return history, loaded_id, msg_count, comp_count, last_msg_id
+
+    def _cached_summary(self, path: Path) -> SessionSummary | None:
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        cached = self._summary_cache.get(path.stem)
+        if cached and cached.mtime_ns == mtime_ns:
+            return cached
+        loaded = self._read_transcript(path)
+        if loaded is None:
+            self._summary_cache.pop(path.stem, None)
+            return None
+        history, _loaded_id, msg_count, comp_count, _last_msg_id = loaded
+        summary = SessionSummary(
+            history=history,
+            msg_count=msg_count,
+            comp_count=comp_count,
+            mtime_ns=mtime_ns,
+        )
+        self._summary_cache[path.stem] = summary
+        return summary
