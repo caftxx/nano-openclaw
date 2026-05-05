@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -326,9 +328,26 @@ def _message(role: str, text: str):
     return Message(role, [{"type": "text", "text": text}])
 
 
-def test_webui_requires_token_for_non_local_host():
-    with pytest.raises(SystemExit):
-        run_webui(config_path=None, agent_id="default", host="0.0.0.0", port=8765, token=None)
+def test_webui_token_is_optional_for_non_local_host(monkeypatch: pytest.MonkeyPatch):
+    calls = []
+    app = object()
+
+    def fake_create_app(*, config_path, agent_id, token):
+        calls.append(("create_app", config_path, agent_id, token))
+        return app
+
+    def fake_run(run_app, *, host, port):
+        calls.append(("run", run_app, host, port))
+
+    monkeypatch.setattr("nano_openclaw.webui.server.create_app", fake_create_app)
+    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=fake_run))
+
+    run_webui(config_path=None, agent_id="default", host="0.0.0.0", port=8765, token=None)
+
+    assert calls == [
+        ("create_app", None, "default", None),
+        ("run", app, "0.0.0.0", 8765),
+    ]
 
 
 def test_webui_reads_assistant_name_from_identity():
