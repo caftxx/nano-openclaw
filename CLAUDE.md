@@ -30,6 +30,12 @@ uv run python -m nano_openclaw --sessions
 
 # 指定 agent（session 隔离）
 uv run python -m nano_openclaw --agent coder
+
+# 启动 WebUI（浏览器界面）
+uv run python -m nano_openclaw web
+
+# WebUI 指定端口和监听地址
+uv run python -m nano_openclaw web --port 8765 --host 127.0.0.1
 ```
 
 测试不需要 API key，纯本地工具单测。
@@ -60,8 +66,9 @@ nano-openclaw 是 OpenClaw agent loop 的最小化 Python 复刻，用于教学�
 - **`subagent/`** — 后台子 agent runner + registry + completion auto-announce
 - **`memory/`** — daily memory 加载 + memory_get/search 工具 + Active Memory 自动召回 + Dreaming 后台整合
 - **`mcp/`** — MCP 服务器连接管理（stdio/SSE/streamable-http）→ 工具注册
-- **`skills/`** — SKILL.md 加载 + slash commands + model-invokable Skill tool
+- **`skills/`** — SKILL.md 加载 + slash commands + model-invokable Skill tool + `skill_install` 隔离依赖安装
 - **`workspace/`** — bootstrap 文件加载（AGENTS.md 等 8 个标准文件）+ budget 截断
+- **`webui/`** — FastAPI WebUI 服务器 + WebSocket 实时通信 + 浏览器界面（附件、主题偏好、活动历史回放）
 
 ### Provider Transport
 

@@ -47,7 +47,15 @@ uv run python -m nano_openclaw --sessions
 
 # 指定 agent（session 隔离）
 uv run python -m nano_openclaw --agent coder
+
+# 启动 WebUI（浏览器界面，默认 http://127.0.0.1:8765）
+uv run python -m nano_openclaw web
+
+# WebUI 指定端口和地址
+uv run python -m nano_openclaw web --port 8765 --host 127.0.0.1
 ```
+
+**WebUI**：运行 `uv run python -m nano_openclaw web` 后在浏览器打开 `http://127.0.0.1:8765`。WebUI 支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮色/暗色/跟随系统主题，移动端自适应。
 
 **配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。内置插件（memory、web、subagent、mcp）始终加载，无法通过 plugins.load 禁用。详见下方配置说明。
 
@@ -203,6 +211,10 @@ uv run python -m nano_openclaw --agent coder
 | `external_content.py::wrap_external_content` | `src/security/external-content.ts`（<EXTERNAL_UNTRUSTED_CONTENT> 边界标记 + LLM token 清洗） |
 | `cli.py::repl`                             | `src/cli/tui-cli.ts:8-63` → `src/tui/tui.ts:1-52`                                    |
 | `cli.py::_render_tool_result`              | `src/tui/components/tool-execution.ts:55-137`                                        |
+| `webui/server.py`                          | nano-openclaw 新增（OpenClaw 对应 native 控制面板）；FastAPI + WebSocket 实时事件流   |
+| `webui/sessions.py`                        | nano-openclaw 新增；WebUI session 状态管理 + 活动历史持久化                          |
+| `webui/approvals.py`                       | nano-openclaw 新增；WebApprovalBroker — 通过 WebSocket 做工具审批                    |
+| `webui/runtime.py`                         | nano-openclaw 新增；AgentRuntime + 关联 approval manager 的生命周期管理               |
 | `session/types.py`                         | `src/config/sessions/types.ts`（SessionEntry 数据结构）                               |
 | `session/paths.py`                         | `src/config/sessions/paths.ts`（Session 路径解析）                                    |
 | `session/store.py`                         | `src/config/sessions/store.ts`（sessions.json 管理）                                  |
@@ -242,7 +254,8 @@ uv run python -m nano_openclaw --agent coder
 28. **`session/transcript.py`** — JSONL 转录文件读写。
 29. **`session/truncate.py`** — tool_result 截断。
 30. **`cli.py`** — 给人看的部分。理解 `on_event` 回调如何把"loop 内部状态"暴露给"渲染层"。包含 Windows msvcrt 原生 Esc watcher 作为 prompt_toolkit 不可用时的降级方案。
-31. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL。
+31. **`webui/`** — 浏览器界面替代方案。先看 `runtime.py` 了解 AgentRuntime 生命周期，再看 `sessions.py` 理解 WebSessionManager 如何管理 session 切换和活动历史持久化，然后看 `approvals.py` 的 WebApprovalBroker（WebSocket 审批替代 CLI 阻塞提示），最后看 `server.py` 理解 FastAPI 路由、WebSocket 实时事件流和斜杠命令处理。启动方式：`uv run python -m nano_openclaw web`。
+32. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL 或 WebUI。
 
 ## 三条不变量
 

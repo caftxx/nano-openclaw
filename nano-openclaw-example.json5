@@ -311,6 +311,31 @@
   // },
 
   // ==========================================
+  // Skills 配置（技能加载与依赖安装）
+  // ==========================================
+  // skills 系统从工作目录和 stateDir 扫描 SKILL.md 文件，注册为斜杠命令和模型工具。
+  // 取消注释并修改以自定义：
+  // skills: {
+  //   // 禁用或覆盖特定技能
+  //   entries: {
+  //     "some-skill": { enabled: false },
+  //     "api-skill": { apiKey: "${API_SKILL_KEY}" },
+  //   },
+  //   // 加载配置
+  //   load: {
+  //     extraDirs: ["~/.skills", "./custom-skills"],
+  //     maxSkillsInPrompt: 150,
+  //   },
+  //   // Python 依赖隔离安装（通过 skill_install 工具）
+  //   install: {
+  //     pythonIsolation: "venv",   // 安装到隔离 venv（默认）
+  //     allowGlobalPip: false,     // 禁止裸 pip 写入全局环境
+  //   },
+  //   // 限制内置技能白名单（null = 允许所有）
+  //   // allowBundled: ["frontend-design", "brainstorming"],
+  // },
+
+  // ==========================================
   // MCP 配置（外部工具服务器，默认关闭）
   // ==========================================
   // MCP（Model Context Protocol）用于连接外部工具服务器。
