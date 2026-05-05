@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nano-openclaw</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260505-markdown" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-skill" />
   </head>
   <body>
     <div class="shell">
@@ -26,18 +26,14 @@
             <div id="sessionTitle" class="session-title">No session</div>
             <div id="workspaceLabel" class="workspace"></div>
           </div>
-          <div class="actions">
-            <button id="compactBtn">Compact</button>
-            <button id="clearBtn">Clear</button>
-            <button id="stopBtn" disabled>Stop</button>
-          </div>
+          <div class="actions"></div>
         </header>
 
         <section id="messages" class="messages"></section>
 
         <form id="composer" class="composer">
           <textarea id="prompt" rows="3" placeholder="Ask nano-openclaw"></textarea>
-          <button id="sendBtn" type="submit">Send</button>
+          <button id="sendBtn" type="submit" title="Send">↑</button>
         </form>
       </main>
 
@@ -67,6 +63,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260505-markdown"></script>
+    <script src="/static/app.js?v=20260505-skill"></script>
   </body>
 </html>

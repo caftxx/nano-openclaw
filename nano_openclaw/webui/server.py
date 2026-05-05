@@ -51,8 +51,6 @@ from nano_openclaw.webui.runtime import AgentRuntime, build_agent_runtime, build
 from nano_openclaw.webui.sessions import WebSessionManager, message_text
 
 
-LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
 
 class ChatRequest(BaseModel):
     session_id: str | None = None
@@ -241,6 +239,31 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue
                     await emit({"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()})
+                elif msg_type == "command.run":
+                    cmd_text = message.get("command", "")
+                    session_id_cmd = message.get("session_id")
+                    cmd_result = await handle_slash_command(cmd_text, runtime, manager, session_id_cmd)
+                    if cmd_result is None:
+                        # Not a built-in command (e.g. a skill) — route to agent loop like CLI does
+                        asyncio.create_task(_run_turn(
+                            runtime=runtime,
+                            manager=manager,
+                            send=send,
+                            approvals=approvals,
+                            active_tokens=active_tokens,
+                            session_id=session_id_cmd,
+                            text=cmd_text,
+                        ))
+                    else:
+                        result_text, should_refresh = cmd_result
+                        await emit({"type": "command.result", "command": cmd_text, "text": result_text})
+                        if should_refresh:
+                            refreshed = manager.get_or_load(session_id_cmd)
+                            await emit({
+                                "type": "session.updated",
+                                "session": _session_payload(manager, refreshed),
+                                "sessions": manager.list(),
+                            })
                 elif msg_type == "session.refresh":
                     try:
                         session = manager.get_or_load(message.get("session_id"))
@@ -521,6 +544,440 @@ def _clone_registry(registry: ToolRegistry) -> ToolRegistry:
     return clone
 
 
+async def handle_slash_command(
+    cmd: str,
+    runtime: AgentRuntime,
+    manager: WebSessionManager,
+    session_id: str | None,
+) -> tuple[str, bool] | None:
+    """Handle a slash command. Returns (markdown_text, should_refresh_session), or None to route to agent loop."""
+    parts = cmd.strip().lstrip("/").split()
+    verb = parts[0].lower() if parts else ""
+    args = parts[1:]
+
+    if verb == "help":
+        hook_registry = runtime.registry.hook_registry()
+        has_memory = (
+            runtime.registry.get("memory_get") is not None
+            and runtime.registry.get("memory_search") is not None
+        )
+        has_subagents = (
+            runtime.registry.get("sessions_spawn") is not None
+            or runtime.registry.get("subagents") is not None
+        )
+        lines = [
+            "## Commands",
+            "",
+            "| Command | Description |",
+            "| --- | --- |",
+            "| `/help` | Show this help |",
+            "| `/context` | Context window usage |",
+            "| `/compact` | Compact session history |",
+            "| `/clear` | Clear session history |",
+            "| `/save` | Save current session |",
+            "| `/skills` | List available skills |",
+            "| `/plugins` | List loaded plugins |",
+            "| `/hooks` | Registered hook handlers |",
+        ]
+        if has_subagents:
+            lines.append("| `/subagents [list\\|all]` | Active subagent runs |")
+        if has_memory:
+            lines.append("| `/active-memory [status\\|on\\|off\\|mode\\|style]` | Active memory config |")
+            lines.append("| `/dreaming [status\\|on\\|off\\|run]` | Dreaming config |")
+        return "\n".join(lines), False
+
+    if verb == "context":
+        # Mirror _show_context() in cli.py
+        session = manager.get_or_load(session_id)
+        tokens = estimate_tokens(session.history)
+        budget = runtime.cfg.context_budget
+        threshold_ratio = getattr(runtime.cfg, "context_threshold", 0.8)
+        threshold = int(budget * threshold_ratio)
+        usage_pct = (tokens / budget) * 100 if budget > 0 else 0
+        window = getattr(runtime.cfg, "context_window", 0)
+
+        if usage_pct < 50:
+            level = "🟢"
+        elif usage_pct < threshold_ratio * 100:
+            level = "🟡"
+        else:
+            level = "🔴"
+
+        lines = [
+            "## Context Status",
+            f"- **Context usage**: {level} {tokens:,} / {budget:,} tokens",
+            f"- **Usage**: {usage_pct:.1f}%",
+            f"- **Threshold**: {threshold:,} tokens ({threshold_ratio * 100:.0f}%)",
+        ]
+        if window > 0:
+            lines.append(f"- **Model window**: {window:,} tokens")
+        lines.append(f"- **Messages**: {len(session.history)}")
+        return "\n".join(lines), False
+
+    if verb == "skills":
+        # Mirror _list_skills() in cli.py
+        if not runtime.cfg.workspace_dir:
+            return "## Skills\n\nNo workspace configured — skills unavailable.", False
+        try:
+            from nano_openclaw.skills import filter_eligible_skills, filter_visible_skills, get_or_load_skills
+            all_entries = get_or_load_skills(
+                runtime.cfg.workspace_dir,
+                runtime.cfg.session_key,
+                extra_dirs=runtime.cfg.extra_skill_dirs,
+                max_bytes=runtime.cfg.max_skill_file_bytes,
+            )
+        except Exception as exc:
+            return f"## Skills\n\nError loading skills: {exc}", False
+
+        if not all_entries:
+            return "## Skills\n\nNo skills found.", False
+
+        eligible = filter_eligible_skills(all_entries, skill_filter=runtime.cfg.skill_filter)
+        visible = filter_visible_skills(eligible)
+
+        lines = [
+            "## Skills",
+            "",
+            "| Name | Source | Status | In Prompt | Reason |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for entry in sorted(all_entries, key=lambda e: e.skill.name):
+            skill = entry.skill
+            status = "eligible" if entry.eligible else "blocked"
+            if skill in visible:
+                in_prompt = "yes"
+            elif entry.eligible:
+                in_prompt = "no (hidden)"
+            else:
+                in_prompt = "—"
+            reason = entry.eligibilityReason or ""
+            if skill in visible:
+                reason = ""
+            elif not reason and not entry.eligible:
+                reason = "gating failed"
+            reason = reason[:40] + ("…" if len(reason) > 40 else "")
+            lines.append(f"| `{skill.name}` | {skill.source} | {status} | {in_prompt} | {reason} |")
+
+        eligible_count = len(eligible)
+        visible_count = len(visible)
+        blocked_count = len(all_entries) - eligible_count
+        lines += [
+            "",
+            f"*{eligible_count} eligible, {visible_count} in prompt, {blocked_count} blocked*",
+        ]
+        if runtime.cfg.skill_filter:
+            lines.append(f"*Skill filter: {', '.join(runtime.cfg.skill_filter)}*")
+        else:
+            lines.append("*Skill filter: unrestricted*")
+        return "\n".join(lines), False
+
+    if verb == "plugins":
+        # Mirror _list_plugins() in cli.py
+        hook_registry = runtime.registry.hook_registry()
+        if hook_registry is None:
+            return "## Plugins\n\nNo plugins loaded.", False
+        try:
+            plugins = hook_registry.plugins()
+        except Exception:
+            plugins = []
+        if not plugins:
+            return "## Plugins\n\nNo plugins loaded.", False
+
+        lines = [
+            "## Plugins",
+            "",
+            "| ID | Name | Source | Entry | Tools | Hooks |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for p in sorted(plugins, key=lambda x: x.id):
+            tools = ", ".join(f"`{t}`" for t in p.tools) if p.tools else "—"
+            hooks = ", ".join(p.hooks) if p.hooks else "—"
+            entry_short = p.entry[-28:] if len(p.entry) > 28 else p.entry
+            lines.append(f"| `{p.id}` | {p.name} | {p.source} | {entry_short} | {tools} | {hooks} |")
+        n = len(plugins)
+        lines += ["", f"*{n} loaded plugin{'s' if n != 1 else ''}*"]
+        return "\n".join(lines), False
+
+    if verb == "hooks":
+        # Mirror _list_hooks() in cli.py
+        hook_registry = runtime.registry.hook_registry()
+        if hook_registry is None:
+            return "## Hooks\n\nNo hooks registered.", False
+        try:
+            hooks_by_event = hook_registry.hooks_by_event()
+        except Exception:
+            hooks_by_event = {}
+        if not hooks_by_event:
+            return "## Hooks\n\nNo hooks registered.", False
+
+        lines = [
+            "## Hooks",
+            "",
+            "| Event | Handlers | Plugins | Priorities |",
+            "| --- | --- | --- | --- |",
+        ]
+        total = 0
+        for event in sorted(hooks_by_event):
+            hooks = hooks_by_event[event]
+            total += len(hooks)
+            plugin_str = ", ".join(f"{h.plugin_name} ({h.plugin_id})" for h in hooks)
+            priorities = ", ".join(str(h.priority) for h in hooks)
+            lines.append(f"| `{event}` | {len(hooks)} | {plugin_str} | {priorities} |")
+        ne = len(hooks_by_event)
+        lines += ["", f"*{total} handler{'s' if total != 1 else ''} across {ne} event{'s' if ne != 1 else ''}*"]
+        return "\n".join(lines), False
+
+    if verb == "save":
+        # Mirror _save_session_now() in cli.py
+        session = manager.get_or_load(session_id)
+        manager.save_metadata(session)
+        return f"session `{session.session_id[:8]}…` saved", False
+
+    if verb == "subagents":
+        # Mirror _handle_subagents_command() in cli.py — full sub-command support
+        try:
+            from nano_openclaw.subagent import get_runner, SubagentStatus
+            runner = get_runner()
+            if runner is None:
+                return "## Subagents\n\nRunner not initialized.", False
+
+            sub_cmd = args[0].lower() if args else "list"
+
+            _status_icons = {
+                "pending": "⏳", "running": "🔄", "completed": "✓",
+                "error": "✗", "timeout": "⏱", "killed": "💀",
+            }
+
+            def _fmt_run(run: Any) -> str:
+                elapsed_ms = getattr(run, "elapsed_ms", None)
+                if elapsed_ms:
+                    s = elapsed_ms / 1000
+                    elapsed = f"{int(s/60)}m {int(s%60)}s" if s >= 60 else f"{s:.1f}s"
+                else:
+                    elapsed = "—"
+                task = getattr(run, "task", "?")
+                label = getattr(run, "label", None) or (task[:40] + ("…" if len(task) > 40 else ""))
+                run_id = getattr(run, "run_id", str(run))
+                status = getattr(run, "status", "?")
+                sv = status.value if hasattr(status, "value") else str(status)
+                icon = _status_icons.get(sv, "?")
+                return f"| `{run_id}` | {label} | {icon} {sv} | {elapsed} |"
+
+            if sub_cmd == "kill":
+                target = args[1].lower() if len(args) > 1 else ""
+                if not target:
+                    return "Usage: `/subagents kill <run_id|all>`", False
+                if target == "all":
+                    killed = await runner.kill_all()
+                    if killed:
+                        return f"Killed {len(killed)} subagent run(s): {', '.join(f'`{k}`' for k in killed)}", False
+                    return "No active subagent runs to kill.", False
+                success = await runner.kill(target)
+                if success:
+                    return f"Killed subagent run: `{target}`", False
+                return f"Run `{target}` not found or already terminated.", False
+
+            show_all = sub_cmd == "all"
+            runs: list[Any] = runner.registry.list_all() if show_all else runner.registry.list_active()
+            title = "All Subagent Runs" if show_all else "Active Subagent Runs"
+
+            if not runs:
+                return f"## {title}\n\nNo {'subagent runs' if show_all else 'active subagent runs'}.", False
+
+            lines = [
+                f"## {title}", "",
+                "| Run ID | Task | Status | Elapsed |",
+                "| --- | --- | --- | --- |",
+            ]
+            lines += [_fmt_run(r) for r in runs]
+            if not show_all:
+                lines.append("\n*Use `/subagents kill <run_id>` to stop a run.*")
+            return "\n".join(lines), False
+        except Exception as exc:
+            return f"## Subagents\n\nUnavailable: {exc}", False
+
+    if verb == "active-memory":
+        # Mirror _handle_active_memory_command() in cli.py — full sub-command support
+        from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
+
+        cfg_am = getattr(runtime.cfg, "active_memory_config", None)
+        if cfg_am is None:
+            cfg_am = ActiveMemoryConfig(enabled=False)
+            runtime.cfg.active_memory_config = cfg_am
+
+        sub_cmd = args[0].lower() if args else "status"
+
+        if sub_cmd == "on":
+            cfg_am.enabled = True
+            return "Active Memory: enabled", False
+
+        if sub_cmd == "off":
+            cfg_am.enabled = False
+            return "Active Memory: disabled", False
+
+        if sub_cmd == "mode":
+            if len(args) < 2:
+                valid = ", ".join(m.value for m in QueryMode)
+                return f"Usage: `/active-memory mode <mode>`\n\nOptions: {valid}", False
+            try:
+                mode = QueryMode(args[1].lower())
+                cfg_am.query_mode = mode
+                return f"Query mode set to: `{mode.value}`", False
+            except ValueError:
+                valid = ", ".join(m.value for m in QueryMode)
+                return f"Invalid mode. Options: {valid}", False
+
+        if sub_cmd == "style":
+            if len(args) < 2:
+                valid = ", ".join(s.value for s in PromptStyle)
+                return f"Usage: `/active-memory style <style>`\n\nOptions: {valid}", False
+            try:
+                style = PromptStyle(args[1].lower())
+                cfg_am.prompt_style = style
+                return f"Prompt style set to: `{style.value}`", False
+            except ValueError:
+                valid = ", ".join(s.value for s in PromptStyle)
+                return f"Invalid style. Options: {valid}", False
+
+        # Default / "status": show full config (same as CLI)
+        state_str = "enabled" if cfg_am.enabled else "disabled"
+        query_mode = getattr(cfg_am.query_mode, "value", str(cfg_am.query_mode))
+        prompt_style = getattr(cfg_am.prompt_style, "value", str(cfg_am.prompt_style))
+        lines = [
+            "## Active Memory Status",
+            f"- **State**: {state_str}",
+            f"- **Query Mode**: `{query_mode}`",
+            f"- **Prompt Style**: `{prompt_style}`",
+            f"- **Timeout**: {cfg_am.timeout_ms}ms",
+            f"- **User Turns**: {cfg_am.recent_user_turns} / **Assistant Turns**: {cfg_am.recent_assistant_turns}",
+        ]
+        return "\n".join(lines), False
+
+    if verb == "dreaming":
+        # Mirror _handle_dreaming_command() in cli.py — full sub-command support
+        from nano_openclaw.memory.dreaming import DreamingConfig, get_dreaming_status
+
+        dc = getattr(runtime.cfg, "dreaming_config", None)
+        workspace_dir = str(runtime.cfg.workspace_dir) if runtime.cfg.workspace_dir else None
+
+        if dc is None:
+            dc = DreamingConfig(enabled=False)
+            runtime.cfg.dreaming_config = dc
+        if not workspace_dir:
+            return "## Dreaming\n\nNo workspace directory configured.", False
+
+        sub_cmd = args[0].lower() if args else "status"
+
+        if sub_cmd == "on":
+            dc.enabled = True
+            return "Dreaming: enabled", False
+
+        if sub_cmd == "off":
+            dc.enabled = False
+            return "Dreaming: disabled", False
+
+        if sub_cmd == "run":
+            try:
+                from nano_openclaw.memory.dreaming import run_dreaming
+                result = await run_dreaming(workspace_dir, dc, runtime.cfg.model, api_client=runtime.client)
+                lines = [
+                    "## Dreaming",
+                    f"Sweep complete in {result.elapsed_ms}ms — "
+                    f"candidates: {len(result.candidates)}, promoted: {len(result.promoted)}",
+                ]
+                for entry, score, content in result.promoted:
+                    preview = content[:60].replace("\n", " ")
+                    lines.append(f"- `{entry.path}:{entry.start_line}` (score={score:.2f}) {preview}…")
+                return "\n".join(lines), False
+            except Exception as exc:
+                return f"## Dreaming\n\nError: {exc}", False
+
+        # Default / "status": show runtime stats
+        try:
+            st = get_dreaming_status(workspace_dir, dc)
+        except Exception as exc:
+            return f"## Dreaming\n\nError: {exc}", False
+
+        state_str = "enabled" if st["enabled"] else "disabled"
+        last_run = st.get("last_run_at") or "never"
+        due_text = " *(due)*" if st.get("due") else ""
+        lines = [
+            "## Dreaming Status",
+            f"- **State**: {state_str}",
+            f"- **Frequency**: `{st.get('frequency', '?')}`",
+            f"- **Last Run**: {last_run}{due_text}",
+            (
+                f"- **Tracked**: {st.get('total_tracked', 0)} entries"
+                f" | **Active**: {st.get('active_candidates', 0)}"
+                f" | **Promoted**: {st.get('promoted_total', 0)}"
+            ),
+        ]
+        top = st.get("top_candidates") or []
+        if top:
+            lines += ["", "**Top candidates:**"]
+            for c in top[:5]:
+                lines.append(
+                    f"- `{c['path']}:{c['start_line']}` — "
+                    f"score={c['score']:.2f}, recalls={c['recall_count']}, "
+                    f"queries={c['unique_queries']}"
+                )
+        return "\n".join(lines), False
+
+    if verb == "compact":
+        # Mirror _manual_compact() in cli.py
+        session = manager.get_or_load(session_id)
+        if session.active_turn_id:
+            return "## Compact\n\nCannot compact while a turn is active.", False
+        async with session.lock:
+            if len(session.history) < runtime.cfg.context_recent_turns * 2:
+                return "## Compact\n\n(not enough history to compact)", False
+            await run_pre_compaction_memory_flush(
+                client=runtime.client,
+                cfg=replace(runtime.cfg, session_key=session.session_id),
+                history=session.history,
+                registry=_clone_registry(runtime.registry),
+                force=True,
+            )
+            _, summary = await compact_if_needed(
+                session.history,
+                budget=1,
+                client=runtime.client,
+                model=runtime.cfg.model,
+                api=runtime.cfg.api,
+                threshold_ratio=1.0,
+                recent_turns=runtime.cfg.context_recent_turns,
+            )
+            if summary:
+                session.writer.append_compaction(summary)
+                manager.save_metadata(session)
+                tokens_after = estimate_tokens(session.history)
+                preview = summary[:400] + ("…" if len(summary) > 400 else "")
+                lines = [
+                    "## Compact",
+                    "",
+                    "Context compacted.",
+                    "",
+                    f"- **Tokens after**: ~{tokens_after:,}",
+                    f"- **Messages after**: {len(session.history)}",
+                    "",
+                    f"**Summary**:\n\n{preview}",
+                ]
+                return "\n".join(lines), True
+            return "## Compact\n\n(compaction not needed — history too short)", False
+
+    if verb == "clear":
+        session = manager.get_or_load(session_id)
+        if session.active_turn_id:
+            return "## Clear\n\nCannot clear while a turn is active.", False
+        try:
+            await manager.clear(session.session_id)
+            return "(history cleared)", True
+        except RuntimeError as exc:
+            return f"## Clear\n\nError: {exc}", False
+
+    return None  # not a built-in — caller should route to agent loop
+
+
 def _wire_spawn_context(registry: ToolRegistry, runtime: AgentRuntime, session_id: str) -> None:
     if registry.get("sessions_spawn") is None:
         return
@@ -544,8 +1001,6 @@ def run_webui(
     port: int,
     token: str | None,
 ) -> None:
-    if host not in LOCAL_HOSTS and not token:
-        raise SystemExit("error: --token is required when --host is not localhost")
     import uvicorn
     app = create_app(config_path=config_path, agent_id=agent_id, token=token)
     uvicorn.run(app, host=host, port=port)

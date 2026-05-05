@@ -61,6 +61,19 @@ function send(type, payload = {}) {
   state.ws.send(JSON.stringify({ type, ...payload }));
 }
 
+function updateSendBtn() {
+  const btn = $("sendBtn");
+  if (state.activeTurnId) {
+    btn.textContent = "⬛";
+    btn.title = "Cancel";
+    btn.classList.add("stop-mode");
+  } else {
+    btn.textContent = "↑";
+    btn.title = "Send";
+    btn.classList.remove("stop-mode");
+  }
+}
+
 function handleEvent(event) {
   switch (event.type) {
     case "state.updated":
@@ -73,8 +86,10 @@ function handleEvent(event) {
       renderHistory();
       break;
     case "chat.accepted":
+      // Remove pending slash-command block if a skill was routed to the agent loop
+      document.querySelectorAll(".message.command.pending").forEach((el) => el.remove());
       state.activeTurnId = event.turn_id;
-      $("stopBtn").disabled = false;
+      updateSendBtn();
       state.tools.clear();
       state.thinkingText = "";
       state._pendingTextLen = 0;
@@ -131,6 +146,7 @@ function handleEvent(event) {
     case "turn.done":
       flushPendingText();
       state.activeTurnId = null;
+      updateSendBtn();
       if (state.assistantNode) {
         if (!state._assistantRawText.trim()) {
           state.assistantNode.closest(".message")?.remove();
@@ -140,7 +156,6 @@ function handleEvent(event) {
         state.assistantNode = null;
       }
       state._assistantRawText = "";
-      $("stopBtn").disabled = true;
       state.currentSession = event.session || state.currentSession;
       state.sessions = event.sessions || state.sessions;
       renderSessions();
@@ -148,13 +163,13 @@ function handleEvent(event) {
       break;
     case "turn.cancelled":
       state.activeTurnId = null;
+      updateSendBtn();
       state.assistantNode = null;
-      $("stopBtn").disabled = true;
       addEvent(event.type, "Turn cancelled", event);
       break;
     case "turn.error":
       state.activeTurnId = null;
-      $("stopBtn").disabled = true;
+      updateSendBtn();
       addEvent(event.type, event.message || "unknown error", event);
       break;
     case "session.error":
@@ -165,6 +180,17 @@ function handleEvent(event) {
     case "compaction":
       addEvent(event.type, event.summary || "context compacted", event);
       break;
+    case "command.result": {
+      const pending = document.querySelector(".message.command.pending");
+      if (pending && pending.dataset.command === event.command) {
+        pending.classList.remove("pending");
+        pending.querySelector(".bubble").innerHTML = renderMarkdown(event.text || "");
+        scrollMessages(true);
+      } else {
+        appendSlashResult(event.command, event.text || "");
+      }
+      break;
+    }
     default:
       if (event.type?.includes("status") || event.type?.includes("invoked") || event.type?.includes("memory")) {
         addEvent(event.type, summarizeEvent(event), event);
@@ -245,6 +271,18 @@ function appendMessage(role, text) {
   $("messages").appendChild(wrap);
   scrollMessages();
   return bubble;
+}
+
+function appendSlashResult(command, text) {
+  const wrap = document.createElement("article");
+  wrap.className = "message command";
+  wrap.dataset.command = command;
+  wrap.innerHTML = `<div class="role">${escapeHtml(command)}</div><div class="bubble"></div>`;
+  const bubble = wrap.querySelector(".bubble");
+  bubble.innerHTML = text ? renderMarkdown(text) : "";
+  $("messages").appendChild(wrap);
+  scrollMessages(true);
+  return wrap;
 }
 
 function displayRole(role) {
@@ -376,11 +414,39 @@ function isTouchViewport() {
   return window.matchMedia("(pointer: coarse)").matches || window.innerWidth <= 720;
 }
 
+$("sendBtn").onclick = (event) => {
+  if (state.activeTurnId) {
+    event.preventDefault();
+    send("turn.cancel", { turn_id: state.activeTurnId });
+  }
+};
+
+const BUILTIN_COMMANDS = new Set([
+  "help", "context", "compact", "clear", "save",
+  "skills", "plugins", "hooks", "subagents", "active-memory", "dreaming",
+]);
+
 $("composer").onsubmit = (event) => {
   event.preventDefault();
   const text = $("prompt").value.trim();
-  if (!text || !state.currentSession) return;
+  if (!text) return;
   $("prompt").value = "";
+
+  if (text.startsWith("/")) {
+    const verb = text.slice(1).split(/\s+/)[0].toLowerCase();
+    if (BUILTIN_COMMANDS.has(verb)) {
+      const msgEl = appendSlashResult(text, "…");
+      msgEl.classList.add("pending");
+      send("command.run", {
+        command: text,
+        session_id: state.currentSession?.session_id ?? null,
+      });
+      return;
+    }
+    // Unknown slash command (skills etc.) → fall through to agent loop, same as CLI
+  }
+
+  if (!state.currentSession) return;
   send("chat.send", { session_id: state.currentSession.session_id, text });
 };
 
@@ -390,33 +456,12 @@ $("prompt").onkeydown = (event) => {
   $("composer").requestSubmit();
 };
 
-$("stopBtn").onclick = () => {
-  if (state.activeTurnId) send("turn.cancel", { turn_id: state.activeTurnId });
-};
-
 $("newSessionBtn").onclick = async () => {
   const data = await api("/api/sessions", { method: "POST", body: "{}" });
   state.sessions = data.sessions;
   state.currentSession = data.session;
   renderSessions();
   renderHistory();
-};
-
-$("clearBtn").onclick = async () => {
-  if (!state.currentSession) return;
-  const id = state.currentSession.session_id;
-  const data = await api(`/api/sessions/${id}/clear`, { method: "POST", body: "{}" });
-  state.sessions = data.sessions;
-  state.currentSession = data.session;
-  renderSessions();
-  renderHistory();
-};
-
-$("compactBtn").onclick = async () => {
-  if (!state.currentSession) return;
-  const id = state.currentSession.session_id;
-  const data = await api(`/api/sessions/${id}/compact`, { method: "POST", body: "{}" });
-  addEvent("compact", data.summary || data.reason || "no compaction", { type: "compact", ...data });
 };
 
 $("sessionSearch").oninput = renderSessions;
