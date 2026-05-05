@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import threading
 from pathlib import Path
@@ -178,6 +179,19 @@ async def _async_main(
     registry.console = console
 
     workspace_dir = resolve_agent_workspace_dir(config, args.agent)
+
+    # Align with openclaw gateway: switch cwd to workspace if configured.
+    # OpenClaw sets WorkingDirectory in launchd/systemd/schtasks service config.
+    # Nano-openclaw runs as a REPL, so we switch cwd at startup instead.
+    if workspace_dir:
+        try:
+            os.chdir(workspace_dir)
+        except OSError as e:
+            print(
+                f"warning: could not change cwd to {workspace_dir}: {e}",
+                file=sys.stderr,
+            )
+
     registry.set_workspace_dir(workspace_dir)
     registry.set_state_dir(state_dir)
     registry.set_allow_global_pip(config.skills.install.allowGlobalPip)
