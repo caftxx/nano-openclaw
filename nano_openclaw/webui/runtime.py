@@ -57,6 +57,10 @@ class AgentRuntime:
                 await self.dreaming_task
             except BaseException:
                 pass
+        if hasattr(self.client, "aclose"):
+            await self.client.aclose()
+        elif hasattr(self.client, "close"):
+            await self.client.close()
 
 
 async def build_agent_runtime(
