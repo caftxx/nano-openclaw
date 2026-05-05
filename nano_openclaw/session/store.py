@@ -59,6 +59,7 @@ def update_session(
     model: str = "",
     message_count: int = 0,
     compaction_count: int = 0,
+    update_time: bool = True,
 ) -> None:
     """Add or update a session entry in the store."""
     import time
@@ -67,7 +68,8 @@ def update_session(
 
     if session_id in sessions:
         entry = sessions[session_id]
-        entry["updated_at"] = now
+        if update_time:
+            entry["updated_at"] = now
         if model:
             entry["model"] = model
         entry["message_count"] = message_count

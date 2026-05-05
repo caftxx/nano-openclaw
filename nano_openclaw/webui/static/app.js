@@ -270,9 +270,10 @@ function renderSessions() {
     .forEach((session) => {
       const btn = document.createElement("button");
       btn.className = `session-item ${state.currentSession?.session_id === session.session_id ? "active" : ""}`;
+      const startDate = session.created_at ? new Date(session.created_at * 1000).toLocaleDateString() : "";
       btn.innerHTML = `<span class="session-id">${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
         <span class="session-preview">${escapeHtml(session.preview || session.session_id.slice(0, 8))}</span>
-        <span class="session-meta">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}</span>`;
+        <span class="session-meta">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}${startDate ? ` · ${startDate}` : ""}</span>`;
       btn.onclick = () => {
         send("session.select", { session_id: session.session_id });
         if (isMobileViewport()) closeDrawers();

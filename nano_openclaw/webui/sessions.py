@@ -173,7 +173,7 @@ class WebSessionManager:
             activities=activities,
         )
         self._loaded[canonical_id] = session
-        self.save_metadata(session)
+        self.save_metadata(session, update_time=False)
         return session
 
     def select(self, session_id: str) -> WebSession:
@@ -182,7 +182,7 @@ class WebSessionManager:
         if self._pending_session_id and self._pending_session_id != session.session_id:
             self._loaded.pop(self._pending_session_id, None)
             self._pending_session_id = None
-        self.save_metadata(session)
+        self.save_metadata(session, update_time=False)
         return session
 
     async def clear(self, session_id: str) -> WebSession:
@@ -197,7 +197,7 @@ class WebSessionManager:
             self.save_metadata(session)
         return session
 
-    def save_metadata(self, session: WebSession) -> None:
+    def save_metadata(self, session: WebSession, *, update_time: bool = True) -> None:
         # If this is the pending session being explicitly saved, promote it now.
         if self._pending_session_id == session.session_id:
             self._pending_session_id = None
@@ -209,6 +209,7 @@ class WebSessionManager:
             model=self.model,
             message_count=session.writer.message_count,
             compaction_count=session.writer.compaction_count,
+            update_time=update_time,
         )
         save_session_store(self.store_path, store)
         self._summary_cache.pop(session.session_id, None)
