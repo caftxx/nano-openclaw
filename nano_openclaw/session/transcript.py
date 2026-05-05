@@ -8,6 +8,7 @@ The .jsonl format uses one JSON object per line:
 - Header: {"type":"session", "version":1, "id":"uuid", ...}
 - Message: {"type":"message", "id":"msg-xxx", "role":"user", "content":[...]}
 - Compaction: {"type":"compaction", "id":"comp-xxx", "summary":"..."}
+- Activity: {"type":"activity", "turn_id":"...", "payloads":[...]}
 """
 
 from __future__ import annotations
@@ -113,6 +114,10 @@ class TranscriptWriter:
         self._compaction_count += 1
         self._append(entry)
 
+    def append_activity(self, activity: dict[str, Any]) -> None:
+        """Append WebUI-only activity metadata to the transcript."""
+        self._append_raw({"type": "activity", **activity})
+
     def clear(self) -> None:
         """Rewrite the transcript keeping only the session header; reset counters."""
         if not self.path.exists():
@@ -149,6 +154,12 @@ class TranscriptWriter:
     def _append(self, entry: TranscriptEntry) -> None:
         self._ensure_started()
         line = json.dumps(asdict(entry), ensure_ascii=False)
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    def _append_raw(self, entry: dict[str, Any]) -> None:
+        self._ensure_started()
+        line = json.dumps(entry, ensure_ascii=False)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 

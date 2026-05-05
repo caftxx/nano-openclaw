@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import secrets
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -329,8 +330,26 @@ async def _run_turn(
     token = CancellationToken()
     active_tokens[turn_id] = token
     session.active_turn_id = turn_id
+    history_len_before_turn = len(session.history)
+    activity_started_at = time.time()
+    activity_payloads: list[dict[str, Any]] = []
     turn_registry = _clone_registry(runtime.registry)
-    turn_registry.approval_handler = approvals.request_decision
+
+    async def request_approval(request: Any, cancellation_token: Any | None = None) -> Any:
+        activity_payloads.append({
+            "type": "approval.requested",
+            "turn_id": turn_id,
+            "session_id": session.session_id,
+            "request_id": request.request_id,
+            "tool_name": request.tool_name,
+            "tool_args": request.tool_args,
+            "risk_level": request.risk_level,
+            "reason": request.reason,
+            "timestamp": request.timestamp,
+        })
+        return await approvals.request_decision(request, cancellation_token)
+
+    turn_registry.approval_handler = request_approval
     _wire_spawn_context(turn_registry, runtime, session.session_id)
     cfg = replace(runtime.cfg, session_key=session.session_id)
     event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -351,7 +370,10 @@ async def _run_turn(
                 event_queue.task_done()
 
     def on_event(event: Any) -> None:
-        event_queue.put_nowait(_event_to_payload(event, turn_id, session.session_id))
+        payload = _event_to_payload(event, turn_id, session.session_id)
+        if _is_replayable_activity_payload(payload):
+            activity_payloads.append(payload)
+        event_queue.put_nowait(payload)
 
     event_drain_task = asyncio.create_task(drain_events())
 
@@ -381,6 +403,20 @@ async def _run_turn(
                 attachment_turn_id=turn_id,
             )
             manager.save_metadata(session)
+            activity = _activity_record(
+                turn_id=turn_id,
+                session_id=session.session_id,
+                insert_after_index=history_len_before_turn,
+                started_at=activity_started_at,
+                payloads=activity_payloads,
+                done_payload={
+                    "type": "turn.done",
+                    "turn_id": turn_id,
+                    "session_id": session.session_id,
+                },
+            )
+            session.activities.append(activity)
+            session.writer.append_activity(activity)
         await send({
             "type": "turn.done",
             "turn_id": turn_id,
@@ -460,6 +496,37 @@ def _event_to_payload(event: Any, turn_id: str, session_id: str) -> dict[str, An
     return {"type": "event", **base, "event_type": type(event).__name__, "payload": _jsonable(event)}
 
 
+def _is_replayable_activity_payload(payload: dict[str, Any]) -> bool:
+    kind = payload.get("type")
+    if kind in {"text.delta", "tool.delta", "tool.end", "message.end"}:
+        return False
+    if kind in {"thinking.delta", "thinking.done", "tool.start", "tool.result", "compaction"}:
+        return True
+    return bool(
+        isinstance(kind, str)
+        and (kind.endswith(".status") or kind.endswith(".invoked") or "memory" in kind)
+    )
+
+
+def _activity_record(
+    *,
+    turn_id: str,
+    session_id: str,
+    insert_after_index: int,
+    started_at: float,
+    payloads: list[dict[str, Any]],
+    done_payload: dict[str, Any],
+) -> dict[str, Any]:
+    duration_ms = max(0, int((time.time() - started_at) * 1000))
+    return {
+        "turn_id": turn_id,
+        "session_id": session_id,
+        "insert_after_index": insert_after_index,
+        "duration_ms": duration_ms,
+        "payloads": [*_jsonable(payloads), done_payload],
+    }
+
+
 async def _ws_send(websocket: WebSocket, payload: dict[str, Any]) -> None:
     try:
         await websocket.send_text(json.dumps(_jsonable(payload), ensure_ascii=False))
@@ -488,6 +555,7 @@ def _session_payload(manager: WebSessionManager, session: Any) -> dict[str, Any]
         "compaction_count": session.writer.compaction_count,
         "active_turn_id": session.active_turn_id,
         "history": manager.history_json(session),
+        "activities": manager.activity_json(session),
         "preview": message_text(session.history[-1])[:160] if session.history else "",
     }
 

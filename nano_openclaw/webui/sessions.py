@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,7 @@ class WebSession:
     transcript_path: Path
     history: list[Message]
     writer: TranscriptWriter
+    activities: list[dict[str, Any]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn_id: str | None = None
 
@@ -81,6 +83,7 @@ class WebSession:
 @dataclass
 class SessionSummary:
     history: list[Message]
+    activities: list[dict[str, Any]]
     msg_count: int
     comp_count: int
     mtime_ns: int
@@ -160,9 +163,15 @@ class WebSessionManager:
         loaded = self._load_existing(session_id)
         if loaded is None:
             raise KeyError(f"session not found or transcript is invalid: {session_id}")
-        canonical_id, path, history, msg_count, comp_count, last_msg_id = loaded
+        canonical_id, path, history, activities, msg_count, comp_count, last_msg_id = loaded
         writer = TranscriptWriter.resume(path, canonical_id, msg_count, comp_count, last_msg_id)
-        session = WebSession(session_id=canonical_id, transcript_path=path, history=history, writer=writer)
+        session = WebSession(
+            session_id=canonical_id,
+            transcript_path=path,
+            history=history,
+            writer=writer,
+            activities=activities,
+        )
         self._loaded[canonical_id] = session
         self.save_metadata(session)
         return session
@@ -182,6 +191,7 @@ class WebSessionManager:
             raise RuntimeError("cannot clear a session while a turn is running")
         async with session.lock:
             session.history.clear()
+            session.activities.clear()
             session.writer.clear()
             self._summary_cache.pop(session.session_id, None)
             self.save_metadata(session)
@@ -206,6 +216,9 @@ class WebSessionManager:
     def history_json(self, session: WebSession) -> list[dict[str, Any]]:
         return [message_to_json(message) for message in session.history]
 
+    def activity_json(self, session: WebSession) -> list[dict[str, Any]]:
+        return [_jsonable_activity(activity) for activity in session.activities]
+
     def _summary_history_and_counts(self, session_id: str) -> tuple[list[Message], int, int]:
         if session_id in self._loaded:
             session = self._loaded[session_id]
@@ -219,12 +232,12 @@ class WebSessionManager:
     def _load_existing(
         self,
         session_id: str,
-    ) -> tuple[str, Path, list[Message], int, int, str] | None:
+    ) -> tuple[str, Path, list[Message], list[dict[str, Any]], int, int, str] | None:
         direct_path = self.session_dir / f"{session_id}.jsonl"
         direct = self._read_transcript(direct_path)
         if direct is not None:
-            history, _header_id, msg_count, comp_count, last_msg_id = direct
-            return session_id, direct_path, history, msg_count, comp_count, last_msg_id
+            history, activities, _header_id, msg_count, comp_count, last_msg_id = direct
+            return session_id, direct_path, history, activities, msg_count, comp_count, last_msg_id
 
         # Compatibility for earlier WebUI builds that accidentally wrote
         # transcript header IDs into sessions.json. Those IDs have no matching
@@ -233,16 +246,16 @@ class WebSessionManager:
             loaded = self._read_transcript(path)
             if loaded is None:
                 continue
-            history, header_id, msg_count, comp_count, last_msg_id = loaded
+            history, activities, header_id, msg_count, comp_count, last_msg_id = loaded
             if header_id == session_id:
-                return path.stem, path, history, msg_count, comp_count, last_msg_id
+                return path.stem, path, history, activities, msg_count, comp_count, last_msg_id
         return None
 
-    def _read_transcript(self, path: Path) -> tuple[list[Message], str, int, int, str] | None:
+    def _read_transcript(self, path: Path) -> tuple[list[Message], list[dict[str, Any]], str, int, int, str] | None:
         history, loaded_id, msg_count, comp_count, last_msg_id = TranscriptReader(path).load_history()
         if not loaded_id:
             return None
-        return history, loaded_id, msg_count, comp_count, last_msg_id
+        return history, _read_activity_entries(path), loaded_id, msg_count, comp_count, last_msg_id
 
     def _cached_summary(self, path: Path) -> SessionSummary | None:
         try:
@@ -256,12 +269,32 @@ class WebSessionManager:
         if loaded is None:
             self._summary_cache.pop(path.stem, None)
             return None
-        history, _loaded_id, msg_count, comp_count, _last_msg_id = loaded
+        history, activities, _loaded_id, msg_count, comp_count, _last_msg_id = loaded
         summary = SessionSummary(
             history=history,
+            activities=activities,
             msg_count=msg_count,
             comp_count=comp_count,
             mtime_ns=mtime_ns,
         )
         self._summary_cache[path.stem] = summary
         return summary
+
+
+def _read_activity_entries(path: Path) -> list[dict[str, Any]]:
+    activities: list[dict[str, Any]] = []
+    if not path.exists():
+        return activities
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and entry.get("type") == "activity":
+                activities.append({k: v for k, v in entry.items() if k != "type"})
+    return activities
+
+
+def _jsonable_activity(activity: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(activity, ensure_ascii=False, default=str))

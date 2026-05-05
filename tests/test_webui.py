@@ -227,6 +227,39 @@ def test_web_session_list_hides_zero_message_sessions():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_web_session_payload_reloads_activity_history():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        session = manager.create()
+        session.history.extend([
+            _message("user", "hello"),
+            _message("assistant", "world"),
+        ])
+        session.writer.append_message(session.history[0])
+        session.writer.append_message(session.history[1])
+        activity = {
+            "turn_id": "turn-1",
+            "session_id": session.session_id,
+            "insert_after_index": 0,
+            "duration_ms": 1200,
+            "payloads": [{"type": "tool.start", "name": "demo"}],
+        }
+        session.activities.append(activity)
+        session.writer.append_activity(activity)
+        manager.save_metadata(session)
+        manager._loaded.clear()
+
+        loaded = manager.select(session.session_id)
+
+        assert manager.activity_json(loaded) == [activity]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_web_session_list_hides_store_entries_without_valid_transcript():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:

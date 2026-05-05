@@ -11,6 +11,9 @@ const state = {
   thinkingText: "",
   activityItems: [],
   activityNode: null,
+  activityTurns: new Map(),
+  currentActivityId: null,
+  selectedActivityId: null,
   activityStartedAt: null,
   activityDurationMs: 0,
   activityTimer: null,
@@ -102,10 +105,13 @@ function handleEvent(event) {
       renderRuntime(event);
       break;
     case "session.updated":
+      const previousSessionId = state.currentSession?.session_id || null;
       state.sessions = event.sessions || state.sessions;
       state.currentSession = event.session || state.currentSession;
       renderSessions();
-      renderHistory();
+      if (previousSessionId !== (state.currentSession?.session_id || null) || !$("messages").children.length) {
+        renderHistory();
+      }
       break;
     case "chat.accepted":
       // Remove pending slash-command block if a skill was routed to the agent loop
@@ -292,9 +298,16 @@ function renderHistory() {
     updateConversationEmptyState();
     return;
   }
-  for (const msg of state.currentSession.history || []) {
+  const activitiesByIndex = groupActivitiesByInsertIndex(state.currentSession.activities || []);
+  (state.currentSession.history || []).forEach((msg, index) => {
     const text = extractText(msg).trim();
     if (text) appendMessage(msg.role, text);
+    for (const activity of activitiesByIndex.get(index) || []) {
+      appendHistoricalActivitySummary(activity);
+    }
+  });
+  for (const activity of activitiesByIndex.get(-1) || []) {
+    appendHistoricalActivitySummary(activity);
   }
   updateConversationEmptyState();
   scrollMessages(true);
@@ -399,6 +412,8 @@ function addEvent(kind, text, payload = null) {
 function resetActivity() {
   state.activityItems = [];
   state.activityNode = null;
+  state.currentActivityId = null;
+  state.selectedActivityId = null;
   state.activityStartedAt = null;
   state.activityDurationMs = 0;
   state.thinkingActivityId = null;
@@ -411,18 +426,63 @@ function resetActivity() {
 
 function appendActivitySummary() {
   $("conversationRoot")?.classList.remove("is-empty");
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const wrap = document.createElement("article");
   wrap.className = "message activity-summary is-empty";
+  wrap.dataset.activityId = id;
   wrap.innerHTML = `
     <button type="button" class="activity-pill" aria-label="Open activity">
       <span class="activity-pill-label">Thought</span>
       <span class="activity-pill-meta"></span>
       <span class="activity-pill-chevron" aria-hidden="true">›</span>
     </button>`;
-  wrap.querySelector("button").onclick = () => openDrawer("inspector");
+  state.currentActivityId = id;
+  state.selectedActivityId = id;
+  state.activityTurns.set(id, {
+    id,
+    node: wrap,
+    items: state.activityItems,
+    startedAt: state.activityStartedAt,
+    durationMs: state.activityDurationMs,
+    thinkingActivityId: state.thinkingActivityId,
+  });
+  wrap.querySelector("button").onclick = () => {
+    selectActivity(id);
+    openDrawer("inspector");
+  };
   $("messages").appendChild(wrap);
   ensureActivityTimer();
   renderActivitySummary();
+  return wrap;
+}
+
+function appendHistoricalActivitySummary(record) {
+  const items = replayActivityItems(record.payloads || []);
+  const id = record.turn_id || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const wrap = document.createElement("article");
+  wrap.className = "message activity-summary";
+  wrap.dataset.activityId = id;
+  wrap.innerHTML = `
+    <button type="button" class="activity-pill" aria-label="Open activity">
+      <span class="activity-pill-label">Thought</span>
+      <span class="activity-pill-meta"></span>
+      <span class="activity-pill-chevron" aria-hidden="true">›</span>
+    </button>`;
+  const activity = {
+    id,
+    node: wrap,
+    items,
+    startedAt: null,
+    durationMs: Number(record.duration_ms || 0),
+    thinkingActivityId: null,
+  };
+  state.activityTurns.set(id, activity);
+  wrap.querySelector("button").onclick = () => {
+    selectActivity(id);
+    openDrawer("inspector");
+  };
+  $("messages").appendChild(wrap);
+  renderActivitySummaryFor(activity);
   return wrap;
 }
 
@@ -431,6 +491,7 @@ function ensureActivityTimer() {
   state.activityTimer = setInterval(() => {
     if (!state.activeTurnId || !state.activityStartedAt) return;
     state.activityDurationMs = Date.now() - state.activityStartedAt;
+    syncCurrentActivityRecord();
     renderActivitySummary();
     renderActivityHeader();
   }, 1000);
@@ -440,6 +501,7 @@ function finishActivity() {
   if (state.activityStartedAt) {
     state.activityDurationMs = Date.now() - state.activityStartedAt;
   }
+  syncCurrentActivityRecord();
   if (state.activityTimer) {
     clearInterval(state.activityTimer);
     state.activityTimer = null;
@@ -466,6 +528,7 @@ function addActivity(kind, text, payload = null) {
   state.activityItems.push(item);
   if (state.activityItems.length > 150) state.activityItems.shift();
   if (!state.activityNode && state.activeTurnId) state.activityNode = appendActivitySummary();
+  syncCurrentActivityRecord();
   renderActivitySummary();
   renderActivity();
   return item;
@@ -521,11 +584,16 @@ function labelEvent(kind) {
 }
 
 function renderActivitySummary() {
-  const node = state.activityNode;
+  const activity = getCurrentActivity();
+  renderActivitySummaryFor(activity || null);
+}
+
+function renderActivitySummaryFor(activity) {
+  const node = activity?.node || state.activityNode;
   if (!node) return;
-  const count = state.activityItems.length;
+  const count = (activity?.items || state.activityItems).length;
   node.classList.toggle("is-empty", count === 0);
-  const seconds = Math.max(0, Math.round((state.activityDurationMs || 0) / 1000));
+  const seconds = Math.max(0, Math.round(((activity?.durationMs ?? state.activityDurationMs) || 0) / 1000));
   const label = node.querySelector(".activity-pill-label");
   const meta = node.querySelector(".activity-pill-meta");
   label.textContent = seconds > 0 ? `Thought for ${seconds}s` : "Thought";
@@ -536,7 +604,8 @@ function renderActivityHeader() {
   const title = $("activityTitle");
   const meta = $("activityMeta");
   if (!title || !meta) return;
-  const seconds = Math.max(0, Math.round((state.activityDurationMs || 0) / 1000));
+  const activity = getSelectedActivity();
+  const seconds = Math.max(0, Math.round(((activity?.durationMs ?? state.activityDurationMs) || 0) / 1000));
   title.textContent = "活动";
   meta.textContent = seconds > 0 ? `· ${seconds}s` : "";
 }
@@ -545,15 +614,17 @@ function renderActivity() {
   renderActivityHeader();
   const list = $("activityList");
   if (!list) return;
+  const activity = getSelectedActivity();
+  const items = activity?.items || state.activityItems;
   list.innerHTML = "";
-  if (!state.activityItems.length) {
+  if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "activity-empty";
     empty.textContent = "暂无活动";
     list.appendChild(empty);
     return;
   }
-  for (const item of state.activityItems) {
+  for (const item of items) {
     const entry = document.createElement("details");
     entry.className = `activity-item ${item.kind.replace(/[^a-z0-9_-]/gi, "-")}`;
     entry.innerHTML = `
@@ -569,6 +640,104 @@ function renderActivity() {
     entry.querySelector(".activity-item-detail").textContent = JSON.stringify(item.details, null, 2);
     list.appendChild(entry);
   }
+}
+
+function getCurrentActivity() {
+  return state.currentActivityId ? state.activityTurns.get(state.currentActivityId) : null;
+}
+
+function getSelectedActivity() {
+  return state.selectedActivityId ? state.activityTurns.get(state.selectedActivityId) : getCurrentActivity();
+}
+
+function syncCurrentActivityRecord() {
+  const activity = getCurrentActivity();
+  if (!activity) return;
+  activity.items = state.activityItems;
+  activity.node = state.activityNode || activity.node;
+  activity.startedAt = state.activityStartedAt;
+  activity.durationMs = state.activityDurationMs;
+  activity.thinkingActivityId = state.thinkingActivityId;
+}
+
+function selectActivity(id) {
+  if (!state.activityTurns.has(id)) return;
+  state.selectedActivityId = id;
+  renderActivity();
+}
+
+function groupActivitiesByInsertIndex(activities) {
+  const result = new Map();
+  const historyLength = (state.currentSession?.history || []).length;
+  for (const activity of activities) {
+    const rawIndex = Number(activity.insert_after_index);
+    const index = Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < historyLength ? rawIndex : -1;
+    if (!result.has(index)) result.set(index, []);
+    result.get(index).push(activity);
+  }
+  return result;
+}
+
+function replayActivityItems(payloads) {
+  const items = [];
+  let thinkingText = "";
+  let thinkingActivityId = null;
+
+  const pushItem = (kind, text, payload) => {
+    const item = {
+      id: `${payload.turn_id || "history"}-${items.length}`,
+      kind,
+      label: labelEvent(kind),
+      icon: eventIcon(kind),
+      text: String(text || ""),
+      timestamp: "",
+      details: payload || { type: kind, message: text },
+    };
+    items.push(item);
+    return item;
+  };
+
+  for (const payload of payloads || []) {
+    const kind = payload.type || "event";
+    if (kind === "thinking.delta") {
+      thinkingText = compactTail(`${thinkingText}${payload.text || ""}`, 2000);
+      const text = thinkingText ? compactTail(thinkingText, 180) : "Thinking";
+      const details = { ...payload, full_text: thinkingText };
+      const existing = items.find((item) => item.id === thinkingActivityId);
+      if (existing) {
+        existing.text = text;
+        existing.details = details;
+      } else {
+        const item = pushItem("thinking.done", text, details);
+        thinkingActivityId = item.id;
+      }
+    } else if (kind === "thinking.done") {
+      const text = thinkingText ? compactTail(thinkingText, 180) : "Thinking";
+      const details = { ...payload, done: true, full_text: thinkingText };
+      const existing = items.find((item) => item.id === thinkingActivityId);
+      if (existing) {
+        existing.text = text;
+        existing.details = details;
+      } else {
+        pushItem("thinking.done", text, details);
+      }
+      thinkingActivityId = null;
+    } else if (kind === "tool.start") {
+      pushItem(kind, `${payload.name} started`, payload);
+    } else if (kind === "tool.result") {
+      const resultPreview = compactTail(String(payload.result || ""), 100);
+      pushItem(kind, `${payload.name} -> ${resultPreview}`, payload);
+    } else if (kind === "approval.requested") {
+      pushItem(kind, `${payload.tool_name} requires approval`, payload);
+    } else if (kind === "turn.done") {
+      if (items.length) pushItem(kind, "Turn done", payload);
+    } else if (kind === "compaction") {
+      pushItem(kind, payload.summary || "context compacted", payload);
+    } else if (kind?.includes("status") || kind?.includes("invoked") || kind?.includes("memory")) {
+      pushItem(kind, summarizeEvent(payload), payload);
+    }
+  }
+  return items;
 }
 
 function summarizeEvent(event) {
