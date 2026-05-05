@@ -9,6 +9,12 @@ const state = {
   approvals: new Map(),
   tools: new Map(),
   thinkingText: "",
+  activityItems: [],
+  activityNode: null,
+  activityStartedAt: null,
+  activityDurationMs: 0,
+  activityTimer: null,
+  thinkingActivityId: null,
   assistantName: "Assistant",
   userName: "User",
   _pendingTextLen: 0,
@@ -108,10 +114,13 @@ function handleEvent(event) {
       updateSendBtn();
       state.tools.clear();
       state.thinkingText = "";
+      resetActivity();
+      state.activityStartedAt = Date.now();
       state._pendingTextLen = 0;
       state._assistantRawText = "";
       document.querySelectorAll(".message.turn-event, .message.approval-card").forEach((el) => el.remove());
       appendMessage("user", formatAcceptedUserText(event));
+      state.activityNode = appendActivitySummary();
       if (state.clearAttachmentsOnAccept) {
         state.attachments = [];
         state.clearAttachmentsOnAccept = false;
@@ -119,7 +128,6 @@ function handleEvent(event) {
       }
       state.assistantNode = appendMessage("assistant", "");
       scrollMessages(true);
-      addEvent(event.type, "Turn accepted", event);
       break;
     case "text.delta":
       if (!state.assistantNode) state.assistantNode = appendMessage("assistant", "");
@@ -130,14 +138,15 @@ function handleEvent(event) {
       break;
     case "thinking.delta":
       state.thinkingText = compactTail(`${state.thinkingText}${event.text}`, 2000);
+      upsertThinkingActivity(event);
       break;
     case "thinking.done":
-      addEvent(event.type, "", { ...event, full_text: state.thinkingText });
+      upsertThinkingActivity({ ...event, done: true });
       break;
     case "tool.start":
       flushPendingText();
       state.tools.set(event.tool_use_id, { name: event.name, args: "", done: false });
-      addEvent(event.type, `${event.name} started`, event);
+      addActivity(event.type, `${event.name} started`, event);
       break;
     case "tool.delta": {
       const tool = state.tools.get(event.tool_use_id);
@@ -150,21 +159,22 @@ function handleEvent(event) {
       tool.result = event.result;
       state.tools.set(event.tool_use_id, tool);
       const resultPreview = compactTail(String(event.result || ""), 100);
-      addEvent(event.type, `${event.name} → ${resultPreview}`, { ...event, args: tool.args });
+      addActivity(event.type, `${event.name} -> ${resultPreview}`, { ...event, args: tool.args });
       break;
     }
     case "approval.requested":
       state.approvals.set(event.request_id, event);
       renderApprovals();
-      addEvent(event.type, `${event.tool_name} requires approval`, event);
+      addActivity(event.type, `${event.tool_name} requires approval`, event);
       break;
     case "approval.decided":
       state.approvals.delete(event.request_id);
       renderApprovals();
-      addEvent(event.type, event.accepted ? "Approval recorded" : "Approval not found", event);
+      addActivity(event.type, event.accepted ? "Approval recorded" : "Approval not found", event);
       break;
     case "turn.done":
       flushPendingText();
+      finishActivity();
       state.activeTurnId = null;
       updateSendBtn();
       if (state.assistantNode) {
@@ -179,27 +189,29 @@ function handleEvent(event) {
       state.currentSession = event.session || state.currentSession;
       state.sessions = event.sessions || state.sessions;
       renderSessions();
-      addEvent(event.type, "Turn done", event);
+      if (state.activityItems.length) addActivity(event.type, "Turn done", event);
       break;
     case "turn.cancelled":
+      finishActivity();
       state.activeTurnId = null;
       updateSendBtn();
       state.assistantNode = null;
-      addEvent(event.type, "Turn cancelled", event);
+      addActivity(event.type, "Turn cancelled", event);
       break;
     case "turn.error":
+      finishActivity();
       state.activeTurnId = null;
       updateSendBtn();
       state.clearAttachmentsOnAccept = false;
-      addEvent(event.type, event.message || "unknown error", event);
+      addActivity(event.type, event.message || "unknown error", event);
       break;
     case "session.error":
       state.sessions = event.sessions || state.sessions;
       renderSessions();
-      addEvent(event.type, event.message || "session unavailable", event);
+      addActivity(event.type, event.message || "session unavailable", event);
       break;
     case "compaction":
-      addEvent(event.type, event.summary || "context compacted", event);
+      addActivity(event.type, event.summary || "context compacted", event);
       break;
     case "command.result": {
       const pending = document.querySelector(".message.command.pending");
@@ -214,7 +226,7 @@ function handleEvent(event) {
     }
     default:
       if (event.type?.includes("status") || event.type?.includes("invoked") || event.type?.includes("memory")) {
-        addEvent(event.type, summarizeEvent(event), event);
+        addActivity(event.type, summarizeEvent(event), event);
       }
   }
 }
@@ -274,6 +286,7 @@ function sessionMatches(session, query) {
 }
 
 function renderHistory() {
+  if (!state.activeTurnId) resetActivity();
   $("messages").innerHTML = "";
   if (!state.currentSession) {
     updateConversationEmptyState();
@@ -380,58 +393,182 @@ function renderApprovals() {
 }
 
 function addEvent(kind, text, payload = null) {
+  return addActivity(kind, text, payload);
+}
+
+function resetActivity() {
+  state.activityItems = [];
+  state.activityNode = null;
+  state.activityStartedAt = null;
+  state.activityDurationMs = 0;
+  state.thinkingActivityId = null;
+  if (state.activityTimer) {
+    clearInterval(state.activityTimer);
+    state.activityTimer = null;
+  }
+  renderActivity();
+}
+
+function appendActivitySummary() {
+  $("conversationRoot")?.classList.remove("is-empty");
+  const wrap = document.createElement("article");
+  wrap.className = "message activity-summary is-empty";
+  wrap.innerHTML = `
+    <button type="button" class="activity-pill" aria-label="Open activity">
+      <span class="activity-pill-label">Thought</span>
+      <span class="activity-pill-meta"></span>
+      <span class="activity-pill-chevron" aria-hidden="true">›</span>
+    </button>`;
+  wrap.querySelector("button").onclick = () => openDrawer("inspector");
+  $("messages").appendChild(wrap);
+  ensureActivityTimer();
+  renderActivitySummary();
+  return wrap;
+}
+
+function ensureActivityTimer() {
+  if (state.activityTimer) return;
+  state.activityTimer = setInterval(() => {
+    if (!state.activeTurnId || !state.activityStartedAt) return;
+    state.activityDurationMs = Date.now() - state.activityStartedAt;
+    renderActivitySummary();
+    renderActivityHeader();
+  }, 1000);
+}
+
+function finishActivity() {
+  if (state.activityStartedAt) {
+    state.activityDurationMs = Date.now() - state.activityStartedAt;
+  }
+  if (state.activityTimer) {
+    clearInterval(state.activityTimer);
+    state.activityTimer = null;
+  }
+  renderActivitySummary();
+  renderActivityHeader();
+}
+
+function addActivity(kind, text, payload = null) {
   const SILENT_KINDS = new Set(["connected", "disconnected"]);
   if (SILENT_KINDS.has(kind)) return null;
 
-  const el = document.createElement("article");
-  el.className = "message turn-event";
-  el.dataset.kind = kind;
-
   const timestamp = new Date().toLocaleTimeString([], { hour12: false });
   const details = payload || { type: kind, message: text };
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    kind,
+    label: labelEvent(kind),
+    icon: eventIcon(kind),
+    text: String(text || ""),
+    timestamp,
+    details,
+  };
+  state.activityItems.push(item);
+  if (state.activityItems.length > 150) state.activityItems.shift();
+  if (!state.activityNode && state.activeTurnId) state.activityNode = appendActivitySummary();
+  renderActivitySummary();
+  renderActivity();
+  return item;
+}
 
-  const detailsEl = document.createElement("details");
-  detailsEl.className = "turn-event-details";
-  detailsEl.innerHTML = `
-    <summary class="turn-event-summary">
-      <span class="turn-event-icon" aria-hidden="true">${eventIcon(kind)}</span>
-      <span class="turn-event-label">${escapeHtml(labelEvent(kind))}</span>
-      <span class="turn-event-body">${escapeHtml(String(text || ""))}</span>
-      <span class="turn-event-time">${escapeHtml(timestamp)}</span>
-    </summary>
-    <pre class="turn-event-detail"></pre>`;
-  detailsEl.querySelector(".turn-event-detail").textContent = JSON.stringify(details, null, 2);
-
-  el.appendChild(detailsEl);
-  $("messages").appendChild(el);
-  scrollMessages();
-
-  const allEvents = $("messages").querySelectorAll(".turn-event");
-  if (allEvents.length > 150) allEvents[0].remove();
-
-  return el;
+function upsertThinkingActivity(event) {
+  const text = state.thinkingText ? compactTail(state.thinkingText, 180) : "Thinking";
+  const details = { ...event, type: event.type || "thinking.delta", full_text: state.thinkingText };
+  const existing = state.activityItems.find((item) => item.id === state.thinkingActivityId);
+  if (existing) {
+    existing.text = text;
+    existing.details = details;
+    renderActivitySummary();
+    renderActivity();
+    if (event.done) state.thinkingActivityId = null;
+    return existing;
+  }
+  const item = addActivity("thinking.done", text, details);
+  state.thinkingActivityId = event.done ? null : item?.id || null;
+  return item;
 }
 
 function eventIcon(kind) {
   if (kind === "tool.start") return "⚙";
   if (kind === "tool.result") return "✓";
   if (kind === "turn.done") return "◎";
-  if (kind === "turn.error") return "✗";
+  if (kind === "turn.error") return "!";
   if (kind === "turn.cancelled") return "⊘";
-  if (kind === "thinking.done") return "💭";
+  if (kind === "thinking.done") return "◌";
   if (kind === "compaction") return "⌗";
+  if (kind.includes("skill")) return "◇";
+  if (kind.includes("memory")) return "✦";
   return "·";
 }
 
 function flushPendingText() {
-  if (state._pendingTextLen > 0) {
-    addEvent("text", `${state._pendingTextLen} chars`, { type: "text", chars: state._pendingTextLen });
-    state._pendingTextLen = 0;
-  }
+  state._pendingTextLen = 0;
 }
 
 function labelEvent(kind) {
+  if (kind === "thinking.done") return "Thinking";
+  if (kind === "tool.start") return "Tool call";
+  if (kind === "tool.result") return "Tool result";
+  if (kind === "approval.requested") return "Approval";
+  if (kind === "approval.decided") return "Approval";
+  if (kind === "turn.done") return "Done";
+  if (kind === "turn.error") return "Error";
+  if (kind === "turn.cancelled") return "Cancelled";
+  if (kind === "text") return "Response";
+  if (kind.includes("skill")) return "Skill";
+  if (kind.includes("memory")) return "Memory";
   return kind;
+}
+
+function renderActivitySummary() {
+  const node = state.activityNode;
+  if (!node) return;
+  const count = state.activityItems.length;
+  node.classList.toggle("is-empty", count === 0);
+  const seconds = Math.max(0, Math.round((state.activityDurationMs || 0) / 1000));
+  const label = node.querySelector(".activity-pill-label");
+  const meta = node.querySelector(".activity-pill-meta");
+  label.textContent = seconds > 0 ? `Thought for ${seconds}s` : "Thought";
+  meta.textContent = count > 0 ? `${count} step${count === 1 ? "" : "s"}` : "";
+}
+
+function renderActivityHeader() {
+  const title = $("activityTitle");
+  const meta = $("activityMeta");
+  if (!title || !meta) return;
+  const seconds = Math.max(0, Math.round((state.activityDurationMs || 0) / 1000));
+  title.textContent = "活动";
+  meta.textContent = seconds > 0 ? `· ${seconds}s` : "";
+}
+
+function renderActivity() {
+  renderActivityHeader();
+  const list = $("activityList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.activityItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "activity-empty";
+    empty.textContent = "暂无活动";
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of state.activityItems) {
+    const entry = document.createElement("details");
+    entry.className = `activity-item ${item.kind.replace(/[^a-z0-9_-]/gi, "-")}`;
+    entry.innerHTML = `
+      <summary class="activity-item-summary">
+        <span class="activity-item-icon" aria-hidden="true">${escapeHtml(item.icon)}</span>
+        <span class="activity-item-main">
+          <span class="activity-item-label">${escapeHtml(item.label)}</span>
+          <span class="activity-item-text">${escapeHtml(item.text)}</span>
+        </span>
+        <span class="activity-item-time">${escapeHtml(item.timestamp)}</span>
+      </summary>
+      <pre class="activity-item-detail"></pre>`;
+    entry.querySelector(".activity-item-detail").textContent = JSON.stringify(item.details, null, 2);
+    list.appendChild(entry);
+  }
 }
 
 function summarizeEvent(event) {

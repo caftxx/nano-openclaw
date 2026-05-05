@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nano-openclaw</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260505-attachments" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-activity" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -56,15 +56,20 @@
         </form>
       </main>
 
-      <aside id="inspectorDrawer" class="inspector drawer-panel" aria-label="Runtime information" aria-hidden="true">
-        <div class="inspector-header mobile-only">
+      <aside id="inspectorDrawer" class="inspector drawer-panel" aria-label="Activity and runtime information" aria-hidden="true">
+        <div class="inspector-header">
           <div>
-            <h2>Runtime</h2>
-            <p>Runtime information</p>
+            <h2><span id="activityTitle">活动</span> <span id="activityMeta"></span></h2>
+            <p>Thinking, tools, skills, and runtime events</p>
           </div>
           <button id="closeInspectorBtn" class="icon-btn" title="Close activity" aria-label="Close activity">×</button>
         </div>
-        <section class="panel">
+        <section class="panel activity-panel">
+          <div id="activityList" class="activity-list">
+            <div class="activity-empty">暂无活动</div>
+          </div>
+        </section>
+        <section class="panel runtime-panel">
           <h2>Runtime</h2>
           <div id="runtimeInfo" class="runtime-info"></div>
         </section>
@@ -81,6 +86,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260505-attachments"></script>
+    <script src="/static/app.js?v=20260505-activity"></script>
   </body>
 </html>

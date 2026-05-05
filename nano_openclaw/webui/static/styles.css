@@ -621,72 +621,59 @@ textarea:focus {
   font-style: italic;
 }
 
-/* ── Turn event 行 ─────────────────────────────────── */
-.message.turn-event {
+/* Compact activity entry shown in the conversation stream. */
+.message.activity-summary {
   width: min(820px, 100%);
-  margin: 0 auto 4px;
+  margin: -6px auto 18px;
+  align-items: flex-start;
 }
 
-.turn-event-summary {
-  display: flex;
+.message.activity-summary.is-empty {
+  display: none;
+}
+
+.activity-pill {
+  min-height: 36px;
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  color: var(--subtle);
-  font-size: 12px;
-  cursor: pointer;
-  list-style: none;
-  transition: background .12s ease;
-}
-
-.turn-event-summary::-webkit-details-marker { display: none; }
-
-.turn-event-summary:hover { background: var(--surface-raised); }
-
-.turn-event-icon {
-  flex: 0 0 18px;
-  text-align: center;
-  font-size: 13px;
-}
-
-.turn-event-label {
-  flex: 0 0 auto;
+  gap: 8px;
+  padding: 7px 11px 7px 13px;
+  border-radius: 999px;
+  background: transparent;
   color: var(--muted);
+  font-size: 14px;
   font-weight: 600;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  transition: background .14s ease, color .14s ease;
 }
 
-.turn-event-body {
-  flex: 1;
+.activity-pill:hover {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.activity-pill-label,
+.activity-pill-meta {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.turn-event-time {
-  flex: 0 0 auto;
-  font-size: 11px;
-  opacity: .55;
+.activity-pill-meta {
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 500;
 }
 
-.turn-event-detail {
-  max-height: 240px;
-  margin: 0;
-  padding: 8px 12px 10px;
-  overflow-x: auto;
-  border-top: 1px solid var(--line-soft);
-  border-radius: 0 0 8px 8px;
-  background: #171717;
+.activity-pill-chevron {
   color: var(--muted);
-  font-size: 11px;
-  white-space: pre-wrap;
 }
 
-/* ── Approval card ──────────────────────────────────── */
+.message.turn-event {
+  display: none;
+}
+
+/* Approval card */
 .message.approval-card {
   width: min(820px, 100%);
   margin: 0 auto 12px;
@@ -776,7 +763,7 @@ textarea:focus {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
   padding: 16px;
   overflow: hidden;
   background: #181818;
@@ -794,13 +781,20 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 2px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .inspector-header h2 {
   margin: 0;
   color: var(--ink);
-  font-size: 16px;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.inspector-header h2 span:last-child {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .inspector-header p {
@@ -812,14 +806,25 @@ textarea:focus {
 .panel {
   min-height: 0;
   margin: 0;
-  padding: 0 0 14px;
+  padding: 14px 0;
   border-bottom: 1px solid var(--line-soft);
 }
 
-.inspector .panel:last-child {
+.activity-panel {
   flex: 1 1 auto;
   max-height: none;
   overflow: auto;
+}
+
+.runtime-panel {
+  flex: 0 0 auto;
+  max-height: 34%;
+  overflow: auto;
+}
+
+.inspector .panel:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
 }
 
 .panel h2 {
@@ -829,6 +834,87 @@ textarea:focus {
   font-weight: 700;
   letter-spacing: .04em;
   text-transform: uppercase;
+}
+
+.activity-list {
+  display: grid;
+  gap: 12px;
+  padding-right: 3px;
+}
+
+.activity-empty {
+  padding: 18px 0;
+  color: var(--subtle);
+  font-size: 13px;
+}
+
+.activity-item {
+  border-left: 2px solid #3a3a3a;
+  padding-left: 12px;
+}
+
+.activity-item-summary {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.activity-item-summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-item-icon {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.activity-item-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.activity-item-label {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.activity-item-text {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.activity-item-time {
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.activity-item-detail {
+  max-height: 260px;
+  margin: 9px 0 0 28px;
+  padding: 10px 11px;
+  overflow: auto;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #141414;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .runtime-info div {
