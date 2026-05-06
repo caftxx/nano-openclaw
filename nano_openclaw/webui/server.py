@@ -336,6 +336,81 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                 elif msg_type == "command.run":
                     cmd_text = message.get("command", "")
                     session_id_cmd = message.get("session_id")
+                    if _slash_verb(cmd_text) == "models":
+                        model_query = _slash_arg_text(cmd_text)
+                        if not model_query:
+                            await emit({
+                                "type": "command.result",
+                                "command": cmd_text,
+                                "text": _models_list_markdown(runtime),
+                            })
+                            continue
+                        if _has_active_turn(manager):
+                            await emit({
+                                "type": "command.result",
+                                "command": cmd_text,
+                                "text": "## Models\n\nCannot change models while a turn is active.",
+                            })
+                            continue
+                        try:
+                            target_model = _resolve_model_option(runtime.config, model_query)
+                        except (KeyError, ValueError) as exc:
+                            await emit({
+                                "type": "command.result",
+                                "command": cmd_text,
+                                "text": f"## Models\n\n{exc}",
+                            })
+                            continue
+                        target_ref = target_model["ref"]
+                        if target_ref == runtime.model_ref:
+                            await emit({
+                                "type": "command.result",
+                                "command": cmd_text,
+                                "text": f"model already set to `{target_model['name']}` (`{target_ref}`)",
+                            })
+                            continue
+                        old_runtime = runtime
+                        try:
+                            runtime = await build_agent_runtime(
+                                config_path=config_path,
+                                agent_id=runtime.agent_id,
+                                model_ref_override=target_ref,
+                                image_model_ref_override=runtime.image_model_ref,
+                            )
+                            manager = WebSessionManager(
+                                session_dir=runtime.session_dir,
+                                store_path=runtime.store_path,
+                                model=runtime.model_id,
+                                cwd=str(runtime.workspace_dir),
+                            )
+                            current = manager.get_or_load(session_id_cmd)
+                            app.state.runtime = runtime
+                            app.state.sessions = manager
+                            await emit({"type": "state.updated", **_state_payload(runtime)})
+                            await emit({
+                                "type": "session.updated",
+                                "session": _session_payload(manager, current),
+                                "sessions": manager.list(),
+                            })
+                            await emit({
+                                "type": "command.result",
+                                "command": cmd_text,
+                                "text": f"model set to `{target_model['name']}` (`{target_ref}`)",
+                            })
+                            try:
+                                await old_runtime.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+                        except Exception as exc:  # noqa: BLE001
+                            runtime = old_runtime
+                            app.state.runtime = old_runtime
+                            await emit({
+                                "type": "command.result",
+                                "command": cmd_text,
+                                "text": f"## Models\n\nModel update failed: {type(exc).__name__}: {exc}",
+                            })
+                        continue
+
                     cmd_result = await handle_slash_command(cmd_text, runtime, manager, session_id_cmd)
                     if cmd_result is None:
                         # Not a built-in command (e.g. a skill) — route to agent loop like CLI does
@@ -758,6 +833,55 @@ def _has_active_turn(manager: WebSessionManager) -> bool:
     return any(session.active_turn_id for session in manager._loaded.values())
 
 
+def _slash_verb(cmd: str) -> str:
+    parts = cmd.strip().lstrip("/").split(maxsplit=1)
+    return parts[0].lower() if parts else ""
+
+
+def _slash_arg_text(cmd: str) -> str:
+    parts = cmd.strip().lstrip("/").split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _models_list_markdown(runtime: AgentRuntime) -> str:
+    lines = [
+        "## Models",
+        "",
+        "| Current | Name | Ref | Capabilities |",
+        "| --- | --- | --- | --- |",
+    ]
+    for option in _model_options(runtime.config):
+        current = "✓" if option["ref"] == runtime.model_ref else ""
+        capabilities = ", ".join(option.get("input") or []) or "unknown"
+        lines.append(
+            f"| {current} | {option['name']} | `{option['ref']}` | {capabilities} |"
+        )
+    return "\n".join(lines)
+
+
+def _resolve_model_option(config: Any, query: str) -> dict[str, Any]:
+    needle = query.strip().lower()
+    matches = []
+    for option in _model_options(config):
+        ref = option["ref"]
+        model_id = ref.split("/", 1)[1] if "/" in ref else ref
+        candidates = {
+            option["name"].lower(),
+            ref.lower(),
+            model_id.lower(),
+        }
+        if needle in candidates:
+            matches.append(option)
+
+    unique = {item["ref"]: item for item in matches}
+    if not unique:
+        raise KeyError(f"unknown model: `{query}`")
+    if len(unique) > 1:
+        refs = ", ".join(f"`{ref}`" for ref in sorted(unique))
+        raise ValueError(f"ambiguous model name `{query}`; use one of: {refs}")
+    return next(iter(unique.values()))
+
+
 def _read_assistant_name(workspace_dir: Path) -> str:
     return _read_profile_field(workspace_dir / "IDENTITY.md", "Name", "Assistant")
 
@@ -866,6 +990,7 @@ async def handle_slash_command(
         ]
         if has_subagents:
             lines.append("| `/subagents [list\\|all]` | Active subagent runs |")
+        lines.append("| `/models [model]` | List or switch configured models |")
         if has_memory:
             lines.append("| `/active-memory [status\\|on\\|off\\|mode\\|style]` | Active memory config |")
             lines.append("| `/dreaming [status\\|on\\|off\\|run]` | Dreaming config |")

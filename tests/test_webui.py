@@ -23,8 +23,10 @@ from nano_openclaw.webui.server import (
     _event_to_payload,
     _image_model_options,
     _model_options,
+    _models_list_markdown,
     _read_assistant_name,
     _read_user_name,
+    _resolve_model_option,
     run_webui,
 )
 from nano_openclaw.webui.sessions import WebSessionManager
@@ -370,6 +372,42 @@ def test_runtime_image_model_options_only_include_image_capable_models():
         {"ref": "", "name": "Native Vision", "input": ["image"]},
         {"ref": "ali-coding/vision", "name": "Vision", "input": ["text", "image"]},
     ]
+
+
+def test_models_command_resolves_by_name_ref_and_id():
+    cfg = NanoOpenClawConfig(
+        models=ModelsConfig(
+            providers={
+                "ali-coding": ModelProvider(
+                    models=[
+                        ModelDefinition(id="glm-5", name="GLM 5", input=["text"]),
+                    ]
+                )
+            }
+        ),
+    )
+
+    assert _resolve_model_option(cfg, "GLM 5")["ref"] == "ali-coding/glm-5"
+    assert _resolve_model_option(cfg, "ali-coding/glm-5")["name"] == "GLM 5"
+    assert _resolve_model_option(cfg, "glm-5")["ref"] == "ali-coding/glm-5"
+
+
+def test_models_command_list_marks_current_model():
+    cfg = NanoOpenClawConfig(
+        agents=AgentsConfig(defaults=AgentDefaultsConfig(model="ali-coding/glm-5")),
+        models=ModelsConfig(
+            providers={
+                "ali-coding": ModelProvider(
+                    models=[ModelDefinition(id="glm-5", name="GLM 5", input=["text"])]
+                )
+            }
+        ),
+    )
+    runtime = SimpleNamespace(config=cfg, model_ref="ali-coding/glm-5")
+
+    text = _models_list_markdown(runtime)
+
+    assert "| ✓ | GLM 5 | `ali-coding/glm-5` | text |" in text
 
 
 def _message(role: str, text: str):

@@ -1200,7 +1200,7 @@ $("sendBtn").onclick = (event) => {
 
 const BUILTIN_COMMANDS = new Set([
   "help", "context", "compact", "clear", "save",
-  "skills", "plugins", "hooks", "subagents", "active-memory", "dreaming",
+  "skills", "plugins", "hooks", "models", "subagents", "active-memory", "dreaming",
 ]);
 
 $("composer").onsubmit = async (event) => {
@@ -1224,6 +1224,8 @@ $("composer").onsubmit = async (event) => {
         command: text,
         session_id: state.currentSession?.session_id ?? null,
       });
+      $("prompt").value = "";
+      resizePrompt();
       return;
     }
     // Unknown slash command (skills etc.) → fall through to agent loop, same as CLI
