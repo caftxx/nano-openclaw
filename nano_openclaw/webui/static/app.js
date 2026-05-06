@@ -148,7 +148,7 @@ function updateSendBtn() {
     btn.setAttribute("aria-label", "Cancel");
     btn.classList.add("stop-mode");
   } else {
-    btn.textContent = "↑";
+    btn.textContent = "";
     btn.title = "Send";
     btn.setAttribute("aria-label", "Send");
     btn.classList.remove("stop-mode");
@@ -996,7 +996,7 @@ function isTouchViewport() {
 
 function resizePrompt() {
   const prompt = $("prompt");
-  const minHeight = 40;
+  const minHeight = Number.parseFloat(getComputedStyle(prompt).minHeight) || 40;
   const maxHeight = isMobileViewport() ? 132 : 208;
   prompt.style.height = `${minHeight}px`;
   const nextHeight = Math.min(Math.max(prompt.scrollHeight, minHeight), maxHeight);
