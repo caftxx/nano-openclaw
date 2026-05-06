@@ -18,7 +18,15 @@ from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
 from nano_openclaw.tools import Tool, ToolRegistry
 from nano_openclaw.webui.approvals import WebApprovalBroker
-from nano_openclaw.webui.server import _event_to_payload, _read_assistant_name, _read_user_name, run_webui
+from nano_openclaw.config.types import AgentDefaultsConfig, AgentsConfig, ModelDefinition, ModelProvider, ModelsConfig, NanoOpenClawConfig
+from nano_openclaw.webui.server import (
+    _event_to_payload,
+    _image_model_options,
+    _model_options,
+    _read_assistant_name,
+    _read_user_name,
+    run_webui,
+)
 from nano_openclaw.webui.sessions import WebSessionManager
 
 
@@ -320,6 +328,48 @@ def test_web_session_select_legacy_header_alias_opens_canonical_file():
         assert selected.history[0].content[0]["text"] == "旧别名 session 内容"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_runtime_model_options_fill_name_and_input_for_default_model():
+    cfg = NanoOpenClawConfig(
+        agents=AgentsConfig(defaults=AgentDefaultsConfig(model="ali-coding/glm-5")),
+        models=ModelsConfig(
+            providers={
+                "ali-coding": ModelProvider(
+                    models=[
+                        ModelDefinition(id="glm-5", name="GLM 5", input=["text"]),
+                    ]
+                )
+            }
+        ),
+    )
+
+    options = _model_options(cfg)
+
+    assert options == [{"ref": "ali-coding/glm-5", "name": "GLM 5", "input": ["text"]}]
+
+
+def test_runtime_image_model_options_only_include_image_capable_models():
+    cfg = NanoOpenClawConfig(
+        agents=AgentsConfig(defaults=AgentDefaultsConfig(imageModel="ali-coding/text-only")),
+        models=ModelsConfig(
+            providers={
+                "ali-coding": ModelProvider(
+                    models=[
+                        ModelDefinition(id="text-only", name="Text Only", input=["text"]),
+                        ModelDefinition(id="vision", name="Vision", input=["text", "image"]),
+                    ]
+                )
+            }
+        ),
+    )
+
+    options = _image_model_options(cfg)
+
+    assert options == [
+        {"ref": "", "name": "Native Vision", "input": ["image"]},
+        {"ref": "ali-coding/vision", "name": "Vision", "input": ["text", "image"]},
+    ]
 
 
 def _message(role: str, text: str):

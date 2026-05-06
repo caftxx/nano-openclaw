@@ -41,6 +41,7 @@ class AgentRuntime:
     workspace_dir: Path
     model_ref: str
     model_id: str
+    image_model_ref: str | None
     dreaming_stop: threading.Event
     dreaming_task: Any | None = None
 
@@ -67,10 +68,14 @@ async def build_agent_runtime(
     *,
     config_path: str | None,
     agent_id: str,
+    model_ref_override: str | None = None,
+    image_model_ref_override: str | None = None,
     console: Console | None = None,
 ) -> AgentRuntime:
     config, warnings = load_config(config_path)
-    model_ref = config.resolve_primary_model(agent_id)
+    if agent_id == "default":
+        agent_id = _resolve_default_agent_id(config)
+    model_ref = model_ref_override or config.resolve_primary_model(agent_id)
     resolved = resolve_model_config(model_ref, config)
     api_type = resolved["api_type"]
     api = "anthropic" if api_type == "anthropic-messages" else "openai"
@@ -101,10 +106,8 @@ async def build_agent_runtime(
     registry.set_allow_global_pip(config.skills.install.allowGlobalPip)
     hook_registry = load_plugins(config.plugins, registry, config) if not no_tools else HookRegistry()
 
-    image_model_ref = config.resolve_image_model(agent_id)
-    image_model_id: str | None = None
-    if image_model_ref:
-        image_model_id = image_model_ref.split("/", 1)[1] if "/" in image_model_ref else image_model_ref
+    image_model_ref = image_model_ref_override if image_model_ref_override is not None else config.resolve_image_model(agent_id)
+    image_model_id = image_model_id_from_ref(image_model_ref)
 
     active_mem_cfg: ActiveMemoryConfig | None = None
     if config.activeMemory and config.activeMemory.enabled:
@@ -206,6 +209,7 @@ async def build_agent_runtime(
         workspace_dir=workspace_dir,
         model_ref=model_ref,
         model_id=model_id,
+        image_model_ref=image_model_ref,
         dreaming_stop=dreaming_stop,
         dreaming_task=dreaming_task,
     )
@@ -215,6 +219,21 @@ async def build_agent_runtime(
         "workspace_dir": str(workspace_dir),
     })
     return runtime
+
+
+def image_model_id_from_ref(image_model_ref: str | None) -> str | None:
+    if not image_model_ref:
+        return None
+    return image_model_ref.split("/", 1)[1] if "/" in image_model_ref else image_model_ref
+
+
+def _resolve_default_agent_id(config: Any) -> str:
+    for agent in config.agents.list:
+        if agent.default:
+            return agent.id
+    if config.agents.list:
+        return config.agents.list[0].id
+    return "default"
 
 
 def build_approval_manager(state_dir: Path, agent_id: str) -> ApprovalManager | None:

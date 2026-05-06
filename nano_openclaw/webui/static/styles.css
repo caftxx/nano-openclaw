@@ -891,14 +891,14 @@ textarea:focus {
 }
 
 .activity-panel {
-  flex: 1 1 auto;
+  flex: 1 1 50%;
   max-height: none;
   overflow: auto;
 }
 
 .runtime-panel {
-  flex: 0 0 auto;
-  max-height: 34%;
+  flex: 0 0 50%;
+  max-height: none;
   overflow: auto;
 }
 
@@ -997,7 +997,8 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
-.runtime-info div {
+.runtime-info div,
+.runtime-field {
   margin-bottom: 8px;
   padding: 10px;
   overflow-wrap: anywhere;
@@ -1005,6 +1006,99 @@ textarea:focus {
   border-radius: 8px;
   background: var(--surface-raised);
   font-size: 12px;
+}
+
+.runtime-field {
+  display: grid;
+  gap: 7px;
+  position: relative;
+}
+
+.runtime-field-label,
+.runtime-static-row strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.runtime-combobox {
+  min-width: 0;
+}
+
+.runtime-select-trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--ink);
+  text-align: left;
+}
+
+.runtime-select-trigger:hover,
+.runtime-select-trigger[aria-expanded="true"] {
+  background: var(--field-strong);
+}
+
+.runtime-select-trigger span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-select-chevron {
+  color: var(--subtle);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.runtime-select-menu {
+  margin-top: 6px;
+  max-height: min(260px, 46vh);
+  padding: 6px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .02);
+}
+
+.runtime-select-option {
+  width: 100%;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.runtime-select-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-select-option:hover,
+.runtime-select-option[aria-selected="true"] {
+  background: var(--surface-hover);
+}
+
+.runtime-select-option[aria-selected="true"]::after {
+  content: "✓";
+  color: var(--accent);
+  font-weight: 700;
+  text-align: center;
 }
 
 .drawer-backdrop {
@@ -1263,3 +1357,4 @@ textarea:focus {
     animation-duration: .01ms !important;
   }
 }
+

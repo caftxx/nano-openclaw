@@ -27,6 +27,16 @@ const state = {
   openDrawer: null,
   thinkingLevel: "off",
   lastThinkingLevel: "low",
+  runtime: {
+    agentId: "",
+    modelRef: "",
+    imageModelRef: "",
+    agentOptions: [],
+    modelOptions: [],
+    imageModelOptions: [],
+    thinkingOptions: ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"],
+    openMenu: "",
+  },
   attachments: [],
   clearAttachmentsOnAccept: false,
 };
@@ -286,24 +296,148 @@ function renderRuntime(payload) {
   state.userName = payload.user_name || "User";
   state.thinkingLevel = payload.thinking_level || "off";
   if (state.thinkingLevel !== "off") state.lastThinkingLevel = state.thinkingLevel;
+  state.runtime.agentId = payload.agent_id || "";
+  state.runtime.modelRef = payload.model_ref || payload.model || "";
+  state.runtime.imageModelRef = payload.image_model_ref || "";
+  state.runtime.agentOptions = payload.agent_options || [];
+  state.runtime.modelOptions = payload.model_options || [];
+  state.runtime.imageModelOptions = payload.image_model_options || [];
+  state.runtime.thinkingOptions = payload.thinking_options || state.runtime.thinkingOptions;
   $("modelLabel").textContent = payload.model || "model";
   if ($("workspaceLabel")) $("workspaceLabel").textContent = payload.workspace_dir || "";
   renderThinkingToggle();
-  $("runtimeInfo").innerHTML = "";
+  renderRuntimeEditor(payload);
+  if (state.currentSession && !state.activeTurnId) renderHistory();
+}
+
+function renderRuntimeEditor(payload) {
+  const root = $("runtimeInfo");
+  root.innerHTML = "";
+  root.appendChild(runtimeSelectRow({
+    label: "Agent",
+    value: state.runtime.agentId,
+    options: state.runtime.agentOptions.map((agent) => ({
+      value: agent.id,
+      label: agent.name && agent.name !== agent.id ? `${agent.name} (${agent.id})` : agent.id,
+    })),
+    onChange: (value) => send("runtime.set", { agent_id: value }),
+  }));
+  root.appendChild(runtimeSelectRow({
+    label: "Model",
+    value: state.runtime.modelRef,
+    options: state.runtime.modelOptions.map((model) => ({
+      value: model.ref,
+      label: runtimeModelLabel(model),
+    })),
+    onChange: (value) => send("runtime.set", { model_ref: value }),
+  }));
+  root.appendChild(runtimeSelectRow({
+    label: "ImageModel",
+    value: state.runtime.imageModelRef,
+    options: state.runtime.imageModelOptions.map((model) => ({
+      value: model.ref,
+      label: runtimeModelLabel(model),
+    })),
+    allowUnknown: false,
+    onChange: (value) => send("runtime.set", { image_model_ref: value }),
+  }));
+  root.appendChild(runtimeSelectRow({
+    label: "Thinking",
+    value: state.thinkingLevel || "low",
+    options: state.runtime.thinkingOptions.map((level) => ({ value: level, label: level })),
+    onChange: (value) => {
+      state.thinkingLevel = value;
+      if (value !== "off") state.lastThinkingLevel = value;
+      renderThinkingToggle();
+      send("runtime.set", { thinking_level: value });
+    },
+  }));
+
   [
-    ["Agent", payload.agent_id],
-    ["Model", payload.model_ref || payload.model],
-    ["Thinking", state.thinkingLevel],
     ["Assistant", state.assistantName],
     ["User", state.userName],
     ["Tools", (payload.tools || []).join(", ") || "none"],
     ["Workspace", payload.workspace_dir || ""],
   ].forEach(([k, v]) => {
     const row = document.createElement("div");
+    row.className = "runtime-static-row";
     row.innerHTML = `<strong>${escapeHtml(k)}</strong><br>${escapeHtml(String(v || ""))}`;
-    $("runtimeInfo").appendChild(row);
+    root.appendChild(row);
   });
-  if (state.currentSession && !state.activeTurnId) renderHistory();
+}
+
+function runtimeModelLabel(model) {
+  const icon = capabilityIcon(model.input || []);
+  if (!model.ref) return `${icon} ${model.name || "Native Vision"}`.trim();
+  const text = model.name && model.name !== model.ref ? `${model.name} (${model.ref})` : model.ref;
+  return `${icon} ${text}`.trim();
+}
+
+function capabilityIcon(input) {
+  const modes = new Set(input || []);
+  if (modes.has("image")) return "👁️";
+  if (modes.has("text")) return "💬";
+  return "◦";
+}
+
+function runtimeSelectRow({ label, value, options, onChange, allowUnknown = true }) {
+  const selected = options.find((option) => option.value === value) || (allowUnknown ? { value, label: value } : options[0]);
+  const menuId = `runtime-${label.toLowerCase()}-${Math.random().toString(16).slice(2)}`;
+  const row = document.createElement("div");
+  row.className = "runtime-field";
+  row.innerHTML = `
+    <span class="runtime-field-label">${escapeHtml(label)}</span>
+    <div class="runtime-combobox">
+      <button type="button" class="runtime-select-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="${menuId}">
+        <span>${escapeHtml(selected.label || "")}</span>
+        <span class="runtime-select-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div id="${menuId}" class="runtime-select-menu" role="listbox" hidden></div>
+    </div>`;
+
+  const trigger = row.querySelector(".runtime-select-trigger");
+  const menu = row.querySelector(".runtime-select-menu");
+  const choices = allowUnknown && selected?.value && !options.some((option) => option.value === selected.value)
+    ? [selected, ...options]
+    : options;
+
+  for (const option of choices) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "runtime-select-option";
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(option.value === value));
+    item.dataset.value = option.value;
+    item.innerHTML = `<span>${escapeHtml(option.label)}</span>`;
+    item.onclick = () => {
+      trigger.querySelector("span").textContent = option.label;
+      closeRuntimeMenus();
+      onChange(option.value);
+    };
+    menu.appendChild(item);
+  }
+
+  trigger.onclick = (event) => {
+    event.stopPropagation();
+    const isOpen = !menu.hidden;
+    closeRuntimeMenus();
+    if (!isOpen) {
+      menu.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      state.runtime.openMenu = menuId;
+    }
+  };
+  return row;
+}
+
+function closeRuntimeMenus() {
+  document.querySelectorAll(".runtime-select-menu").forEach((menu) => {
+    menu.hidden = true;
+  });
+  document.querySelectorAll(".runtime-select-trigger").forEach((trigger) => {
+    trigger.setAttribute("aria-expanded", "false");
+  });
+  state.runtime.openMenu = "";
 }
 
 function renderSessions() {
@@ -1181,12 +1315,14 @@ $("closeInspectorBtn").onclick = closeDrawers;
 $("drawerBackdrop").onclick = closeDrawers;
 
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeRuntimeMenus();
   if (event.key === "Escape") closeAppearanceMenu();
   if (event.key === "Escape" && state.openDrawer) closeDrawers();
 });
 
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".appearance-menu")) closeAppearanceMenu();
+  if (!event.target.closest(".runtime-combobox")) closeRuntimeMenus();
 });
 
 window.addEventListener("resize", () => {

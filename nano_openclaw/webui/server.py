@@ -49,7 +49,7 @@ from nano_openclaw.provider import (
 )
 from nano_openclaw.tools import ToolRegistry
 from nano_openclaw.webui.approvals import WebApprovalBroker
-from nano_openclaw.webui.runtime import AgentRuntime, build_agent_runtime, build_approval_manager
+from nano_openclaw.webui.runtime import AgentRuntime, build_agent_runtime, build_approval_manager, image_model_id_from_ref
 from nano_openclaw.webui.sessions import WebSessionManager, message_text
 
 
@@ -75,6 +75,13 @@ class SessionSelectRequest(BaseModel):
 
 class ThinkingSetRequest(BaseModel):
     level: str
+
+
+class RuntimeSetRequest(BaseModel):
+    agent_id: str | None = None
+    model_ref: str | None = None
+    image_model_ref: str | None = None
+    thinking_level: str | None = None
 
 
 def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> FastAPI:
@@ -254,6 +261,78 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                         continue
                     runtime.cfg.thinking_level = req.level
                     await emit({"type": "state.updated", **_state_payload(runtime)})
+                elif msg_type == "runtime.set":
+                    req = RuntimeSetRequest(**message)
+                    if req.thinking_level is not None and req.thinking_level not in _thinking_levels():
+                        await emit({"type": "turn.error", "message": f"invalid thinking level: {req.thinking_level}"})
+                        continue
+                    agent_ids = {item["id"] for item in _agent_options(runtime.config)}
+                    model_refs = {item["ref"] for item in _model_options(runtime.config)}
+                    image_model_refs = {item["ref"] for item in _image_model_options(runtime.config)}
+                    if req.agent_id is not None and req.agent_id not in agent_ids:
+                        await emit({"type": "turn.error", "message": f"invalid agent: {req.agent_id}"})
+                        continue
+                    if req.model_ref is not None and req.model_ref not in model_refs:
+                        await emit({"type": "turn.error", "message": f"invalid model: {req.model_ref}"})
+                        continue
+                    if req.image_model_ref is not None and req.image_model_ref not in image_model_refs:
+                        await emit({"type": "turn.error", "message": f"invalid image model: {req.image_model_ref}"})
+                        continue
+                    if _has_active_turn(manager):
+                        await emit({"type": "turn.error", "message": "cannot change runtime while a turn is active"})
+                        continue
+
+                    next_agent_id = req.agent_id or runtime.agent_id
+                    next_model_ref = req.model_ref or runtime.model_ref
+                    agent_changed = next_agent_id != runtime.agent_id
+                    model_changed = next_model_ref != runtime.model_ref
+                    next_image_model_ref = (
+                        req.image_model_ref
+                        if req.image_model_ref is not None
+                        else (None if agent_changed else runtime.image_model_ref)
+                    )
+
+                    if agent_changed or model_changed:
+                        old_runtime = runtime
+                        try:
+                            runtime = await build_agent_runtime(
+                                config_path=config_path,
+                                agent_id=next_agent_id,
+                                model_ref_override=next_model_ref if model_changed else None,
+                                image_model_ref_override=next_image_model_ref,
+                            )
+                            if req.thinking_level is not None:
+                                runtime.cfg.thinking_level = req.thinking_level
+                            manager = WebSessionManager(
+                                session_dir=runtime.session_dir,
+                                store_path=runtime.store_path,
+                                model=runtime.model_id,
+                                cwd=str(runtime.workspace_dir),
+                            )
+                            current = manager.get_or_load(None)
+                            app.state.runtime = runtime
+                            app.state.sessions = manager
+                            await emit({"type": "state.updated", **_state_payload(runtime)})
+                            await emit({
+                                "type": "session.updated",
+                                "session": _session_payload(manager, current),
+                                "sessions": manager.list(),
+                            })
+                            try:
+                                await old_runtime.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+                        except Exception as exc:  # noqa: BLE001
+                            runtime = old_runtime
+                            app.state.runtime = old_runtime
+                            await emit({"type": "turn.error", "message": f"runtime update failed: {type(exc).__name__}: {exc}"})
+                    else:
+                        if req.image_model_ref is not None:
+                            runtime.image_model_ref = req.image_model_ref
+                            runtime.cfg.image_model = image_model_id_from_ref(req.image_model_ref)
+                        if req.thinking_level is not None:
+                            runtime.cfg.thinking_level = req.thinking_level
+                        await emit({"type": "state.updated", **_state_payload(runtime)})
                 elif msg_type == "command.run":
                     cmd_text = message.get("command", "")
                     session_id_cmd = message.get("session_id")
@@ -564,9 +643,15 @@ def _state_payload(runtime: AgentRuntime) -> dict[str, Any]:
     hook_registry = runtime.registry.hook_registry()
     return {
         "agent_id": runtime.agent_id,
+        "agent_options": _agent_options(runtime.config),
         "model": runtime.model_id,
         "model_ref": runtime.model_ref,
+        "model_options": _model_options(runtime.config),
+        "image_model": runtime.cfg.image_model,
+        "image_model_ref": runtime.image_model_ref or "",
+        "image_model_options": _image_model_options(runtime.config),
         "thinking_level": runtime.cfg.thinking_level,
+        "thinking_options": list(_thinking_levels()),
         "assistant_name": _read_assistant_name(runtime.workspace_dir),
         "user_name": _read_user_name(runtime.workspace_dir),
         "workspace_dir": str(runtime.workspace_dir),
@@ -579,6 +664,98 @@ def _state_payload(runtime: AgentRuntime) -> dict[str, Any]:
         },
         "warnings": runtime.warnings,
     }
+
+
+def _thinking_levels() -> tuple[str, ...]:
+    return ("off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max")
+
+
+def _agent_options(config: Any) -> list[dict[str, Any]]:
+    agents = list(config.agents.list or [])
+    default_id = None
+    for agent in agents:
+        if agent.default:
+            default_id = agent.id
+            break
+    if default_id is None:
+        default_id = agents[0].id if agents else "default"
+
+    if not agents:
+        return [{"id": "default", "name": "Default Agent", "default": True}]
+
+    return [
+        {
+            "id": agent.id,
+            "name": agent.name or agent.id,
+            "default": agent.id == default_id,
+        }
+        for agent in agents
+    ]
+
+
+def _model_options(config: Any) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+
+    def add(ref: str | None, name: str | None = None, input: list[str] | None = None) -> None:
+        if not ref or "/" not in ref:
+            return
+        if ref in seen:
+            if name or input:
+                for item in result:
+                    if item["ref"] != ref:
+                        continue
+                    if name and item["name"] == ref:
+                        item["name"] = name
+                    if input and not item.get("input"):
+                        item["input"] = input
+                        break
+            return
+        seen.add(ref)
+        result.append({"ref": ref, "name": name or ref, "input": input or []})
+
+    add(config.resolve_primary_model())
+    for agent in config.agents.list:
+        add(config.resolve_primary_model(agent.id))
+    for provider_id, provider in config.models.providers.items():
+        for model in provider.models:
+            add(f"{provider_id}/{model.id}", model.name or model.id, list(model.input or []))
+
+    return result
+
+
+def _image_model_options(config: Any) -> list[dict[str, Any]]:
+    seen: set[str] = {""}
+    result: list[dict[str, Any]] = [{"ref": "", "name": "Native Vision", "input": ["image"]}]
+
+    def add(ref: str | None, name: str | None = None, input: list[str] | None = None) -> None:
+        if not ref or "/" not in ref:
+            return
+        if "image" not in (input or []):
+            return
+        if ref in seen:
+            if name or input:
+                for item in result:
+                    if item["ref"] != ref:
+                        continue
+                    if name and item["name"] == ref:
+                        item["name"] = name
+                    if input and not item.get("input"):
+                        item["input"] = input
+                        break
+            return
+        seen.add(ref)
+        result.append({"ref": ref, "name": name or ref, "input": input or []})
+
+    for provider_id, provider in config.models.providers.items():
+        for model in provider.models:
+            add(f"{provider_id}/{model.id}", model.name or model.id, list(model.input or []))
+
+    return result
+
+
+def _has_active_turn(manager: WebSessionManager) -> bool:
+    return any(session.active_turn_id for session in manager._loaded.values())
 
 
 def _read_assistant_name(workspace_dir: Path) -> str:
