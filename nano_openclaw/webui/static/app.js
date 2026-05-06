@@ -38,7 +38,7 @@ const state = {
     openMenu: "",
   },
   attachments: [],
-  clearAttachmentsOnAccept: false,
+  submittedAttachmentIds: new Set(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -143,12 +143,14 @@ function send(type, payload = {}) {
 function updateSendBtn() {
   const btn = $("sendBtn");
   if (state.activeTurnId) {
-    btn.textContent = "⬛";
+    btn.textContent = "";
     btn.title = "Cancel";
+    btn.setAttribute("aria-label", "Cancel");
     btn.classList.add("stop-mode");
   } else {
     btn.textContent = "↑";
     btn.title = "Send";
+    btn.setAttribute("aria-label", "Send");
     btn.classList.remove("stop-mode");
   }
 }
@@ -181,9 +183,10 @@ function handleEvent(event) {
       document.querySelectorAll(".message.turn-event, .message.approval-card").forEach((el) => el.remove());
       appendMessage("user", formatAcceptedUserText(event));
       state.activityNode = appendActivitySummary();
-      if (state.clearAttachmentsOnAccept) {
-        state.attachments = [];
-        state.clearAttachmentsOnAccept = false;
+      if (state.submittedAttachmentIds.size) {
+        state.attachments = state.attachments.filter((item) => !state.submittedAttachmentIds.has(item.id));
+        state.submittedAttachmentIds.clear();
+        validateAttachmentSet();
         renderAttachments();
       }
       state.assistantNode = appendMessage("assistant", "");
@@ -256,13 +259,14 @@ function handleEvent(event) {
       state.activeTurnId = null;
       updateSendBtn();
       state.assistantNode = null;
+      state.submittedAttachmentIds.clear();
       addActivity(event.type, "Turn cancelled", event);
       break;
     case "turn.error":
       finishActivity();
       state.activeTurnId = null;
       updateSendBtn();
-      state.clearAttachmentsOnAccept = false;
+      state.submittedAttachmentIds.clear();
       addActivity(event.type, event.message || "unknown error", event);
       break;
     case "session.error":
@@ -1060,9 +1064,9 @@ function hasAttachmentErrors() {
   return state.attachments.some((item) => item.error);
 }
 
-async function buildAttachmentPayloads() {
+async function buildAttachmentPayloads(items = state.attachments) {
   const payloads = [];
-  for (const item of state.attachments) {
+  for (const item of items) {
     const data = await fileToBase64(item.file);
     payloads.push({
       name: item.file.name,
@@ -1232,9 +1236,11 @@ $("composer").onsubmit = async (event) => {
   }
 
   if (!state.currentSession) return;
+  const submittedAttachments = [...state.attachments];
+  const submittedAttachmentIds = new Set(submittedAttachments.map((item) => item.id));
   let attachments = [];
   try {
-    attachments = await buildAttachmentPayloads();
+    attachments = await buildAttachmentPayloads(submittedAttachments);
   } catch (error) {
     addEvent("attachment.error", String(error?.message || error), { type: "attachment.error" });
     return;
@@ -1243,7 +1249,7 @@ $("composer").onsubmit = async (event) => {
   const didSend = send("chat.send", { session_id: state.currentSession.session_id, text, attachments });
   if (!didSend) return;
   $("prompt").value = "";
-  state.clearAttachmentsOnAccept = state.attachments.length > 0;
+  state.submittedAttachmentIds = submittedAttachmentIds;
   resizePrompt();
 };
 

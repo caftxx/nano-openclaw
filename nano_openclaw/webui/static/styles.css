@@ -675,7 +675,16 @@ textarea:focus {
 #sendBtn.stop-mode {
   background: var(--button-primary-bg);
   color: var(--button-primary-ink);
-  font-size: 13px;
+  font-size: 0;
+}
+
+#sendBtn.stop-mode::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  display: block;
+  border-radius: 2px;
+  background: currentColor;
 }
 
 .message.command .role {
