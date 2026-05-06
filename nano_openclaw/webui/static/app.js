@@ -53,9 +53,9 @@ const ALLOWED_ATTACHMENT_TYPES = new Set([
   "application/pdf",
 ]);
 const THEME_LABELS = {
-  system: "系统",
-  dark: "深色",
-  light: "浅色",
+  system: "System",
+  dark: "Dark",
+  light: "Light",
 };
 const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
 
@@ -82,7 +82,11 @@ function setThemePreference(preference) {
 
 function renderAppearanceMenu() {
   const btn = $("appearanceBtn");
-  if (btn) btn.title = `外观：${THEME_LABELS[state.themePreference] || THEME_LABELS.system}`;
+  if (btn) {
+    const label = THEME_LABELS[state.themePreference] || THEME_LABELS.system;
+    btn.title = `Theme: ${label}`;
+    btn.setAttribute("aria-label", `Theme settings, current: ${label}`);
+  }
   document.querySelectorAll("[data-theme-choice]").forEach((option) => {
     option.setAttribute("aria-checked", String(option.dataset.themeChoice === state.themePreference));
   });
@@ -307,7 +311,6 @@ function renderRuntime(payload) {
   state.runtime.modelOptions = payload.model_options || [];
   state.runtime.imageModelOptions = payload.image_model_options || [];
   state.runtime.thinkingOptions = payload.thinking_options || state.runtime.thinkingOptions;
-  $("modelLabel").textContent = payload.model || "model";
   if ($("workspaceLabel")) $("workspaceLabel").textContent = payload.workspace_dir || "";
   renderThinkingToggle();
   renderRuntimeEditor(payload);
@@ -789,7 +792,7 @@ function renderActivityHeader() {
   if (!title || !meta) return;
   const activity = getSelectedActivity();
   const seconds = Math.max(0, Math.round(((activity?.durationMs ?? state.activityDurationMs) || 0) / 1000));
-  title.textContent = "活动";
+  title.textContent = "Activity";
   meta.textContent = seconds > 0 ? `· ${seconds}s` : "";
 }
 
@@ -803,7 +806,7 @@ function renderActivity() {
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "activity-empty";
-    empty.textContent = "暂无活动";
+    empty.textContent = "No activity";
     list.appendChild(empty);
     return;
   }

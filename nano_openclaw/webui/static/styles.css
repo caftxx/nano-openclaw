@@ -342,6 +342,34 @@ textarea::placeholder {
   border-radius: 999px;
 }
 
+.tool-icon {
+  position: relative;
+  border: 1px solid transparent;
+  color: var(--muted);
+  transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease;
+}
+
+.tool-icon:hover,
+.tool-icon[aria-expanded="true"] {
+  border-color: var(--line-soft);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.tool-icon:active {
+  transform: scale(.96);
+}
+
+.tool-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .thinking-toggle {
   min-height: 34px;
   padding: 0 14px;
@@ -364,14 +392,6 @@ textarea::placeholder {
 .thinking-toggle:active { transform: scale(.98); }
 
 .status-button { position: relative; }
-
-.status-dot {
-  width: 10px;
-  height: 10px;
-  display: block;
-  border: 2px solid var(--muted);
-  border-radius: 999px;
-}
 
 .appearance-menu {
   position: relative;
@@ -934,28 +954,9 @@ textarea:focus {
 .inspector-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.inspector-header h2 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 20px;
-  line-height: 1.2;
-}
-
-.inspector-header h2 span:last-child {
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.inspector-header p {
-  margin: 3px 0 0;
-  color: var(--subtle);
-  font-size: 12px;
+  justify-content: flex-end;
+  min-height: 36px;
+  padding-bottom: 8px;
 }
 
 .panel {
@@ -989,6 +990,11 @@ textarea:focus {
   font-weight: 700;
   letter-spacing: .04em;
   text-transform: uppercase;
+}
+
+.panel h2 span:last-child {
+  color: var(--subtle);
+  font-weight: 700;
 }
 
 .activity-list {

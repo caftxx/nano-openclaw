@@ -13,7 +13,7 @@
         document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260506-runtime-menu" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260506-unified-drawers" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -23,16 +23,15 @@
         <div class="brand">
           <div>
             <h1>nano-openclaw</h1>
-            <p id="modelLabel">connecting</p>
           </div>
           <div class="brand-actions">
             <button id="closeSessionDrawerBtn" class="icon-btn" title="Close sessions" aria-label="Close sessions">×</button>
           </div>
         </div>
         <nav class="sidebar-nav" aria-label="Primary">
-          <button type="button" id="newSessionNavBtn" class="nav-item">✎ <span>新聊天</span></button>
+          <button type="button" id="newSessionNavBtn" class="nav-item">✎ <span>New chat</span></button>
         </nav>
-        <div class="sidebar-section-label">最近</div>
+        <div class="sidebar-section-label">Recent</div>
         <input id="sessionSearch" class="search" placeholder="Search sessions" />
         <div id="sessionList" class="session-list"></div>
       </aside>
@@ -45,21 +44,37 @@
           </div>
           <div class="actions">
             <div class="appearance-menu">
-              <button id="appearanceBtn" class="topbar-action" type="button" title="Appearance" aria-haspopup="menu" aria-expanded="false">
-                <span>外观</span>
+              <button id="appearanceBtn" class="topbar-icon tool-icon" type="button" title="Theme" aria-label="Theme settings" aria-haspopup="menu" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="4"></circle>
+                  <path d="M12 2v2.2M12 19.8V22M4.93 4.93l1.56 1.56M17.51 17.51l1.56 1.56M2 12h2.2M19.8 12H22M4.93 19.07l1.56-1.56M17.51 6.49l1.56-1.56"></path>
+                </svg>
               </button>
               <div id="appearanceOptions" class="appearance-options" role="menu" hidden>
-                <button type="button" role="menuitemradio" data-theme-choice="system" aria-checked="true">系统</button>
-                <button type="button" role="menuitemradio" data-theme-choice="dark" aria-checked="false">深色</button>
-                <button type="button" role="menuitemradio" data-theme-choice="light" aria-checked="false">浅色</button>
+                <button type="button" role="menuitemradio" data-theme-choice="system" aria-checked="true">System</button>
+                <button type="button" role="menuitemradio" data-theme-choice="dark" aria-checked="false">Dark</button>
+                <button type="button" role="menuitemradio" data-theme-choice="light" aria-checked="false">Light</button>
               </div>
             </div>
-            <button id="openInspectorDesktopBtn" class="topbar-action desktop-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
-              <span class="status-dot" aria-hidden="true"></span>
-              <span>运行</span>
+            <button id="openInspectorDesktopBtn" class="topbar-icon desktop-only status-button tool-icon" type="button" title="Runtime" aria-label="Open runtime panel">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h10"></path>
+                <path d="M18 7h2"></path>
+                <circle cx="16" cy="7" r="2"></circle>
+                <path d="M4 17h2"></path>
+                <path d="M10 17h10"></path>
+                <circle cx="8" cy="17" r="2"></circle>
+              </svg>
             </button>
-            <button id="openInspectorBtn" class="topbar-icon mobile-only status-button" type="button" title="Runtime" aria-label="Open runtime panel">
-              <span class="status-dot" aria-hidden="true"></span>
+            <button id="openInspectorBtn" class="topbar-icon mobile-only status-button tool-icon" type="button" title="Runtime" aria-label="Open runtime panel">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h10"></path>
+                <path d="M18 7h2"></path>
+                <circle cx="16" cy="7" r="2"></circle>
+                <path d="M4 17h2"></path>
+                <path d="M10 17h10"></path>
+                <circle cx="8" cy="17" r="2"></circle>
+              </svg>
             </button>
           </div>
         </header>
@@ -77,15 +92,12 @@
 
       <aside id="inspectorDrawer" class="inspector drawer-panel" aria-label="Activity and runtime information" aria-hidden="true">
         <div class="inspector-header">
-          <div>
-            <h2><span id="activityTitle">活动</span> <span id="activityMeta"></span></h2>
-            <p>Thinking, tools, skills, and runtime events</p>
-          </div>
           <button id="closeInspectorBtn" class="icon-btn" title="Close activity" aria-label="Close activity">×</button>
         </div>
         <section class="panel activity-panel">
+          <h2><span id="activityTitle">Activity</span> <span id="activityMeta"></span></h2>
           <div id="activityList" class="activity-list">
-            <div class="activity-empty">暂无活动</div>
+            <div class="activity-empty">No activity</div>
           </div>
         </section>
         <section class="panel runtime-panel">
@@ -105,6 +117,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260506-runtime-menu"></script>
+    <script src="/static/app.js?v=20260506-unified-drawers"></script>
   </body>
 </html>
