@@ -658,8 +658,29 @@ async def agent_loop(
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
         if has_denial:
-            # User denied at least one tool — stop immediately so the model
-            # cannot retry with a different approach in the same turn.
+            # At least one tool was denied — make one final model call so the
+            # model can draw a conclusion from the context collected so far,
+            # then end the turn. Pass no tools to force a text-only response.
+            await check_cancelled()
+            wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
+            try:
+                final_blocks, _ = await _consume_one_assistant_turn(
+                    client=client,
+                    api=cfg.api,
+                    model=cfg.model,
+                    system=system,
+                    messages=wire_messages,
+                    tools=[],
+                    max_tokens=cfg.max_tokens,
+                    thinking_budget_tokens=cfg.thinking_budget_tokens,
+                    on_event=on_event,
+                    cancellation_token=cancellation_token,
+                )
+            except TurnCancelled:
+                await drain_loop_event_hooks()
+                raise
+            scratch_history.append(Message("assistant", final_blocks))
+            pending_transcript_ops.append(("message", scratch_history[-1]))
             history[:] = scratch_history
             if transcript_writer:
                 for op, payload in pending_transcript_ops:
