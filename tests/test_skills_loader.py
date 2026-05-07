@@ -120,6 +120,18 @@ def test_load_bundled_skill_base_dir_is_skill_dir():
     assert (Path(clawhub.baseDir) / "scripts" / "clawhub_api.py").is_file()
 
 
+def test_clawhub_declares_httpx_uv_installer(tmp_path: Path):
+    """Bundled clawhub exposes its Python dependency to skill_install."""
+    entries = load_skill_entries(tmp_path)
+    clawhub = next(entry for entry in entries if entry.skill.name == "clawhub")
+
+    assert clawhub.metadata is not None
+    assert clawhub.metadata.install is not None
+    installer = next(spec for spec in clawhub.metadata.install if spec.id == "httpx")
+    assert installer.kind == "uv"
+    assert installer.package == "httpx"
+
+
 def test_load_skill_entries_from_workspace(tmp_path: Path):
     """Load skills from workspace directory."""
     # Create a test skill in workspace

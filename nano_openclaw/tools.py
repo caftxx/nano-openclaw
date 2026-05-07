@@ -114,8 +114,14 @@ class ToolRegistry:
         if tool is None:
             return _error_result(tool_use_id, f"unknown tool: {name!r}")
 
+        pip_install_protected = (
+            name == "bash"
+            and _is_python_package_install_command(str(args.get("command") or ""))
+            and not self._allow_global_pip
+        )
+
         # Check approval if manager is configured (sync, fast)
-        if self.approval_manager:
+        if self.approval_manager and not pip_install_protected:
             eval_result = self.approval_manager.check_request(name, args)
 
             if eval_result.requires_approval:
@@ -503,6 +509,11 @@ async def _skill_install(
         timeout=timeout,
     )
     parts = [f"ok={str(result.ok).lower()}", f"message={result.message}"]
+    if result.ok:
+        from nano_openclaw.skills.install import resolve_skill_python_env
+        env_info = resolve_skill_python_env(state_dir, skill_name)
+        parts.append(f"python={env_info.python_executable}")
+        parts.append(f"venv={env_info.venv_dir}")
     if result.code is not None:
         parts.append(f"code={result.code}")
     if result.stdout:

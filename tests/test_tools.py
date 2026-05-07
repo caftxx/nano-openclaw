@@ -216,6 +216,22 @@ def test_bash_protects_python_m_pip_install(registry, tmp_path):
     assert "metadata.openclaw.install" in text
 
 
+def test_bash_protected_pip_bypasses_approval_prompt(tmp_path):
+    registry = build_core_registry()
+    registry.set_state_dir(tmp_path / "state")
+    policy = ApprovalPolicy(ask_mode="always", dangerous_tools=["bash"], allowlist=[])
+    registry.approval_manager = __import__(
+        "nano_openclaw.approvals", fromlist=["ApprovalManager"]
+    ).ApprovalManager(policy)
+
+    out = registry.dispatch("id-pip", "bash", {"command": "pip install --help", "timeout": 20})
+
+    assert out.get("is_error") is None
+    text = out["content"][0]["text"]
+    assert "approval denied" not in text
+    assert "PIP_REQUIRE_VIRTUALENV=true" in text
+
+
 def test_bash_non_install_python_command_not_protected(registry):
     out = registry.dispatch("id-py", "bash", {"command": "python --version", "timeout": 20})
 
@@ -351,6 +367,8 @@ def test_skill_install_tool_returns_install_result(registry, tmp_path, monkeypat
     text = out["content"][0]["text"]
     assert "ok=true" in text
     assert "message=Installed" in text
+    assert f"python={state / 'tools' / 'python' / 'skills' / 'demo' / 'venv' / 'bin' / 'python'}" in text
+    assert f"venv={state / 'tools' / 'python' / 'skills' / 'demo' / 'venv'}" in text
     assert "--- stdout ---\nok" in text
 
 

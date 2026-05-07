@@ -5,6 +5,10 @@ user-invocable: true
 metadata:
   openclaw:
     emoji: "🦞"
+    install:
+      - id: httpx
+        kind: uv
+        package: httpx
 ---
 
 # ClawHub Skill
@@ -15,6 +19,8 @@ Search, inspect, install, update, and uninstall skills from the ClawHub registry
 
 This skill includes `scripts/clawhub_api.py` — a CLI tool to manage ClawHub skills.
 The CLI is non-interactive: if overwrite or removal confirmation is needed, it tells you to ask the user first, then rerun with the required flag only after the user confirms.
+
+If Python reports `ModuleNotFoundError: No module named 'httpx'`, call the `skill_install` tool with `skill="clawhub"` and `installId="httpx"`. Then rerun the CLI with the Python executable reported by `skill_install`.
 
 ### Usage
 
