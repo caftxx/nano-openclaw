@@ -219,7 +219,7 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
 
         try:
             await emit({"type": "state.updated", **_state_payload(runtime)})
-            current = manager.get_or_load(None)
+            current = manager.create()
             await emit({"type": "session.updated", "session": _session_payload(manager, current), "sessions": manager.list()})
             while True:
                 message = await websocket.receive_json()
