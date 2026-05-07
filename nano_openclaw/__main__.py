@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 
 from nano_openclaw.cli import repl
-from nano_openclaw.loop import LoopConfig, Message, agent_loop
+from nano_openclaw.loop import LoopConfig, Message
 from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.memory.dreaming import DreamingConfig, start_dreaming_scheduler
 from nano_openclaw.config import (

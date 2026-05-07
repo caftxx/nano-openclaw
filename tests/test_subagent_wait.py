@@ -4,7 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import LoopConfig, Message, SubagentProgress, agent_loop
+from nano_openclaw.loop import AgentSession, LoopConfig, Message, SubagentProgress
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.subagent.registry import reset_registry
 from nano_openclaw.subagent.runner import SubagentRunner, get_runner, reset_runner
@@ -12,7 +12,7 @@ from nano_openclaw.subagent.types import SpawnParams
 from nano_openclaw.tools import Tool, ToolRegistry
 
 
-def test_agent_loop_waits_for_spawned_subagent_before_next_model_turn(monkeypatch):
+def test_agent_session_waits_for_spawned_subagent_before_next_model_turn(monkeypatch):
     reset_registry()
     reset_runner()
 
@@ -78,14 +78,14 @@ def test_agent_loop_waits_for_spawned_subagent_before_next_model_turn(monkeypatc
     monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
     history: list[Message] = []
-    asyncio.run(agent_loop(
-        user_input="spawn child",
+    session = AgentSession(
         history=history,
         registry=registry,
         on_event=lambda _event: None,
         client=object(),
         cfg=LoopConfig(session_key=requester_session_key),
-    ))
+    )
+    asyncio.run(session.run_turn("spawn child"))
 
     assert len(sent_messages) == 2
     assert any(
@@ -98,15 +98,15 @@ def test_agent_loop_waits_for_spawned_subagent_before_next_model_turn(monkeypatc
 def test_subagent_runner_emits_progress_events(monkeypatch, tmp_path):
     reset_registry()
 
-    async def fake_agent_loop(**kwargs):
-        kwargs["on_event"](ToolUseStart(id="tool-1", name="Read"))
-        kwargs["on_event"](MessageEnd(
+    async def fake_run_turn(self, _user_input, **_kwargs):
+        self.on_event(ToolUseStart(id="tool-1", name="Read"))
+        self.on_event(MessageEnd(
             stop_reason="end_turn",
             usage={"input_tokens": 1200, "output_tokens": 300},
         ))
-        kwargs["history"].append(Message("assistant", [{"type": "text", "text": "child done"}]))
+        self.history.append(Message("assistant", [{"type": "text", "text": "child done"}]))
 
-    monkeypatch.setattr("nano_openclaw.subagent.runner.agent_loop", fake_agent_loop)
+    monkeypatch.setattr("nano_openclaw.subagent.runner.AgentSession.run_turn", fake_run_turn)
 
     runner = SubagentRunner()
     record = runner.registry.register(

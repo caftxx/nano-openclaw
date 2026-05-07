@@ -272,15 +272,364 @@ class LoopConfig:
         return THINKING_BUDGETS.get(self.thinking_level)
 
 
-async def agent_loop(
+@dataclass
+class AgentSession:
+    """Runtime state for one agent session.
+
+    Keep one ``AgentSession`` per conversation and call ``run_turn`` for each
+    user turn.
+    """
+
+    history: list[Message]
+    registry: ToolRegistry
+    on_event: EventCallback
+    client: Any
+    cfg: LoopConfig
+    transcript_writer: "TranscriptWriter | None" = None
+    cancellation_token: "CancellationToken | None" = None
+
+    @property
+    def session_id(self) -> str:
+        if self.transcript_writer:
+            return self.transcript_writer.session_id
+        return self.cfg.session_key
+
+    async def run_turn(
+        self,
+        user_input: str,
+        *,
+        on_event: EventCallback | None = None,
+        cancellation_token: "CancellationToken | None" = None,
+        attachments: list[PromptAttachment] | None = None,
+        attachment_turn_id: str | None = None,
+    ) -> list[Message]:
+        """Drive one user turn to completion and mutate ``history`` in place."""
+        return await _run_agent_session_turn(
+            self,
+            user_input,
+            on_event=on_event,
+            cancellation_token=cancellation_token,
+            attachments=attachments,
+            attachment_turn_id=attachment_turn_id,
+        )
+
+    def _commit_turn(
+        self,
+        scratch_history: list[Message],
+        pending_ops: list[tuple[str, Message | str]],
+    ) -> None:
+        self.history[:] = scratch_history
+        if not self.transcript_writer:
+            return
+        for op, payload in pending_ops:
+            if op == "message":
+                self.transcript_writer.append_message(payload)  # type: ignore[arg-type]
+            else:
+                self.transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+
+    def _load_turn_skills(self) -> tuple[list[SkillEntry], list[Skill] | None]:
+        eligible_entries: list[SkillEntry] = []
+        visible_skills: list[Skill] | None = None
+        if not self.cfg.workspace_dir:
+            return eligible_entries, visible_skills
+
+        skill_entries = get_or_load_skills(
+            self.cfg.workspace_dir,
+            self.cfg.session_key,
+            extra_dirs=self.cfg.extra_skill_dirs,
+            max_bytes=self.cfg.max_skill_file_bytes,
+        )
+        if skill_entries:
+            eligible_entries = filter_eligible_skills(
+                skill_entries,
+                skill_filter=self.cfg.skill_filter,
+            )
+            visible_skills = filter_visible_skills(eligible_entries)
+        return eligible_entries, visible_skills
+
+    def _prepare_skill_command(
+        self,
+        user_input: str,
+        eligible_entries: list[SkillEntry],
+    ) -> tuple[SlashCommand | None, str, dict[str, Skill]]:
+        command: SlashCommand | None = None
+        remaining_text = user_input
+        skill_registry: dict[str, Skill] = {}
+        if not eligible_entries:
+            return command, remaining_text, skill_registry
+
+        # Slash commands: user-invocable skills only.
+        runtime_registry = build_skill_registry_from_entries(eligible_entries)
+        if runtime_registry:
+            skill_registry = runtime_registry
+        command, remaining_text = parse_slash_command(user_input, skill_registry)
+
+        # Model Skill tool: all eligible skills, not just user-invocable ones.
+        model_registry = build_skill_registry_from_entries(
+            eligible_entries,
+            user_invocable_only=False,
+        )
+        self.registry.set_eligible_skills(model_registry)
+        return command, remaining_text, skill_registry
+
+    async def _build_user_content(
+        self,
+        user_input: str,
+        remaining_text: str,
+        command: SlashCommand | None,
+        on_event: EventCallback,
+        *,
+        attachments: list[PromptAttachment] | None = None,
+        attachment_turn_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = []
+
+        if command:
+            skill_context = build_slash_command_context(command)
+            content.append({"type": "text", "text": skill_context})
+            on_event(SkillInvoked(skill_name=command.name, skill_path=command.skill.filePath))
+
+        cleaned_text, image_refs = parse_image_refs(remaining_text)
+        loaded_refs: list[str] = []
+        for ref in image_refs:
+            try:
+                b64, mime = load_image(ref)
+                if self.cfg.image_model:
+                    on_event(ImageDescribe(ref=ref))
+                    desc = await describe_image(
+                        b64,
+                        mime,
+                        client=self.client,
+                        model=self.cfg.image_model,
+                        api=self.cfg.api,
+                    )
+                    content.append({"type": "text", "text": f"[Image: {desc}]"})
+                elif self.cfg.model_has_vision:
+                    content.append(to_anthropic_image_block(b64, mime))
+                else:
+                    on_event(ImageSkip(
+                        ref=ref,
+                        reason="model has no vision capability and no image_model configured",
+                    ))
+                loaded_refs.append(ref)
+            except Exception as exc:
+                on_event(ImageError(ref=ref, error=str(exc)))
+
+        if loaded_refs:
+            on_event(ImageAttached(refs=loaded_refs, via_model=bool(self.cfg.image_model)))
+
+        attachment_refs: list[str] = []
+        uploaded_image_refs: list[str] = []
+        attachment_root = self.cfg.workspace_dir or Path(os.getcwd())
+        turn_attachment_id = attachment_turn_id
+        if attachments and not turn_attachment_id:
+            turn_attachment_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        for attachment in attachments or []:
+            if is_image_mime(attachment.mime):
+                try:
+                    b64, mime = load_image_bytes(attachment.data, attachment.mime)
+                    if self.cfg.image_model:
+                        on_event(ImageDescribe(ref=attachment.name))
+                        desc = await describe_image(
+                            b64,
+                            mime,
+                            client=self.client,
+                            model=self.cfg.image_model,
+                            api=self.cfg.api,
+                        )
+                        content.append({
+                            "type": "text",
+                            "text": f"[Image: {attachment.name} - {desc}]",
+                        })
+                    elif self.cfg.model_has_vision:
+                        content.append(to_anthropic_image_block(b64, mime))
+                    else:
+                        on_event(ImageSkip(
+                            ref=attachment.name,
+                            reason="model has no vision capability and no image_model configured",
+                        ))
+                    uploaded_image_refs.append(attachment.name)
+                except Exception as exc:
+                    on_event(ImageError(ref=attachment.name, error=str(exc)))
+                continue
+
+            try:
+                saved = save_non_image_attachment(
+                    attachment,
+                    root=attachment_root,
+                    session_id=self.cfg.session_key,
+                    turn_id=turn_attachment_id or "turn",
+                )
+                content.append({"type": "text", "text": attachment_prompt_block(saved)})
+                attachment_refs.append(saved.display_path)
+            except Exception as exc:
+                on_event(AttachmentError(ref=attachment.name, error=str(exc)))
+
+        if uploaded_image_refs:
+            on_event(ImageAttached(refs=uploaded_image_refs, via_model=bool(self.cfg.image_model)))
+        if attachment_refs:
+            on_event(AttachmentAttached(refs=attachment_refs))
+
+        # Mirror openclaw convertContentBlocks: guarantee at least one text block.
+        if cleaned_text:
+            content.append({"type": "text", "text": cleaned_text})
+        if not content:
+            content.append({"type": "text", "text": user_input})
+        elif not any(b.get("type") == "text" for b in content):
+            content.append({"type": "text", "text": "(see attached image)"})
+        return content
+
+    async def _build_system_for_turn(
+        self,
+        user_input: str,
+        scratch_history: list[Message],
+        visible_skills: list[Skill] | None,
+        on_event: EventCallback,
+    ) -> str:
+        bootstrap_files: list[WorkspaceBootstrapFile] | None = None
+        if self.cfg.workspace_dir:
+            bootstrap_files = get_or_load_bootstrap_files(
+                self.cfg.workspace_dir,
+                self.cfg.session_key,
+                self.cfg.bootstrap_max_chars,
+                self.cfg.bootstrap_total_max_chars,
+            )
+
+        active_memory_context: str | None = None
+        if (
+            self.cfg.workspace_dir
+            and self.cfg.active_memory_config
+            and self.cfg.active_memory_config.enabled
+        ):
+            manager = ActiveMemoryManager(
+                client=self.client,
+                model=self.cfg.model,
+                workspace_dir=str(self.cfg.workspace_dir),
+                config=self.cfg.active_memory_config,
+            )
+            wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
+            recall_result = await manager.run(wire_messages)
+            if recall_result:
+                on_event(ActiveMemoryRecall(result=recall_result))
+                if recall_result.context:
+                    active_memory_context = recall_result.context
+
+        if self.cfg.system_prompt_override is not None:
+            system = self.cfg.system_prompt_override
+        else:
+            system = build_system_prompt(
+                self.registry,
+                self.cfg.workspace_dir,
+                bootstrap_files,
+                visible_skills,
+                max_skills_in_prompt=self.cfg.max_skills_in_prompt,
+                max_skills_prompt_chars=self.cfg.max_skills_prompt_chars,
+            )
+
+        if self.cfg.hook_registry:
+            hook_result = await self.cfg.hook_registry.run("before_prompt_build", {
+                "system": system,
+                "user_input": user_input,
+                "workspace_dir": str(self.cfg.workspace_dir) if self.cfg.workspace_dir else "",
+            })
+            system = hook_result.get("system", system)
+            if prepend := hook_result.get("prepend"):
+                system = f"{prepend}\n\n{system}"
+            if append := hook_result.get("append"):
+                system = f"{system}\n\n{append}"
+
+        if active_memory_context:
+            system = f"{active_memory_context}\n\n{system}"
+        return system
+
+    async def _dispatch_tool_batch(
+        self,
+        scratch_history: list[Message],
+        tool_use_blocks: list[dict[str, Any]],
+        skill_registry: dict[str, Skill],
+        on_event: EventCallback,
+        cancellation_token: "CancellationToken | None",
+    ) -> tuple[list[dict[str, Any]], bool]:
+        self.registry.set_session_status_context(
+            model=self.cfg.model,
+            session_id=self.transcript_writer.session_id if self.transcript_writer else "",
+            context_budget=self.cfg.context_budget,
+            context_window=self.cfg.context_window,
+            current_tokens=estimate_tokens(scratch_history),
+            compaction_count=self.transcript_writer.compaction_count if self.transcript_writer else 0,
+            message_count=len(scratch_history),
+        )
+
+        # Emit SkillInvoked events before dispatch; order matters for UX.
+        for block in tool_use_blocks:
+            tool_name = block["name"]
+            tool_args = block.get("input") or {}
+            if tool_name == "skill" and "skill" in tool_args:
+                skill_name = tool_args["skill"]
+                if skill_registry and skill_name in skill_registry:
+                    skill = skill_registry[skill_name]
+                    on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
+
+        batch_requires_approval = False
+        if self.registry.approval_manager:
+            batch_requires_approval = any(
+                self.registry.approval_manager.check_request(
+                    b["name"],
+                    b.get("input") or {},
+                ).requires_approval
+                for b in tool_use_blocks
+            )
+
+        if batch_requires_approval:
+            tool_results = []
+            denied_tool_name: str | None = None
+            for block in tool_use_blocks:
+                if denied_tool_name is not None:
+                    tool_results.append(_skipped_after_denial_result(
+                        block["id"],
+                        denied_tool_name,
+                    ))
+                    continue
+
+                result = await self.registry.dispatch(
+                    block["id"],
+                    block["name"],
+                    block.get("input") or {},
+                    cancellation_token=cancellation_token,
+                )
+                if result.get("_denied"):
+                    denied_tool_name = block["name"]
+                tool_results.append(result)
+        else:
+            tool_results = list(
+                await asyncio.gather(*[
+                    self.registry.dispatch(
+                        b["id"],
+                        b["name"],
+                        b.get("input") or {},
+                        cancellation_token=cancellation_token,
+                    )
+                    for b in tool_use_blocks
+                ])
+            )
+
+        has_denial = False
+        for result in tool_results:
+            has_denial = bool(result.pop("_denied", False)) or has_denial
+        for block, result in zip(tool_use_blocks, tool_results):
+            on_event(ToolResult(
+                tool_use_id=block["id"],
+                name=block["name"],
+                args=block.get("input") or {},
+                result=result,
+            ))
+        return tool_results, has_denial
+
+async def _run_agent_session_turn(
+    session: AgentSession,
     user_input: str,
-    history: list[Message],
-    registry: ToolRegistry,
-    on_event: EventCallback,
     *,
-    client: Any,  # anthropic.AsyncAnthropic | openai.AsyncOpenAI
-    cfg: LoopConfig,
-    transcript_writer: "TranscriptWriter | None" = None,
+    on_event: EventCallback | None = None,
     cancellation_token: "CancellationToken | None" = None,
     attachments: list[PromptAttachment] | None = None,
     attachment_turn_id: str | None = None,
@@ -294,6 +643,15 @@ async def agent_loop(
     Skills are loaded from cfg each turn (cached per session) and used for
     both slash command dispatch and system prompt injection.
     """
+    history = session.history
+    registry = session.registry
+    on_event = on_event or session.on_event
+    client = session.client
+    cfg = session.cfg
+    cancellation_token = (
+        cancellation_token if cancellation_token is not None else session.cancellation_token
+    )
+
     # The turn is built against a scratch history and committed only on success.
     scratch_history = list(history)
     pending_transcript_ops: list[tuple[str, Message | str]] = []
@@ -324,180 +682,33 @@ async def agent_loop(
     await check_cancelled()
 
     # 1. Load skills early (needed for slash commands + prompt injection)
-    eligible_entries: list[SkillEntry] = []
-    visible_skills: list[Skill] | None = None
-    if cfg.workspace_dir:
-        skill_entries = get_or_load_skills(
-            cfg.workspace_dir,
-            cfg.session_key,
-            extra_dirs=cfg.extra_skill_dirs,
-            max_bytes=cfg.max_skill_file_bytes,
-        )
-        if skill_entries:
-            eligible_entries = filter_eligible_skills(skill_entries, skill_filter=cfg.skill_filter)
-            visible_skills = filter_visible_skills(eligible_entries)
+    eligible_entries, visible_skills = session._load_turn_skills()
 
     # 2. Parse slash command (mirrors openclaw slash-commands.md)
-    command: SlashCommand | None = None
-    remaining_text = user_input
-    skill_registry: dict[str, Skill] = {}
-    if eligible_entries:
-        # Slash commands: user-invocable skills only
-        runtime_registry = build_skill_registry_from_entries(eligible_entries)
-        if runtime_registry:
-            skill_registry = runtime_registry
-        command, remaining_text = parse_slash_command(user_input, skill_registry)
-        # Model Skill tool: all eligible skills, not just user-invocable ones.
-        # user-invocable controls slash command access; disable-model-invocation
-        # controls model access. These are separate gates.
-        model_registry = build_skill_registry_from_entries(eligible_entries, user_invocable_only=False)
-        registry.set_eligible_skills(model_registry)
+    command, remaining_text, skill_registry = session._prepare_skill_command(
+        user_input,
+        eligible_entries,
+    )
 
     # 3. Build message content
-    content: list[dict[str, Any]] = []
-    
-    # Slash command invocation: inject skill content
-    if command:
-        skill_context = build_slash_command_context(command)
-        content.append({"type": "text", "text": skill_context})
-        on_event(SkillInvoked(skill_name=command.name, skill_path=command.skill.filePath))
-    
-    # 3. Parse image references from remaining text (mirrors openclaw attempt.ts detectAndLoadPromptImages)
-    cleaned_text, image_refs = parse_image_refs(remaining_text)
-    loaded_refs: list[str] = []
-    for ref in image_refs:
-        try:
-            b64, mime = load_image(ref)
-            if cfg.image_model:
-                # Media Understanding path (openclaw: imageModel configured → apply.ts)
-                # Image model describes the image; main model receives text, not pixels.
-                on_event(ImageDescribe(ref=ref))
-                desc = await describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
-                content.append({"type": "text", "text": f"[Image: {desc}]"})
-            elif cfg.model_has_vision:
-                # Native Vision path (openclaw: main model supports vision → attempt.ts:2648-2654)
-                # Image sent as base64 block directly to the main model.
-                content.append(to_anthropic_image_block(b64, mime))
-            else:
-                # Main model has no vision AND no image_model configured → skip image.
-                on_event(ImageSkip(ref=ref, reason="model has no vision capability and no image_model configured"))
-            loaded_refs.append(ref)
-        except Exception as exc:
-            on_event(ImageError(ref=ref, error=str(exc)))
-
-    if loaded_refs:
-        on_event(ImageAttached(refs=loaded_refs, via_model=bool(cfg.image_model)))
-
-    # 4. Handle Web-uploaded attachments. Images reuse the existing image pipeline.
-    # Non-images are persisted and exposed as paths for the model to inspect via skills/tools.
-    attachment_refs: list[str] = []
-    uploaded_image_refs: list[str] = []
-    attachment_root = cfg.workspace_dir or Path(os.getcwd())
-    turn_attachment_id = attachment_turn_id
-    if attachments and not turn_attachment_id:
-        turn_attachment_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-    for attachment in attachments or []:
-        if is_image_mime(attachment.mime):
-            try:
-                b64, mime = load_image_bytes(attachment.data, attachment.mime)
-                if cfg.image_model:
-                    on_event(ImageDescribe(ref=attachment.name))
-                    desc = await describe_image(b64, mime, client=client, model=cfg.image_model, api=cfg.api)
-                    content.append({"type": "text", "text": f"[Image: {attachment.name} - {desc}]"})
-                elif cfg.model_has_vision:
-                    content.append(to_anthropic_image_block(b64, mime))
-                else:
-                    on_event(ImageSkip(
-                        ref=attachment.name,
-                        reason="model has no vision capability and no image_model configured",
-                    ))
-                uploaded_image_refs.append(attachment.name)
-            except Exception as exc:
-                on_event(ImageError(ref=attachment.name, error=str(exc)))
-            continue
-
-        try:
-            saved = save_non_image_attachment(
-                attachment,
-                root=attachment_root,
-                session_id=cfg.session_key,
-                turn_id=turn_attachment_id or "turn",
-            )
-            content.append({"type": "text", "text": attachment_prompt_block(saved)})
-            attachment_refs.append(saved.display_path)
-        except Exception as exc:
-            on_event(AttachmentError(ref=attachment.name, error=str(exc)))
-
-    if uploaded_image_refs:
-        on_event(ImageAttached(refs=uploaded_image_refs, via_model=bool(cfg.image_model)))
-    if attachment_refs:
-        on_event(AttachmentAttached(refs=attachment_refs))
-
-    # Mirror openclaw convertContentBlocks: guarantee at least one text block.
-    if cleaned_text:
-        content.append({"type": "text", "text": cleaned_text})
-    if not content:
-        content.append({"type": "text", "text": user_input})
-    elif not any(b.get("type") == "text" for b in content):
-        content.append({"type": "text", "text": "(see attached image)"})
+    content = await session._build_user_content(
+        user_input,
+        remaining_text,
+        command,
+        on_event,
+        attachments=attachments,
+        attachment_turn_id=attachment_turn_id,
+    )
 
     scratch_history.append(Message("user", content))
     pending_transcript_ops.append(("message", scratch_history[-1]))
 
-    # Load workspace bootstrap files (AGENTS.md, SOUL.md, etc.) for prompt injection
-    bootstrap_files: list[WorkspaceBootstrapFile] | None = None
-    if cfg.workspace_dir:
-        bootstrap_files = get_or_load_bootstrap_files(
-            cfg.workspace_dir,
-            cfg.session_key,
-            cfg.bootstrap_max_chars,
-            cfg.bootstrap_total_max_chars,
-        )
-
-    # Run Active Memory recall before building system prompt
-    active_memory_context: str | None = None
-    if cfg.workspace_dir and cfg.active_memory_config and cfg.active_memory_config.enabled:
-        manager = ActiveMemoryManager(
-            client=client,
-            model=cfg.model,
-            workspace_dir=str(cfg.workspace_dir),
-            config=cfg.active_memory_config,
-        )
-        wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
-        recall_result = await manager.run(wire_messages)
-        if recall_result:
-            on_event(ActiveMemoryRecall(result=recall_result))
-            if recall_result.context:
-                active_memory_context = recall_result.context
-
-    if cfg.system_prompt_override is not None:
-        system = cfg.system_prompt_override
-    else:
-        system = build_system_prompt(
-            registry,
-            cfg.workspace_dir,
-            bootstrap_files,
-            visible_skills,
-            max_skills_in_prompt=cfg.max_skills_in_prompt,
-            max_skills_prompt_chars=cfg.max_skills_prompt_chars,
-        )
-
-    if cfg.hook_registry:
-        hook_result = await cfg.hook_registry.run("before_prompt_build", {
-            "system": system,
-            "user_input": user_input,
-            "workspace_dir": str(cfg.workspace_dir) if cfg.workspace_dir else "",
-        })
-        system = hook_result.get("system", system)
-        if prepend := hook_result.get("prepend"):
-            system = f"{prepend}\n\n{system}"
-        if append := hook_result.get("append"):
-            system = f"{system}\n\n{append}"
-
-    # Inject Active Memory after prompt hooks so custom system replacements do
-    # not accidentally discard recalled context.
-    if active_memory_context:
-        system = f"{active_memory_context}\n\n{system}"
+    system = await session._build_system_for_turn(
+        user_input,
+        scratch_history,
+        visible_skills,
+        on_event,
+    )
 
     tools_schema = registry.schemas()
     already_flushed_for_compaction = False
@@ -561,98 +772,21 @@ async def agent_loop(
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
         if stop_reason != "tool_use":
-            history[:] = scratch_history
-            if transcript_writer:
-                for op, payload in pending_transcript_ops:
-                    if op == "message":
-                        transcript_writer.append_message(payload)  # type: ignore[arg-type]
-                    else:
-                        transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+            session._commit_turn(scratch_history, pending_transcript_ops)
             await drain_loop_event_hooks()
             return history  # end_turn / max_tokens / stop_sequence — terminal
 
-        # Dispatch every tool_use; package all results into ONE user message.
-        registry.set_session_status_context(
-            model=cfg.model,
-            session_id=transcript_writer.session_id if transcript_writer else "",
-            context_budget=cfg.context_budget,
-            context_window=cfg.context_window,
-            current_tokens=estimate_tokens(scratch_history),
-            compaction_count=transcript_writer.compaction_count if transcript_writer else 0,
-            message_count=len(scratch_history),
-        )
         tool_use_blocks = [b for b in assistant_blocks if b.get("type") == "tool_use"]
 
-        # Emit SkillInvoked events before dispatch (synchronous, order matters for UX)
-        for block in tool_use_blocks:
-            tool_name = block["name"]
-            tool_args = block.get("input") or {}
-            if tool_name == "skill" and "skill" in tool_args:
-                skill_name = tool_args["skill"]
-                if skill_registry and skill_name in skill_registry:
-                    skill = skill_registry[skill_name]
-                    on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
-
         await check_cancelled()
-
-        batch_requires_approval = False
-        if registry.approval_manager:
-            batch_requires_approval = any(
-                registry.approval_manager.check_request(
-                    b["name"],
-                    b.get("input") or {},
-                ).requires_approval
-                for b in tool_use_blocks
-            )
-
-        if batch_requires_approval:
-            # Approval prompts are foreground UI. Run this batch sequentially so
-            # a denial can stop later tools before they create side effects.
-            tool_results = []
-            denied_tool_name: str | None = None
-            for block in tool_use_blocks:
-                if denied_tool_name is not None:
-                    tool_results.append(_skipped_after_denial_result(
-                        block["id"],
-                        denied_tool_name,
-                    ))
-                    continue
-
-                result = await registry.dispatch(
-                    block["id"],
-                    block["name"],
-                    block.get("input") or {},
-                    cancellation_token=cancellation_token,
-                )
-                if result.get("_denied"):
-                    denied_tool_name = block["name"]
-                tool_results.append(result)
-        else:
-            # Dispatch all tool calls in parallel — core benefit of async model.
-            tool_results = list(
-                await asyncio.gather(*[
-                    registry.dispatch(
-                        b["id"],
-                        b["name"],
-                        b.get("input") or {},
-                        cancellation_token=cancellation_token,
-                    )
-                    for b in tool_use_blocks
-                ])
-            )
-
+        tool_results, has_denial = await session._dispatch_tool_batch(
+            scratch_history,
+            tool_use_blocks,
+            skill_registry,
+            on_event,
+            cancellation_token,
+        )
         await check_cancelled()
-        # Strip denial markers before persisting (keeps history clean for the API).
-        has_denial = False
-        for result in tool_results:
-            has_denial = bool(result.pop("_denied", False)) or has_denial
-        for block, result in zip(tool_use_blocks, tool_results):
-            on_event(ToolResult(
-                tool_use_id=block["id"],
-                name=block["name"],
-                args=block.get("input") or {},
-                result=result,
-            ))
 
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
@@ -681,13 +815,7 @@ async def agent_loop(
                 raise
             scratch_history.append(Message("assistant", final_blocks))
             pending_transcript_ops.append(("message", scratch_history[-1]))
-            history[:] = scratch_history
-            if transcript_writer:
-                for op, payload in pending_transcript_ops:
-                    if op == "message":
-                        transcript_writer.append_message(payload)  # type: ignore[arg-type]
-                    else:
-                        transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+            session._commit_turn(scratch_history, pending_transcript_ops)
             await drain_loop_event_hooks()
             return history
 
@@ -710,13 +838,7 @@ async def agent_loop(
         Message("assistant", [{"type": "text", "text": "[max_iterations reached]"}])
     )
     pending_transcript_ops.append(("message", scratch_history[-1]))
-    history[:] = scratch_history
-    if transcript_writer:
-        for op, payload in pending_transcript_ops:
-            if op == "message":
-                transcript_writer.append_message(payload)  # type: ignore[arg-type]
-            else:
-                transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+    session._commit_turn(scratch_history, pending_transcript_ops)
     await drain_loop_event_hooks()
     return history
 

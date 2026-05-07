@@ -1,7 +1,7 @@
 """Subagent runner - executes subagent runs in background.
 
-Spawns subagent runs using asyncio tasks, reusing the main agent_loop
-with filtered tools and isolated session.
+Spawns subagent runs using asyncio tasks, reusing AgentSession with filtered
+tools and isolated session.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from nano_openclaw.loop import (
     SubagentAnnounced,
     SubagentKilled,
     SubagentProgress,
-    agent_loop,
+    AgentSession,
 )
 from nano_openclaw.provider import MessageEnd, ToolUseStart
 from nano_openclaw.subagent.registry import SubagentRegistry, get_registry
@@ -222,32 +222,23 @@ class SubagentRunner:
         try:
             timeout_seconds = params.run_timeout_seconds or self.config.run_timeout_seconds
             # Subagent's internal events are suppressed from parent; only lifecycle events reach parent.
+            agent_session = AgentSession(
+                history=history,
+                registry=registry,
+                on_event=_subagent_on_event,
+                client=client,
+                cfg=cfg,
+                transcript_writer=transcript_writer,
+                cancellation_token=cancellation_token,
+            )
             try:
                 if timeout_seconds > 0:
                     await asyncio.wait_for(
-                        agent_loop(
-                            user_input=params.task,
-                            history=history,
-                            registry=registry,
-                            on_event=_subagent_on_event,
-                            client=client,
-                            cfg=cfg,
-                            transcript_writer=transcript_writer,
-                            cancellation_token=cancellation_token,
-                        ),
+                        agent_session.run_turn(params.task),
                         timeout=timeout_seconds,
                     )
                 else:
-                    await agent_loop(
-                        user_input=params.task,
-                        history=history,
-                        registry=registry,
-                        on_event=_subagent_on_event,
-                        client=client,
-                        cfg=cfg,
-                        transcript_writer=transcript_writer,
-                        cancellation_token=cancellation_token,
-                    )
+                    await agent_session.run_turn(params.task)
 
                 result_text = self._extract_result_text(history)
                 elapsed_ms = int((time.time() - start_time) * 1000)

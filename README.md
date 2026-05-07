@@ -114,7 +114,7 @@ uv run python -m nano_openclaw web --port 8765 --host 127.0.0.1
                                 │
                                 ▼
                       ┌──────────────────────┐
-    image refs ─────▶ │   loop.agent_loop()  │  parse_image_refs → load_image
+    image refs ─────▶ │ AgentSession.run_turn│  parse_image_refs → load_image
     (@file.png)       │  plugin hooks        │  before_prompt_build / on_loop_event
                        └──┬──────────────┬────┘
            compact check │              │ tool_use blocks
@@ -165,7 +165,7 @@ uv run python -m nano_openclaw web --port 8765 --host 127.0.0.1
 | `config/paths.py`                          | `src/config/paths.ts` + `src/agents/agent-scope-config.ts`（路径 + workspace 解析）     |
 | `config/io.py`                             | `src/config/load.ts`（配置文件加载 + 模型解析）                                        |
 | `config/env_substitution.py`               | `src/config/env-substitution.ts`（`${ENV_VAR}` 替换）                                 |
-| `loop.py::agent_loop`                      | `src/agents/pi-embedded-runner/run/attempt.ts:566` (`runEmbeddedAttempt`)            |
+| `loop.py::AgentSession.run_turn`           | `src/agents/pi-embedded-runner/run/attempt.ts:566` (`runEmbeddedAttempt`)            |
 | 消息内容块结构                               | `src/agents/stream-message-shared.ts` (`AssistantMessage`)                           |
 | `provider.py::stream_response`             | `src/agents/provider-transport-stream.ts`（switch(model.api) 路由层）                 |
 | `_stream_events.py`                        | `src/agents/transport-stream-shared.ts`（共享事件类型契约 + thinking 事件）|

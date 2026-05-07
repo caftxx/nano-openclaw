@@ -46,7 +46,7 @@ from nano_openclaw.loop import (
     SubagentProgress,
     ToolResult,
     TurnCancelled,
-    agent_loop,
+    AgentSession,
     run_pre_compaction_memory_flush,
 )
 from nano_openclaw.provider import (
@@ -290,8 +290,7 @@ async def repl(
         on_event = _make_event_handler(console, registry=registry)
         try:
             with _escape_cancellation_token() as cancellation_token:
-                await agent_loop(
-                    user_input=user_input,
+                session = AgentSession(
                     history=history,
                     registry=registry,
                     on_event=on_event,
@@ -300,6 +299,7 @@ async def repl(
                     transcript_writer=transcript_writer,
                     cancellation_token=cancellation_token,
                 )
+                await session.run_turn(user_input)
         except TurnCancelled:
             console.print("\n[dim](turn cancelled)[/]")
             continue

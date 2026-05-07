@@ -12,19 +12,19 @@ from rich.console import Console
 from nano_openclaw.cli import _manual_compact, repl
 from nano_openclaw.config.types import MemoryFlushConfig
 from nano_openclaw.loop import (
+    AgentSession,
     CancellationToken,
     LoopConfig,
     Message,
     TurnCancelled,
     _build_memory_flush_prompt,
-    agent_loop,
 )
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session.transcript import TranscriptWriter
 from nano_openclaw.tools import Tool, ToolRegistry
 
 
-def test_agent_loop_cancellation_during_stream_discards_turn(monkeypatch):
+def test_agent_session_cancellation_during_stream_discards_turn(monkeypatch):
     history = [Message("user", [{"type": "text", "text": "earlier"}])]
     registry = ToolRegistry()
     token = CancellationToken()
@@ -37,20 +37,20 @@ def test_agent_loop_cancellation_during_stream_discards_turn(monkeypatch):
     monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
     with pytest.raises(TurnCancelled):
-        asyncio.run(agent_loop(
-            user_input="hello",
+        session = AgentSession(
             history=history,
             registry=registry,
             on_event=lambda _event: None,
             client=object(),
             cfg=LoopConfig(),
             cancellation_token=token,
-        ))
+        )
+        asyncio.run(session.run_turn("hello"))
 
     assert history == [Message("user", [{"type": "text", "text": "earlier"}])]
 
 
-def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch):
+def test_agent_session_cancellation_before_tool_dispatch_discards_turn(monkeypatch):
     history: list[Message] = []
     registry = ToolRegistry()
     tool_called = False
@@ -89,8 +89,7 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
         monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
         with pytest.raises(TurnCancelled):
-            asyncio.run(agent_loop(
-                user_input="run tool",
+            session = AgentSession(
                 history=history,
                 registry=registry,
                 on_event=on_event,
@@ -98,7 +97,8 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
                 cfg=LoopConfig(),
                 transcript_writer=writer,
                 cancellation_token=token,
-            ))
+            )
+            asyncio.run(session.run_turn("run tool"))
 
         assert tool_called is False
         assert history == []
@@ -109,7 +109,7 @@ def test_agent_loop_cancellation_before_tool_dispatch_discards_turn(monkeypatch)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_agent_loop_memory_flush_is_silent_and_dispatches_tools(monkeypatch):
+def test_agent_session_memory_flush_is_silent_and_dispatches_tools(monkeypatch):
     history: list[Message] = []
     registry = ToolRegistry()
     registry.register(
@@ -158,8 +158,7 @@ def test_agent_loop_memory_flush_is_silent_and_dispatches_tools(monkeypatch):
     monkeypatch.setattr("nano_openclaw.loop.datetime", _fixed_datetime())
 
     try:
-        asyncio.run(agent_loop(
-            user_input="x" * 500,
+        session = AgentSession(
             history=history,
             registry=registry,
             on_event=visible_events.append,
@@ -175,7 +174,8 @@ def test_agent_loop_memory_flush_is_silent_and_dispatches_tools(monkeypatch):
                     prompt="flush memory/YYYY-MM-DD.md now",
                 ),
             ),
-        ))
+        )
+        asyncio.run(session.run_turn("x" * 500))
 
         assert target.read_text(encoding="utf-8") == "existing note\nnew note"
         assert stream_calls == 3
@@ -188,7 +188,7 @@ def test_agent_loop_memory_flush_is_silent_and_dispatches_tools(monkeypatch):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_agent_loop_skips_memory_flush_without_write_tool(monkeypatch):
+def test_agent_session_skips_memory_flush_without_write_tool(monkeypatch):
     history: list[Message] = []
     registry = ToolRegistry()
     stream_calls = 0
@@ -202,8 +202,7 @@ def test_agent_loop_skips_memory_flush_without_write_tool(monkeypatch):
 
     monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
-    asyncio.run(agent_loop(
-        user_input="x" * 500,
+    session = AgentSession(
         history=history,
         registry=registry,
         on_event=lambda _event: None,
@@ -218,7 +217,8 @@ def test_agent_loop_skips_memory_flush_without_write_tool(monkeypatch):
                 softThresholdTokens=10,
             ),
         ),
-    ))
+    )
+    asyncio.run(session.run_turn("x" * 500))
 
     assert stream_calls == 1
     assert history[1].content == [{"type": "text", "text": "main reply"}]
@@ -326,7 +326,10 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
     monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
     monkeypatch.setattr("nano_openclaw.cli._repl_input", mock_repl_input)
     monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("nano_openclaw.cli.agent_loop", AsyncMock(side_effect=TurnCancelled()))
+    monkeypatch.setattr(
+        "nano_openclaw.cli.AgentSession.run_turn",
+        AsyncMock(side_effect=TurnCancelled()),
+    )
 
     asyncio.run(repl(registry, client=MagicMock(), cfg=cfg))
 

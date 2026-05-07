@@ -35,7 +35,7 @@ from nano_openclaw.loop import (
     SubagentSpawned,
     ToolResult,
     TurnCancelled,
-    agent_loop,
+    AgentSession,
     run_pre_compaction_memory_flush,
 )
 from nano_openclaw.provider import (
@@ -544,8 +544,7 @@ async def _run_turn(
 
     try:
         async with session.lock:
-            await agent_loop(
-                user_input=text,
+            agent_session = AgentSession(
                 history=session.history,
                 registry=turn_registry,
                 on_event=on_event,
@@ -553,6 +552,9 @@ async def _run_turn(
                 cfg=cfg,
                 transcript_writer=session.writer,
                 cancellation_token=token,
+            )
+            await agent_session.run_turn(
+                text,
                 attachments=decoded_attachments,
                 attachment_turn_id=turn_id,
             )

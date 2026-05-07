@@ -13,7 +13,7 @@ from nano_openclaw.attachments import (
     PromptAttachment,
     decode_attachment_payloads,
 )
-from nano_openclaw.loop import LoopConfig, Message, agent_loop
+from nano_openclaw.loop import AgentSession, LoopConfig, Message
 from nano_openclaw.provider import MessageEnd, TextDelta
 from nano_openclaw.tools import ToolRegistry
 
@@ -40,7 +40,7 @@ def test_decode_attachment_payloads_rejects_bad_base64():
         }])
 
 
-def test_agent_loop_persists_non_image_attachment_and_injects_path(monkeypatch):
+def test_agent_session_persists_non_image_attachment_and_injects_path(monkeypatch):
     tmp_dir = Path("tests") / f".tmp-attachments-{uuid.uuid4().hex}"
     events = []
 
@@ -60,13 +60,15 @@ def test_agent_loop_persists_non_image_attachment_and_injects_path(monkeypatch):
             data=b"%PDF-1.7",
         )
 
-        asyncio.run(agent_loop(
-            user_input="summarize this",
+        session = AgentSession(
             history=history,
             registry=ToolRegistry(),
             on_event=events.append,
             client=object(),
             cfg=LoopConfig(workspace_dir=tmp_dir, session_key="session-1"),
+        )
+        asyncio.run(session.run_turn(
+            "summarize this",
             attachments=[attachment],
             attachment_turn_id="turn-1",
         ))

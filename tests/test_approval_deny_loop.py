@@ -4,7 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import LoopConfig, Message, agent_loop
+from nano_openclaw.loop import AgentSession, LoopConfig, Message
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.tools import ToolRegistry
 
@@ -21,6 +21,31 @@ async def _tool_use_batch_stream(tool_names: list[str]):
 async def _conclusion_stream():
     yield TextDelta(text="I cannot proceed as the tool call was denied.")
     yield MessageEnd(stop_reason="end_turn", usage={})
+
+
+def test_agent_session_run_turn_mutates_owned_history(monkeypatch):
+    registry = ToolRegistry()
+
+    async def fake_stream_response(**_kwargs):
+        yield TextDelta(text="done")
+        yield MessageEnd(stop_reason="end_turn", usage={})
+
+    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+
+    history: list[Message] = []
+    session = AgentSession(
+        history=history,
+        registry=registry,
+        on_event=lambda _event: None,
+        client=object(),
+        cfg=LoopConfig(),
+    )
+
+    result = asyncio.run(session.run_turn("hello"))
+
+    assert result is history
+    assert [message.role for message in history] == ["user", "assistant"]
+    assert history[-1].content == [{"type": "text", "text": "done"}]
 
 
 def test_denied_approval_skips_later_tools_in_same_batch(monkeypatch):
@@ -57,14 +82,14 @@ def test_denied_approval_skips_later_tools_in_same_batch(monkeypatch):
     monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
 
     history: list[Message] = []
-    asyncio.run(agent_loop(
-        user_input="run tools",
+    session = AgentSession(
         history=history,
         registry=registry,
         on_event=lambda _event: None,
         client=object(),
         cfg=LoopConfig(),
-    ))
+    )
+    asyncio.run(session.run_turn("run tools"))
 
     assert dispatches == ["needs_approval"]
     # Tool results are now the second-to-last message; last is the conclusion.
@@ -105,14 +130,14 @@ def test_denial_markers_are_stripped_from_all_tool_results(monkeypatch):
     monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
 
     history: list[Message] = []
-    asyncio.run(agent_loop(
-        user_input="run tools",
+    session = AgentSession(
         history=history,
         registry=registry,
         on_event=lambda _event: None,
         client=object(),
         cfg=LoopConfig(),
-    ))
+    )
+    asyncio.run(session.run_turn("run tools"))
 
     # Tool results are the second-to-last message; last is the conclusion.
     tool_results = history[-2].content
