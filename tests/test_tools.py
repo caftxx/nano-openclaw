@@ -420,6 +420,7 @@ def test_dispatch_rejects_approval_without_interactive_console():
     )
 
     assert out["is_error"] is True
+    assert out["_denied"] is True
     assert "approval denied for write_file" in out["content"][0]["text"]
     assert "non-interactive background execution cannot request approval" in out["content"][0]["text"]
 

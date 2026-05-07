@@ -83,10 +83,5 @@ class WebApprovalBroker:
 
 
 async def _wait_for_cancellation(cancellation_token: Any) -> None:
-    cancel_event = getattr(cancellation_token, "_cancelled", None)
-    if cancel_event is not None and callable(getattr(cancel_event, "wait", None)):
-        await asyncio.to_thread(cancel_event.wait)
-        return
-
     while not getattr(cancellation_token, "is_cancelled", False):
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)

@@ -128,10 +128,12 @@ class ToolRegistry:
                 request = self.approval_manager.create_request(name, args)
 
                 if self.approval_handler is None and self.console is None:
-                    return _error_result(
+                    result = _error_result(
                         tool_use_id,
                         f"approval denied for {name}: non-interactive background execution cannot request approval ({request.reason})",
                     )
+                    result["_denied"] = True
+                    return result
 
                 if callable(self.approval_live_stopper):
                     self.approval_live_stopper()
@@ -142,10 +144,12 @@ class ToolRegistry:
                     decision = await raw_decision if asyncio.iscoroutine(raw_decision) else raw_decision
                 else:
                     if self.console is None:
-                        return _error_result(
+                        result = _error_result(
                             tool_use_id,
                             f"approval denied for {name}: non-interactive background execution cannot request approval ({request.reason})",
                         )
+                        result["_denied"] = True
+                        return result
 
                     from nano_openclaw.approvals.ui import ApprovalUI
                     ui = ApprovalUI(self.console)

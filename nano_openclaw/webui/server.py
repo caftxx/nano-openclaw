@@ -573,6 +573,7 @@ async def _run_turn(
             )
             session.activities.append(activity)
             session.writer.append_activity(activity)
+        await event_queue.join()
         await send({
             "type": "turn.done",
             "turn_id": turn_id,

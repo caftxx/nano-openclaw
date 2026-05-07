@@ -12,7 +12,7 @@ import pytest
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from nano_openclaw.attachments import AttachmentAttached, AttachmentError
-from nano_openclaw.loop import CancellationToken
+from nano_openclaw.loop import CancellationToken, LoopConfig
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
@@ -27,6 +27,7 @@ from nano_openclaw.webui.server import (
     _read_assistant_name,
     _read_user_name,
     _resolve_model_option,
+    _run_turn,
     run_webui,
 )
 from nano_openclaw.webui.sessions import WebSessionManager
@@ -112,6 +113,28 @@ def test_web_approval_broker_denies_on_cancellation():
     assert emitted[0]["type"] == "approval.requested"
 
 
+def test_web_approval_broker_decision_wins_over_cancel_watcher():
+    emitted = []
+
+    async def run():
+        broker = WebApprovalBroker(lambda payload: _emit(emitted, payload))
+        request = ApprovalRequest(
+            request_id="req-1",
+            tool_name="bash",
+            tool_args={"command": "pwd"},
+            risk_level="medium",
+            reason="test",
+        )
+        token = CancellationToken()
+        task = asyncio.create_task(broker.request_decision(request, cancellation_token=token))
+        await asyncio.sleep(0)
+        assert broker.decide("req-1", "deny") is True
+        return await asyncio.wait_for(task, timeout=1)
+
+    assert asyncio.run(run()) == ApprovalDecision.DENY
+    assert emitted[0]["type"] == "approval.requested"
+
+
 async def _emit(target, payload):
     target.append(payload)
 
@@ -151,6 +174,117 @@ def test_web_session_manager_create_select_clear():
         cleared = asyncio.run(manager.clear(session.session_id))
         assert cleared.history == []
         assert cleared.writer.message_count == 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_run_turn_sends_stream_events_before_done(monkeypatch: pytest.MonkeyPatch):
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        runtime = SimpleNamespace(
+            cfg=LoopConfig(),
+            registry=ToolRegistry(),
+            client=object(),
+        )
+        emitted: list[dict] = []
+
+        async def fake_run_turn(self, _text, **_kwargs):
+            self.on_event(TextDelta("final conclusion"))
+            self.history.extend([
+                _message("user", "run a tool"),
+                _message("assistant", "final conclusion"),
+            ])
+            return self.history
+
+        async def slow_send(payload):
+            if payload["type"] == "text.delta":
+                await asyncio.sleep(0.01)
+            emitted.append(payload)
+
+        monkeypatch.setattr("nano_openclaw.loop.AgentSession.run_turn", fake_run_turn)
+
+        asyncio.run(_run_turn(
+            runtime=runtime,
+            manager=manager,
+            send=slow_send,
+            approvals=WebApprovalBroker(slow_send),
+            active_tokens={},
+            session_id=None,
+            text="run a tool",
+            attachments=[],
+        ))
+
+        event_types = [payload["type"] for payload in emitted]
+        assert event_types.index("text.delta") < event_types.index("turn.done")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_run_turn_deny_emits_final_conclusion(monkeypatch: pytest.MonkeyPatch):
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        registry = ToolRegistry()
+        registry.register(Tool("demo", "demo", {"type": "object", "properties": {}}, lambda _args: "ok"))
+        runtime = SimpleNamespace(
+            cfg=LoopConfig(),
+            registry=registry,
+            client=object(),
+        )
+        emitted: list[dict] = []
+        approvals: WebApprovalBroker | None = None
+
+        async def fake_stream_response(**_kwargs):
+            call_index = fake_stream_response.call_count
+            fake_stream_response.call_count += 1
+            if call_index == 0:
+                yield ToolUseStart(id="tool-1", name="demo")
+                yield ToolUseEnd(id="tool-1")
+                yield MessageEnd(stop_reason="tool_use", usage={})
+            else:
+                yield TextDelta("final after deny")
+                yield MessageEnd(stop_reason="end_turn", usage={})
+
+        fake_stream_response.call_count = 0
+
+        async def fake_dispatch(self, tool_use_id, name, args, cancellation_token=None):
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "is_error": True,
+                "_denied": True,
+                "content": [{"type": "text", "text": f"approval denied for {name}"}],
+            }
+
+        async def send_and_deny(payload):
+            emitted.append(payload)
+
+        approvals = WebApprovalBroker(send_and_deny)
+        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+        monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
+
+        asyncio.run(_run_turn(
+            runtime=runtime,
+            manager=manager,
+            send=send_and_deny,
+            approvals=approvals,
+            active_tokens={},
+            session_id=None,
+            text="run a tool",
+            attachments=[],
+        ))
+
+        event_types = [payload["type"] for payload in emitted]
+        assert "turn.cancelled" not in event_types
+        assert "turn.error" not in event_types
+        assert "text.delta" in event_types
+        assert emitted[event_types.index("text.delta")]["text"] == "final after deny"
+        assert event_types.index("text.delta") < event_types.index("turn.done")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
