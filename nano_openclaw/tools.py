@@ -452,15 +452,27 @@ def _invoke_skill(
 
     skill = eligible_skills[skill_name]
 
+    def with_skill_location(content: str) -> str:
+        return "\n".join([
+            f"[Skill invoked: {skill.name}]",
+            "",
+            f"Skill file location: {skill.filePath}",
+            f"Skill directory: {skill.baseDir}",
+            "Resolve any relative paths mentioned by the skill against the skill directory.",
+            "",
+            "Skill instructions:",
+            content,
+        ])
+
     # Return skill content
     if skill.content:
-        return skill.content
+        return with_skill_location(skill.content)
 
     # Load content from file if not already loaded
     skill_path = Path(skill.filePath)
     if not skill_path.exists():
         raise FileNotFoundError(f"skill file not found: {skill.filePath}")
-    return skill_path.read_text(encoding="utf-8")
+    return with_skill_location(skill_path.read_text(encoding="utf-8"))
 
 
 async def _skill_install(

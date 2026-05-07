@@ -263,6 +263,8 @@ def test_skill_tool_returns_content_for_known_skill(registry, tmp_path):
     text = out["content"][0]["text"]
     assert "Test Skill" in text
     assert "skill content" in text
+    assert f"Skill directory: {skill_dir}" in text
+    assert "Resolve any relative paths mentioned by the skill against the skill directory." in text
 
 
 def test_skill_tool_invokable_when_not_user_invocable(registry, tmp_path):
@@ -322,6 +324,7 @@ def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
     text = out["content"][0]["text"]
     assert "Load Skill" in text
     assert "loaded from file" in text
+    assert f"Skill file location: {skill_file}" in text
 
 
 def test_skill_install_tool_returns_install_result(registry, tmp_path, monkeypatch):

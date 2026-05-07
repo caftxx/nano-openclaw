@@ -243,11 +243,13 @@ def load_skill_from_file(
     # Extract markdown body
     body = extract_content_after_frontmatter(content)
 
+    skill_base_dir = skill_file.parent
+
     return Skill(
         name=name,
         description=description,
         filePath=str(skill_file),
-        baseDir=str(base_dir),
+        baseDir=str(skill_base_dir),
         source=source,
         content=body,
     )

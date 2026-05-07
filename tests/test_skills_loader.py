@@ -108,6 +108,18 @@ def test_load_bundled_skills():
         assert skill.source == "bundled"
 
 
+def test_load_bundled_skill_base_dir_is_skill_dir():
+    """Bundled subdir skills resolve relative assets against their own dir."""
+    bundled_dir = resolve_bundled_skills_dir()
+    assert bundled_dir is not None
+
+    skills = load_skills_from_dir(bundled_dir, "bundled")
+    clawhub = next(skill for skill in skills if skill.name == "clawhub")
+
+    assert Path(clawhub.baseDir) == Path(clawhub.filePath).parent
+    assert (Path(clawhub.baseDir) / "scripts" / "clawhub_api.py").is_file()
+
+
 def test_load_skill_entries_from_workspace(tmp_path: Path):
     """Load skills from workspace directory."""
     # Create a test skill in workspace
