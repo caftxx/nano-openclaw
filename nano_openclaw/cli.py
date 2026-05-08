@@ -94,6 +94,7 @@ _BASE_COMMANDS = [
     "/skills",
     "/plugins",
     "/hooks",
+    "/tools",
 ]
 
 
@@ -208,6 +209,9 @@ async def repl(
             continue
         if user_input == "/hooks":
             _list_hooks(console, registry)
+            continue
+        if user_input == "/tools":
+            _list_tools(console, registry)
             continue
         if user_input.startswith("/sessions"):
             if store_path:
@@ -1504,6 +1508,26 @@ def _list_hooks(console: Console, registry: ToolRegistry) -> None:
     console.print(table)
     total = sum(len(hooks) for hooks in hooks_by_event.values())
     console.print(f"[dim]{total} hook handler{'s' if total != 1 else ''} across {len(hooks_by_event)} event{'s' if len(hooks_by_event) != 1 else ''}[/]")
+
+
+def _list_tools(console: Console, registry: ToolRegistry) -> None:
+    """Display all registered tools with name and description."""
+    names = sorted(registry.names())
+    if not names:
+        console.print("[dim]no tools registered[/]")
+        return
+
+    table = Table(title="Tools", border_style="cyan")
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Description", style="white", no_wrap=False)
+
+    for name in names:
+        tool = registry.get(name)
+        desc = tool.description.split("\n")[0][:120] if tool else ""
+        table.add_row(markup.escape(name), markup.escape(desc))
+
+    console.print(table)
+    console.print(f"[dim]{len(names)} tool{'s' if len(names) != 1 else ''} registered[/]")
 
 
 def _handle_active_memory_command(console: Console, user_input: str, cfg: LoopConfig) -> None:

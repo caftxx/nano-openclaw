@@ -44,6 +44,8 @@ class AgentRuntime:
     image_model_ref: str | None
     dreaming_stop: threading.Event
     dreaming_task: Any | None = None
+    cron_stop: threading.Event | None = None
+    cron_task: Any | None = None
 
     async def close(self) -> None:
         await self.hook_registry.run("session_end", {
@@ -56,6 +58,14 @@ class AgentRuntime:
             self.dreaming_task.cancel()
             try:
                 await self.dreaming_task
+            except BaseException:
+                pass
+        if self.cron_stop is not None:
+            self.cron_stop.set()
+        if self.cron_task and not self.cron_task.done():
+            self.cron_task.cancel()
+            try:
+                await self.cron_task
             except BaseException:
                 pass
         if hasattr(self.client, "aclose"):
@@ -104,6 +114,7 @@ async def build_agent_runtime(
     registry.set_workspace_dir(workspace_dir)
     registry.set_state_dir(state_dir)
     registry.set_allow_global_pip(config.skills.install.allowGlobalPip)
+    config.state_dir = str(state_dir)
     hook_registry = load_plugins(config.plugins, registry, config) if not no_tools else HookRegistry()
 
     image_model_ref = image_model_ref_override if image_model_ref_override is not None else config.resolve_image_model(agent_id)
@@ -195,6 +206,22 @@ async def build_agent_runtime(
     if dreaming_cfg.enabled and workspace_dir:
         dreaming_task = start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, dreaming_stop)
 
+    cron_stop = threading.Event()
+    cron_task = None
+    if config.schedule.enabled and not no_tools:
+        from nano_openclaw.schedule.scheduler import start_cron_scheduler
+        cron_dir = state_dir / "cron"
+        cron_task = start_cron_scheduler(
+            cron_dir=cron_dir,
+            session_dir=session_dir,
+            workspace_dir=workspace_dir,
+            client=client,
+            base_cfg=cfg,
+            max_concurrent=config.schedule.maxConcurrentRuns,
+            missed_jobs_limit=config.schedule.missedJobsLimit,
+            stop_event=cron_stop,
+        )
+
     runtime = AgentRuntime(
         agent_id=agent_id,
         config=config,
@@ -212,6 +239,8 @@ async def build_agent_runtime(
         image_model_ref=image_model_ref,
         dreaming_stop=dreaming_stop,
         dreaming_task=dreaming_task,
+        cron_stop=cron_stop,
+        cron_task=cron_task,
     )
     await hook_registry.run("session_start", {
         "session_id": "",

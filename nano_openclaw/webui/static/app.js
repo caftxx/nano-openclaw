@@ -1324,7 +1324,7 @@ $("sendBtn").onclick = (event) => {
 
 const BUILTIN_COMMANDS = new Set([
   "help", "context", "compact", "clear", "save",
-  "skills", "plugins", "hooks", "models", "subagents", "active-memory", "dreaming",
+  "tools", "skills", "plugins", "hooks", "models", "subagents", "active-memory", "dreaming",
 ]);
 
 $("composer").onsubmit = async (event) => {

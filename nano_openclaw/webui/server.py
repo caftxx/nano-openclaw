@@ -1029,6 +1029,7 @@ async def handle_slash_command(
             "| `/compact` | Compact session history |",
             "| `/clear` | Clear session history |",
             "| `/save` | Save current session |",
+            "| `/tools` | List all registered tools |",
             "| `/skills` | List available skills |",
             "| `/plugins` | List loaded plugins |",
             "| `/hooks` | Registered hook handlers |",
@@ -1180,6 +1181,23 @@ async def handle_slash_command(
             lines.append(f"| `{event}` | {len(hooks)} | {plugin_str} | {priorities} |")
         ne = len(hooks_by_event)
         lines += ["", f"*{total} handler{'s' if total != 1 else ''} across {ne} event{'s' if ne != 1 else ''}*"]
+        return "\n".join(lines), False
+
+    if verb == "tools":
+        names = sorted(runtime.registry.names())
+        if not names:
+            return "## Tools\n\nNo tools registered.", False
+        lines = [
+            "## Tools",
+            "",
+            "| Name | Description |",
+            "| --- | --- |",
+        ]
+        for name in names:
+            tool = runtime.registry.get(name)
+            desc = tool.description.split("\n")[0][:120] if tool else ""
+            lines.append(f"| `{name}` | {desc} |")
+        lines += ["", f"*{len(names)} tool{'s' if len(names) != 1 else ''} registered*"]
         return "\n".join(lines), False
 
     if verb == "save":

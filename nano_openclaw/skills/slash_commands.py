@@ -34,6 +34,7 @@ BUILTIN_COMMANDS: frozenset[str] = frozenset(
         "skills",
         "plugins",
         "hooks",
+        "tools",
     }
 )
 
