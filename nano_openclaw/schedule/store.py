@@ -52,7 +52,10 @@ class CronStore:
     def remove_job(self, job_id: str) -> bool:
         jobs = self.load_jobs()
         if job_id not in jobs:
-            return False
+            matches = [k for k in jobs if k.startswith(job_id)]
+            if len(matches) != 1:
+                return False
+            job_id = matches[0]
         del jobs[job_id]
         self.save_jobs(jobs)
         return True
@@ -80,6 +83,10 @@ class CronStore:
 
     def remove_state(self, job_id: str) -> None:
         states = self.load_state()
+        if job_id not in states:
+            matches = [k for k in states if k.startswith(job_id)]
+            if len(matches) == 1:
+                job_id = matches[0]
         states.pop(job_id, None)
         self.save_state(states)
 
