@@ -6,6 +6,8 @@ const state = {
   sessions: [],
   currentSession: null,
   activeTurnId: null,
+  activeTurnsBySession: new Map(),
+  sessionByTurn: new Map(),
   assistantNode: null,
   approvals: new Map(),
   tools: new Map(),
@@ -144,8 +146,40 @@ function send(type, payload = {}) {
   return true;
 }
 
+function currentSessionId() {
+  return state.currentSession?.session_id || null;
+}
+
+function activeTurnIdForCurrentSession() {
+  const sessionId = currentSessionId();
+  return sessionId ? state.activeTurnsBySession.get(sessionId) || null : null;
+}
+
+function setSessionActiveTurn(sessionId, turnId) {
+  if (!sessionId) return;
+  if (turnId) {
+    state.activeTurnsBySession.set(sessionId, turnId);
+    state.sessionByTurn.set(turnId, sessionId);
+  } else {
+    const previousTurnId = state.activeTurnsBySession.get(sessionId);
+    if (previousTurnId) state.sessionByTurn.delete(previousTurnId);
+    state.activeTurnsBySession.delete(sessionId);
+  }
+  state.activeTurnId = activeTurnIdForCurrentSession();
+}
+
+function syncSessionActiveTurn(session) {
+  if (!session?.session_id) return;
+  setSessionActiveTurn(session.session_id, session.active_turn_id || null);
+}
+
+function isCurrentSessionEvent(event) {
+  return !event.session_id || event.session_id === currentSessionId();
+}
+
 function updateSendBtn() {
   const btn = $("sendBtn");
+  state.activeTurnId = activeTurnIdForCurrentSession();
   if (state.activeTurnId) {
     btn.textContent = "";
     btn.title = "Cancel";
@@ -168,16 +202,19 @@ function handleEvent(event) {
       const previousSessionId = state.currentSession?.session_id || null;
       state.sessions = event.sessions || state.sessions;
       state.currentSession = event.session || state.currentSession;
+      syncSessionActiveTurn(state.currentSession);
       renderSessions();
+      updateSendBtn();
       if (previousSessionId !== (state.currentSession?.session_id || null) || !$("messages").children.length) {
         renderHistory();
       }
       break;
     case "chat.accepted":
       // Remove pending slash-command block if a skill was routed to the agent loop
-      document.querySelectorAll(".message.command.pending").forEach((el) => el.remove());
-      state.activeTurnId = event.turn_id;
+      setSessionActiveTurn(event.session_id, event.turn_id);
       updateSendBtn();
+      if (!isCurrentSessionEvent(event)) break;
+      document.querySelectorAll(".message.command.pending").forEach((el) => el.remove());
       state.tools.clear();
       state.thinkingText = "";
       resetActivity();
@@ -197,6 +234,7 @@ function handleEvent(event) {
       scrollMessages(true);
       break;
     case "text.delta":
+      if (!isCurrentSessionEvent(event)) break;
       if (!state.assistantNode) state.assistantNode = appendMessage("assistant", "");
       state._assistantRawText += event.text;
       state.assistantNode.innerHTML = renderMarkdown(state._assistantRawText);
@@ -204,23 +242,28 @@ function handleEvent(event) {
       scrollMessages();
       break;
     case "thinking.delta":
+      if (!isCurrentSessionEvent(event)) break;
       state.thinkingText = compactTail(`${state.thinkingText}${event.text}`, 2000);
       upsertThinkingActivity(event);
       break;
     case "thinking.done":
+      if (!isCurrentSessionEvent(event)) break;
       upsertThinkingActivity({ ...event, done: true });
       break;
     case "tool.start":
+      if (!isCurrentSessionEvent(event)) break;
       flushPendingText();
       state.tools.set(event.tool_use_id, { name: event.name, args: "", done: false });
       addActivity(event.type, `${event.name} started`, event);
       break;
     case "tool.delta": {
+      if (!isCurrentSessionEvent(event)) break;
       const tool = state.tools.get(event.tool_use_id);
       if (tool) tool.args += event.partial_json;
       break;
     }
     case "tool.result": {
+      if (!isCurrentSessionEvent(event)) break;
       const tool = state.tools.get(event.tool_use_id) || { name: event.name, args: "" };
       tool.done = true;
       tool.result = event.result;
@@ -230,6 +273,7 @@ function handleEvent(event) {
       break;
     }
     case "approval.requested":
+      if (!isCurrentSessionEvent(event)) break;
       state.approvals.set(event.request_id, event);
       renderApprovals();
       addActivity(event.type, `${event.tool_name} requires approval`, event);
@@ -237,41 +281,48 @@ function handleEvent(event) {
     case "approval.decided":
       state.approvals.delete(event.request_id);
       renderApprovals();
-      addActivity(event.type, event.accepted ? "Approval recorded" : "Approval not found", event);
+      if (isCurrentSessionEvent(event)) addActivity(event.type, event.accepted ? "Approval recorded" : "Approval not found", event);
       break;
     case "turn.done":
-      flushPendingText();
-      finishActivity();
-      state.activeTurnId = null;
-      updateSendBtn();
-      if (state.assistantNode) {
-        if (!state._assistantRawText.trim()) {
-          state.assistantNode.closest(".message")?.remove();
-        } else {
-          state.assistantNode.innerHTML = renderMarkdown(state._assistantRawText);
+      setSessionActiveTurn(event.session_id, null);
+      if (isCurrentSessionEvent(event)) {
+        flushPendingText();
+        finishActivity();
+        updateSendBtn();
+        if (state.assistantNode) {
+          if (!state._assistantRawText.trim()) {
+            state.assistantNode.closest(".message")?.remove();
+          } else {
+            state.assistantNode.innerHTML = renderMarkdown(state._assistantRawText);
+          }
+          state.assistantNode = null;
         }
-        state.assistantNode = null;
+        state._assistantRawText = "";
+        state.currentSession = event.session || state.currentSession;
+        syncSessionActiveTurn(state.currentSession);
+        if (state.activityItems.length) addActivity(event.type, "Turn done", event);
       }
-      state._assistantRawText = "";
-      state.currentSession = event.session || state.currentSession;
       state.sessions = event.sessions || state.sessions;
       renderSessions();
-      if (state.activityItems.length) addActivity(event.type, "Turn done", event);
       break;
     case "turn.cancelled":
-      finishActivity();
-      state.activeTurnId = null;
-      updateSendBtn();
-      state.assistantNode = null;
-      state.submittedAttachmentIds.clear();
-      addActivity(event.type, "Turn cancelled", event);
+      setSessionActiveTurn(event.session_id || state.sessionByTurn.get(event.turn_id), null);
+      if (isCurrentSessionEvent(event)) {
+        finishActivity();
+        updateSendBtn();
+        state.assistantNode = null;
+        state.submittedAttachmentIds.clear();
+        addActivity(event.type, "Turn cancelled", event);
+      }
       break;
     case "turn.error":
-      finishActivity();
-      state.activeTurnId = null;
-      updateSendBtn();
-      state.submittedAttachmentIds.clear();
-      addActivity(event.type, event.message || "unknown error", event);
+      if (event.session_id) setSessionActiveTurn(event.session_id, null);
+      if (isCurrentSessionEvent(event)) {
+        finishActivity();
+        updateSendBtn();
+        state.submittedAttachmentIds.clear();
+        addActivity(event.type, event.message || "unknown error", event);
+      }
       break;
     case "session.error":
       state.sessions = event.sessions || state.sessions;
@@ -478,7 +529,11 @@ function sessionMatches(session, query) {
 }
 
 function renderHistory() {
-  if (!state.activeTurnId) resetActivity();
+  syncSessionActiveTurn(state.currentSession);
+  updateSendBtn();
+  state.assistantNode = null;
+  state._assistantRawText = "";
+  if (!activeTurnIdForCurrentSession()) resetActivity();
   $("messages").innerHTML = "";
   if (!state.currentSession) {
     updateConversationEmptyState();
@@ -729,11 +784,19 @@ function upsertThinkingActivity(event) {
     existing.details = details;
     renderActivitySummary();
     renderActivity();
-    if (event.done) state.thinkingActivityId = null;
+    if (event.done) {
+      state.thinkingActivityId = null;
+      state.thinkingText = "";
+    }
     return existing;
   }
   const item = addActivity("thinking.done", text, details);
-  state.thinkingActivityId = event.done ? null : item?.id || null;
+  if (event.done) {
+    state.thinkingActivityId = null;
+    state.thinkingText = "";
+  } else {
+    state.thinkingActivityId = item?.id || null;
+  }
   return item;
 }
 
@@ -908,6 +971,7 @@ function replayActivityItems(payloads) {
         pushItem("thinking.done", text, details);
       }
       thinkingActivityId = null;
+      thinkingText = "";
     } else if (kind === "tool.start") {
       pushItem(kind, `${payload.name} started`, payload);
     } else if (kind === "tool.result") {
@@ -1199,6 +1263,7 @@ function renderThinkingToggle() {
 }
 
 $("sendBtn").onclick = (event) => {
+  updateSendBtn();
   if (state.activeTurnId) {
     event.preventDefault();
     send("turn.cancel", { turn_id: state.activeTurnId });
@@ -1212,6 +1277,10 @@ const BUILTIN_COMMANDS = new Set([
 
 $("composer").onsubmit = async (event) => {
   event.preventDefault();
+  if (activeTurnIdForCurrentSession()) {
+    send("turn.cancel", { turn_id: activeTurnIdForCurrentSession() });
+    return;
+  }
   const text = $("prompt").value.trim();
   if (!text && !state.attachments.length) return;
   if (hasAttachmentErrors()) {
@@ -1266,7 +1335,9 @@ $("newSessionNavBtn").onclick = async () => {
   const data = await api("/api/sessions", { method: "POST", body: "{}" });
   state.sessions = data.sessions;
   state.currentSession = data.session;
+  syncSessionActiveTurn(state.currentSession);
   renderSessions();
+  updateSendBtn();
   renderHistory();
   if (isMobileViewport()) closeDrawers();
 };
