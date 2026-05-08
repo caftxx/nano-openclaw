@@ -408,14 +408,7 @@ def _session_status(
     compaction_count: int = 0,
     message_count: int = 0,
 ) -> str:
-    from datetime import datetime
-    now = datetime.now()
-    weekday = now.strftime("%A")
-    date_str = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H:%M:%S")
-    timezone = datetime.now().astimezone().tzname() or "local"
-
-    lines = [f"Clock: {weekday}, {date_str} {time_str} ({timezone})"]
+    lines: list[str] = []
 
     if model:
         lines.append(f"Model: {model}")
@@ -598,7 +591,7 @@ def _build_core_tools() -> list[Tool]:
         ),
         Tool(
             name="session_status",
-            description="Show current session status: date/time, model, session ID, context usage (tokens/compactions), and message count. Use for current time or session state.",
+            description="Show current session status: model, session ID, context usage (tokens/compactions), and message count.",
             input_schema={
                 "type": "object",
                 "properties": {},
