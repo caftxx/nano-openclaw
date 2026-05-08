@@ -37,9 +37,12 @@ from nano_openclaw.loop import (
     ImageError,
     ImageSkip,
     LoopConfig,
+    MaxIterationsReached,
     Message,
     CancellationToken,
+    RetryAttempt,
     SkillInvoked,
+    StopReasonWarning,
     SubagentSpawned,
     SubagentAnnounced,
     SubagentKilled,
@@ -738,6 +741,21 @@ def _make_event_handler(console: Console, registry: ToolRegistry | None = None) 
                 stop_subagent_live_if_done()
             else:
                 _render_status_tree(console, "Subagent", [(event.task[:40], f"[yellow]killed[/] {event.run_id}")])
+
+        elif isinstance(event, MaxIterationsReached):
+            console.print(
+                f"[yellow]⚠ 已达到最大迭代次数 ({event.max_iterations})，正在请求最终结论…[/]"
+            )
+
+        elif isinstance(event, StopReasonWarning):
+            console.print(
+                f"[yellow]⚠ 第 {event.iteration} 轮输出被截断 (max_tokens)，压缩上下文后重试…[/]"
+            )
+
+        elif isinstance(event, RetryAttempt):
+            _render_status_tree(console, "Retry", [
+                (f"attempt {event.attempt}/{event.max_attempts}", markup.escape(event.error[:80]))
+            ])
 
     return handle
 

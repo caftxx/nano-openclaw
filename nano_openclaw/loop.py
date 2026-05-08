@@ -186,6 +186,27 @@ class SubagentKilled:
 
 
 @dataclass
+class MaxIterationsReached:
+    """Event emitted when the loop exhausts max_iterations and forces a final conclusion."""
+    max_iterations: int
+
+
+@dataclass
+class StopReasonWarning:
+    """Event emitted when the model stops for an unusual reason (max_tokens, stop_sequence)."""
+    stop_reason: str
+    iteration: int
+
+
+@dataclass
+class RetryAttempt:
+    """Event emitted before each retry of a failed API call."""
+    attempt: int       # 1-indexed
+    max_attempts: int
+    error: str
+
+
+@dataclass
 class SubagentProgress:
     """Event emitted during subagent execution with live progress."""
     run_id: str
@@ -727,7 +748,7 @@ async def _run_agent_session_turn(
     tools_schema = registry.schemas()
     already_flushed_for_compaction = False
 
-    for _ in range(cfg.max_iterations):
+    for i in range(cfg.max_iterations):
         await check_cancelled()
         current_tokens = estimate_tokens(scratch_history)
         if should_run_memory_flush(
@@ -765,7 +786,7 @@ async def _run_agent_session_turn(
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
         try:
-            assistant_blocks, stop_reason = await _consume_one_assistant_turn(
+            assistant_blocks, stop_reason = await _retry_assistant_turn(
                 client=client,
                 api=cfg.api,
                 model=cfg.model,
@@ -782,13 +803,49 @@ async def _run_agent_session_turn(
             raise
 
         await check_cancelled()
+
+        # max_tokens means the model's output was truncated. Force compact and retry once
+        # so the model can generate a complete response with a smaller context window.
+        if stop_reason == "max_tokens":
+            on_event(StopReasonWarning(stop_reason="max_tokens", iteration=i + 1))
+            _, summary = await compact_if_needed(
+                scratch_history,
+                budget=1,
+                client=client,
+                model=cfg.model,
+                api=cfg.api,
+                threshold_ratio=1.0,
+                recent_turns=cfg.context_recent_turns,
+            )
+            if summary:
+                on_event(Compaction(summary=summary))
+                pending_transcript_ops.append(("compaction", summary))
+            wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
+            try:
+                assistant_blocks, stop_reason = await _retry_assistant_turn(
+                    client=client,
+                    api=cfg.api,
+                    model=cfg.model,
+                    system=system,
+                    messages=wire_messages,
+                    tools=tools_schema,
+                    max_tokens=cfg.max_tokens,
+                    thinking_budget_tokens=cfg.thinking_budget_tokens,
+                    on_event=on_event,
+                    cancellation_token=cancellation_token,
+                )
+            except TurnCancelled:
+                await drain_loop_event_hooks()
+                raise
+            await check_cancelled()
+
         scratch_history.append(Message("assistant", assistant_blocks))
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
         if stop_reason != "tool_use":
             session._commit_turn(scratch_history, pending_transcript_ops)
             await drain_loop_event_hooks()
-            return history  # end_turn / max_tokens / stop_sequence — terminal
+            return history  # end_turn / stop_sequence — terminal
 
         tool_use_blocks = [b for b in assistant_blocks if b.get("type") == "tool_use"]
 
@@ -805,14 +862,16 @@ async def _run_agent_session_turn(
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
-        if has_denial:
-            # At least one tool was denied — make one final model call so the
-            # model can draw a conclusion from the context collected so far,
-            # then end the turn. Pass no tools to force a text-only response.
+        # Force a final text-only conclusion when the tool budget is exhausted or a tool
+        # was denied. Pass tools=[] so the model cannot make more tool calls.
+        is_last_iteration = (i == cfg.max_iterations - 1)
+        if has_denial or is_last_iteration:
+            if is_last_iteration and not has_denial:
+                on_event(MaxIterationsReached(max_iterations=cfg.max_iterations))
             await check_cancelled()
             wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
             try:
-                final_blocks, _ = await _consume_one_assistant_turn(
+                final_blocks, _ = await _retry_assistant_turn(
                     client=client,
                     api=cfg.api,
                     model=cfg.model,
@@ -848,13 +907,8 @@ async def _run_agent_session_turn(
                 pending_transcript_ops.extend(("message", msg) for msg in announced)
         # next iteration sends history (now including tool_results) back to the model
 
-    scratch_history.append(
-        Message("assistant", [{"type": "text", "text": "[max_iterations reached]"}])
-    )
-    pending_transcript_ops.append(("message", scratch_history[-1]))
-    session._commit_turn(scratch_history, pending_transcript_ops)
-    await drain_loop_event_hooks()
-    return history
+    # Unreachable: the is_last_iteration branch inside the loop always returns.
+    raise AssertionError("loop exited without returning — this is a bug")
 
 
 async def _run_memory_flush_turn(
@@ -1157,6 +1211,32 @@ def _maybe_dump_payload(
     path = Path.cwd() / "nano-openclaw-debug.jsonl"
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+async def _retry_assistant_turn(
+    *,
+    on_event: EventCallback,
+    cancellation_token: "CancellationToken | None" = None,
+    max_attempts: int = 3,
+    **kwargs: Any,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Wrap _consume_one_assistant_turn with up to max_attempts retries on API errors.
+
+    TurnCancelled is never retried. Other exceptions are retried with 1s / 2s backoff.
+    """
+    for attempt in range(max_attempts):
+        try:
+            return await _consume_one_assistant_turn(
+                **kwargs, on_event=on_event, cancellation_token=cancellation_token
+            )
+        except TurnCancelled:
+            raise
+        except Exception as exc:
+            if attempt == max_attempts - 1:
+                raise
+            on_event(RetryAttempt(attempt=attempt + 1, max_attempts=max_attempts, error=str(exc)))
+            await asyncio.sleep(2 ** attempt)
+    raise AssertionError("unreachable")
 
 
 async def _consume_one_assistant_turn(
