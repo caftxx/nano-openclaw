@@ -109,6 +109,58 @@ def _build_subagent_section(registry: ToolRegistry) -> str:
     return "\n".join(lines)
 
 
+def _build_schedule_section(registry: ToolRegistry) -> str:
+    """Inject cron/schedule guidance when schedule tools are registered.
+
+    Mirrors openclaw system-prompt.ts coreToolSummaries["cron"] guidance.
+    Only injected when at least one of cron_create / schedule_wakeup is present.
+    """
+    has_create = registry.get("cron_create") is not None
+    has_wakeup = registry.get("schedule_wakeup") is not None
+    has_list = registry.get("cron_list") is not None
+    has_delete = registry.get("cron_delete") is not None
+
+    if not has_create and not has_wakeup:
+        return ""
+
+    lines = ["## Cron Schedule"]
+
+    if has_create and has_wakeup:
+        lines.append(
+            "- `cron_create` schedules a recurring background task (cron expression, "
+            "e.g. `0 9 * * *` for daily 9 AM). "
+            "`schedule_wakeup` schedules a one-shot task after a delay (minimum 60 s)."
+        )
+    elif has_create:
+        lines.append(
+            "- `cron_create` schedules a recurring background task on a cron expression "
+            "(e.g. `0 9 * * *` for daily 9 AM)."
+        )
+    else:
+        lines.append(
+            "- `schedule_wakeup` schedules a one-shot task to run after a delay (minimum 60 s)."
+        )
+
+    if has_list or has_delete:
+        mgmt = []
+        if has_list:
+            mgmt.append("`cron_list` to view jobs and their next run time")
+        if has_delete:
+            mgmt.append("`cron_delete` to remove a job")
+        lines.append(f"- Use {' and '.join(mgmt)}.")
+
+    lines += [
+        "- **Writing reminder prompts**: phrase the prompt so it reads naturally when it fires "
+        "(e.g. 'Remind me to review the PR' → prompt: 'This is your reminder to review the PR. "
+        "Check its current status and summarise what still needs attention.'). "
+        "For longer gaps (hours/days), mention it is a reminder. "
+        "Include relevant context from the current conversation in the prompt text.",
+        "- Scheduled tasks run as isolated background agents with access to workspace tools.",
+    ]
+
+    return "\n".join(lines)
+
+
 def _build_project_context_section(
     files: list[WorkspaceBootstrapFile],
 ) -> str:
@@ -228,6 +280,10 @@ def build_system_prompt(
     subagent_section = _build_subagent_section(registry)
     if subagent_section:
         prompt += "\n" + subagent_section + "\n"
+
+    schedule_section = _build_schedule_section(registry)
+    if schedule_section:
+        prompt += "\n" + schedule_section + "\n"
 
     # Memory tool guidance (after tools section)
     if registry.get("memory_search") is not None and registry.get("memory_get") is not None:
