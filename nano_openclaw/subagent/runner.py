@@ -23,11 +23,10 @@ from nano_openclaw.loop import (
     SubagentProgress,
     SkillInvoked,
     ThinkingBlockComplete,
-    ThinkingDelta,
     ToolResult,
     AgentSession,
 )
-from nano_openclaw.provider import MessageEnd, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.provider import MessageEnd, ToolUseStart
 from nano_openclaw.subagent.registry import SubagentRegistry, get_registry
 from nano_openclaw.subagent.types import (
     SubagentConfig,
@@ -193,11 +192,7 @@ class SubagentRunner:
         if len(params.task) > 50 and not params.label:
             progress_label += "..."
         activity_events = (
-            ThinkingDelta,
             ThinkingBlockComplete,
-            ToolUseStart,
-            ToolUseDelta,
-            ToolUseEnd,
             ToolResult,
             SkillInvoked,
         )

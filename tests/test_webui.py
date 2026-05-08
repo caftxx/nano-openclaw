@@ -12,7 +12,7 @@ import pytest
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from nano_openclaw.attachments import AttachmentAttached, AttachmentError
-from nano_openclaw.loop import CancellationToken, LoopConfig, SubagentAnnounced, SubagentEvent
+from nano_openclaw.loop import CancellationToken, LoopConfig, SubagentAnnounced, SubagentEvent, ToolResult
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
@@ -105,7 +105,12 @@ def test_webui_serializes_subagent_internal_event_for_activity():
             run_id="run-12345678",
             label="research",
             task="research task",
-            event=ToolUseStart("tool-1", "web_search"),
+            event=ToolResult(
+                tool_use_id="tool-1",
+                name="web_search",
+                args={"query": "nano-openclaw"},
+                result={"content": [{"type": "text", "text": "done"}]},
+            ),
         ),
         "turn-1",
         "session-1",
@@ -119,9 +124,11 @@ def test_webui_serializes_subagent_internal_event_for_activity():
         "label": "research",
         "task": "research task",
         "event": {
-            "type": "tool.start",
+            "type": "tool.result",
             "tool_use_id": "tool-1",
             "name": "web_search",
+            "args": {"query": "nano-openclaw"},
+            "result": {"content": [{"type": "text", "text": "done"}]},
         },
     }
     assert _is_replayable_activity_payload(payload)

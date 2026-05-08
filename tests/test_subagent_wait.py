@@ -4,7 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress
+from nano_openclaw.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress, ToolResult
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.subagent.registry import reset_registry
 from nano_openclaw.subagent.runner import SubagentRunner, get_runner, reset_runner
@@ -100,6 +100,12 @@ def test_subagent_runner_emits_progress_events(monkeypatch, tmp_path):
 
     async def fake_run_turn(self, _user_input, **_kwargs):
         self.on_event(ToolUseStart(id="tool-1", name="Read"))
+        self.on_event(ToolResult(
+            tool_use_id="tool-1",
+            name="Read",
+            args={"path": "demo.md"},
+            result={"content": [{"type": "text", "text": "ok"}]},
+        ))
         self.on_event(MessageEnd(
             stop_reason="end_turn",
             usage={"input_tokens": 1200, "output_tokens": 300},
@@ -138,6 +144,6 @@ def test_subagent_runner_emits_progress_events(monkeypatch, tmp_path):
     assert len(activity_events) == 1
     assert activity_events[0].run_id == record.run_id
     assert activity_events[0].label == "child"
-    assert isinstance(activity_events[0].event, ToolUseStart)
+    assert isinstance(activity_events[0].event, ToolResult)
     assert result.input_tokens == 1200
     assert result.output_tokens == 300

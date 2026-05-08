@@ -1021,11 +1021,7 @@ function summarizeSubagentEvent(event) {
 function summarizeSubagentNestedEvent(event) {
   const child = event.event || {};
   const prefix = subagentPrefix(event);
-  if (child.type === "thinking.delta") return `${prefix}Thinking · ${compactTail(child.text || "", 120)}`;
   if (child.type === "thinking.done") return `${prefix}Thinking done${child.redacted ? " · redacted" : ""}`;
-  if (child.type === "tool.start") return `${prefix}Tool call · ${child.name || "tool"} started`;
-  if (child.type === "tool.delta") return `${prefix}Tool args · ${compactTail(child.partial_json || "", 120)}`;
-  if (child.type === "tool.end") return `${prefix}Tool call · ${child.tool_use_id || "tool"} ended`;
   if (child.type === "tool.result") {
     const resultPreview = compactTail(String(child.result || ""), 120);
     return `${prefix}Tool result · ${child.name || "tool"}${resultPreview ? ` -> ${resultPreview}` : ""}`;
