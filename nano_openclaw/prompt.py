@@ -125,28 +125,22 @@ def _build_schedule_section(registry: ToolRegistry) -> str:
 
     lines = ["## Cron Schedule"]
 
-    if has_create and has_wakeup:
-        lines.append(
-            "- `cron_create` schedules a recurring background task (cron expression, "
-            "e.g. `0 9 * * *` for daily 9 AM). "
-            "`schedule_wakeup` schedules a one-shot task after a delay (minimum 60 s)."
-        )
-    elif has_create:
+    if has_create:
         lines.append(
             "- `cron_create` schedules a recurring background task on a cron expression "
             "(e.g. `0 9 * * *` for daily 9 AM)."
         )
-    else:
+    if has_wakeup:
         lines.append(
             "- `schedule_wakeup` schedules a one-shot task to run after a delay (minimum 60 s)."
         )
 
-    if has_list or has_delete:
-        mgmt = []
-        if has_list:
-            mgmt.append("`cron_list` to view jobs and their next run time")
-        if has_delete:
-            mgmt.append("`cron_delete` to remove a job")
+    mgmt = []
+    if has_list:
+        mgmt.append("`cron_list` to view jobs and their next run time")
+    if has_delete:
+        mgmt.append("`cron_delete` to remove a job")
+    if mgmt:
         lines.append(f"- Use {' and '.join(mgmt)}.")
 
     lines += [
