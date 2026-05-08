@@ -532,8 +532,23 @@ async def web_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return await _web_fetch(*args, **kwargs)
 
 
+def _current_time(args: dict[str, Any]) -> str:
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    return now.isoformat()
+
+
 def _build_core_tools() -> list[Tool]:
     tools: list[Tool] = [
+        Tool(
+            name="current_time",
+            description="Get the current UTC time in ISO 8601 format.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+            },
+            run=_current_time,
+        ),
         Tool(
             name="read_file",
             description="Read a UTF-8 text file from disk and return its contents. Binary/media files (images, video, audio, PDF) return a metadata summary only — attach image paths directly in the user message to analyse them.",
