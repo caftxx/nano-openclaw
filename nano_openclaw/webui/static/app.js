@@ -340,7 +340,7 @@ function handleEvent(event) {
       break;
     }
     default:
-      if (event.type?.includes("status") || event.type?.includes("invoked") || event.type?.includes("memory")) {
+      if (event.type === "subagent.event" || event.type?.includes("status") || event.type?.includes("invoked") || event.type?.includes("memory")) {
         addActivity(event.type, summarizeEvent(event), event);
       }
   }
@@ -803,6 +803,8 @@ function upsertThinkingActivity(event) {
 function eventIcon(kind) {
   if (kind === "tool.start") return "⚙";
   if (kind === "tool.result") return "✓";
+  if (kind === "subagent.status") return "◈";
+  if (kind === "subagent.event") return "◈";
   if (kind === "turn.done") return "◎";
   if (kind === "turn.error") return "!";
   if (kind === "turn.cancelled") return "⊘";
@@ -821,6 +823,8 @@ function labelEvent(kind) {
   if (kind === "thinking.done") return "Thinking";
   if (kind === "tool.start") return "Tool call";
   if (kind === "tool.result") return "Tool result";
+  if (kind === "subagent.status") return "Subagent";
+  if (kind === "subagent.event") return "Subagent";
   if (kind === "approval.requested") return "Approval";
   if (kind === "approval.decided") return "Approval";
   if (kind === "turn.done") return "Done";
@@ -983,7 +987,7 @@ function replayActivityItems(payloads) {
       if (items.length) pushItem(kind, "Turn done", payload);
     } else if (kind === "compaction") {
       pushItem(kind, payload.summary || "context compacted", payload);
-    } else if (kind?.includes("status") || kind?.includes("invoked") || kind?.includes("memory")) {
+    } else if (kind === "subagent.event" || kind?.includes("status") || kind?.includes("invoked") || kind?.includes("memory")) {
       pushItem(kind, summarizeEvent(payload), payload);
     }
   }
@@ -991,10 +995,62 @@ function replayActivityItems(payloads) {
 }
 
 function summarizeEvent(event) {
+  if (event.type === "subagent.status") return summarizeSubagentEvent(event);
+  if (event.type === "subagent.event") return summarizeSubagentNestedEvent(event);
   if (event.skill_name) return event.skill_name;
   if (event.status) return event.status;
   if (event.message) return event.message;
   return JSON.stringify(event).slice(0, 120);
+}
+
+function summarizeSubagentEvent(event) {
+  const task = compactTail(event.label || event.task || event.run_id || "subagent", 80);
+  const status = event.status || "updated";
+  if (status === "spawned") return `Spawned: ${task}`;
+  if (status === "progress") {
+    const activity = event.current_activity ? ` · ${event.current_activity}` : "";
+    return `Running: ${task}${activity}`;
+  }
+  if (status === "killed") return `Killed: ${task}`;
+  const elapsed = formatElapsed(event.elapsed_ms);
+  const result = event.error_message || event.result_text || "";
+  const preview = result ? ` · ${compactTail(result, 120)}` : "";
+  return `${capitalize(status)}: ${task}${elapsed ? ` (${elapsed})` : ""}${preview}`;
+}
+
+function summarizeSubagentNestedEvent(event) {
+  const child = event.event || {};
+  const prefix = subagentPrefix(event);
+  if (child.type === "thinking.delta") return `${prefix}Thinking · ${compactTail(child.text || "", 120)}`;
+  if (child.type === "thinking.done") return `${prefix}Thinking done${child.redacted ? " · redacted" : ""}`;
+  if (child.type === "tool.start") return `${prefix}Tool call · ${child.name || "tool"} started`;
+  if (child.type === "tool.delta") return `${prefix}Tool args · ${compactTail(child.partial_json || "", 120)}`;
+  if (child.type === "tool.end") return `${prefix}Tool call · ${child.tool_use_id || "tool"} ended`;
+  if (child.type === "tool.result") {
+    const resultPreview = compactTail(String(child.result || ""), 120);
+    return `${prefix}Tool result · ${child.name || "tool"}${resultPreview ? ` -> ${resultPreview}` : ""}`;
+  }
+  if (child.type === "skill.invoked") return `${prefix}Skill · ${child.skill_name || child.skill_path || "skill"}`;
+  return `${prefix}${child.type || "event"}`;
+}
+
+function subagentPrefix(event) {
+  const label = compactTail(event.label || event.task || "subagent", 48);
+  const run = event.run_id ? `#${String(event.run_id).slice(0, 8)}` : "";
+  return `[${label}${run ? ` ${run}` : ""}] `;
+}
+
+function formatElapsed(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function capitalize(text) {
+  const value = String(text || "");
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "";
 }
 
 function compactTail(text, limit) {

@@ -18,11 +18,16 @@ from nano_openclaw.loop import (
     CancellationToken,
     SubagentSpawned,
     SubagentAnnounced,
+    SubagentEvent,
     SubagentKilled,
     SubagentProgress,
+    SkillInvoked,
+    ThinkingBlockComplete,
+    ThinkingDelta,
+    ToolResult,
     AgentSession,
 )
-from nano_openclaw.provider import MessageEnd, ToolUseStart
+from nano_openclaw.provider import MessageEnd, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.subagent.registry import SubagentRegistry, get_registry
 from nano_openclaw.subagent.types import (
     SubagentConfig,
@@ -187,6 +192,15 @@ class SubagentRunner:
         progress_label = params.label or params.task[:50]
         if len(params.task) > 50 and not params.label:
             progress_label += "..."
+        activity_events = (
+            ThinkingDelta,
+            ThinkingBlockComplete,
+            ToolUseStart,
+            ToolUseDelta,
+            ToolUseEnd,
+            ToolResult,
+            SkillInvoked,
+        )
 
         def _subagent_on_event(ev: Any) -> None:
             changed = False
@@ -207,6 +221,13 @@ class SubagentRunner:
                     input_tokens=progress["input_tokens"],
                     output_tokens=progress["output_tokens"],
                     current_activity=progress["activity"],
+                ))
+            if parent_on_event and isinstance(ev, activity_events):
+                parent_on_event(SubagentEvent(
+                    run_id=record.run_id,
+                    label=progress_label,
+                    task=record.task,
+                    event=ev,
                 ))
         
         system_prompt = self._build_subagent_system_prompt(params.task)

@@ -12,7 +12,7 @@ import pytest
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from nano_openclaw.attachments import AttachmentAttached, AttachmentError
-from nano_openclaw.loop import CancellationToken, LoopConfig
+from nano_openclaw.loop import CancellationToken, LoopConfig, SubagentAnnounced, SubagentEvent
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
@@ -28,6 +28,8 @@ from nano_openclaw.webui.server import (
     _read_user_name,
     _resolve_model_option,
     _run_turn,
+    _wire_spawn_context,
+    _is_replayable_activity_payload,
     run_webui,
 )
 from nano_openclaw.webui.sessions import WebSessionManager
@@ -68,6 +70,84 @@ def test_webui_event_serializer_core_stream_events():
         "status": "error",
         "error": "bad",
     }
+
+
+def test_webui_serializes_subagent_completion_for_activity():
+    payload = _event_to_payload(
+        SubagentAnnounced(
+            run_id="run-1",
+            status="completed",
+            task="research task",
+            result_text="child result",
+            elapsed_ms=1234,
+        ),
+        "turn-1",
+        "session-1",
+    )
+
+    assert payload == {
+        "type": "subagent.status",
+        "turn_id": "turn-1",
+        "session_id": "session-1",
+        "status": "completed",
+        "run_id": "run-1",
+        "task": "research task",
+        "result_text": "child result",
+        "elapsed_ms": 1234,
+        "error_message": None,
+    }
+    assert _is_replayable_activity_payload(payload)
+
+
+def test_webui_serializes_subagent_internal_event_for_activity():
+    payload = _event_to_payload(
+        SubagentEvent(
+            run_id="run-12345678",
+            label="research",
+            task="research task",
+            event=ToolUseStart("tool-1", "web_search"),
+        ),
+        "turn-1",
+        "session-1",
+    )
+
+    assert payload == {
+        "type": "subagent.event",
+        "turn_id": "turn-1",
+        "session_id": "session-1",
+        "run_id": "run-12345678",
+        "label": "research",
+        "task": "research task",
+        "event": {
+            "type": "tool.start",
+            "tool_use_id": "tool-1",
+            "name": "web_search",
+        },
+    }
+    assert _is_replayable_activity_payload(payload)
+
+
+def test_webui_spawn_context_forwards_subagent_events():
+    registry = ToolRegistry()
+    registry.register(Tool(
+        name="sessions_spawn",
+        description="spawn",
+        input_schema={"type": "object"},
+        run=lambda args: "ok",
+    ))
+    callback = object()
+    runtime = SimpleNamespace(
+        session_dir=Path("sessions"),
+        workspace_dir=Path("."),
+        client=object(),
+        cfg=LoopConfig(model="model"),
+    )
+
+    _wire_spawn_context(registry, runtime, "session-1", on_event=callback)
+
+    context = registry._spawn_tool_context
+    assert context.requester_session_key == "session-1"
+    assert context.on_event is callback
 
 
 def test_web_approval_broker_waits_for_decision():
@@ -487,6 +567,42 @@ def test_web_session_list_uses_conversation_text_for_title_and_search():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_web_session_display_hides_subagent_announcements():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        subagent_announcement = (
+            '<subagent_completion runId="run-1" status="completed">\n'
+            "  <task>research task</task>\n"
+            "  <result>raw child result</result>\n"
+            "</subagent_completion>"
+        )
+        session = manager.create()
+        session.history.extend([
+            _message("user", "please research this"),
+            _message("assistant", "I will check."),
+            _message("user", subagent_announcement),
+            _message("assistant", "Here is the final answer."),
+        ])
+        for message in session.history:
+            session.writer.append_message(message)
+        manager.save_metadata(session)
+
+        history = manager.history_json(session)
+        listed = manager.list()[0]
+
+        assert [message["role"] for message in history] == ["user", "assistant", "assistant"]
+        assert all("subagent_completion" not in _json_text(message) for message in history)
+        assert listed["title"] == "please research this"
+        assert listed["preview"] == "Here is the final answer."
+        assert "raw child result" not in listed["search_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_web_session_list_sorts_by_creation_time_not_completion_time():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:
@@ -705,6 +821,14 @@ def _message(role: str, text: str):
     from nano_openclaw.loop import Message
 
     return Message(role, [{"type": "text", "text": text}])
+
+
+def _json_text(message: dict) -> str:
+    return "\n".join(
+        str(block.get("text", ""))
+        for block in message.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
 
 
 def test_webui_token_is_optional_for_non_local_host(monkeypatch: pytest.MonkeyPatch):

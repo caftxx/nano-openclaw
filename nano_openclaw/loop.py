@@ -196,6 +196,15 @@ class SubagentProgress:
     current_activity: str
 
 
+@dataclass
+class SubagentEvent:
+    """Event emitted from inside a subagent, tagged for parent activity views."""
+    run_id: str
+    label: str
+    task: str
+    event: Any
+
+
 # Thinking level type (mirrors openclaw ThinkLevel)
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]
 

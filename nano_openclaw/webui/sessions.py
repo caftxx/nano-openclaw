@@ -34,14 +34,26 @@ def message_text(message: Message) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def is_subagent_announcement(message: Message) -> bool:
+    if message.role != "user":
+        return False
+    text = message_text(message).strip()
+    return text.startswith("<subagent_completion") and text.endswith("</subagent_completion>")
+
+
+def display_history(history: list[Message]) -> list[Message]:
+    return [message for message in history if not is_subagent_announcement(message)]
+
+
 def session_title(history: list[Message], fallback: str) -> str:
-    for message in history:
+    visible_history = display_history(history)
+    for message in visible_history:
         if message.role != "user":
             continue
         text = _one_line(message_text(message))
         if text:
             return _truncate(text, 42)
-    for message in history:
+    for message in visible_history:
         text = _one_line(message_text(message))
         if text:
             return _truncate(text, 42)
@@ -49,7 +61,7 @@ def session_title(history: list[Message], fallback: str) -> str:
 
 
 def session_preview(history: list[Message]) -> str:
-    for message in reversed(history):
+    for message in reversed(display_history(history)):
         text = _one_line(message_text(message))
         if text:
             return _truncate(text, 96)
@@ -57,7 +69,7 @@ def session_preview(history: list[Message]) -> str:
 
 
 def session_search_text(history: list[Message]) -> str:
-    parts = [_one_line(message_text(message)) for message in history]
+    parts = [_one_line(message_text(message)) for message in display_history(history)]
     return "\n".join(part for part in parts if part)[:6000].lower()
 
 
@@ -264,7 +276,7 @@ class WebSessionManager:
             self._unmark_pending(session_id)
 
     def history_json(self, session: WebSession) -> list[dict[str, Any]]:
-        return [message_to_json(message) for message in session.history]
+        return [message_to_json(message) for message in display_history(session.history)]
 
     def activity_json(self, session: WebSession) -> list[dict[str, Any]]:
         return [_jsonable_activity(activity) for activity in session.activities]

@@ -30,6 +30,7 @@ from nano_openclaw.loop import (
     ImageSkip,
     SkillInvoked,
     SubagentAnnounced,
+    SubagentEvent,
     SubagentKilled,
     SubagentProgress,
     SubagentSpawned,
@@ -50,7 +51,7 @@ from nano_openclaw.provider import (
 from nano_openclaw.tools import ToolRegistry
 from nano_openclaw.webui.approvals import WebApprovalBroker
 from nano_openclaw.webui.runtime import AgentRuntime, build_agent_runtime, build_approval_manager, image_model_id_from_ref
-from nano_openclaw.webui.sessions import WebSessionManager, message_text
+from nano_openclaw.webui.sessions import WebSessionManager, display_history, message_text
 
 
 
@@ -504,7 +505,6 @@ async def _run_turn(
         return await approvals.request_decision(request, cancellation_token)
 
     turn_registry.approval_handler = request_approval
-    _wire_spawn_context(turn_registry, runtime, session.session_id)
     cfg = replace(runtime.cfg, session_key=session.session_id)
     event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
@@ -529,6 +529,7 @@ async def _run_turn(
             activity_payloads.append(payload)
         event_queue.put_nowait(payload)
 
+    _wire_spawn_context(turn_registry, runtime, session.session_id, on_event=on_event)
     event_drain_task = asyncio.create_task(drain_events())
 
     await send({
@@ -656,6 +657,18 @@ def _event_to_payload(event: Any, turn_id: str, session_id: str) -> dict[str, An
         return {"type": "subagent.status", **base, "status": "killed", **_jsonable(event)}
     if isinstance(event, SubagentProgress):
         return {"type": "subagent.status", **base, "status": "progress", **_jsonable(event)}
+    if isinstance(event, SubagentEvent):
+        nested = _event_to_payload(event.event, turn_id, session_id)
+        nested.pop("turn_id", None)
+        nested.pop("session_id", None)
+        return {
+            "type": "subagent.event",
+            **base,
+            "run_id": event.run_id,
+            "label": event.label,
+            "task": event.task,
+            "event": nested,
+        }
     return {"type": "event", **base, "event_type": type(event).__name__, "payload": _jsonable(event)}
 
 
@@ -663,7 +676,7 @@ def _is_replayable_activity_payload(payload: dict[str, Any]) -> bool:
     kind = payload.get("type")
     if kind in {"text.delta", "tool.delta", "tool.end", "message.end"}:
         return False
-    if kind in {"thinking.delta", "thinking.done", "tool.start", "tool.result", "compaction"}:
+    if kind in {"thinking.delta", "thinking.done", "tool.start", "tool.result", "compaction", "subagent.event"}:
         return True
     return bool(
         isinstance(kind, str)
@@ -712,6 +725,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _session_payload(manager: WebSessionManager, session: Any) -> dict[str, Any]:
+    visible_history = display_history(session.history)
     return {
         "session_id": session.session_id,
         "message_count": session.writer.message_count,
@@ -719,7 +733,7 @@ def _session_payload(manager: WebSessionManager, session: Any) -> dict[str, Any]
         "active_turn_id": session.active_turn_id,
         "history": manager.history_json(session),
         "activities": manager.activity_json(session),
-        "preview": message_text(session.history[-1])[:160] if session.history else "",
+        "preview": message_text(visible_history[-1])[:160] if visible_history else "",
     }
 
 
@@ -1397,7 +1411,13 @@ async def handle_slash_command(
     return None  # not a built-in — caller should route to agent loop
 
 
-def _wire_spawn_context(registry: ToolRegistry, runtime: AgentRuntime, session_id: str) -> None:
+def _wire_spawn_context(
+    registry: ToolRegistry,
+    runtime: AgentRuntime,
+    session_id: str,
+    *,
+    on_event: Any | None = None,
+) -> None:
     if registry.get("sessions_spawn") is None:
         return
     from nano_openclaw.subagent.tools import SpawnToolContext
@@ -1407,7 +1427,7 @@ def _wire_spawn_context(registry: ToolRegistry, runtime: AgentRuntime, session_i
         workspace_dir=runtime.workspace_dir,
         client=runtime.client,
         base_cfg=replace(runtime.cfg, session_key=session_id),
-        on_event=lambda _event: None,
+        on_event=on_event,
         parent_registry=registry,
     ))
 

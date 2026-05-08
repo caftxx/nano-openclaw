@@ -4,7 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import AgentSession, LoopConfig, Message, SubagentProgress
+from nano_openclaw.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.subagent.registry import reset_registry
 from nano_openclaw.subagent.runner import SubagentRunner, get_runner, reset_runner
@@ -129,10 +129,15 @@ def test_subagent_runner_emits_progress_events(monkeypatch, tmp_path):
     ))
 
     progress_events = [event for event in events if isinstance(event, SubagentProgress)]
+    activity_events = [event for event in events if isinstance(event, SubagentEvent)]
     assert len(progress_events) == 2
     assert progress_events[0].tool_uses == 1
     assert progress_events[0].current_activity == "Read"
     assert progress_events[-1].input_tokens == 1200
     assert progress_events[-1].output_tokens == 300
+    assert len(activity_events) == 1
+    assert activity_events[0].run_id == record.run_id
+    assert activity_events[0].label == "child"
+    assert isinstance(activity_events[0].event, ToolUseStart)
     assert result.input_tokens == 1200
     assert result.output_tokens == 300
