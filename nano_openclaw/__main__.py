@@ -195,6 +195,7 @@ async def _async_main(
     registry.set_workspace_dir(workspace_dir)
     registry.set_state_dir(state_dir)
     registry.set_allow_global_pip(config.skills.install.allowGlobalPip)
+    config.state_dir = str(state_dir)
     hook_registry = (
         load_plugins(config.plugins, registry, config)
         if not no_tools
@@ -341,6 +342,23 @@ async def _async_main(
     if dreaming_cfg.enabled and workspace_dir:
         dreaming_task = start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, _dreaming_stop)
 
+    # Start cron scheduler
+    _cron_stop = threading.Event()
+    cron_task = None
+    if config.schedule.enabled and not no_tools:
+        from nano_openclaw.schedule.scheduler import start_cron_scheduler
+        cron_dir = state_dir / "cron"
+        cron_task = start_cron_scheduler(
+            cron_dir=cron_dir,
+            session_dir=session_dir,
+            workspace_dir=workspace_dir,
+            client=client,
+            base_cfg=cfg,
+            max_concurrent=config.schedule.maxConcurrentRuns,
+            missed_jobs_limit=config.schedule.missedJobsLimit,
+            stop_event=_cron_stop,
+        )
+
     # Wire config.subagents to the global SubagentRunner before the REPL starts.
     if not no_tools:
         from nano_openclaw.subagent.runner import get_runner
@@ -382,6 +400,13 @@ async def _async_main(
             dreaming_task.cancel()
             try:
                 await dreaming_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        _cron_stop.set()
+        if cron_task and not cron_task.done():
+            cron_task.cancel()
+            try:
+                await cron_task
             except (asyncio.CancelledError, Exception):
                 pass
 

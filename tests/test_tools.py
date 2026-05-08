@@ -87,7 +87,7 @@ def test_bash_captures_exit_code(registry):
 def test_schemas_have_required_anthropic_fields(registry):
     schemas = registry.schemas()
     assert {s["name"] for s in schemas} == {
-        "read_file", "write_file", "list_dir", "bash",
+        "current_time", "read_file", "write_file", "list_dir", "bash",
         "session_status", "skill", "skill_install", "memory_get", "memory_search",
         "web_search", "web_fetch", "sessions_spawn", "subagents"
     }
@@ -99,8 +99,6 @@ def test_schemas_have_required_anthropic_fields(registry):
 def test_session_status_without_context(registry):
     out = registry.dispatch("id-s", "session_status", {})
     assert out.get("is_error") is None
-    text = out["content"][0]["text"]
-    assert "Clock:" in text
 
 
 def test_session_status_with_context(registry):
@@ -115,7 +113,6 @@ def test_session_status_with_context(registry):
     out = registry.dispatch("id-s", "session_status", {})
     assert out.get("is_error") is None
     text = out["content"][0]["text"]
-    assert "Clock:" in text
     assert "Model: anthropic/claude-sonnet-4" in text
     assert "Session: test-123" in text
     assert "Context:" in text and "tokens" in text

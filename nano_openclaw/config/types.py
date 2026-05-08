@@ -418,6 +418,15 @@ class DreamingConfigInput(BaseModel):
     model: Optional[str] = Field(default=None, description="Model override for Dream Diary generation")
 
 
+class ScheduleConfigInput(BaseModel):
+    """Cron schedule configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=True, description="Enable cron scheduler")
+    maxConcurrentRuns: int = Field(default=3, ge=1, le=20, description="Max jobs running in parallel")
+    missedJobsLimit: int = Field(default=5, ge=1, le=50, description="Max missed jobs to run immediately on startup")
+
+
 class SubagentConfigInput(BaseModel):
     """Subagent configuration, aligns with openclaw agents.defaults.subagents."""
     model_config = ConfigDict(populate_by_name=True)
@@ -497,7 +506,7 @@ class ToolsConfig(BaseModel):
 # Plugin Types (nano-openclaw lightweight plugin loader)
 # ============================================================================
 
-BUILTIN_PLUGIN_IDS = ("memory", "web", "subagent", "mcp")
+BUILTIN_PLUGIN_IDS = ("memory", "web", "subagent", "mcp", "schedule")
 
 
 class PluginEntryConfig(BaseModel):
@@ -581,6 +590,12 @@ class NanoOpenClawConfig(BaseModel):
         default_factory=SubagentConfigInput,
         description="Subagent configuration (background agent runs)"
     )
+    schedule: ScheduleConfigInput = Field(
+        default_factory=ScheduleConfigInput,
+        description="Cron schedule configuration"
+    )
+    # Runtime-resolved state directory (set by __main__.py, not user-configurable)
+    state_dir: str = Field(default="", exclude=True, description="Resolved state directory path")
 
     def resolve_primary_model(self, agent_id: Optional[str] = None) -> str:
         """
