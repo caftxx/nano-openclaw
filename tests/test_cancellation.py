@@ -20,6 +20,7 @@ from nano_openclaw.loop import (
     _build_memory_flush_prompt,
 )
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.session import TranscriptReader, load_session_store
 from nano_openclaw.session.transcript import TranscriptWriter
 from nano_openclaw.tools import Tool, ToolRegistry
 
@@ -101,10 +102,49 @@ def test_agent_session_cancellation_before_tool_dispatch_discards_turn(monkeypat
             asyncio.run(session.run_turn("run tool"))
 
         assert tool_called is False
-        assert history == []
-        assert writer.message_count == 0
-        # No messages were committed, so the file must not exist (lazy write).
-        assert not (tmp_dir / "session.jsonl").exists()
+        assert len(history) == 1
+        assert history[0].role == "user"
+        assert history[0].content[0]["text"] == "run tool"
+        assert writer.message_count == 1
+        assert (tmp_dir / "session.jsonl").exists()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_agent_session_success_does_not_duplicate_immediate_user_message(monkeypatch):
+    history: list[Message] = []
+    registry = ToolRegistry()
+    tmp_dir = Path("tests") / f".tmp-success-{uuid.uuid4().hex}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    async def fake_stream_response(**_kwargs):
+        yield TextDelta(text="reply")
+        yield MessageEnd(stop_reason="end_turn", usage={})
+
+    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+
+    try:
+        writer = TranscriptWriter(tmp_dir / "session.jsonl")
+        writer.start(model="test-model")
+        session = AgentSession(
+            history=history,
+            registry=registry,
+            on_event=lambda _event: None,
+            client=object(),
+            cfg=LoopConfig(),
+            transcript_writer=writer,
+        )
+
+        asyncio.run(session.run_turn("hello"))
+
+        assert [message.role for message in history] == ["user", "assistant"]
+        assert history[0].content[0]["text"] == "hello"
+        assert writer.message_count == 2
+        from nano_openclaw.session.transcript import TranscriptReader
+
+        loaded, _, msg_count, _, _ = TranscriptReader(tmp_dir / "session.jsonl").load_history()
+        assert msg_count == 2
+        assert [message.role for message in loaded] == ["user", "assistant"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -336,3 +376,49 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
     output = console.export_text()
     assert "turn cancelled" in output.lower()
     assert "error:" not in output.lower()
+
+
+def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
+    registry = ToolRegistry()
+    cfg = LoopConfig(model="test-model")
+    console = Console(record=True)
+    tmp_dir = Path("tests") / f".tmp-cli-cancel-{uuid.uuid4().hex}"
+    session_dir = tmp_dir / "sessions"
+    store_path = session_dir / "sessions.json"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    inputs = iter(["/new", "hello", "/quit"])
+
+    async def mock_repl_input(_console):
+        return next(inputs)
+
+    async def fake_stream_response(**_kwargs):
+        yield TextDelta(text="partial")
+        raise TurnCancelled()
+
+    try:
+        monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
+        monkeypatch.setattr("nano_openclaw.cli._repl_input", mock_repl_input)
+        monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+
+        asyncio.run(repl(
+            registry,
+            client=MagicMock(),
+            cfg=cfg,
+            session_dir=session_dir,
+            store_path=store_path,
+        ))
+
+        store = load_session_store(store_path)
+        assert len(store["sessions"]) == 1
+        session_id = next(iter(store["sessions"]))
+        assert store["sessions"][session_id]["message_count"] == 1
+        transcript_path = session_dir / f"{session_id}.jsonl"
+        assert transcript_path.exists()
+        history, _, msg_count, _, _ = TranscriptReader(transcript_path).load_history()
+        assert msg_count == 1
+        assert history[0].role == "user"
+        assert history[0].content[0]["text"] == "hello"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

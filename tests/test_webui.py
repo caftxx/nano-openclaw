@@ -166,14 +166,38 @@ def test_web_session_manager_create_select_clear():
         # get_or_load(None) must return the same pending session within this process.
         assert manager.get_or_load(None).session_id == session.session_id
 
-        # select() explicitly saves metadata, so the store is updated at that point.
+        # select() should not persist a blank pending session.
         loaded = manager.select(session.session_id)
         assert loaded.session_id == session.session_id
-        assert load_session_store(store_path)["lastSessionId"] == session.session_id
+        assert load_session_store(store_path)["lastSessionId"] is None
 
         cleared = asyncio.run(manager.clear(session.session_id))
         assert cleared.history == []
         assert cleared.writer.message_count == 0
+        assert load_session_store(store_path)["lastSessionId"] is None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_session_manager_keeps_multiple_pending_sessions_independent():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        first = manager.create()
+        second = manager.create()
+
+        assert manager.get_or_load(None).session_id == second.session_id
+
+        first.history.append(_message("user", "first prompt"))
+        first.writer.append_message(first.history[0])
+
+        store = load_session_store(store_path)
+        assert first.session_id in store["sessions"]
+        assert second.session_id not in store["sessions"]
+        assert manager.get_or_load(None).session_id == second.session_id
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -219,6 +243,8 @@ def test_web_run_turn_sends_stream_events_before_done(monkeypatch: pytest.Monkey
 
         event_types = [payload["type"] for payload in emitted]
         assert event_types.index("text.delta") < event_types.index("turn.done")
+        done = emitted[event_types.index("turn.done")]
+        assert done["session"]["active_turn_id"] is None
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -289,6 +315,109 @@ def test_web_run_turn_deny_emits_final_conclusion(monkeypatch: pytest.MonkeyPatc
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_web_run_turn_persists_two_new_sessions_concurrently(monkeypatch: pytest.MonkeyPatch):
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        first = manager.create()
+        second = manager.create()
+        runtime = SimpleNamespace(
+            cfg=LoopConfig(),
+            registry=ToolRegistry(),
+            client=object(),
+        )
+        emitted: list[dict] = []
+
+        async def fake_stream_response(**kwargs):
+            text = kwargs["messages"][-1]["content"][0]["text"]
+            await asyncio.sleep(0.01)
+            yield TextDelta(f"reply to {text}")
+            yield MessageEnd(stop_reason="end_turn", usage={})
+
+        async def send(payload):
+            emitted.append(payload)
+
+        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+
+        async def run_both():
+            await asyncio.gather(
+                _run_turn(
+                    runtime=runtime,
+                    manager=manager,
+                    send=send,
+                    approvals=WebApprovalBroker(send),
+                    active_tokens={},
+                    session_id=first.session_id,
+                    text="first",
+                    attachments=[],
+                ),
+                _run_turn(
+                    runtime=runtime,
+                    manager=manager,
+                    send=send,
+                    approvals=WebApprovalBroker(send),
+                    active_tokens={},
+                    session_id=second.session_id,
+                    text="second",
+                    attachments=[],
+                ),
+            )
+
+        asyncio.run(run_both())
+
+        store = load_session_store(store_path)
+        assert first.session_id in store["sessions"]
+        assert second.session_id in store["sessions"]
+        assert first.transcript_path.exists()
+        assert second.transcript_path.exists()
+        assert [message.role for message in first.history] == ["user", "assistant"]
+        assert [message.role for message in second.history] == ["user", "assistant"]
+        assert {item["session_id"] for item in manager.list()} == {first.session_id, second.session_id}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_run_turn_rejects_second_turn_for_same_active_session():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        session = manager.create()
+        session.active_turn_id = "turn-1"
+        runtime = SimpleNamespace(
+            cfg=LoopConfig(),
+            registry=ToolRegistry(),
+            client=object(),
+        )
+        emitted: list[dict] = []
+
+        async def send(payload):
+            emitted.append(payload)
+
+        asyncio.run(_run_turn(
+            runtime=runtime,
+            manager=manager,
+            send=send,
+            approvals=WebApprovalBroker(send),
+            active_tokens={},
+            session_id=session.session_id,
+            text="second",
+            attachments=[],
+        ))
+
+        assert emitted == [{
+            "type": "turn.error",
+            "session_id": session.session_id,
+            "message": "session already has an active turn",
+        }]
+        assert not session.transcript_path.exists()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_web_session_select_uses_store_id_not_transcript_header_id():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:
@@ -354,6 +483,34 @@ def test_web_session_list_uses_conversation_text_for_title_and_search():
         assert listed["title"] == "小番茄是什么星座"
         assert listed["preview"] == "我是双鱼座吗"
         assert "射手座" in listed["search_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_session_list_sorts_by_creation_time_not_completion_time():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        older = manager.create()
+        newer = manager.create()
+        older.created_at = 100
+        newer.created_at = 200
+
+        newer.history.append(_message("user", "newer created"))
+        newer.writer.append_message(newer.history[0])
+        manager.save_metadata(newer)
+
+        older.history.append(_message("user", "older created"))
+        older.writer.append_message(older.history[0])
+        manager.save_metadata(older)
+
+        listed = manager.list()
+
+        assert [item["session_id"] for item in listed] == [newer.session_id, older.session_id]
+        assert [item["created_at"] for item in listed] == [200, 100]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

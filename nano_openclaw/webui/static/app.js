@@ -212,6 +212,7 @@ function handleEvent(event) {
     case "chat.accepted":
       // Remove pending slash-command block if a skill was routed to the agent loop
       setSessionActiveTurn(event.session_id, event.turn_id);
+      renderSessions();
       updateSendBtn();
       if (!isCurrentSessionEvent(event)) break;
       document.querySelectorAll(".message.command.pending").forEach((el) => el.remove());
@@ -288,25 +289,19 @@ function handleEvent(event) {
       if (isCurrentSessionEvent(event)) {
         flushPendingText();
         finishActivity();
-        updateSendBtn();
-        if (state.assistantNode) {
-          if (!state._assistantRawText.trim()) {
-            state.assistantNode.closest(".message")?.remove();
-          } else {
-            state.assistantNode.innerHTML = renderMarkdown(state._assistantRawText);
-          }
-          state.assistantNode = null;
-        }
-        state._assistantRawText = "";
         state.currentSession = event.session || state.currentSession;
-        syncSessionActiveTurn(state.currentSession);
-        if (state.activityItems.length) addActivity(event.type, "Turn done", event);
+        if (state.currentSession) state.currentSession.active_turn_id = null;
+        state.assistantNode = null;
+        state._assistantRawText = "";
+        renderHistory();
+        updateSendBtn();
       }
       state.sessions = event.sessions || state.sessions;
       renderSessions();
       break;
     case "turn.cancelled":
       setSessionActiveTurn(event.session_id || state.sessionByTurn.get(event.turn_id), null);
+      renderSessions();
       if (isCurrentSessionEvent(event)) {
         finishActivity();
         updateSendBtn();
@@ -317,6 +312,7 @@ function handleEvent(event) {
       break;
     case "turn.error":
       if (event.session_id) setSessionActiveTurn(event.session_id, null);
+      renderSessions();
       if (isCurrentSessionEvent(event)) {
         finishActivity();
         updateSendBtn();
@@ -504,12 +500,16 @@ function renderSessions() {
   state.sessions
     .filter((s) => !query || sessionMatches(s, query))
     .forEach((session) => {
+      const isRunning = Boolean(state.activeTurnsBySession.get(session.session_id) || session.active_turn_id);
       const btn = document.createElement("button");
-      btn.className = `session-item ${state.currentSession?.session_id === session.session_id ? "active" : ""}`;
+      btn.className = `session-item ${state.currentSession?.session_id === session.session_id ? "active" : ""} ${isRunning ? "is-running" : ""}`;
       const startDate = session.created_at ? new Date(session.created_at * 1000).toLocaleDateString() : "";
       btn.innerHTML = `<span class="session-id">${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
         <span class="session-preview">${escapeHtml(session.preview || session.session_id.slice(0, 8))}</span>
-        <span class="session-meta">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}${startDate ? ` · ${startDate}` : ""}</span>`;
+        <span class="session-meta">
+          <span class="session-meta-text">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}${startDate ? ` · ${startDate}` : ""}</span>
+          ${isRunning ? `<span class="session-spinner" title="Processing" aria-label="Processing"></span>` : ""}
+        </span>`;
       btn.onclick = () => {
         send("session.select", { session_id: session.session_id });
         if (isMobileViewport()) closeDrawers();

@@ -175,7 +175,11 @@ async def repl(
                 new_path = session_dir / f"{session_id}.jsonl"
                 transcript_writer = TranscriptWriter(new_path)
                 transcript_writer.start(model=cfg.model)
-                # No store update here: deferred to first message via _update_session_metadata.
+                cfg.session_key = session_id
+                transcript_writer._on_first_write = (
+                    lambda _sp=store_path, _sid=session_id, _tw=transcript_writer, _model=cfg.model:
+                    _update_session_metadata(_sp, _sid, _tw, _model)
+                )
                 if _spawn_ctx is not None:
                     _spawn_ctx.requester_session_key = session_id
                 console.print(f"[dim]new session: {session_id[:8]}…[/]")
@@ -219,6 +223,7 @@ async def repl(
                         history.extend(new_history)
                         transcript_writer = new_writer
                         session_id = target_id
+                        cfg.session_key = session_id
                         if _spawn_ctx is not None:
                             _spawn_ctx.requester_session_key = session_id
                         _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
@@ -260,6 +265,7 @@ async def repl(
                             history.extend(new_history)
                             transcript_writer = new_writer
                             session_id = new_sid
+                            cfg.session_key = session_id
                             if _spawn_ctx is not None:
                                 _spawn_ctx.requester_session_key = session_id
                             _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)

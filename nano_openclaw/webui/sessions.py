@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -78,6 +80,7 @@ class WebSession:
     activities: list[dict[str, Any]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn_id: str | None = None
+    created_at: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -97,9 +100,12 @@ class WebSessionManager:
         self.cwd = cwd
         self._loaded: dict[str, WebSession] = {}
         self._summary_cache: dict[str, SessionSummary] = {}
-        # Tracks a session created in memory but not yet written to disk.
-        # Cleared once the session's first message is persisted.
-        self._pending_session_id: str | None = None
+        self._store_lock = threading.RLock()
+        # Tracks sessions created in memory but not yet written to disk.
+        # Each id is cleared independently once that session's first message
+        # is persisted, so multiple new WebUI sessions can coexist safely.
+        self._pending_session_ids: set[str] = set()
+        self._pending_session_order: list[str] = []
 
     def list(self) -> list[dict[str, Any]]:
         store = load_session_store(self.store_path)
@@ -109,6 +115,7 @@ class WebSessionManager:
             history, actual_msg_count, actual_comp_count = self._summary_history_and_counts(item.session_id)
             if actual_msg_count == 0:
                 continue
+            loaded_session = self._loaded.get(item.session_id)
             result.append({
                 "session_id": item.session_id,
                 "title": session_title(history, item.session_id[:8]),
@@ -120,7 +127,9 @@ class WebSessionManager:
                 "message_count": actual_msg_count,
                 "compaction_count": actual_comp_count,
                 "current": item.session_id == last_id,
+                "active_turn_id": loaded_session.active_turn_id if loaded_session else None,
             })
+        result.sort(key=lambda item: item.get("created_at", 0), reverse=True)
         return result
 
     def create(self) -> WebSession:
@@ -131,21 +140,22 @@ class WebSessionManager:
         session = WebSession(session_id=session_id, transcript_path=path, history=[], writer=writer)
         self._loaded[session_id] = session
         self._summary_cache.pop(session_id, None)
-        self._pending_session_id = session_id
+        self._mark_pending(session_id)
         # Persist to sessions.json only when the first message is written.
         def _on_first_write() -> None:
-            self._pending_session_id = None
+            self._unmark_pending(session_id)
             self.save_metadata(session)
         writer._on_first_write = _on_first_write
         return session
 
     def get_or_load(self, session_id: str | None = None) -> WebSession:
         if not session_id:
-            # Return the in-memory pending session before consulting the store so
-            # that repeated get_or_load(None) calls within the same process always
-            # return the same session, even before the first message is written.
-            if self._pending_session_id and self._pending_session_id in self._loaded:
-                return self._loaded[self._pending_session_id]
+            # Return the most recently created in-memory pending session before
+            # consulting the store. Explicit session_id lookups still bypass
+            # this and load/select the requested session.
+            pending = self._latest_pending_session()
+            if pending is not None:
+                return pending
             store = load_session_store(self.store_path)
             session_id = store.get("lastSessionId")
             if not session_id:
@@ -178,11 +188,12 @@ class WebSessionManager:
 
     def select(self, session_id: str) -> WebSession:
         session = self.get_or_load(session_id)
-        # Abandon any pending session that was never written — no file, no store entry.
-        if self._pending_session_id and self._pending_session_id != session.session_id:
-            self._loaded.pop(self._pending_session_id, None)
-            self._pending_session_id = None
-        self.save_metadata(session, update_time=False)
+        # Abandon other pending sessions only when they are truly blank and not
+        # running. A pending session that has an active turn will persist itself
+        # as soon as its first user message is written.
+        self._prune_blank_pending_sessions(except_session_id=session.session_id)
+        if self._is_persisted(session):
+            self.save_metadata(session, update_time=False)
         return session
 
     async def clear(self, session_id: str) -> WebSession:
@@ -198,21 +209,59 @@ class WebSessionManager:
         return session
 
     def save_metadata(self, session: WebSession, *, update_time: bool = True) -> None:
-        # If this is the pending session being explicitly saved, promote it now.
-        if self._pending_session_id == session.session_id:
-            self._pending_session_id = None
-            session.writer._on_first_write = None
-        store = load_session_store(self.store_path)
-        update_session(
-            store,
-            session.session_id,
-            model=self.model,
-            message_count=session.writer.message_count,
-            compaction_count=session.writer.compaction_count,
-            update_time=update_time,
-        )
-        save_session_store(self.store_path, store)
+        if not self._is_persisted(session):
+            return
+        self._unmark_pending(session.session_id)
+        session.writer._on_first_write = None
+        with self._store_lock:
+            store = load_session_store(self.store_path)
+            existed = session.session_id in store.get("sessions", {})
+            update_session(
+                store,
+                session.session_id,
+                model=self.model,
+                message_count=session.writer.message_count,
+                compaction_count=session.writer.compaction_count,
+                update_time=update_time,
+            )
+            if not existed:
+                store["sessions"][session.session_id]["created_at"] = session.created_at
+            save_session_store(self.store_path, store)
         self._summary_cache.pop(session.session_id, None)
+
+    def _mark_pending(self, session_id: str) -> None:
+        self._pending_session_ids.add(session_id)
+        self._pending_session_order = [sid for sid in self._pending_session_order if sid != session_id]
+        self._pending_session_order.append(session_id)
+
+    def _unmark_pending(self, session_id: str) -> None:
+        self._pending_session_ids.discard(session_id)
+        self._pending_session_order = [sid for sid in self._pending_session_order if sid != session_id]
+
+    def _latest_pending_session(self) -> WebSession | None:
+        for session_id in reversed(self._pending_session_order):
+            if session_id not in self._pending_session_ids:
+                continue
+            session = self._loaded.get(session_id)
+            if session is not None:
+                return session
+        return None
+
+    def _is_persisted(self, session: WebSession) -> bool:
+        return session.transcript_path.exists()
+
+    def _prune_blank_pending_sessions(self, *, except_session_id: str) -> None:
+        for session_id in list(self._pending_session_order):
+            if session_id == except_session_id or session_id not in self._pending_session_ids:
+                continue
+            session = self._loaded.get(session_id)
+            if session is None:
+                self._unmark_pending(session_id)
+                continue
+            if session.active_turn_id or self._is_persisted(session):
+                continue
+            self._loaded.pop(session_id, None)
+            self._unmark_pending(session_id)
 
     def history_json(self, session: WebSession) -> list[dict[str, Any]]:
         return [message_to_json(message) for message in session.history]

@@ -652,7 +652,9 @@ async def _run_agent_session_turn(
         cancellation_token if cancellation_token is not None else session.cancellation_token
     )
 
-    # The turn is built against a scratch history and committed only on success.
+    # User input is committed before the model call starts so a cancelled or
+    # failed turn still leaves a resumable session anchored by the submitted
+    # prompt. Assistant/tool messages are committed only after successful turns.
     scratch_history = list(history)
     pending_transcript_ops: list[tuple[str, Message | str]] = []
     loop_event_tasks: list[asyncio.Task] = []
@@ -700,8 +702,11 @@ async def _run_agent_session_turn(
         attachment_turn_id=attachment_turn_id,
     )
 
-    scratch_history.append(Message("user", content))
-    pending_transcript_ops.append(("message", scratch_history[-1]))
+    user_message = Message("user", content)
+    history.append(user_message)
+    if session.transcript_writer:
+        session.transcript_writer.append_message(user_message)
+    scratch_history.append(user_message)
 
     system = await session._build_system_for_turn(
         user_input,

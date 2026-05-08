@@ -574,6 +574,8 @@ async def _run_turn(
             session.activities.append(activity)
             session.writer.append_activity(activity)
         await event_queue.join()
+        if session.active_turn_id == turn_id:
+            session.active_turn_id = None
         await send({
             "type": "turn.done",
             "turn_id": turn_id,
@@ -582,8 +584,12 @@ async def _run_turn(
             "sessions": manager.list(),
         })
     except TurnCancelled:
+        if session.active_turn_id == turn_id:
+            session.active_turn_id = None
         await send({"type": "turn.cancelled", "turn_id": turn_id, "session_id": session.session_id})
     except Exception as exc:  # noqa: BLE001
+        if session.active_turn_id == turn_id:
+            session.active_turn_id = None
         await send({
             "type": "turn.error",
             "turn_id": turn_id,

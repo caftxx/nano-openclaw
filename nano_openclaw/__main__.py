@@ -231,10 +231,16 @@ async def _async_main(
         transcript_writer.start(model=model_id, cwd=str(workspace_dir))
         # Defer the sessions.json entry to the first actual message so sessions
         # with no messages leave neither a file nor a store entry behind.
-        _sid, _mid, _sp = session_id, model_id, store_path
+        _sid, _mid, _sp, _tw = session_id, model_id, store_path, transcript_writer
         def _persist_new_session() -> None:
             _store = load_session_store(_sp)
-            update_session(_store, _sid, model=_mid, message_count=0, compaction_count=0)
+            update_session(
+                _store,
+                _sid,
+                model=_mid,
+                message_count=_tw.message_count,
+                compaction_count=_tw.compaction_count,
+            )
             save_session_store(_sp, _store)
         transcript_writer._on_first_write = _persist_new_session
 
