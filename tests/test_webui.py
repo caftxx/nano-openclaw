@@ -28,6 +28,7 @@ from nano_openclaw.webui.server import (
     _read_user_name,
     _resolve_model_option,
     _run_turn,
+    _session_payload,
     _wire_spawn_context,
     _is_replayable_activity_payload,
     run_webui,
@@ -574,6 +575,36 @@ def test_web_session_list_uses_conversation_text_for_title_and_search():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_web_session_list_uses_stored_summary_without_reloading_transcript(monkeypatch: pytest.MonkeyPatch):
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        session = manager.create()
+        session.history.extend([
+            _message("user", "cached title"),
+            _message("assistant", "cached reply"),
+        ])
+        for message in session.history:
+            session.writer.append_message(message)
+        manager.save_metadata(session)
+        manager._loaded.clear()
+
+        def fail_read(_path):
+            raise AssertionError("list() should use sessions.json webui_summary")
+
+        monkeypatch.setattr(manager, "_read_transcript", fail_read)
+
+        listed = manager.list()
+
+        assert listed[0]["title"] == "cached title"
+        assert listed[0]["preview"] == "cached reply"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_web_session_display_hides_subagent_announcements():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:
@@ -606,6 +637,26 @@ def test_web_session_display_hides_subagent_announcements():
         assert listed["title"] == "please research this"
         assert listed["preview"] == "Here is the final answer."
         assert "raw child result" not in listed["search_text"]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_session_payload_truncates_long_history():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        session = manager.create()
+        for index in range(90):
+            session.history.append(_message("user", f"message {index}"))
+        payload = _session_payload(manager, session)
+
+        assert payload["history_truncated"] is True
+        assert payload["history_offset"] == 10
+        assert len(payload["history"]) == 80
+        assert payload["history"][0]["content"][0]["text"] == "message 10"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

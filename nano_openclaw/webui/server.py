@@ -54,6 +54,9 @@ from nano_openclaw.webui.runtime import AgentRuntime, build_agent_runtime, build
 from nano_openclaw.webui.sessions import WebSessionManager, display_history, message_text
 
 
+SESSION_PAYLOAD_HISTORY_LIMIT = 80
+SESSION_PAYLOAD_ACTIVITY_LIMIT = 120
+
 
 class ChatRequest(BaseModel):
     session_id: str | None = None
@@ -254,7 +257,7 @@ def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> 
                     except KeyError as exc:
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue
-                    await emit({"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()})
+                    await emit({"type": "session.updated", "session": _session_payload(manager, session)})
                 elif msg_type == "thinking.set":
                     req = ThinkingSetRequest(**message)
                     if req.level not in {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}:
@@ -726,15 +729,34 @@ def _jsonable(value: Any) -> Any:
 
 def _session_payload(manager: WebSessionManager, session: Any) -> dict[str, Any]:
     visible_history = display_history(session.history)
+    history_offset = max(0, len(visible_history) - SESSION_PAYLOAD_HISTORY_LIMIT)
+    payload_history = visible_history[history_offset:]
+    payload_activities = _recent_activity_json(manager, session, history_offset)
     return {
         "session_id": session.session_id,
         "message_count": session.writer.message_count,
         "compaction_count": session.writer.compaction_count,
         "active_turn_id": session.active_turn_id,
-        "history": manager.history_json(session),
-        "activities": manager.activity_json(session),
+        "history": [{"role": message.role, "content": message.content} for message in payload_history],
+        "history_offset": history_offset,
+        "history_truncated": history_offset > 0,
+        "activities": payload_activities,
         "preview": message_text(visible_history[-1])[:160] if visible_history else "",
     }
+
+
+def _recent_activity_json(manager: WebSessionManager, session: Any, history_offset: int) -> list[dict[str, Any]]:
+    activities = manager.activity_json(session)
+    recent = []
+    for activity in activities[-SESSION_PAYLOAD_ACTIVITY_LIMIT:]:
+        item = dict(activity)
+        insert_after_index = item.get("insert_after_index")
+        if isinstance(insert_after_index, int) and insert_after_index >= history_offset:
+            item["insert_after_index"] = insert_after_index - history_offset
+        elif history_offset > 0:
+            item["insert_after_index"] = -1
+        recent.append(item)
+    return recent
 
 
 def _state_payload(runtime: AgentRuntime) -> dict[str, Any]:

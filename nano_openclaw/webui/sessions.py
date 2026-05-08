@@ -124,15 +124,18 @@ class WebSessionManager:
         last_id = store.get("lastSessionId")
         result = []
         for item in list_sessions(store):
-            history, actual_msg_count, actual_comp_count = self._summary_history_and_counts(item.session_id)
+            path = self.session_dir / f"{item.session_id}.jsonl"
+            if item.session_id not in self._loaded and not path.exists():
+                continue
+            history, actual_msg_count, actual_comp_count, stored_summary = self._summary_for_list(store, item.session_id)
             if actual_msg_count == 0:
                 continue
             loaded_session = self._loaded.get(item.session_id)
             result.append({
                 "session_id": item.session_id,
-                "title": session_title(history, item.session_id[:8]),
-                "preview": session_preview(history),
-                "search_text": session_search_text(history),
+                "title": stored_summary.get("title") or session_title(history, item.session_id[:8]),
+                "preview": stored_summary.get("preview") or session_preview(history),
+                "search_text": stored_summary.get("search_text") or session_search_text(history),
                 "created_at": item.created_at,
                 "updated_at": item.updated_at,
                 "model": item.model,
@@ -238,6 +241,10 @@ class WebSessionManager:
             )
             if not existed:
                 store["sessions"][session.session_id]["created_at"] = session.created_at
+            store["sessions"][session.session_id]["webui_summary"] = _session_summary_metadata(
+                session.history,
+                fallback=session.session_id[:8],
+            )
             save_session_store(self.store_path, store)
         self._summary_cache.pop(session.session_id, None)
 
@@ -280,6 +287,27 @@ class WebSessionManager:
 
     def activity_json(self, session: WebSession) -> list[dict[str, Any]]:
         return [_jsonable_activity(activity) for activity in session.activities]
+
+    def _summary_for_list(self, store: dict[str, Any], session_id: str) -> tuple[list[Message], int, int, dict[str, Any]]:
+        entry = store.get("sessions", {}).get(session_id, {})
+        stored_summary = entry.get("webui_summary") if isinstance(entry, dict) else None
+        if isinstance(stored_summary, dict):
+            loaded_session = self._loaded.get(session_id)
+            if loaded_session:
+                return (
+                    [],
+                    loaded_session.writer.message_count,
+                    loaded_session.writer.compaction_count,
+                    stored_summary,
+                )
+            return (
+                [],
+                int(entry.get("message_count", 0) or 0),
+                int(entry.get("compaction_count", 0) or 0),
+                stored_summary,
+            )
+        history, msg_count, comp_count = self._summary_history_and_counts(session_id)
+        return history, msg_count, comp_count, {}
 
     def _summary_history_and_counts(self, session_id: str) -> tuple[list[Message], int, int]:
         if session_id in self._loaded:
@@ -360,3 +388,11 @@ def _read_activity_entries(path: Path) -> list[dict[str, Any]]:
 
 def _jsonable_activity(activity: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(activity, ensure_ascii=False, default=str))
+
+
+def _session_summary_metadata(history: list[Message], *, fallback: str) -> dict[str, str]:
+    return {
+        "title": session_title(history, fallback),
+        "preview": session_preview(history),
+        "search_text": session_search_text(history),
+    }
