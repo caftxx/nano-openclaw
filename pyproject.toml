@@ -21,6 +21,7 @@ dependencies = [
     "readability-lxml>=0.8",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "cryptography>=42.0",
 ]
 
 [project.scripts]

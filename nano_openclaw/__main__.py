@@ -82,7 +82,20 @@ def main() -> None:
     web_parser.add_argument("--token", metavar="TOKEN", default=None,
                             help="Bearer token for API authentication")
 
+    wechat_parser = subparsers.add_parser("wechat", help="Start WeChat bot (iLink)", parents=[_common])
+    wechat_parser.add_argument("--token", metavar="TOKEN", default=None,
+                               help="iLink bot token (overrides config and ILINK_TOKEN env)")
+
     args = parser.parse_args()
+
+    if args.command == "wechat":
+        from nano_openclaw.wechat.bot import run_wechat_bot
+        asyncio.run(run_wechat_bot(
+            config_path=args.config,
+            agent_id=args.agent or "wechat",
+            token_override=args.token,
+        ))
+        return
 
     if args.command == "web":
         from nano_openclaw.webui.server import main as web_main

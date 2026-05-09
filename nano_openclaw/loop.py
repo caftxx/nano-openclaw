@@ -478,6 +478,16 @@ class AgentSession:
                             ref=attachment.name,
                             reason="model has no vision capability and no image_model configured",
                         ))
+                        content.append({
+                            "type": "text",
+                            "text": (
+                                f"[Image: {attachment.name}]\n"
+                                f"type: {attachment.mime}\n"
+                                f"size: {attachment.size} bytes\n\n"
+                                "The user sent an image but the current model cannot view it. "
+                                "Let the user know you received it and ask them to describe it if needed."
+                            ),
+                        })
                     uploaded_image_refs.append(attachment.name)
                 except Exception as exc:
                     on_event(ImageError(ref=attachment.name, error=str(exc)))

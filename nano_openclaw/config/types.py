@@ -427,6 +427,16 @@ class ScheduleConfigInput(BaseModel):
     missedJobsLimit: int = Field(default=5, ge=1, le=50, description="Max missed jobs to run immediately on startup")
 
 
+class WechatConfig(BaseModel):
+    """WeChat bot configuration via iLink API."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    ilink_token: str = Field(default="", description="iLink bot token (or ILINK_TOKEN env var)")
+    ilink_base_url: str = Field(default="https://ilinkai.weixin.qq.com", description="iLink API base URL")
+    poll_timeout: int = Field(default=35, ge=5, le=120, description="Long-poll timeout in seconds")
+    typing_interval: int = Field(default=5, ge=1, le=30, description="Typing indicator renewal interval in seconds")
+
+
 class SubagentConfigInput(BaseModel):
     """Subagent configuration, aligns with openclaw agents.defaults.subagents."""
     model_config = ConfigDict(populate_by_name=True)
@@ -593,6 +603,10 @@ class NanoOpenClawConfig(BaseModel):
     schedule: ScheduleConfigInput = Field(
         default_factory=ScheduleConfigInput,
         description="Cron schedule configuration"
+    )
+    wechat: WechatConfig = Field(
+        default_factory=WechatConfig,
+        description="WeChat bot configuration (iLink API)"
     )
     # Runtime-resolved state directory (set by __main__.py, not user-configurable)
     state_dir: str = Field(default="", exclude=True, description="Resolved state directory path")
