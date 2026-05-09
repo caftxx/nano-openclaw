@@ -58,31 +58,31 @@ def _clone_registry(registry: ToolRegistry, uid: str) -> ToolRegistry:
 
     # Wrap cron_create to auto-bind created_by and enable notification
     if "cron_create" in clone._tools:
-        original = clone._tools["cron_create"]
+        cron_create = clone._tools["cron_create"]
         def wrapped_run(args: dict[str, Any]) -> str:
             args["created_by"] = f"wechat:{uid}"
             args.setdefault("notify_wechat", True)  # 微信创建默认开启通知
-            return original.run(args)
+            return cron_create.run(args)
 
         clone._tools["cron_create"] = Tool(
             name="cron_create",
-            description=original.description,
-            input_schema=original.input_schema,
+            description=cron_create.description,
+            input_schema=cron_create.input_schema,
             run=wrapped_run,
         )
 
     # Wrap schedule_wakeup similarly
     if "schedule_wakeup" in clone._tools:
-        original = clone._tools["schedule_wakeup"]
+        schedule_wakeup = clone._tools["schedule_wakeup"]
         def wrapped_wakeup(args: dict[str, Any]) -> str:
             args["created_by"] = f"wechat:{uid}"
             args.setdefault("notify_wechat", True)
-            return original.run(args)
+            return schedule_wakeup.run(args)
 
         clone._tools["schedule_wakeup"] = Tool(
             name="schedule_wakeup",
-            description=original.description,
-            input_schema=original.input_schema,
+            description=schedule_wakeup.description,
+            input_schema=schedule_wakeup.input_schema,
             run=wrapped_wakeup,
         )
 
