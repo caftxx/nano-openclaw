@@ -63,7 +63,7 @@ def test_streamable_http_uses_current_module_and_three_value_client(monkeypatch)
     assert ready.is_set()
 
 
-def test_run_server_signals_ready_when_connection_fails(capsys, monkeypatch):
+def test_run_server_signals_ready_when_connection_fails(caplog, monkeypatch):
     runtime = McpRuntime()
     ready = threading.Event()
     cfg = McpServerConfig(command="missing-command", connectionTimeoutMs=500)
@@ -76,4 +76,4 @@ def test_run_server_signals_ready_when_connection_fails(capsys, monkeypatch):
     asyncio.run(runtime._run_server("broken", cfg, ready))
 
     assert ready.is_set()
-    assert "server 'broken' connection failed: boom" in capsys.readouterr().err
+    assert "server 'broken' connection failed: boom" in caplog.text
