@@ -17,6 +17,11 @@ class CronJob:
     created_at: str       # ISO datetime string
     one_shot: bool = False
     fire_at_ms: int | None = None  # one-shot absolute fire time in epoch-ms
+    # 通知相关字段
+    created_by: str = ""  # 创建者标识: "cli" / "webui:session-id" / "wechat:uid"
+    notify_wechat: bool = False
+    notify_on_success: bool = True
+    notify_on_error: bool = True
 
 
 @dataclass

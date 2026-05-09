@@ -262,6 +262,33 @@ async def _execute_job(
         elapsed_ms=elapsed_ms,
     ))
 
+    # ── Directed WeChat notification ────────────────────────────────────────────
+
+    if job.notify_wechat and job.created_by.startswith("wechat:"):
+        target_uid = job.created_by.split(":", 1)[1]
+        should_notify = (status == "ok" and job.notify_on_success) or \
+                        (status == "error" and job.notify_on_error)
+        if should_notify:
+            from nano_openclaw.wechat.notify import NotifyQueue, NotifyItem
+            # notify-queue.jsonl is at stateDir level (parent of session_dir)
+            notify_path = session_dir.parent / "notify-queue.jsonl"
+            queue = NotifyQueue(notify_path)
+
+            summary = f"定时任务「{job.name}」执行完成\n状态: {status}\n耗时: {elapsed_ms}ms"
+            if error:
+                summary += f"\n错误: {error}"
+
+            queue.append(NotifyItem(
+                job_id=job.id,
+                job_name=job.name,
+                status=status,
+                result_summary=summary,
+                created_at=ended_at.isoformat(),
+                target_uid=target_uid,
+                sent=False,
+            ))
+            log.info("cron.notify.queued", f"Notification queued for {target_uid:.16} (job={job.name})")
+
 
 # ── Next-run calculation ──────────────────────────────────────────────────────
 

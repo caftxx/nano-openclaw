@@ -30,6 +30,10 @@ def _cron_create_tool(store: CronStore) -> Tool:
         expression = args.get("schedule", "").strip()
         prompt = args.get("prompt", "").strip()
         enabled = bool(args.get("enabled", True))
+        created_by = args.get("created_by", "cli").strip()
+        notify_wechat = bool(args.get("notify_wechat", False))
+        notify_on_success = bool(args.get("notify_on_success", True))
+        notify_on_error = bool(args.get("notify_on_error", True))
 
         if not name:
             return "Error: 'name' is required"
@@ -55,6 +59,10 @@ def _cron_create_tool(store: CronStore) -> Tool:
             prompt=prompt,
             enabled=enabled,
             created_at=datetime.now().isoformat(),
+            created_by=created_by,
+            notify_wechat=notify_wechat,
+            notify_on_success=notify_on_success,
+            notify_on_error=notify_on_error,
         )
         store.add_job(job)
 
@@ -63,12 +71,16 @@ def _cron_create_tool(store: CronStore) -> Tool:
         store.update_state(state)
 
         next_run_str = nxt.strftime("%Y-%m-%d %H:%M")
+        notify_str = ""
+        if notify_wechat:
+            notify_str = f"\nWeChat通知: 启用 (成功: {notify_on_success}, 失败: {notify_on_error})"
         return (
             f"Cron job created.\n"
             f"ID: {job_id}\n"
             f"Name: {name}\n"
             f"Schedule: {expression}\n"
             f"Next run: {next_run_str}"
+            f"{notify_str}"
         )
 
     return Tool(
@@ -78,7 +90,9 @@ def _cron_create_tool(store: CronStore) -> Tool:
             "background agent on the specified cron schedule. "
             "Supports 'minute hour * * *' format (day/month/weekday must be '*'). "
             "Examples: '0 9 * * *' (daily 9am), '*/30 * * * *' (every 30 min), "
-            "'0 */6 * * *' (every 6 hours)."
+            "'0 */6 * * *' (every 6 hours). "
+            "Use created_by to bind the job to a specific user for notification routing. "
+            "Use notify_wechat to enable WeChat push notification on completion."
         ),
         input_schema={
             "type": "object",
@@ -96,6 +110,26 @@ def _cron_create_tool(store: CronStore) -> Tool:
                     "type": "boolean",
                     "default": True,
                     "description": "Whether the job is active",
+                },
+                "created_by": {
+                    "type": "string",
+                    "default": "cli",
+                    "description": "Creator identifier for notification routing (e.g. 'wechat:uid')",
+                },
+                "notify_wechat": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Send WeChat notification on job completion",
+                },
+                "notify_on_success": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Notify on successful execution",
+                },
+                "notify_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Notify on execution error",
                 },
             },
             "required": ["name", "schedule", "prompt"],
@@ -184,6 +218,10 @@ def _schedule_wakeup_tool(store: CronStore) -> Tool:
         delay_seconds = args.get("delay_seconds")
         prompt = args.get("prompt", "").strip()
         reason = args.get("reason", "").strip()
+        created_by = args.get("created_by", "cli").strip()
+        notify_wechat = bool(args.get("notify_wechat", False))
+        notify_on_success = bool(args.get("notify_on_success", True))
+        notify_on_error = bool(args.get("notify_on_error", True))
 
         if delay_seconds is None:
             return "Error: 'delay_seconds' is required"
@@ -209,6 +247,10 @@ def _schedule_wakeup_tool(store: CronStore) -> Tool:
             created_at=datetime.now().isoformat(),
             one_shot=True,
             fire_at_ms=fire_at_ms,
+            created_by=created_by,
+            notify_wechat=notify_wechat,
+            notify_on_success=notify_on_success,
+            notify_on_error=notify_on_error,
         )
         store.add_job(job)
 
@@ -216,11 +258,15 @@ def _schedule_wakeup_tool(store: CronStore) -> Tool:
         store.update_state(state)
 
         fire_dt = datetime.fromtimestamp(fire_at_ms / 1000)
+        notify_str = ""
+        if notify_wechat:
+            notify_str = f"\nWeChat通知: 启用"
         return (
             f"One-shot task scheduled.\n"
             f"ID: {job_id}\n"
             f"Fire at: {fire_dt.strftime('%Y-%m-%d %H:%M:%S')} "
             f"(in ~{delay_seconds}s)"
+            f"{notify_str}"
         )
 
     return Tool(
@@ -229,7 +275,9 @@ def _schedule_wakeup_tool(store: CronStore) -> Tool:
             "Schedule a one-shot task to run after a delay. "
             "The prompt runs once as a background agent, then the job is removed. "
             "Minimum delay is 60 seconds. Useful for self-pacing within a /loop "
-            "or deferring work to a future time."
+            "or deferring work to a future time. "
+            "Use created_by to bind the job to a specific user for notification routing. "
+            "Use notify_wechat to enable WeChat push notification on completion."
         ),
         input_schema={
             "type": "object",
@@ -245,6 +293,26 @@ def _schedule_wakeup_tool(store: CronStore) -> Tool:
                 "reason": {
                     "type": "string",
                     "description": "Optional short label explaining why (used as job name)",
+                },
+                "created_by": {
+                    "type": "string",
+                    "default": "cli",
+                    "description": "Creator identifier for notification routing (e.g. 'wechat:uid')",
+                },
+                "notify_wechat": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Send WeChat notification on completion",
+                },
+                "notify_on_success": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Notify on successful execution",
+                },
+                "notify_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Notify on execution error",
                 },
             },
             "required": ["delay_seconds", "prompt"],

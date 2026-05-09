@@ -435,6 +435,9 @@ class WechatConfig(BaseModel):
     ilink_base_url: str = Field(default="https://ilinkai.weixin.qq.com", description="iLink API base URL")
     poll_timeout: int = Field(default=35, ge=5, le=120, description="Long-poll timeout in seconds")
     typing_interval: int = Field(default=5, ge=1, le=30, description="Typing indicator renewal interval in seconds")
+    # Notification queue settings
+    notify_queue_path: str = Field(default="", description="Path to notify-queue.jsonl (default: {stateDir}/notify-queue.jsonl)")
+    notify_poll_interval: int = Field(default=30, ge=5, le=300, description="Notification queue poll interval in seconds")
 
 
 class LoggingConfig(BaseModel):

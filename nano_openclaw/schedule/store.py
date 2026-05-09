@@ -130,6 +130,10 @@ def _job_from_dict(d: dict) -> CronJob:
         created_at=d.get("created_at", ""),
         one_shot=d.get("one_shot", False),
         fire_at_ms=d.get("fire_at_ms"),
+        created_by=d.get("created_by", ""),
+        notify_wechat=d.get("notify_wechat", False),
+        notify_on_success=d.get("notify_on_success", True),
+        notify_on_error=d.get("notify_on_error", True),
     )
 
 

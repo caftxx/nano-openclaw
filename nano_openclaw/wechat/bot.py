@@ -4,6 +4,9 @@ Connects to iLink WeChat API via long-polling and routes each message through
 AgentSession.run_turn(), sending the reply back via iLink.
 
 Each WeChat user gets an isolated history list (per-user session).
+
+Supports directed notifications: scheduled jobs created via WeChat will notify
+the creator when completed.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from nano_openclaw.attachments import PromptAttachment
 from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import AgentSession, TextDelta
 from nano_openclaw.runtime import AgentRuntime, build_agent_runtime
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.tools import ToolRegistry, Tool
 from nano_openclaw.wechat.ilink import (
     download_wechat_file,
     download_wechat_image,
@@ -32,11 +35,13 @@ from nano_openclaw.wechat.ilink import (
     send_text,
     send_typing,
 )
+from nano_openclaw.wechat.notify import NotifyQueue, NotifyItem
 
 log = get_logger(__name__)
 
 
-def _clone_registry(registry: ToolRegistry) -> ToolRegistry:
+def _clone_registry(registry: ToolRegistry, uid: str) -> ToolRegistry:
+    """Clone registry and inject uid into cron_create tool for directed notifications."""
     clone = ToolRegistry(
         _tools=dict(registry._tools),
         approval_manager=registry.approval_manager,
@@ -50,6 +55,37 @@ def _clone_registry(registry: ToolRegistry) -> ToolRegistry:
     hook_reg = registry.hook_registry()
     if hook_reg is not None:
         clone.set_hook_registry(hook_reg)
+
+    # Wrap cron_create to auto-bind created_by and enable notification
+    if "cron_create" in clone._tools:
+        original = clone._tools["cron_create"]
+        def wrapped_run(args: dict[str, Any]) -> str:
+            args["created_by"] = f"wechat:{uid}"
+            args.setdefault("notify_wechat", True)  # 微信创建默认开启通知
+            return original.run(args)
+
+        clone._tools["cron_create"] = Tool(
+            name="cron_create",
+            description=original.description,
+            input_schema=original.input_schema,
+            run=wrapped_run,
+        )
+
+    # Wrap schedule_wakeup similarly
+    if "schedule_wakeup" in clone._tools:
+        original = clone._tools["schedule_wakeup"]
+        def wrapped_wakeup(args: dict[str, Any]) -> str:
+            args["created_by"] = f"wechat:{uid}"
+            args.setdefault("notify_wechat", True)
+            return original.run(args)
+
+        clone._tools["schedule_wakeup"] = Tool(
+            name="schedule_wakeup",
+            description=original.description,
+            input_schema=original.input_schema,
+            run=wrapped_wakeup,
+        )
+
     return clone
 
 
@@ -60,6 +96,8 @@ class WechatBot:
     token: str
     poll_timeout: int = 35
     typing_interval: int = 5
+    notify_queue: NotifyQueue | None = None
+    notify_poll_interval: int = 30
     # uid -> history list (in-memory per-user session)
     _sessions: dict[str, list[Any]] = field(default_factory=dict)
 
@@ -67,6 +105,31 @@ class WechatBot:
         if uid not in self._sessions:
             self._sessions[uid] = []
         return self._sessions[uid]
+
+    async def _poll_notifications(self) -> None:
+        """Poll notify-queue and send directed notifications to creators."""
+        if not self.notify_queue:
+            return
+
+        while True:
+            await asyncio.sleep(self.notify_poll_interval)
+
+            pending = self.notify_queue.get_pending(limit=10)
+            if not pending:
+                continue
+
+            async with httpx.AsyncClient() as client:
+                for item in pending:
+                    target_uid = item.target_uid
+                    if not target_uid:
+                        continue
+                    try:
+                        await send_text(client, self.base_url, self.token, target_uid, item.result_summary)
+                        log.info("wechat.notify.sent", f"notification sent to {target_uid:.16} for job {item.job_name}")
+                    except Exception as exc:
+                        log.warning("wechat.notify.failed", f"send notification to {target_uid:.16} failed: {exc}")
+
+                    self.notify_queue.mark_sent(item.job_id, item.created_at)
 
     async def _handle_slash_command(self, uid: str, cmd: str) -> str | None:
         """Handle slash commands like /clear, /help, /tools, etc.
@@ -225,6 +288,10 @@ class WechatBot:
         """Main long-poll loop. Runs until cancelled."""
         buf = ""
         log.info("wechat.start", f"WeChat bot started (base_url={self.base_url})")
+
+        # Start notification polling task
+        notify_task = asyncio.create_task(self._poll_notifications())
+
         async with httpx.AsyncClient() as client:
             while True:
                 try:
@@ -243,6 +310,11 @@ class WechatBot:
                     log.warning("wechat.poll.error", f"iLink HTTP error {exc.response.status_code}, backing off")
                     await asyncio.sleep(10)
                 except asyncio.CancelledError:
+                    notify_task.cancel()
+                    try:
+                        await notify_task
+                    except BaseException:
+                        pass
                     raise
                 except Exception as exc:
                     log.warning("wechat.poll.error", f"poll error: {exc}, backing off")
@@ -350,7 +422,7 @@ class WechatBot:
             try:
                 agent_session = AgentSession(
                     history=history,
-                    registry=_clone_registry(self.runtime.registry),
+                    registry=_clone_registry(self.runtime.registry, uid),
                     on_event=on_event,
                     client=self.runtime.client,
                     cfg=self.runtime.cfg,
@@ -382,6 +454,7 @@ async def run_wechat_bot(
 ) -> None:
     """Entry point called from __main__.py for the `wechat` subcommand."""
     from rich.console import Console
+    from pathlib import Path
 
     console = Console()
     runtime = await build_agent_runtime(
@@ -405,15 +478,28 @@ async def run_wechat_bot(
         return
 
     base_url = cfg.ilink_base_url
+
+    # Initialize notification queue
+    notify_path_str = cfg.notify_queue_path or ""
+    if notify_path_str:
+        notify_path = Path(notify_path_str)
+    else:
+        notify_path = runtime.state_dir / "notify-queue.jsonl"
+    notify_queue = NotifyQueue(notify_path)
+    notify_poll_interval = cfg.notify_poll_interval or 30
+
     bot = WechatBot(
         runtime=runtime,
         base_url=base_url,
         token=token,
         poll_timeout=cfg.poll_timeout,
         typing_interval=cfg.typing_interval,
+        notify_queue=notify_queue,
+        notify_poll_interval=notify_poll_interval,
     )
 
     console.print(f"[green]WeChat bot running[/green] (agent={agent_id}, url={base_url})")
+    console.print(f"[green]Notification queue[/green] at {notify_path}")
     try:
         await bot.run()
     finally:
