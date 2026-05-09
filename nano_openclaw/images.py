@@ -73,7 +73,7 @@ _LOCAL_PATH = re.compile(
 # ---------------------------------------------------------------------------
 
 
-def parse_image_refs(text: str) -> tuple[str, list[str]]:
+def parse_image_refs(text: str, workspace_dir: Path | None = None) -> tuple[str, list[str]]:
     """Extract image references from user text.
 
     Returns (cleaned_text, refs) where refs are paths/URLs in detection order
@@ -90,7 +90,7 @@ def parse_image_refs(text: str) -> tuple[str, list[str]]:
         if not _is_safe_ref(raw):
             continue
         path = Path(raw)
-        resolved = str(path if path.is_absolute() else Path(os.getcwd()) / path)
+        resolved = str(path if path.is_absolute() else (workspace_dir or Path(os.getcwd())) / path)
         if resolved not in refs:
             refs.append(resolved)
     text = _AT_IMAGE.sub("", text)

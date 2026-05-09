@@ -228,8 +228,7 @@ def build_system_prompt(
         Complete system prompt string
     """
     runtime_lines = [
-        f"- cwd: {os.getcwd()}",
-        f"- workspace: {workspace_dir}" if workspace_dir else None,
+        f"- cwd: {str(workspace_dir) if workspace_dir else os.getcwd()}",
         f"- platform: {platform.system()} ({platform.release()})",
     ]
     runtime_lines = [l for l in runtime_lines if l is not None]

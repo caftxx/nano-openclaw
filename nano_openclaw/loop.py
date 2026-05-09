@@ -419,7 +419,7 @@ class AgentSession:
             content.append({"type": "text", "text": skill_context})
             on_event(SkillInvoked(skill_name=command.name, skill_path=command.skill.filePath))
 
-        cleaned_text, image_refs = parse_image_refs(remaining_text)
+        cleaned_text, image_refs = parse_image_refs(remaining_text, workspace_dir=self.cfg.workspace_dir)
         loaded_refs: list[str] = []
         for ref in image_refs:
             try:

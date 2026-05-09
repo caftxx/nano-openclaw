@@ -25,6 +25,7 @@ def load_plugins(
     config: PluginsConfig,
     tool_registry: ToolRegistry,
     nano_config: NanoOpenClawConfig,
+    base_dir: Path | None = None,
 ) -> HookRegistry:
     """Load configured plugins and return their hook registry."""
     hook_registry = HookRegistry()
@@ -34,7 +35,7 @@ def load_plugins(
         return hook_registry
 
     for entry in config.load:
-        plugin = _resolve_plugin(entry)
+        plugin = _resolve_plugin(entry, base_dir=base_dir)
         before_tools = set(tool_registry.names())
         before_hooks = hook_registry.handler_counts()
         before_hook_ids = {
@@ -101,7 +102,7 @@ def _entry_label(entry: str | PluginEntryConfig) -> str:
     return "(unknown)"
 
 
-def _resolve_plugin(entry: str | PluginEntryConfig) -> Any:
+def _resolve_plugin(entry: str | PluginEntryConfig, base_dir: Path | None = None) -> Any:
     if isinstance(entry, str):
         if entry in BUILTIN_PLUGINS:
             return _load_object(BUILTIN_PLUGINS[entry])
@@ -110,7 +111,7 @@ def _resolve_plugin(entry: str | PluginEntryConfig) -> Any:
     if entry.module:
         return _load_from_module(entry.module)
     if entry.path:
-        return _load_from_path(entry.path)
+        return _load_from_path(entry.path, base_dir=base_dir)
     raise ValueError("plugin entry requires 'module' or 'path'")
 
 
@@ -134,10 +135,10 @@ def _load_from_module(module_name: str) -> Any:
     raise ValueError(f"plugin module {module_name!r} must export plugin, Plugin, or get_plugin()")
 
 
-def _load_from_path(path: str) -> Any:
+def _load_from_path(path: str, base_dir: Path | None = None) -> Any:
     plugin_path = Path(path).expanduser()
     if not plugin_path.is_absolute():
-        plugin_path = Path.cwd() / plugin_path
+        plugin_path = (base_dir or Path.cwd()) / plugin_path
     spec = importlib.util.spec_from_file_location(f"nano_openclaw_external_plugin_{plugin_path.stem}", plugin_path)
     if spec is None or spec.loader is None:
         raise ValueError(f"cannot load plugin from path: {plugin_path}")
