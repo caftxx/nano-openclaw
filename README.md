@@ -138,7 +138,7 @@ NANO_LOG_LEVEL=DEBUG uv run python -m nano_openclaw
 - Gzip 压缩（旧日志自动压缩）
 - 上下文注入（session_id、run_id、tool_call_id 自动关联）
 
-日志等级：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`（默认 `INFO`）。
+日志等级：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`（默认 `WARNING`）。
 
 ---
 
