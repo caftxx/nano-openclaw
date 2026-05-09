@@ -15,9 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from nano_openclaw.logger import get_logger
 from nano_openclaw.memory.dreaming import _last_cron_occurrence, _next_cron_occurrence
 from nano_openclaw.schedule.store import CronStore
 from nano_openclaw.schedule.types import CronJob, CronJobState, CronRunRecord
+
+log = get_logger(__name__)
 
 
 def start_cron_scheduler(
@@ -183,6 +186,7 @@ async def _execute_job(
     run_id = str(uuid.uuid4())
     started_at = datetime.now()
     started_ms = int(started_at.timestamp() * 1000)
+    log.info("cron.job.start", f"Cron job '{job.name}' ({job.id[:8]}) started")
 
     # Mark running
     states = store.load_state()
@@ -223,6 +227,7 @@ async def _execute_job(
 
     ended_at = datetime.now()
     elapsed_ms = int((ended_at - started_at).total_seconds() * 1000)
+    log.info("cron.job.complete", f"Cron job '{job.name}' ({job.id[:8]}) completed: status={status}, elapsed={elapsed_ms}ms")
 
     # Update state
     states = store.load_state()

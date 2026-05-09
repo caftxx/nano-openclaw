@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from nano_openclaw.attachments import AttachmentAttached, AttachmentError, decode_attachment_payloads
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
+from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import (
     ActiveMemoryRecall,
     CancellationToken,
@@ -56,6 +57,8 @@ from nano_openclaw.webui.sessions import WebSessionManager, display_history, mes
 
 SESSION_PAYLOAD_HISTORY_LIMIT = 80
 SESSION_PAYLOAD_ACTIVITY_LIMIT = 120
+
+logger = get_logger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -527,6 +530,8 @@ async def _run_turn(
                 event_queue.task_done()
 
     def on_event(event: Any) -> None:
+        event_type = type(event).__name__
+        logger.debug("event.received", "", event_type=event_type)
         payload = _event_to_payload(event, turn_id, session.session_id)
         if _is_replayable_activity_payload(payload):
             activity_payloads.append(payload)

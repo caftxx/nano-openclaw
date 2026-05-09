@@ -13,6 +13,10 @@ from typing import Any
 
 import httpx
 
+from nano_openclaw.logger import get_logger
+
+log = get_logger(__name__)
+
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
@@ -73,6 +77,7 @@ async def get_updates(
             timeout=timeout + 5,
         )
     except httpx.TimeoutException:
+        log.warning("ilink.get_updates.timeout", "get_updates request timed out")
         return {"ret": 0, "msgs": [], "get_updates_buf": buf}
 
 
@@ -200,8 +205,9 @@ async def download_wechat_image(
     try:
         decrypted = _decrypt_wechat_media(encrypted_data, aeskey)
         return decrypted, mime
-    except Exception:
+    except Exception as e:
         # If decryption fails, return raw data (might already be unencrypted)
+        log.warning("ilink.image.decrypt.error", f"Image decryption failed: {e}")
         return encrypted_data, mime
 
 
@@ -226,7 +232,8 @@ async def download_wechat_file(
         try:
             # Decode base64 -> hex string like "f25e0b8d..."
             aeskey_hex = base64.b64decode(aes_key_b64).decode()
-        except Exception:
+        except Exception as e:
+            log.warning("ilink.file.aeskey.error", f"Failed to decode aes_key: {e}")
             pass
 
     url = file_item.get("file_url") or file_item.get("media", {}).get("full_url", "")
@@ -259,7 +266,8 @@ async def download_wechat_file(
     if aeskey_hex:
         try:
             data = _decrypt_wechat_media(data, aeskey_hex)
-        except Exception:
+        except Exception as e:
+            log.warning("ilink.file.decrypt.error", f"File decryption failed: {e}")
             pass  # Keep raw data if decryption fails
 
     # Detect PDF from content (fix mime if needed)

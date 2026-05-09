@@ -437,6 +437,16 @@ class WechatConfig(BaseModel):
     typing_interval: int = Field(default=5, ge=1, le=30, description="Typing indicator renewal interval in seconds")
 
 
+class LoggingConfig(BaseModel):
+    """Structured JSON Lines logging configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    level: str = Field(
+        default="warning",
+        description="Log level: debug|info|warning|error|critical",
+    )
+
+
 class SubagentConfigInput(BaseModel):
     """Subagent configuration, aligns with openclaw agents.defaults.subagents."""
     model_config = ConfigDict(populate_by_name=True)
@@ -607,6 +617,10 @@ class NanoOpenClawConfig(BaseModel):
     wechat: WechatConfig = Field(
         default_factory=WechatConfig,
         description="WeChat bot configuration (iLink API)"
+    )
+    logging: LoggingConfig = Field(
+        default_factory=lambda: LoggingConfig(),
+        description="Structured logging configuration",
     )
     # Runtime-resolved state directory (set by __main__.py, not user-configurable)
     state_dir: str = Field(default="", exclude=True, description="Resolved state directory path")

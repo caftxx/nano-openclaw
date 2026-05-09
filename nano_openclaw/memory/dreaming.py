@@ -21,6 +21,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from nano_openclaw.logger import get_logger
+
+log = get_logger(__name__)
+
 
 # ============================================================================
 # Config (runtime dataclass, mirrors DreamingConfigInput from config/types.py)
@@ -131,7 +135,8 @@ def load_dreaming_state(workspace_dir: str) -> DreamingState:
             last_run_at=raw.get("last_run_at"),
             entries=entries,
         )
-    except Exception:
+    except Exception as e:
+        log.warning("dreaming.state.load.error", f"Failed to load dreaming state: {e}")
         return DreamingState()
 
 
@@ -200,7 +205,8 @@ def track_recall(
 
     try:
         _save_dreaming_state(workspace_dir, state)
-    except (OSError, PermissionError):
+    except (OSError, PermissionError) as e:
+        log.warning("dreaming.state.save.error", f"Failed to save dreaming state: {e}")
         pass
 
 
@@ -324,7 +330,8 @@ def start_dreaming_scheduler(
         if is_dreaming_due(config.frequency, state.last_run_at):
             try:
                 await run_dreaming(workspace_dir, config, model, api_client=api_client, blocking=False)
-            except Exception:
+            except Exception as e:
+                log.warning("dreaming.scheduler.startup.error", f"Dreaming run at startup failed: {e}")
                 pass
 
         while not stop_event.is_set():
@@ -337,7 +344,8 @@ def start_dreaming_scheduler(
                 return
             try:
                 await run_dreaming(workspace_dir, config, model, api_client=api_client, blocking=False)
-            except Exception:
+            except Exception as e:
+                log.warning("dreaming.scheduler.loop.error", f"Dreaming scheduled run failed: {e}")
                 pass
 
     return asyncio.create_task(_loop(), name="dreaming-scheduler")
@@ -399,7 +407,8 @@ def _rehydrate_snippet(entry: ShortTermRecallEntry, workspace_dir: str) -> str |
         if start < 0 or end > len(lines):
             return None
         return "\n".join(lines[start:end]).strip()
-    except Exception:
+    except Exception as e:
+        log.warning("dreaming.rehydrate.error", f"Failed to rehydrate snippet for {entry.path}: {e}")
         return None
 
 
@@ -516,7 +525,8 @@ async def generate_dream_diary(
                     messages=[{"role": "user", "content": prompt}],
                 )
                 narrative = response.content[0].text.strip()
-        except Exception:
+        except Exception as e:
+            log.warning("dreaming.diary.anthropic.error", f"Anthropic diary generation failed: {e}")
             pass
 
         if narrative is None:
@@ -529,7 +539,8 @@ async def generate_dream_diary(
                         messages=[{"role": "user", "content": prompt}],
                     )
                     narrative = response.choices[0].message.content.strip()
-            except Exception:
+            except Exception as e:
+                log.warning("dreaming.diary.openai.error", f"OpenAI diary generation failed: {e}")
                 pass
 
     if narrative is None:
@@ -580,6 +591,7 @@ async def run_dreaming(
 
     try:
         start = time.monotonic()
+        log.info("dreaming.run.start", f"Dreaming sweep started for workspace {workspace_dir}")
 
         candidates = run_light_phase(workspace_dir)
         promoted = run_deep_phase(workspace_dir, config, candidates)
@@ -587,12 +599,14 @@ async def run_dreaming(
         if config.diary and api_client is not None:
             try:
                 await generate_dream_diary(workspace_dir, promoted, candidates, config, model, api_client)
-            except Exception:
+            except Exception as e:
+                log.warning("dreaming.diary.error", f"Dream diary generation failed: {e}")
                 pass
 
         update_last_run_at(workspace_dir)
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        log.info("dreaming.run.complete", f"Dreaming sweep completed: {len(candidates)} candidates, {len(promoted)} promoted, elapsed={elapsed_ms}ms")
         return DreamingResult(candidates=candidates, promoted=promoted, elapsed_ms=elapsed_ms)
     finally:
         lock.release()

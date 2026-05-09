@@ -28,6 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
+from nano_openclaw.logger import get_logger
 from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.loop import (
     ActiveMemoryRecall,
@@ -78,6 +79,8 @@ from nano_openclaw.skills import (
     get_or_load_skills,
 )
 from nano_openclaw.tools import ToolRegistry
+
+logger = get_logger(__name__)
 
 _PREVIEW_LINES = 12
 _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
@@ -576,6 +579,8 @@ def _make_event_handler(console: Console, registry: ToolRegistry | None = None) 
             progress.clear()
 
     def handle(event: Any) -> None:
+        event_type = type(event).__name__
+        logger.debug("event.received", "", event_type=event_type)
         if isinstance(event, ThinkingDelta):
             if not state["thinking_in_flight"]:
                 console.print()

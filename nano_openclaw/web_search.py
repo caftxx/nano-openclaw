@@ -12,6 +12,9 @@ from typing import Any
 from ddgs import DDGS
 
 from nano_openclaw.external_content import wrap_external_content
+from nano_openclaw.logger import get_logger
+
+log = get_logger(__name__)
 
 
 _SEARCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -76,6 +79,7 @@ def web_search(
         with DDGS() as ddgs:
             raw_results = list(ddgs.text(query, region=region, max_results=max_results))
     except Exception as e:
+        log.warning("web_search.error", f"Search failed for query '{query}': {e}")
         return {
             "query": query,
             "error": str(e),

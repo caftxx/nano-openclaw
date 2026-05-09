@@ -15,7 +15,10 @@ import httpx
 from readability import Document
 
 from nano_openclaw.external_content import wrap_external_content
+from nano_openclaw.logger import get_logger
 from nano_openclaw.ssrf_guard import assert_public_url, SsrfBlockedError
+
+log = get_logger(__name__)
 
 
 ExtractMode = Literal["markdown", "text"]
@@ -160,6 +163,7 @@ async def web_fetch(
     try:
         assert_public_url(url)
     except SsrfBlockedError as e:
+        log.warning("web_fetch.ssrf.blocked", f"SSRF blocked: {url}: {e}")
         return {
             "url": url,
             "status": 403,
@@ -167,6 +171,7 @@ async def web_fetch(
             "text": f"[SSRF blocked: {e}]",
         }
     except ValueError as e:
+        log.warning("web_fetch.url.invalid", f"Invalid URL: {url}: {e}")
         return {
             "url": url,
             "status": 400,
@@ -190,6 +195,7 @@ async def web_fetch(
         ) as client:
             resp = await client.get(url)
     except httpx.TimeoutException:
+        log.warning("web_fetch.timeout", f"Request timeout: {url}")
         return {
             "url": url,
             "status": 408,
@@ -197,6 +203,7 @@ async def web_fetch(
             "text": "[Request timed out]",
         }
     except httpx.RequestError as e:
+        log.warning("web_fetch.network.error", f"Network error: {url}: {e}")
         return {
             "url": url,
             "status": 503,
@@ -225,6 +232,7 @@ async def web_fetch(
     try:
         body = resp.text
     except UnicodeDecodeError:
+        log.warning("web_fetch.decode.error", f"Unable to decode response as text: {url}")
         return {
             "url": url,
             "finalUrl": final_url,
@@ -243,16 +251,18 @@ async def web_fetch(
     elif "text/html" in content_type_clean:
         try:
             text, title, extractor = _extract_html(body, extract_mode)
-        except Exception:
+        except Exception as e:
+            log.warning("web_fetch.html.extract.error", f"HTML extraction failed for {url}: {e}, using fallback")
             text, raw_title = _html_to_markdown(body)
             title = title or raw_title
             extractor = "regex-fallback"
-    
+
     elif "application/json" in content_type_clean:
         try:
             text = json.dumps(json.loads(body), indent=2, ensure_ascii=False)
             extractor = "json"
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            log.warning("web_fetch.json.decode.error", f"JSON decode failed for {url}: {e}")
             text = body
     
     else:

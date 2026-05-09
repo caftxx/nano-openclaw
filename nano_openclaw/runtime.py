@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +18,10 @@ from nano_openclaw.config import (
     resolve_model_config,
     resolve_state_dir,
 )
+from nano_openclaw.logger import get_logger, resolve_log_level
 from nano_openclaw.loop import LoopConfig
+
+log = get_logger(__name__)
 from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
 from nano_openclaw.memory.dreaming import DreamingConfig, start_dreaming_scheduler
 from nano_openclaw.plugins.loader import load_plugins
@@ -59,7 +63,8 @@ class AgentRuntime:
             self.dreaming_task.cancel()
             try:
                 await self.dreaming_task
-            except BaseException:
+            except BaseException as e:
+                log.debug("runtime.close.dreaming", f"Dreaming task cancelled: {type(e).__name__}")
                 pass
         if self.cron_stop is not None:
             self.cron_stop.set()
@@ -67,7 +72,8 @@ class AgentRuntime:
             self.cron_task.cancel()
             try:
                 await self.cron_task
-            except BaseException:
+            except BaseException as e:
+                log.debug("runtime.close.cron", f"Cron task cancelled: {type(e).__name__}")
                 pass
         if hasattr(self.client, "aclose"):
             await self.client.aclose()
@@ -85,6 +91,9 @@ async def build_agent_runtime(
     console: Console | None = None,
 ) -> AgentRuntime:
     config, warnings = load_config(config_path)
+    # Apply log level from config (env var NANO_LOG_LEVEL takes precedence)
+    level = resolve_log_level(config.logging.level)
+    logging.getLogger().setLevel(level)
     if agent_id == "default":
         agent_id = _resolve_default_agent_id(config)
     model_ref = model_ref_override or config.resolve_primary_model(agent_id)

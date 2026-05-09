@@ -1,11 +1,11 @@
 """Built-in MCP plugin."""
 
-import logging
 from typing import Any
 
+from nano_openclaw.logger import get_logger
 from nano_openclaw.plugins.types import PluginApi
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class McpPlugin:
@@ -34,9 +34,8 @@ class McpPlugin:
             for tool in mcp_tools:
                 api.register_tool(tool)
             logger.info(
-                "MCP: loaded %d tools from %d server(s)",
-                len(mcp_tools),
-                len(api.config.mcp.servers),
+                "mcp.loaded",
+                f"MCP: loaded {len(mcp_tools)} tools from {len(api.config.mcp.servers)} server(s)",
             )
             return None
 

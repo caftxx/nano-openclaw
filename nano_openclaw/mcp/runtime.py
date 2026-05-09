@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from nano_openclaw.config.types import McpServerConfig
+from nano_openclaw.logger import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -63,10 +66,7 @@ class McpRuntime:
             try:
                 await asyncio.wait_for(ready.wait(), timeout=timeout_ms / 1000)
             except asyncio.TimeoutError:
-                print(
-                    f"MCP: server '{name}' connection timeout after {timeout_ms}ms, skipping",
-                    file=sys.stderr,
-                )
+                log.warning("mcp.server.timeout", f"server '{name}' connection timeout after {timeout_ms}ms, skipping")
 
     async def _run_server(
         self,
@@ -91,10 +91,7 @@ class McpRuntime:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            print(
-                f"MCP: server '{name}' connection failed: {e}",
-                file=sys.stderr,
-            )
+            log.warning("mcp.server.error", f"server '{name}' connection failed: {e}")
             ready.set()
 
     async def _run_stdio_server(

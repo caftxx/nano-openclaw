@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from nano_openclaw.cli import repl
+from nano_openclaw.logger import setup_logging
 from nano_openclaw.runtime import build_agent_runtime
 from nano_openclaw.session import (
     TranscriptWriter,
@@ -87,6 +88,9 @@ def main() -> None:
                                help="iLink bot token (overrides config and ILINK_TOKEN env)")
 
     args = parser.parse_args()
+
+    state_dir = resolve_state_dir()
+    setup_logging(state_dir)
 
     if args.command == "wechat":
         from nano_openclaw.wechat.bot import run_wechat_bot

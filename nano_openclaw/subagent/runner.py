@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import (
     LoopConfig,
     Message,
@@ -39,6 +40,8 @@ from nano_openclaw.subagent.types import (
 )
 from nano_openclaw.tools import ToolRegistry, build_core_registry
 from nano_openclaw.session import TranscriptWriter
+
+logger = get_logger(__name__)
 
 
 SUBAGENT_TOOL_BLACKLIST = frozenset([
@@ -198,6 +201,8 @@ class SubagentRunner:
         )
 
         def _subagent_on_event(ev: Any) -> None:
+            event_type = type(ev).__name__
+            logger.debug("event.received", "", event_type=event_type, run_id=record.run_id)
             changed = False
             if isinstance(ev, ToolUseStart):
                 progress["tool_uses"] += 1
@@ -294,6 +299,7 @@ class SubagentRunner:
 
             except asyncio.TimeoutError:
                 elapsed_ms = int((time.time() - start_time) * 1000)
+                logger.warning("subagent.run.timeout", f"Run {record.run_id} timed out after {timeout_seconds}s")
                 self.registry.mark_timeout(record.run_id)
                 runner_result = SubagentRunnerResult(
                     run_id=record.run_id,
@@ -335,6 +341,7 @@ class SubagentRunner:
             except Exception as exc:
                 elapsed_ms = int((time.time() - start_time) * 1000)
                 error_message = f"{type(exc).__name__}: {exc}"
+                logger.warning("subagent.run.error", f"Run {record.run_id} failed: {error_message}")
                 self.registry.mark_error(record.run_id, error_message, elapsed_ms)
                 runner_result = SubagentRunnerResult(
                     run_id=record.run_id,
@@ -480,6 +487,7 @@ class SubagentRunner:
             result = await asyncio.wait_for(task, timeout=timeout)
             return result
         except asyncio.TimeoutError:
+            logger.warning("subagent.wait.timeout", f"Wait for run timed out after {timeout}s")
             return None
 
     async def wait_for_requester(self, requester_session_key: str, cancellation_token: CancellationToken | None = None) -> None:

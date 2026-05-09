@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens, should_run_memory_flush
 from nano_openclaw.config.types import MemoryFlushConfig
+from nano_openclaw.logger import get_logger
 from nano_openclaw.attachments import (
     AttachmentAttached,
     AttachmentError,
@@ -75,6 +76,8 @@ if TYPE_CHECKING:
 
 EventCallback = Callable[[Any], None]
 MEMORY_FLUSH_ALLOWED_TOOLS = frozenset({"read_file", "write_file"})
+
+logger = get_logger(__name__)
 
 
 class TurnCancelled(Exception):
@@ -443,6 +446,7 @@ class AgentSession:
                     ))
                 loaded_refs.append(ref)
             except Exception as exc:
+                logger.warning("loop.image.load.error", f"Failed to load image {ref}: {exc}")
                 on_event(ImageError(ref=ref, error=str(exc)))
 
         if loaded_refs:
@@ -490,6 +494,7 @@ class AgentSession:
                         })
                     uploaded_image_refs.append(attachment.name)
                 except Exception as exc:
+                    logger.warning("loop.attachment.image.error", f"Failed to process image attachment {attachment.name}: {exc}")
                     on_event(ImageError(ref=attachment.name, error=str(exc)))
                 continue
 
@@ -503,6 +508,7 @@ class AgentSession:
                 content.append({"type": "text", "text": attachment_prompt_block(saved)})
                 attachment_refs.append(saved.display_path)
             except Exception as exc:
+                logger.warning("loop.attachment.save.error", f"Failed to save attachment {attachment.name}: {exc}")
                 on_event(AttachmentError(ref=attachment.name, error=str(exc)))
 
         if uploaded_image_refs:
@@ -701,6 +707,8 @@ async def _run_agent_session_turn(
     original_on_event = on_event
 
     def hooked_on_event(event: Any) -> None:
+        event_type = type(event).__name__
+        logger.debug("event.received", "", event_type=event_type)
         original_on_event(event)
         if cfg.hook_registry:
             loop_event_tasks.append(
@@ -791,6 +799,7 @@ async def _run_agent_session_turn(
             recent_turns=cfg.context_recent_turns,
         )
         if summary:
+            logger.info("loop.compaction", f"Context compacted: {summary[:100]}...")
             on_event(Compaction(summary=summary))
             pending_transcript_ops.append(("compaction", summary))
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
@@ -828,6 +837,7 @@ async def _run_agent_session_turn(
                 recent_turns=cfg.context_recent_turns,
             )
             if summary:
+                logger.info("loop.compaction.max_tokens", f"Context compacted due to max_tokens: {summary[:100]}...")
                 on_event(Compaction(summary=summary))
                 pending_transcript_ops.append(("compaction", summary))
             wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
@@ -1242,6 +1252,7 @@ async def _retry_assistant_turn(
         except TurnCancelled:
             raise
         except Exception as exc:
+            logger.warning("loop.turn.retry", f"Turn failed (attempt {attempt + 1}/{max_attempts}): {exc}")
             if attempt == max_attempts - 1:
                 raise
             on_event(RetryAttempt(attempt=attempt + 1, max_attempts=max_attempts, error=str(exc)))

@@ -9,7 +9,6 @@ Each WeChat user gets an isolated history list (per-user session).
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +17,7 @@ import base64
 import httpx
 
 from nano_openclaw.attachments import PromptAttachment
+from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import AgentSession, TextDelta
 from nano_openclaw.runtime import AgentRuntime, build_agent_runtime
 from nano_openclaw.tools import ToolRegistry
@@ -33,7 +33,7 @@ from nano_openclaw.wechat.ilink import (
     send_typing,
 )
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def _clone_registry(registry: ToolRegistry) -> ToolRegistry:
@@ -224,7 +224,7 @@ class WechatBot:
     async def run(self) -> None:
         """Main long-poll loop. Runs until cancelled."""
         buf = ""
-        log.info("WeChat bot started (base_url=%s)", self.base_url)
+        log.info("wechat.start", f"WeChat bot started (base_url={self.base_url})")
         async with httpx.AsyncClient() as client:
             while True:
                 try:
@@ -233,19 +233,19 @@ class WechatBot:
                     )
                     ret = resp.get("ret")
                     if ret not in (0, None):
-                        log.warning("iLink getUpdates ret=%s, backing off", ret)
+                        log.warning("wechat.poll.error", f"iLink getUpdates ret={ret}, backing off")
                         await asyncio.sleep(5)
                         continue
                     buf = resp.get("get_updates_buf", buf)
                     for msg in resp.get("msgs", []):
                         asyncio.create_task(self._handle_message(msg))
                 except httpx.HTTPStatusError as exc:
-                    log.warning("iLink HTTP error %s, backing off", exc.response.status_code)
+                    log.warning("wechat.poll.error", f"iLink HTTP error {exc.response.status_code}, backing off")
                     await asyncio.sleep(10)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    log.warning("poll error: %s, backing off", exc)
+                    log.warning("wechat.poll.error", f"poll error: {exc}, backing off")
                     await asyncio.sleep(5)
 
     async def _keep_typing(
@@ -265,13 +265,13 @@ class WechatBot:
                 try:
                     await send_typing(client, self.base_url, self.token, uid, ticket, status=1)
                 except Exception as exc:
-                    log.debug("typing keepalive failed for %.16s: %s", uid, exc)
+                    log.debug("wechat.typing.error", f"typing keepalive failed for {uid:.16}: {exc}")
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=self.typing_interval)
                 except asyncio.TimeoutError:
                     pass
         except Exception as exc:
-            log.debug("typing setup failed for %.16s: %s", uid, exc)
+            log.debug("wechat.typing.error", f"typing setup failed for {uid:.16}: {exc}")
         finally:
             if ticket:
                 try:
@@ -286,8 +286,7 @@ class WechatBot:
         text = extract_text(items)
 
         item_types = ",".join(str(it.get("type", 0)) for it in items)
-        log.info("msg from %.16s items=%d types=%s text=%r",
-                 uid, len(items), item_types, text[:80] if text else "")
+        log.info("wechat.message.received", f"msg from {uid:.16} items={len(items)} types={item_types} text={text[:80] if text else ''!r}")
 
         # Handle slash commands before attachments
         if text.strip().startswith("/"):
@@ -301,35 +300,35 @@ class WechatBot:
         attachments: list[PromptAttachment] = []
         image_items = extract_image_items(items)
         if image_items:
-            log.info("found %d image item(s) to download", len(image_items))
+            log.info("wechat.image.count", f"found {len(image_items)} image item(s) to download")
         async with httpx.AsyncClient() as dl_client:
             for img_item in image_items:
                 try:
                     data, mime = await download_wechat_image(dl_client, img_item, self.token)
                     aeskey = img_item.get("aeskey", "")
                     name = f"wechat-image-{aeskey[:8] if aeskey else 'raw'}.jpg"
-                    log.debug("downloaded image: aeskey=%s mime=%s size=%d, b64[:30]=%s", aeskey[:8] if aeskey else "none", mime, len(data), base64.b64encode(data[:30]).decode() if data else "none")
+                    log.debug("wechat.image.downloaded", f"downloaded image: aeskey={aeskey[:8] if aeskey else 'none'} mime={mime} size={len(data)}, b64[:30]={base64.b64encode(data[:30]).decode() if data else 'none'}")
                     attachments.append(
                         PromptAttachment(name=name, mime=mime, size=len(data), data=data)
                     )
-                    log.info("image downloaded: name=%s mime=%s size=%d", name, mime, len(data))
+                    log.info("wechat.image.downloaded", f"image downloaded: name={name} mime={mime} size={len(data)}")
                 except Exception as exc:
-                    log.warning("image download failed: %s", exc)
+                    log.warning("wechat.image.failed", f"image download failed: {exc}")
 
             # Download file attachments (type=4/5, PDFs, docs, etc.)
             file_items = extract_file_items(items)
             if file_items:
-                log.info("found %d file item(s) to download", len(file_items))
+                log.info("wechat.file.count", f"found {len(file_items)} file item(s) to download")
             for file_item in file_items:
                 try:
                     data, mime, filename = await download_wechat_file(dl_client, file_item, self.token)
-                    log.debug("downloaded file: filename=%s mime=%s size=%d, b64[:30]=%s", filename, mime, len(data), base64.b64encode(data[:30]).decode() if data else "none")
+                    log.debug("wechat.file.downloaded", f"downloaded file: filename={filename} mime={mime} size={len(data)}, b64[:30]={base64.b64encode(data[:30]).decode() if data else 'none'}")
                     attachments.append(
                         PromptAttachment(name=filename, mime=mime, size=len(data), data=data)
                     )
-                    log.info("file downloaded: name=%s mime=%s size=%d", filename, mime, len(data))
+                    log.info("wechat.file.downloaded", f"file downloaded: name={filename} mime={mime} size={len(data)}")
                 except Exception as exc:
-                    log.warning("file download failed: %s", exc)
+                    log.warning("wechat.file.failed", f"file download failed: {exc}")
 
         if not text.strip() and not attachments:
             return
@@ -338,6 +337,8 @@ class WechatBot:
         text_buf: list[str] = []
 
         def on_event(event: Any) -> None:
+            event_type = type(event).__name__
+            log.debug("event.received", "", event_type=event_type)
             if isinstance(event, TextDelta):
                 text_buf.append(event.text)
 
@@ -359,7 +360,7 @@ class WechatBot:
                     attachments=attachments or None,
                 )
             except Exception as exc:
-                log.error("run_turn failed for %.16s: %s", uid, exc)
+                log.error("wechat.turn.failed", f"run_turn failed for {uid:.16}: {exc}")
             finally:
                 stop_typing.set()
                 await typing_task
@@ -370,7 +371,7 @@ class WechatBot:
                 try:
                     await send_text(send_client, self.base_url, self.token, uid, reply, ctx)
                 except Exception as exc:
-                    log.error("send_text failed for %.16s: %s", uid, exc)
+                    log.error("wechat.send.failed", f"send_text failed for {uid:.16}: {exc}")
 
 
 async def run_wechat_bot(
@@ -381,14 +382,6 @@ async def run_wechat_bot(
 ) -> None:
     """Entry point called from __main__.py for the `wechat` subcommand."""
     from rich.console import Console
-
-    log_level = os.getenv("NANO_LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S",
-        force=True,
-    )
 
     console = Console()
     runtime = await build_agent_runtime(

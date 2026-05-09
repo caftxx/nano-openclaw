@@ -23,6 +23,9 @@ from rich.console import Console
 
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision
+from nano_openclaw.logger import get_logger
+
+log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from nano_openclaw.config.types import ToolsConfig
@@ -217,6 +220,7 @@ class ToolRegistry:
 
             output = await raw if asyncio.iscoroutine(raw) else raw
         except Exception as exc:  # noqa: BLE001 — exceptions become tool_results
+            log.warning("tools.dispatch.error", f"Tool {name} failed: {exc}")
             output: str | list[dict[str, Any]] = f"{type(exc).__name__}: {exc}"
             if self._hook_registry:
                 hook_payload = await self._hook_registry.run("after_tool_call", {
@@ -305,6 +309,7 @@ def _read_file(args: dict[str, Any], workspace_dir: str | None = None) -> "str |
         try:
             b64, mime = load_image(str(path))
         except Exception as exc:
+            log.warning("tools.read_file.image.error", f"Failed to load image {path}: {exc}")
             return f"[image load error: {path}: {exc}]"
         return [
             to_anthropic_image_block(b64, mime),
@@ -383,6 +388,7 @@ async def _bash(
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {cmdline}")
         proc.kill()
         await proc.communicate()
         return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"

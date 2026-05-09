@@ -18,10 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nano_openclaw.logger import get_logger
 from nano_openclaw.workspace.constants import (
     BOOTSTRAP_FILES,
     CONTEXT_FILE_ORDER,
 )
+
+logger = get_logger(__name__)
 
 
 # Hard safety limit: never read files larger than 2 MB
@@ -74,11 +77,7 @@ def _read_file_safe(file_path: Path, workspace_dir: Path) -> str | None:
 
     # Security check: ensure file is within workspace
     if not _is_within_workspace(file_path, workspace_dir):
-        logger.warning(
-            "Bootstrap file %s escapes workspace %s — skipping",
-            file_path,
-            workspace_dir,
-        )
+        logger.warning("workspace.load.skip", f"Bootstrap file {file_path} escapes workspace {workspace_dir} — skipping")
         return None
 
     # Size check
@@ -86,10 +85,8 @@ def _read_file_safe(file_path: Path, workspace_dir: Path) -> str | None:
         stat = file_path.stat()
         if stat.st_size > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES:
             logger.warning(
-                "Bootstrap file %s exceeds %d bytes (%d) — skipping",
-                file_path,
-                MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
-                stat.st_size,
+                "workspace.load.skip",
+                f"Bootstrap file {file_path} exceeds {MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES} bytes ({stat.st_size}) — skipping",
             )
             return None
     except OSError:
@@ -99,7 +96,7 @@ def _read_file_safe(file_path: Path, workspace_dir: Path) -> str | None:
     try:
         return file_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        logger.warning("Failed to read %s: %s", file_path, exc)
+        logger.warning("workspace.load.error", f"Failed to read {file_path}: {exc}")
         return None
 
 

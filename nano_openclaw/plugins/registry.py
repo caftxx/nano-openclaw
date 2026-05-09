@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from nano_openclaw.logger import get_logger
 from nano_openclaw.plugins.types import HookHandler
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -75,5 +75,5 @@ class HookRegistry:
                 if isinstance(result, dict):
                     payload = {**payload, **result}
             except Exception as exc:  # noqa: BLE001 - plugin errors must not break core loop
-                logger.warning("hook %s handler error: %s", event, exc)
+                logger.warning("plugin.hook.error", f"hook {event} handler error: {exc}")
         return payload
