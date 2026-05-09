@@ -1,0 +1,12 @@
+.nano-openclaw/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.git/
+.env
+.env.*
+!.env.example
+tests/
+*.egg-info/
+dist/

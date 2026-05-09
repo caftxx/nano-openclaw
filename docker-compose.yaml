@@ -1,0 +1,39 @@
+services:
+  web:
+    build: .
+    profiles: [web]
+    ports:
+      - "${WEB_PORT:-8765}:8765"
+    volumes:
+      - ./.nano-openclaw-dev:/root/.nano-openclaw
+    environment:
+      - NANO_OPENCLAW_STATE_DIR=/root/.nano-openclaw
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    command: web --host 0.0.0.0 --port 8765
+    restart: unless-stopped
+
+  cli:
+    build: .
+    profiles: [cli]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./.nano-openclaw-dev:/root/.nano-openclaw
+    environment:
+      - NANO_OPENCLAW_STATE_DIR=/root/.nano-openclaw
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+  # Placeholder for future IM integrations (e.g. Telegram, Discord, Slack)
+  # Replace command with the actual IM bridge entrypoint when implemented.
+  im:
+    build: .
+    profiles: [im]
+    volumes:
+      - ./.nano-openclaw-dev:/root/.nano-openclaw
+    environment:
+      - NANO_OPENCLAW_STATE_DIR=/root/.nano-openclaw
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    command: ["python", "-c", "print('IM integration not yet implemented')"]

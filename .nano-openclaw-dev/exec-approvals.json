@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "defaults": {
+    "ask": "off",
+    "security": "full"
+  },
+  "agents": {
+    "*": {
+      "ask": "off",
+      "security": "full",
+      "allowlist": [
+        {
+          "pattern": "*",
+          "source": "allow-always"
+        }
+      ]
+    }
+  }
+}

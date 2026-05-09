@@ -7,13 +7,6 @@
 
 读完这个仓库里的核心 `.py` 文件，你就理解了一个"会用工具的 LLM agent"的全部秘密。
 
-## 为什么要写这个
-
-OpenClaw 是一个生产级的 TypeScript agent 框架，能力丰富但代码量很大；想真正"读懂它怎么跑"会被插件系统、provider 抽象、TUI 渲染、会话持久化、权限审批等一系列层层包裹的概念劝退。
-nano-openclaw 把这些层全部砍掉，只留**最核心的循环**：用户输入 → 拼消息 → 调模型 → 流式接收 → 派发工具 → 把结果喂回去 → 直到模型说"完事了"。
-
-每个文件都明确映射到 OpenClaw 的真实 TS 源文件（见下方对照表），方便你在 nano 里看明白概念，再去真实代码里查实现细节。
-
 ## 快速运行
 
 依赖管理用 [uv](https://github.com/astral-sh/uv)。
@@ -27,9 +20,7 @@ uv sync
 # 跑测试（不需要 API key，纯本地工具单测）
 uv run pytest tests/
 
-# 复制并编辑配置文件
-cp nano-openclaw-example.json5 nano-openclaw.json5
-# 编辑 nano-openclaw.json5，填入你的 API key 和 provider 信息
+# 编辑 `.nano-openclaw-dev/nano-openclaw.json5`，填入你的 API key 和 provider 信息
 ```
 
 ```bash
@@ -55,9 +46,42 @@ uv run python -m nano_openclaw web
 uv run python -m nano_openclaw web --port 8765 --host 127.0.0.1
 ```
 
-**WebUI**：运行 `uv run python -m nano_openclaw web` 后在浏览器打开 `http://127.0.0.1:8765`。WebUI 支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮色/暗色/跟随系统主题，移动端自适应。
+**WebUI**：运行 `uv run python -m nano_openclaw web` 后在浏览器打开 `http://127.0.0.1:8765`。
 
-**配置示例**：复制 `nano-openclaw-example.json5` 并根据你的 provider 修改。内置插件（memory、web、subagent、mcp）始终加载，无法通过 plugins.load 禁用。详见下方配置说明。
+---
+
+### Docker Compose 启动
+
+不想装 Python 环境？用 Docker Compose 一键启动：
+
+```bash
+# 复制环境变量模板并填入 API key
+cp .env.example .env
+
+# web 模式（后台运行，访问 http://localhost:8765）
+docker compose --profile web up -d
+
+# CLI 模式（交互式终端）
+docker compose run --rm cli
+
+# 停止 web 服务
+docker compose --profile web down
+```
+
+**端口**：默认 `8765`，通过 `.env` 里的 `WEB_PORT` 修改宿主机端口：
+
+```bash
+WEB_PORT=9000 docker compose --profile web up -d
+# 访问 http://localhost:9000
+```
+
+**Volume 映射**：
+
+| 宿主机路径 | 容器路径 | 用途 |
+| --- | --- | --- |
+| `./.nano-openclaw-dev/` | `/root/.nano-openclaw/` | 会话、配置、记忆等状态数据 |
+
+配置文件放在 `.nano-openclaw-dev/nano-openclaw.json5` 即可自动加载，无需额外参数。容器中agent 的工作目录由配置文件中的 `workspaceDir` 决定，默认为 `~/.nano-openclaw/workspace/`。WebUI 支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮色/暗色/跟随系统主题，移动端自适应。
 
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 
