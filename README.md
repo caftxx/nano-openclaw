@@ -44,6 +44,9 @@ uv run python -m nano_openclaw web
 
 # WebUI 指定端口和地址
 uv run python -m nano_openclaw web --port 8765 --host 127.0.0.1
+
+# 启动微信机器人（通过 iLink API）
+uv run python -m nano_openclaw wechat
 ```
 
 **WebUI**：运行 `uv run python -m nano_openclaw web` 后在浏览器打开 `http://127.0.0.1:8765`。
@@ -117,6 +120,56 @@ WEB_PORT=9000 docker compose --profile web up -d
 
 **完整配置字段说明见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。**
 
+## 日志系统
+
+支持结构化 JSON Lines 日志，通过环境变量或配置文件控制：
+
+```bash
+# 通过环境变量设置日志等级
+NANO_LOG_LEVEL=DEBUG uv run python -m nano_openclaw
+
+# 或在配置文件中设置
+# config.logging.level = "INFO"
+```
+
+日志文件位于 `{stateDir}/logs/` 目录，支持：
+- JSON Lines 格式（每行一个 JSON 对象）
+- 自动轮转（单文件超过 10MB 时滚动）
+- Gzip 压缩（旧日志自动压缩）
+- 上下文注入（session_id、run_id、tool_call_id 自动关联）
+
+日志等级：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`（默认 `INFO`）。
+
+---
+
+## 微信机器人
+
+通过 `wechat` 子命令启动微信机器人，使用 iLink API 长轮询接入：
+
+```bash
+uv run python -m nano_openclaw wechat
+```
+
+**配置**（在 `nano-openclaw.json5` 中）：
+
+```json5
+{
+  wechat: {
+    ilink_token: "xxx"
+  }
+}
+```
+
+> `ilink_token` 获取方式：先用openclaw或hermes连接微信bot，然后从openclaw或hermes的token文件中读取
+
+**特性**：
+- **Per-user Session 隔离** — 每个微信用户独立 session，历史不混淆
+- **Typing Indicator** — 处理消息时自动发送"正在输入"状态
+- **图片处理** — 自动下载/解密微信图片，支持 Vision 模型分析
+- **Vision Fallback** — 模型无视觉能力时返回文本占位符
+
+---
+
 ## REPL 斜杠命令
 
 支持的斜杠命令：`/quit`、`/clear`、`/new`、`/help`、`/context`、`/compact`、`/sessions`、`/save`、`/skills`、`/plugins`、`/hooks`、`/subagents`。
@@ -138,7 +191,7 @@ WEB_PORT=9000 docker compose --profile web up -d
                                 │
                                 ▼
                       ┌──────────────────────┐
-    image refs ─────▶ │ AgentSession.run_turn│  parse_image_refs → load_image
+    image refs ─────▶ │ AgentRuntime.run_turn│  parse_image_refs → load_image
     (@file.png)       │  plugin hooks        │  before_prompt_build / on_loop_event
                        └──┬──────────────┬────┘
            compact check │              │ tool_use blocks
@@ -162,6 +215,9 @@ WEB_PORT=9000 docker compose --profile web up -d
   │  Anthropic Messages  │   │  OpenAI Completions  │
   └──────────────────────┘   └──────────────────────┘
 
+  runtime.py        = AgentRuntime 共享模块 + CLI 子命令入口（web/wechat）+ build_agent_runtime 工厂
+  logger.py         = JSON Lines 日志系统 + 轮转/Gzip 压缩 + contextvars 注入（session_id/run_id/tool_call_id）
+  wechat/           = 微信机器人集成（iLink API 长轮询 + per-user session 隔离 + typing indicator + 图片解密）
   config/           = JSON5 加载 + Pydantic 类型验证 + 环境变量替换 + 模型解析
   _stream_events.py = 5 个共享 dataclass（两个 transport 的协议契约）+ thinking 事件
   system prompt     = prompt.build_system_prompt(registry)
@@ -180,106 +236,6 @@ WEB_PORT=9000 docker compose --profile web up -d
    thinking          = Anthropic 原生 thinking / OpenAI reasoning_content → dim 样式渲染 → 持久化到消息历史
    memory/           = daily memory 文件加载 + memory_get/search 工具 + Active Memory 自动召回
 ```
-
-## 模块映射（nano ↔ OpenClaw）
-
-| nano_openclaw 文件 / 符号                   | 对应的 OpenClaw 真实位置                                                              |
-| ------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `config/types.py`                          | `src/config/`（Pydantic 类型验证 + 配置结构）                                          |
-| `config/paths.py`                          | `src/config/paths.ts` + `src/agents/agent-scope-config.ts`（路径 + workspace 解析）     |
-| `config/io.py`                             | `src/config/load.ts`（配置文件加载 + 模型解析）                                        |
-| `config/env_substitution.py`               | `src/config/env-substitution.ts`（`${ENV_VAR}` 替换）                                 |
-| `loop.py::AgentSession.run_turn`           | `src/agents/pi-embedded-runner/run/attempt.ts:566` (`runEmbeddedAttempt`)            |
-| 消息内容块结构                               | `src/agents/stream-message-shared.ts` (`AssistantMessage`)                           |
-| `provider.py::stream_response`             | `src/agents/provider-transport-stream.ts`（switch(model.api) 路由层）                 |
-| `_stream_events.py`                        | `src/agents/transport-stream-shared.ts`（共享事件类型契约 + thinking 事件）|
-| `_provider_anthropic.py::stream_response`  | `src/agents/anthropic-transport-stream.ts:742+`（SSE → 归一化事件）                    |
-| `_provider_openai.py::stream_response`     | `src/agents/openai-transport-stream.ts`（OpenAI → 归一化事件）                         |
-| `_provider_openai._to_openai_messages`     | `src/agents/transport-message-transform.ts`（Anthropic↔OpenAI 格式转换）              |
-| `compact.py::compact_if_needed`            | `src/agents/compaction.ts`（token 估算 + 摘要压缩旧消息）                              |
-| `compact.py::summarize_history`            | `src/agents/compaction.ts`（调用 LLM 生成历史摘要）                                    |
-| `images.py::parse_image_refs`              | `src/media/parse.ts`（检测 @file.png、Markdown ![]()、URL 等图片引用）                |
-| `images.py::load_image`                    | `src/media/input-files.ts`（SSRF 防护 + 大小限制 + 自动压缩）                          |
-| `images.py::describe_image`                | `src/media-understanding/`（Media Understanding 路径：调用模型描述图片）              |
-| `tools.py::Tool` 数据类                     | `src/agents/tools/common.ts:1-36` (`AnyAgentTool` / `AgentTool`)                     |
-| `tools.py::ToolRegistry.dispatch`          | `src/agents/pi-embedded-subscribe.handlers.tools.ts`                                 |
-| `tools.py::read_file` / `write_file`       | `src/agents/pi-tools.read.ts` / `src/agents/pi-tools.ts`                             |
-| `tools.py::bash`                           | `src/agents/bash-tools.exec.ts:1309+` (`createExecTool`)                             |
-| `approvals/exec_approvals.py`              | `src/infra/exec-approvals.ts::resolveExecApprovalsFromFile()`（加载 exec-approvals.json + 多层解析） |
-| `approvals/types.py`                       | `src/infra/exec-approvals.types.ts`（ApprovalDecision / Request / Policy / AllowlistEntry） |
-| `approvals/policy.py`                      | `src/infra/exec-approvals-allowlist.ts`（危险模式匹配 + allowlist 评估）                |
-| `approvals/manager.py`                     | `src/gateway/exec-approval-manager.ts` + `src/infra/exec-approvals.ts`（请求生命周期 + allowlist 持久化） |
-| `approvals/ui.py`                          | 审批提示 Rich UI（openclaw TUI 审批弹窗的简化版）                                       |
-| `subagent/runner.py`                       | `src/agents/subagent/runner` / session orchestration（后台子 agent 生命周期的简化版）      |
-| `subagent/registry.py`                     | OpenClaw 子 agent run registry（run 状态、session key、requester 关联）                   |
-| `subagent/tools.py::sessions_spawn`        | OpenClaw `sessions_spawn` 子 agent 派生工具（nano 版只支持 isolated context）             |
-| `subagent/announce.py`                     | 子 agent completion auto-announce（完成后作为 user message 回灌父 session）              |
-| `prompt.py::build_system_prompt`           | `src/agents/system-prompt.ts:189+` & `pi-embedded-runner/system-prompt.ts:12-95`     |
-| `workspace/loader.py`                      | `src/agents/workspace.ts`（bootstrap 文件加载 + budget 截断）                         |
-| `workspace/cache.py`                       | `src/agents/workspace.ts`（session-scoped 缓存）                                      |
-| `workspace/constants.py`                   | `src/agents/workspace.ts`（bootstrap 文件常量定义）                                   |
-| `memory/daily.py::build_daily_memory_prelude` | `src/auto-reply/reply/startup-context.ts`（每日记忆文件加载 + 日期戳生成）             |
-| `memory/tools.py::memory_get`              | `extensions/memory-core/src/tools.ts:memory_get`（读取记忆文件/片段）                  |
-| `memory/tools.py::memory_search`           | `extensions/memory-core/src/tools.ts:memory_search`（搜索记忆文件，nano 用词法匹配 + 上下文窗口匹配 + 停用词过滤）    |
-| `memory/tools.py::context_window_match`    | `extensions/memory-core/src/tools.ts`（上下文窗口匹配，提高记忆搜索相关度）           |
-| `memory/tools.py::stopword_filter`         | `extensions/memory-core/src/tools.ts`（停用词过滤，避免无意义匹配）                   |
-| `mcp/runtime.py`                           | `src/agents/pi-bundle-mcp-runtime.ts`（MCP 服务器连接管理 + 工具调用）               |
-| `mcp/materialize.py`                       | `src/agents/pi-bundle-mcp-materialize.ts`（MCP 工具转换为 Agent 工具）               |
-| `memory/active.py::ActiveMemoryManager`    | `extensions/active-memory/index.ts`（before_prompt_build hook + 子 agent 召回）       |
-| `memory/active.py::QueryMode/PromptStyle`  | `extensions/active-memory/index.ts:17-34`（查询模式和召回风格枚举）                     |
-| `memory/dreaming.py::track_recall`         | `extensions/memory-core/src/dreaming.ts`（记忆召回追踪 + cron 调度）                   |
-| `memory/dreaming.py::run_light/deep_phase` | `extensions/memory-core/src/dreaming-phases.ts`（Light/Deep Phase 评分 + 提升）        |
-| `web_search.py::web_search`                | `src/agents/tools/web-search.ts`（DuckDuckGo 搜索 + 缓存 + 外部内容包装）               |
-| `web_fetch.py::web_fetch`                  | `src/agents/tools/web-fetch.ts`（HTML 提取 + readability + SSRF 防护 + 缓存）           |
-| `ssrf_guard.py::assert_public_url`         | `src/infra/net/ssrf.ts`（两阶段 hostname 验证：预 DNS + 后 DNS）                        |
-| `external_content.py::wrap_external_content` | `src/security/external-content.ts`（<EXTERNAL_UNTRUSTED_CONTENT> 边界标记 + LLM token 清洗） |
-| `cli.py::repl`                             | `src/cli/tui-cli.ts:8-63` → `src/tui/tui.ts:1-52`                                    |
-| `cli.py::_render_tool_result`              | `src/tui/components/tool-execution.ts:55-137`                                        |
-| `webui/server.py`                          | nano-openclaw 新增（OpenClaw 对应 native 控制面板）；FastAPI + WebSocket 实时事件流   |
-| `webui/sessions.py`                        | nano-openclaw 新增；WebUI session 状态管理 + 活动历史持久化                          |
-| `webui/approvals.py`                       | nano-openclaw 新增；WebApprovalBroker — 通过 WebSocket 做工具审批                    |
-| `webui/runtime.py`                         | nano-openclaw 新增；AgentRuntime + 关联 approval manager 的生命周期管理               |
-| `session/types.py`                         | `src/config/sessions/types.ts`（SessionEntry 数据结构）                               |
-| `session/paths.py`                         | `src/config/sessions/paths.ts`（Session 路径解析）                                    |
-| `session/store.py`                         | `src/config/sessions/store.ts`（sessions.json 管理）                                  |
-| `session/transcript.py`                    | `src/config/sessions/transcript.ts`（JSONL 读写）                                     |
-| `session/truncate.py`                      | `src/agents/session-tool-result-guard.ts`（tool_result 截断）                         |
-| `__main__.py`                              | `openclaw.mjs` → `src/entry.ts` → `src/run-main.ts`（合并三层）                       |
-
-## 顺着循环读：推荐阅读顺序
-
-1. **`config/types.py`** — 配置结构定义。Pydantic 类型验证，理解配置文件的 schema。
-2. **`config/paths.py`** — 路径解析。`OPENCLAW_*` 环境变量处理、workspace 解析优先级。
-3. **`config/io.py`** — 配置加载 + 模型解析。理解 `provider/model-id` 格式如何解析为 API 参数。
-4. **`config/env_substitution.py`** — 环境变量替换。`${ENV_VAR}` 语法，递归遍历嵌套对象。
-5. **`prompt.py`** — 我们告诉模型什么。简短，先建立"system prompt 是动态拼出来的"这个认知。
-6. **`workspace/`** — Workspace 引导文件加载。从项目目录加载 AGENTS.md、SOUL.md 等 8 个标准文件，应用安全防护和预算截断，注入到系统提示中。先看 `constants.py` 了解文件列表，再看 `loader.py` 理解加载和截断逻辑，最后看 `cache.py` 理解 session-scoped 缓存。
-7. **`memory/daily.py`** — Daily Memory 加载。理解如何扫描 `memory/` 目录，按日期加载每日记忆文件，生成 startup context prelude。
-8. **`memory/tools.py`** — Memory 工具。`memory_get` 读取指定记忆文件，`memory_search` 搜索相关内容（nano 用词法匹配 + 上下文窗口匹配 + 停用词过滤，提升搜索相关度）。
-9. **`memory/active.py`** — Active Memory 自动召回。理解 `before_prompt_build` hook 模式、子 agent 执行、QueryMode 和 PromptStyle 的含义。
-10. **`memory/dreaming.py`** — Dreaming 后台记忆整合。理解 `track_recall` 追踪机制、cron 调度频率、Light/Deep Phase 评分逻辑、MEMORY.md 提升、Dream Diary 生成。状态存储在 `memory/.dreams/short-term-recall.json`。
-11. **`mcp/`** — MCP 服务器集成。`runtime.py` 管理到 MCP 服务器的持久连接（支持 stdio/SSE/streamable-http 三种传输），`materialize.py` 将 MCP 工具转换为 nano-openclaw Tool 对象。启动时连接服务器，关闭时清理资源。
-12. **`web_search.py`** — DuckDuckGo 网页搜索。理解缓存机制、结果格式化、外部内容安全包装。
-13. **`web_fetch.py`** — URL 内容抓取。理解 HTML→markdown 转换、readability 提取、缓存、SSRF 防护。
-14. **`ssrf_guard.py`** — SSRF 防护。理解两阶段 hostname 检查：预 DNS（字面 IP + 已知黑名单）+ 后 DNS（解析后验证私有 IP）。
-15. **`external_content.py`** — 外部内容安全包装。理解 `<EXTERNAL_UNTRUSTED_CONTENT>` 边界标记和 LLM 特殊 token 清洗，防止 prompt injection。
-16. **`tools.py`** — 模型能干什么。看 `Tool` 形状、内置工具（含 web_search/web_fetch 条件注册）、`dispatch` 永不抛异常的契约。包含 `session_status` 工具用于查询日期时间和会话上下文。
-17. **`approvals/`** — 危险命令门禁。`policy.py` 评估风险，`manager.py` 管理审批请求和 per-agent allowlist 持久化，`ui.py` 渲染 Rich 提示（输入捕获暂停以避免与后台 Esc watcher 冲突）。`check_request()` 镜像 openclaw 的 `requiresExecApproval()`：`on-miss + allowlist + 未命中 = 提示用户`。
-18. **`subagent/`** — 后台子 agent 编排。先看 `types.py` 理解 run/session key/status，再看 `registry.py` 的内存 run 表，接着看 `tools.py` 如何暴露 `sessions_spawn` 和 `subagents`，最后看 `runner.py` 如何用过滤后的 ToolRegistry 启动 isolated 子会话并把结果 auto-announce 回父会话。
-19. **`images.py`** — 图片怎么处理。`parse_image_refs` 检测引用 → `load_image` 加载 → `describe_image` 双路径架构。
-20. **`_stream_events.py`** — provider 协议契约。5 个 dataclass 是两个 transport 共同说的语言 + thinking 事件。
-21. **`_provider_anthropic.py`** — Anthropic transport：SDK SSE 事件 → 5 个 dataclass + 原生 thinking 支持。
-22. **`_provider_openai.py`** — OpenAI transport：同样翻译到 5 个 dataclass，顺带做消息格式转换 + reasoning_content 支持。
-23. **`provider.py`** — 路由层：`switch(api)` 派发给正确的 transport，对外只暴露一个 `stream_response`。
-24. **`compact.py`** — 上下文压缩：`estimate_tokens` → `compact_if_needed` → `summarize_history`。
-25. **`loop.py`** — 把上面全部粘起来。这一步最关键，看完你就懂 agent 了。
-26. **`session/paths.py`** — Session 路径解析。按 agent 隔离的 session 存储结构。
-27. **`session/store.py`** — sessions.json 管理。
-28. **`session/transcript.py`** — JSONL 转录文件读写。
-29. **`session/truncate.py`** — tool_result 截断。
-30. **`cli.py`** — 给人看的部分。理解 `on_event` 回调如何把"loop 内部状态"暴露给"渲染层"。包含 Windows msvcrt 原生 Esc watcher 作为 prompt_toolkit 不可用时的降级方案。
-31. **`webui/`** — 浏览器界面替代方案。先看 `runtime.py` 了解 AgentRuntime 生命周期，再看 `sessions.py` 理解 WebSessionManager 如何管理 session 切换和活动历史持久化，然后看 `approvals.py` 的 WebApprovalBroker（WebSocket 审批替代 CLI 阻塞提示），最后看 `server.py` 理解 FastAPI 路由、WebSocket 实时事件流和斜杠命令处理。启动方式：`uv run python -m nano_openclaw web`。
-32. **`__main__.py`** — 入口装配。配置加载 → 模型解析 → LoopConfig 构建 → 启动 REPL 或 WebUI。
 
 ## 三条不变量
 
