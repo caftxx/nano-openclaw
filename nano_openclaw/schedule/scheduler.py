@@ -25,6 +25,7 @@ log = get_logger(__name__)
 
 def start_cron_scheduler(
     cron_dir: Path,
+    state_dir: Path,
     session_dir: Path,
     workspace_dir: Path | None,
     client: Any,
@@ -43,7 +44,7 @@ def start_cron_scheduler(
         cron_dir.mkdir(parents=True, exist_ok=True)
 
         _recover_interrupted(store)
-        await _run_missed_jobs(store, session_dir, workspace_dir, client, base_cfg, missed_jobs_limit)
+        await _run_missed_jobs(store, state_dir, session_dir, workspace_dir, client, base_cfg, missed_jobs_limit)
 
         active_tasks: set[asyncio.Task] = set()
 
@@ -65,7 +66,7 @@ def start_cron_scheduler(
 
             for job in due:
                 task = asyncio.create_task(
-                    _execute_job(job, store, session_dir, workspace_dir, client, base_cfg),
+                    _execute_job(job, store, state_dir, session_dir, workspace_dir, client, base_cfg),
                     name=f"cron-{job.id[:8]}",
                 )
                 active_tasks.add(task)
@@ -96,6 +97,7 @@ def _recover_interrupted(store: CronStore) -> None:
 
 async def _run_missed_jobs(
     store: CronStore,
+    state_dir: Path,
     session_dir: Path,
     workspace_dir: Path | None,
     client: Any,
@@ -126,7 +128,7 @@ async def _run_missed_jobs(
 
     tasks = [
         asyncio.create_task(
-            _execute_job(j, store, session_dir, workspace_dir, client, base_cfg),
+            _execute_job(j, store, state_dir, session_dir, workspace_dir, client, base_cfg),
             name=f"cron-missed-{j.id[:8]}",
         )
         for j in immediate
@@ -173,6 +175,7 @@ def _collect_due(
 async def _execute_job(
     job: CronJob,
     store: CronStore,
+    state_dir: Path,
     session_dir: Path,
     workspace_dir: Path | None,
     client: Any,
@@ -270,8 +273,8 @@ async def _execute_job(
                         (status == "error" and job.notify_on_error)
         if should_notify:
             from nano_openclaw.wechat.notify import NotifyQueue, NotifyItem
-            # notify-queue.jsonl is at stateDir level (parent of session_dir)
-            notify_path = session_dir.parent / "notify-queue.jsonl"
+            # Use state_dir for notify-queue path (same as wechat bot)
+            notify_path = state_dir / "notify-queue.jsonl"
             queue = NotifyQueue(notify_path)
 
             summary = f"定时任务「{job.name}」执行完成\n状态: {status}\n耗时: {elapsed_ms}ms"

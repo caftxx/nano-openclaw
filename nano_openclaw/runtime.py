@@ -232,6 +232,7 @@ async def build_agent_runtime(
         cron_dir = state_dir / "cron"
         cron_task = start_cron_scheduler(
             cron_dir=cron_dir,
+            state_dir=state_dir,
             session_dir=session_dir,
             workspace_dir=workspace_dir,
             client=client,
