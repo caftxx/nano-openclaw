@@ -35,6 +35,7 @@ from nano_openclaw.wechat.ilink import (
     extract_text,
     get_typing_ticket,
     get_updates,
+    is_session_expired,
     send_text,
     send_typing,
 )
@@ -128,11 +129,21 @@ class WechatBot:
     # forget which uid maps to which session and the next message creates a
     # fresh empty session.
     uid_map_path: Path | None = None
+    # typing_ticket cache TTL — iLink tickets are stable for some minutes; we
+    # default to 30 min to avoid a getconfig RTT on every reply while still
+    # rotating well before any plausible server-side expiry.
+    typing_ticket_ttl: float = 1800.0
     # uid -> history list (legacy fallback when session_manager is None)
     _sessions: dict[str, list[Any]] = field(default_factory=dict)
     # uid -> session_id (loaded from uid_map_path on first use)
     _uid_to_session_id: dict[str, str] = field(default_factory=dict)
     _uid_map_loaded: bool = False
+    # uid -> (ticket, expires_at_monotonic). Populated by _keep_typing on miss
+    # and invalidated on send_typing failure.
+    _typing_ticket_cache: dict[str, tuple[str, float]] = field(default_factory=dict)
+    # monotonic timestamp of the most recent errcode=-14 from getUpdates;
+    # surfaced by daemon channel reporting / future health checks.
+    _session_expired_at: float | None = None
 
     def _ensure_uid_map_loaded(self) -> None:
         """Lazy-load the uid → session_id JSON mapping. Idempotent."""
@@ -436,13 +447,49 @@ class WechatBot:
         # Not a recognized command, return None to let agent handle it
         return None
 
+    # Long-poll backoff schedule. Mirrors openilink-sdk-python/monitor.py
+    # constants so behavior matches the reference SDK: a couple of fast
+    # retries to absorb transient blips, then a 30s cool-off so we don't
+    # hammer iLink (or fill the log) when the server is genuinely down.
+    POLL_RETRY_DELAY: float = 2.0
+    POLL_BACKOFF_DELAY: float = 30.0
+    POLL_MAX_CONSECUTIVE_FAILURES: int = 3
+    # Session-expired (errcode=-14) means the bot token is invalid; only a
+    # re-login can fix it. Wait long enough that we don't spam the server but
+    # short enough that a fresh token (e.g. via `wechat login`) is picked up
+    # without restarting the daemon.
+    POLL_SESSION_EXPIRED_BACKOFF: float = 300.0
+
     async def run(self) -> None:
-        """Main long-poll loop. Runs until cancelled."""
+        """Main long-poll loop. Runs until cancelled.
+
+        Maintains a consecutive-failure counter so steady-state errors
+        backoff to ``POLL_BACKOFF_DELAY`` instead of tight-looping at the
+        per-failure ``POLL_RETRY_DELAY`` cadence.
+        """
         buf = ""
+        failures = 0
         log.info("wechat.start", f"WeChat bot started (base_url={self.base_url})")
 
         # Start notification polling task
         notify_task = asyncio.create_task(self._poll_notifications())
+
+        async def _backoff(reason: str) -> None:
+            """Sleep based on consecutive-failure count, then advance counter."""
+            nonlocal failures
+            failures += 1
+            if failures >= self.POLL_MAX_CONSECUTIVE_FAILURES:
+                delay = self.POLL_BACKOFF_DELAY
+                # Reset so the *next* unbroken streak rebuilds before the
+                # next long sleep — same semantics as the reference SDK.
+                failures = 0
+            else:
+                delay = self.POLL_RETRY_DELAY
+            log.warning(
+                "wechat.poll.error",
+                f"{reason} (consecutive={failures}/{self.POLL_MAX_CONSECUTIVE_FAILURES}, sleep={delay}s)",
+            )
+            await asyncio.sleep(delay)
 
         async with httpx.AsyncClient() as client:
             while True:
@@ -450,17 +497,6 @@ class WechatBot:
                     resp = await get_updates(
                         client, self.base_url, self.token, buf, self.poll_timeout
                     )
-                    ret = resp.get("ret")
-                    if ret not in (0, None):
-                        log.warning("wechat.poll.error", f"iLink getUpdates ret={ret}, backing off")
-                        await asyncio.sleep(5)
-                        continue
-                    buf = resp.get("get_updates_buf", buf)
-                    for msg in resp.get("msgs", []):
-                        asyncio.create_task(self._handle_message(msg))
-                except httpx.HTTPStatusError as exc:
-                    log.warning("wechat.poll.error", f"iLink HTTP error {exc.response.status_code}, backing off")
-                    await asyncio.sleep(10)
                 except asyncio.CancelledError:
                     notify_task.cancel()
                     try:
@@ -468,9 +504,54 @@ class WechatBot:
                     except BaseException:
                         pass
                     raise
-                except Exception as exc:
-                    log.warning("wechat.poll.error", f"poll error: {exc}, backing off")
-                    await asyncio.sleep(5)
+                except httpx.HTTPStatusError as exc:
+                    await _backoff(f"iLink HTTP error {exc.response.status_code}")
+                    continue
+                except Exception as exc:  # noqa: BLE001 — catch-all is the long-poll story
+                    await _backoff(f"poll error: {type(exc).__name__}: {exc}")
+                    continue
+
+                if is_session_expired(resp):
+                    self._session_expired_at = time.monotonic()
+                    log.error(
+                        "wechat.session.expired",
+                        f"iLink session expired (errcode/ret=-14) for account={self.account_id!r}; "
+                        f"run `nano-openclaw wechat login --account={self.account_id}` to re-login",
+                    )
+                    await asyncio.sleep(self.POLL_SESSION_EXPIRED_BACKOFF)
+                    continue
+
+                ret = resp.get("ret")
+                if ret not in (0, None):
+                    await _backoff(f"iLink getUpdates ret={ret}")
+                    continue
+
+                # Successful long-poll: clear failure streak and dispatch.
+                failures = 0
+                buf = resp.get("get_updates_buf", buf)
+                for msg in resp.get("msgs", []):
+                    asyncio.create_task(self._handle_message(msg))
+
+    async def _resolve_typing_ticket(
+        self,
+        client: httpx.AsyncClient,
+        uid: str,
+        ctx: str,
+    ) -> str:
+        """Return a valid typing_ticket for ``uid``, reusing a cached one when fresh.
+
+        Cache miss / expiry → call ``getconfig``; failures invalidate so the
+        next caller retries. Empty result is cached briefly via the same path
+        (we just re-fetch next time since we only store non-empty values).
+        """
+        now = time.monotonic()
+        cached = self._typing_ticket_cache.get(uid)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        ticket = await get_typing_ticket(client, self.base_url, self.token, uid, ctx)
+        if ticket:
+            self._typing_ticket_cache[uid] = (ticket, now + self.typing_ticket_ttl)
+        return ticket
 
     async def _keep_typing(
         self,
@@ -482,7 +563,7 @@ class WechatBot:
         """Send typing indicator and keep it alive until stop is set."""
         ticket = ""
         try:
-            ticket = await get_typing_ticket(client, self.base_url, self.token, uid, ctx)
+            ticket = await self._resolve_typing_ticket(client, uid, ctx)
             if not ticket:
                 return
             while not stop.is_set():
@@ -490,12 +571,17 @@ class WechatBot:
                     await send_typing(client, self.base_url, self.token, uid, ticket, status=1)
                 except Exception as exc:
                     log.debug("wechat.typing.error", f"typing keepalive failed for {uid:.16}: {exc}")
+                    # Drop the cached ticket so the next turn re-fetches; the
+                    # current keepalive loop just keeps trying the same one
+                    # since stop is the only exit condition.
+                    self._typing_ticket_cache.pop(uid, None)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=self.typing_interval)
                 except asyncio.TimeoutError:
                     pass
         except Exception as exc:
             log.debug("wechat.typing.error", f"typing setup failed for {uid:.16}: {exc}")
+            self._typing_ticket_cache.pop(uid, None)
         finally:
             if ticket:
                 try:

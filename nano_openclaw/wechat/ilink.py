@@ -1,15 +1,19 @@
 """Async iLink WeChat API client.
 
 Mirrors hermesclaw's iLink functions but uses httpx.AsyncClient for asyncio
-compatibility. Supports long-polling, text send, typing indicators, and image
-download.
+compatibility. Supports long-polling, text send, typing indicators, image
+download, and QR-code login.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import secrets
-from typing import Any
+import time
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
 import httpx
 
@@ -33,14 +37,16 @@ MAX_FILE_BYTES = 20 * 1024 * 1024  # 文件上限更大
 
 
 def _headers(token: str, body: bytes) -> dict[str, str]:
-    return {
+    h = {
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "Content-Length": str(len(body)),
         "iLink-App-Id": "",
         "iLink-App-ClientVersion": ILINK_CV,
-        "Authorization": f"Bearer {token}",
     }
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 
 async def _post(
@@ -57,6 +63,42 @@ async def _post(
     resp = await client.post(url, content=raw, headers=_headers(token, raw), timeout=timeout)
     resp.raise_for_status()
     return resp.json()
+
+
+async def _get(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    token: str = "",
+    query: dict[str, str] | None = None,
+    extra_headers: dict[str, str] | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Generic GET helper used by QR endpoints.
+
+    Mirrors ``_post`` but for the few iLink endpoints (qrcode lifecycle) that
+    use GET. Token may be empty — we're often pre-login here.
+    """
+    url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+    if query:
+        url += "?" + urlencode(query)
+    headers = _headers(token, b"")
+    headers.pop("Content-Length", None)  # GET has no body
+    if extra_headers:
+        headers.update(extra_headers)
+    resp = await client.get(url, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def is_session_expired(resp: dict[str, Any]) -> bool:
+    """Detect a session-expired response from getUpdates / sendmessage etc.
+
+    iLink returns ``ret == -14`` or ``errcode == -14`` once the bot token is
+    revoked or the server-side session times out. Mirrors SDK
+    ``APIError.is_session_expired()``.
+    """
+    return resp.get("ret") == -14 or resp.get("errcode") == -14
 
 
 async def get_updates(
@@ -350,6 +392,184 @@ def extract_file_items(item_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # type=5 is explicitly FILE
             items.append(it)
     return items
+
+
+# --- QR-code login ----------------------------------------------------------
+
+QR_MAX_REFRESH = 3
+QR_POLL_TIMEOUT = 40.0  # seconds — server long-polls roughly this long
+QR_LOGIN_DEFAULT_TIMEOUT = 8 * 60.0  # 8 minutes
+
+
+@dataclass
+class LoginResult:
+    """Outcome of :func:`login_with_qr`. ``connected`` toggles success/fail."""
+    connected: bool = False
+    bot_token: str = ""
+    bot_id: str = ""
+    base_url: str = ""
+    user_id: str = ""
+    message: str = ""
+
+
+@dataclass
+class LoginCallbacks:
+    """Async/sync callbacks invoked during :func:`login_with_qr`.
+
+    ``on_qrcode`` receives the raw ``qrcode_img_content`` payload (typically a
+    URL string the QR encodes); the caller decides how to render it.
+    Each callback may be a regular function or an async coroutine.
+    """
+    on_qrcode: Callable[[str], Any] | None = None
+    on_scanned: Callable[[], Any] | None = None
+    on_expired: Callable[[int, int], Any] | None = None
+
+
+async def _maybe_await(fn: Callable[..., Any] | None, *args: Any) -> None:
+    if fn is None:
+        return
+    try:
+        result = fn(*args)
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ilink.login.callback.error", f"login callback raised: {exc}")
+
+
+async def fetch_qr_code(
+    client: httpx.AsyncClient,
+    base_url: str,
+    bot_type: str = "3",
+) -> dict[str, Any]:
+    """Request a fresh login QR code. Returns ``{qrcode, qrcode_img_content}``."""
+    return await _get(
+        client, base_url, "ilink/bot/get_bot_qrcode",
+        query={"bot_type": bot_type}, timeout=15.0,
+    )
+
+
+async def poll_qr_status(
+    client: httpx.AsyncClient,
+    base_url: str,
+    qrcode: str,
+) -> dict[str, Any]:
+    """Long-poll the scan status of a QR code.
+
+    Server hangs the request up to ~40s. Network failures degrade to ``wait``
+    so the outer loop keeps polling rather than aborting.
+    """
+    try:
+        return await _get(
+            client, base_url, "ilink/bot/get_qrcode_status",
+            query={"qrcode": qrcode},
+            extra_headers={"iLink-App-ClientVersion": "1"},
+            timeout=QR_POLL_TIMEOUT + 5.0,
+        )
+    except (httpx.TimeoutException, httpx.HTTPError):
+        return {"status": "wait"}
+
+
+async def login_with_qr(
+    client: httpx.AsyncClient,
+    base_url: str,
+    callbacks: LoginCallbacks | None = None,
+    timeout: float = QR_LOGIN_DEFAULT_TIMEOUT,
+) -> LoginResult:
+    """Run the full QR-code login state machine.
+
+    States: ``wait`` -> ``scaned`` -> ``confirmed`` (success) or ``expired``
+    (refresh QR up to :data:`QR_MAX_REFRESH` times). Returns once the user
+    confirms on their phone, the QR-refresh budget is exhausted, or
+    ``timeout`` elapses.
+    """
+    callbacks = callbacks or LoginCallbacks()
+    deadline = time.monotonic() + timeout
+
+    qr = await fetch_qr_code(client, base_url)
+    current_qr = qr.get("qrcode", "")
+    if not current_qr:
+        return LoginResult(message="server returned empty qrcode")
+    await _maybe_await(callbacks.on_qrcode, qr.get("qrcode_img_content", ""))
+
+    scanned_notified = False
+    refresh_count = 1
+
+    while True:
+        if time.monotonic() > deadline:
+            return LoginResult(message="login timeout")
+
+        status_resp = await poll_qr_status(client, base_url, current_qr)
+        status = status_resp.get("status", "")
+
+        if status == "wait":
+            await asyncio.sleep(1.0)
+            continue
+        if status == "scaned":
+            if not scanned_notified:
+                scanned_notified = True
+                await _maybe_await(callbacks.on_scanned)
+            await asyncio.sleep(1.0)
+            continue
+        if status == "expired":
+            refresh_count += 1
+            if refresh_count > QR_MAX_REFRESH:
+                return LoginResult(message="QR code expired too many times")
+            await _maybe_await(callbacks.on_expired, refresh_count, QR_MAX_REFRESH)
+            qr = await fetch_qr_code(client, base_url)
+            current_qr = qr.get("qrcode", "")
+            scanned_notified = False
+            await _maybe_await(callbacks.on_qrcode, qr.get("qrcode_img_content", ""))
+            await asyncio.sleep(1.0)
+            continue
+        if status == "confirmed":
+            bot_id = status_resp.get("ilink_bot_id", "")
+            if not bot_id:
+                return LoginResult(message="server did not return bot ID")
+            return LoginResult(
+                connected=True,
+                bot_token=status_resp.get("bot_token", ""),
+                bot_id=bot_id,
+                base_url=status_resp.get("baseurl", ""),
+                user_id=status_resp.get("ilink_user_id", ""),
+                message="connected",
+            )
+
+        # Unknown status → keep polling but don't tight-loop.
+        log.debug("ilink.qr.unknown_status", f"unrecognized status={status!r}")
+        await asyncio.sleep(1.0)
+
+
+def print_qrcode(content: str) -> None:
+    """Render a QR code as ASCII to stdout. Falls back to printing the URL.
+
+    Lazy-imports ``qrcode`` so missing the dep degrades gracefully — caller
+    can still scan by typing the URL into a phone QR generator if needed.
+    """
+    if not content:
+        print("(empty qrcode payload)")
+        return
+    try:
+        import qrcode  # type: ignore[import-not-found]
+    except ImportError:
+        print(f"qrcode package not installed; QR payload:\n  {content}")
+        print("install with:  uv add qrcode  (or pip install qrcode)")
+        return
+    qr = qrcode.QRCode(
+        box_size=1, border=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+    try:
+        qr.print_ascii(invert=True)
+    except (UnicodeEncodeError, OSError):
+        # Some terminals can't render box-drawing; fall back to plain blocks.
+        matrix = qr.get_matrix()
+        for row in matrix:
+            print("".join("##" if cell else "  " for cell in row))
+
+
+# --- Media decryption -------------------------------------------------------
 
 
 def _decrypt_wechat_media(data: bytes, aeskey_hex: str) -> bytes:

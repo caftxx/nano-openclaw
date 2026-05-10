@@ -23,6 +23,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "websockets>=14",
     "cryptography>=42.0",
+    "qrcode>=7.0",
 ]
 
 [project.scripts]

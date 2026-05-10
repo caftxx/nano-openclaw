@@ -97,6 +97,25 @@ def main() -> None:
 
     add_gateway_subparser(subparsers)
 
+    # WeChat (iLink) management subcommand. Currently exposes ``login`` for
+    # the QR-code login flow; runs in-process and exits, separate from the
+    # daemon long-poll loop so the QR can be shown interactively in the
+    # terminal.
+    wechat_parser = subparsers.add_parser(
+        "wechat",
+        help="WeChat (iLink) management commands (login, …)",
+    )
+    wechat_sub = wechat_parser.add_subparsers(dest="wechat_command")
+    wechat_login_p = wechat_sub.add_parser(
+        "login",
+        help="Run the QR login flow and persist the resulting bot token",
+    )
+    wechat_login_p.add_argument(
+        "--account",
+        default="default",
+        help="Account id to log in (matches wechat.accounts[*].id; default: 'default')",
+    )
+
     args = parser.parse_args()
 
     state_dir = resolve_state_dir()
@@ -114,6 +133,15 @@ def main() -> None:
 
     if args.command == "gateway":
         sys.exit(run_gateway_cli(args))
+
+    if args.command == "wechat":
+        if args.wechat_command == "login":
+            from nano_openclaw.wechat.login_cli import run_wechat_login
+            sys.exit(asyncio.run(run_wechat_login(
+                config_path=config_path,
+                account_id=args.account,
+            )))
+        wechat_parser.error("missing wechat subcommand (try `wechat login`)")
 
     # ── tui (explicit or default) ───────────────────────────────────────────
     # Back-compat: top-level --resume / --sessions still work; they get

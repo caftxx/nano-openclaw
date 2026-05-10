@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from nano_openclaw.channels.base import Channel, ChannelAccount
 from nano_openclaw.logger import get_logger
 from nano_openclaw.wechat.bot import WechatBot
+from nano_openclaw.wechat.login_cli import load_persisted_token
 from nano_openclaw.wechat.notify import NotifyItem, NotifyQueue
 
 if TYPE_CHECKING:
@@ -57,14 +58,30 @@ class WechatChannel(Channel):
         self._state = "starting"
         self._error = None
 
-        token = str(self.account.config.get("ilink_token") or "")
+        # Token resolution order:
+        #   1. state_dir/wechat-tokens.{account}.json — written by
+        #      ``nano-openclaw wechat login`` after a successful QR login.
+        #   2. account.config.ilink_token — what's in nano-openclaw.json5.
+        # The persisted file also carries the server-provided base_url, which
+        # may differ from the configured one (the iLink server can route bots
+        # to a sharded instance after login). When present, the persisted
+        # base_url wins so we keep talking to the shard the token belongs to.
+        persisted_token, persisted_base_url = load_persisted_token(runtime.state_dir, self.account.id)
+        token = persisted_token or str(self.account.config.get("ilink_token") or "")
         if not token:
             self._state = "error"
-            self._error = f"wechat account {self.account.id!r}: missing ilink_token"
+            self._error = (
+                f"wechat account {self.account.id!r}: missing ilink_token; "
+                f"run `nano-openclaw wechat login --account={self.account.id}` to log in"
+            )
             log.warning("wechat.channel.missing_token", self._error)
             raise ValueError(self._error)
 
-        base_url = str(self.account.config.get("ilink_base_url") or DEFAULT_BASE_URL)
+        base_url = (
+            persisted_base_url
+            or str(self.account.config.get("ilink_base_url") or "")
+            or DEFAULT_BASE_URL
+        )
         notify_path_str = str(self.account.config.get("notify_queue_path") or "")
         if notify_path_str:
             notify_path = Path(notify_path_str)

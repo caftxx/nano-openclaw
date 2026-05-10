@@ -209,15 +209,37 @@ async def _start_configured_channels(
     alongside webui/tui sessions in the unified ``/sessions`` list.
     """
     from nano_openclaw.channels.base import ChannelAccount
+    from nano_openclaw.config.types import WechatAccountConfig
+    from nano_openclaw.wechat.login_cli import discover_persisted_account_ids, load_persisted_token
 
     wechat_cfg = runtime.config.wechat
-    for account_cfg in wechat_cfg.accounts:
-        if not account_cfg.ilink_token:
+
+    # Build the effective account list:
+    #   1. Anything explicitly listed under wechat.accounts in config.
+    #   2. Anything discovered as state_dir/wechat-tokens.{id}.json that
+    #      isn't already in (1) — lets `wechat login` work without anyone
+    #      having to also remember to add the account to config.
+    accounts_by_id: dict[str, WechatAccountConfig] = {a.id: a for a in wechat_cfg.accounts}
+    for discovered_id in discover_persisted_account_ids(runtime.state_dir):
+        if discovered_id not in accounts_by_id:
+            accounts_by_id[discovered_id] = WechatAccountConfig(id=discovered_id)
             log.info(
-                "gateway.channel.skip.no_token",
-                f"wechat/{account_cfg.id}: no ilink_token configured, skipping",
+                "gateway.channel.discovered",
+                f"wechat/{discovered_id}: persisted login found, account auto-registered",
             )
-            continue
+
+    for account_cfg in accounts_by_id.values():
+        # A persisted token from `wechat login` counts the same as a configured
+        # one — only skip when *both* sources are empty.
+        if not account_cfg.ilink_token:
+            persisted, _ = load_persisted_token(runtime.state_dir, account_cfg.id)
+            if not persisted:
+                log.info(
+                    "gateway.channel.skip.no_token",
+                    f"wechat/{account_cfg.id}: no ilink_token configured and no persisted "
+                    f"login found, skipping (run `nano-openclaw wechat login --account={account_cfg.id}`)",
+                )
+                continue
         account = ChannelAccount(
             id=account_cfg.id,
             config={
