@@ -325,26 +325,35 @@ class PlainRenderer:
         title: str | None = None,
         style: str = "info",
     ) -> None:
-        # Multi-line bodies need a leading non-whitespace marker per line
-        # because WeChat collapses \n in some chat surfaces. Without the
-        # marker a panel like /model's "Current Model" comes through as one
-        # mangled paragraph. We also collapse runs of internal whitespace
-        # (the original ``model_ref:    foo`` padding is decorative for TTY
-        # alignment — meaningless once wrapped to a single space).
-        title_emoji = "📋 " if self._emoji else ""
-        bullet = "🔹 " if self._emoji else "- "
+        # Match the wire format of ``table()`` exactly — same ``- `` prefix,
+        # same ``key — value`` separator, no emoji decoration on title or
+        # rows. Empirically WeChat (iLink web surface) collapses \n into
+        # spaces when a line starts with an emoji like 🔹 / 📋, but
+        # preserves \n when lines start with a plain ``- ``. /models /tools
+        # / /skills already worked because their ``table()`` path uses
+        # ``- `` — /model used 🔹 for panel and got mangled. Whitespace
+        # inside each line is collapsed since the TTY column padding is
+        # meaningless once \n becomes a single space.
         if title:
-            self._push(f"{title_emoji}{_strip_markup(title)}")
+            self._push(_strip_markup(title))
         plain = _strip_markup(body)
         lines: list[str] = []
         for raw in plain.splitlines():
-            stripped = " ".join(raw.split())
-            if not stripped:
+            collapsed = " ".join(raw.split())
+            if not collapsed:
                 continue
-            if stripped.startswith(("- ", "* ", "🔹", "•")):
-                lines.append(stripped)
+            if collapsed.startswith(("- ", "* ", "•")):
+                lines.append(collapsed)
+                continue
+            # Promote ``key: value`` into ``- key — value`` so the layout
+            # mirrors table rows; pure prose lines just get a ``- ``.
+            if ":" in collapsed:
+                key, _, value = collapsed.partition(":")
+                key = key.strip()
+                value = value.strip()
+                lines.append(f"- {key} — {value}" if value else f"- {key}")
             else:
-                lines.append(f"{bullet}{stripped}")
+                lines.append(f"- {collapsed}")
         self._push("\n".join(lines) if lines else plain)
 
     def collect(self) -> str:
