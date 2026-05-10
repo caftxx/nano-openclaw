@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
 import base64
@@ -22,6 +23,7 @@ import httpx
 from nano_openclaw.attachments import PromptAttachment
 from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import AgentSession, TextDelta
+from nano_openclaw._stream_events import ToolUseEnd, ToolUseStart
 from nano_openclaw.runtime import AgentRuntime, build_agent_runtime
 from nano_openclaw.tools import ToolRegistry, Tool
 from nano_openclaw.wechat.ilink import (
@@ -98,6 +100,7 @@ class WechatBot:
     typing_interval: int = 5
     notify_queue: NotifyQueue | None = None
     notify_poll_interval: int = 30
+    heartbeat_interval: float = 30.0  # seconds of silence before a tool-status line is sent
     # uid -> history list (in-memory per-user session)
     _sessions: dict[str, list[Any]] = field(default_factory=dict)
 
@@ -406,19 +409,89 @@ class WechatBot:
             return
 
         history = self._get_or_create_history(uid)
+        # Buffer of TextDeltas that have not yet been flushed as a wechat message.
+        # On every ToolUseStart we cut here and ship the buffered text as one
+        # standalone message — that gives the user incremental visibility into the
+        # model's reasoning between tool calls instead of one big blob at the end.
         text_buf: list[str] = []
+        send_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        # Heartbeat state: when the model is silently grinding through tools we
+        # ship one throttled status line so the user knows work is still happening.
+        active_tools: dict[str, str] = {}        # tool_use_id -> name (currently running)
+        last_activity_at = time.monotonic()       # bumped whenever we enqueue any segment
+
+        def mark_activity() -> None:
+            nonlocal last_activity_at
+            last_activity_at = time.monotonic()
+
+        def flush_buf() -> None:
+            chunk = "".join(text_buf).strip()
+            if not chunk:
+                return
+            text_buf.clear()
+            send_queue.put_nowait(chunk)
+            mark_activity()
 
         def on_event(event: Any) -> None:
             event_type = type(event).__name__
             log.debug("event.received", "", event_type=event_type)
             if isinstance(event, TextDelta):
                 text_buf.append(event.text)
+            elif isinstance(event, ToolUseStart):
+                # Model finished talking and is invoking a tool — ship what it said
+                # so far as a separate message, then start a new segment.
+                flush_buf()
+                active_tools[event.id] = event.name
+            elif isinstance(event, ToolUseEnd):
+                active_tools.pop(event.id, None)
 
-        async with httpx.AsyncClient() as typing_client:
+        async with httpx.AsyncClient() as wechat_client:
             stop_typing = asyncio.Event()
             typing_task = asyncio.create_task(
-                self._keep_typing(typing_client, uid, ctx, stop_typing)
+                self._keep_typing(wechat_client, uid, ctx, stop_typing)
             )
+
+            async def sender() -> None:
+                """Serially drain send_queue; None is the sentinel to stop."""
+                while True:
+                    segment = await send_queue.get()
+                    if segment is None:
+                        return
+                    try:
+                        await send_text(wechat_client, self.base_url, self.token, uid, segment, ctx)
+                    except Exception as exc:
+                        log.error("wechat.send.segment.failed", f"send_text failed for {uid:.16}: {exc}")
+
+            heartbeat_stop = asyncio.Event()
+
+            async def heartbeat() -> None:
+                """Emit a throttled status line when tools have been running silently.
+
+                Wakes every 5s; only enqueues a heartbeat when (a) tools are
+                currently running, and (b) no segment has been produced for at
+                least `heartbeat_interval` seconds.
+                """
+                while not heartbeat_stop.is_set():
+                    try:
+                        await asyncio.wait_for(heartbeat_stop.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    if heartbeat_stop.is_set():
+                        return
+                    if not active_tools:
+                        continue
+                    if time.monotonic() - last_activity_at < self.heartbeat_interval:
+                        continue
+                    # Dedupe names while preserving insertion order.
+                    names = list(dict.fromkeys(active_tools.values()))
+                    line = "⏳ " + " · ".join(names)
+                    send_queue.put_nowait(line)
+                    mark_activity()
+
+            sender_task = asyncio.create_task(sender())
+            heartbeat_task = asyncio.create_task(heartbeat())
+
             try:
                 agent_session = AgentSession(
                     history=history,
@@ -435,15 +508,14 @@ class WechatBot:
                 log.error("wechat.turn.failed", f"run_turn failed for {uid:.16}: {exc}")
             finally:
                 stop_typing.set()
+                heartbeat_stop.set()
                 await typing_task
-
-        reply = "".join(text_buf).strip()
-        if reply:
-            async with httpx.AsyncClient() as send_client:
-                try:
-                    await send_text(send_client, self.base_url, self.token, uid, reply, ctx)
-                except Exception as exc:
-                    log.error("wechat.send.failed", f"send_text failed for {uid:.16}: {exc}")
+                await heartbeat_task
+                # Final segment: whatever text remained after the last tool call
+                # (or the entire reply if there were no tool calls at all).
+                flush_buf()
+                send_queue.put_nowait(None)
+                await sender_task
 
 
 async def run_wechat_bot(
