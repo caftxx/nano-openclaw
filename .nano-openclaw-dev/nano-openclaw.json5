@@ -97,7 +97,7 @@
   // Dreaming：后台记忆整合，自动将高频记忆提升到 MEMORY.md
   dreaming: {
     enabled: true,
-    frequency: "* 3 * * *",  // 每天凌晨 3 点
+    frequency: "0 3 * * *",  // 每天凌晨 3 点
     minScore: 0.5,
     minRecallCount: 2,
     minUniqueQueries: 1,
@@ -123,5 +123,24 @@
       enabled: true,
       halfLifeDays: 30,
     },
+  },
+
+  gateway: {
+    host: "0.0.0.0",   // 建议 loopback；改成 0.0.0.0 / 局域网 IP 时启动会打 warning（v1 无 auth）
+    port: 5000,          // 默认 5000
+    log_path: "",        // 可选；空 → state_dir/log/gateway.log
+  },
+
+  wechat: {
+    accounts: [
+      {
+        id: "default",
+        ilink_token: "",
+      },
+    ],
+  },
+
+  logging: {
+    level: "INFO"
   },
 }

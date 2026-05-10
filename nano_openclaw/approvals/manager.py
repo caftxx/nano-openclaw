@@ -8,6 +8,7 @@ Mirrors openclaw's exec-approval-manager.ts and exec-approvals.ts:
 """
 
 import json
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -40,6 +41,12 @@ class ApprovalManager:
         self._decisions: Dict[str, ApprovalDecision] = {}
         self._allowlist: List[AllowlistEntry] = list(policy.allowlist)
         self._file_cache: Optional[Dict] = None
+        # Phase 7: protect the read-modify-write cycle on
+        # ``allow_always_store``. Pure-asyncio code on a single event loop is
+        # already safe (no awaits inside the persistence path), but the lock
+        # defends against future thread-spawning and the (rare) case where
+        # two ApprovalManager instances share an allowlist file path.
+        self._allowlist_lock = threading.RLock()
     
     def create_request(
         self,
@@ -263,42 +270,48 @@ class ApprovalManager:
     
     def _persist_allowlist_entry(self, entry: AllowlistEntry) -> None:
         """Persist a single allowlist entry to the store file.
-        
+
         Mirrors openclaw's saveExecApprovals():
         - Load existing file
         - Add/update entry for agent
         - Save file
+
+        The whole read-modify-write is held under ``_allowlist_lock`` so two
+        concurrent ``record_decision`` calls can't both load the same file,
+        each append a different entry, and then race the write — which
+        would let one entry win and the other vanish.
         """
         if not self.policy.allow_always_store:
             return
-        
+
         store_path = Path(self.policy.allow_always_store)
         store_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        data = self._load_or_create_file(store_path)
-        
-        agents = data.get("agents", {})
-        agent_data = agents.get(self.policy.agent_id, {"allowlist": []})
-        allowlist = agent_data.get("allowlist", [])
-        
-        entry_dict = entry.model_dump()
-        
-        existing_idx = None
-        for i, existing in enumerate(allowlist):
-            if existing.get("pattern") == entry.pattern:
-                existing_idx = i
-                break
-        
-        if existing_idx is not None:
-            allowlist[existing_idx] = entry_dict
-        else:
-            allowlist.append(entry_dict)
-        
-        agent_data["allowlist"] = allowlist
-        agents[self.policy.agent_id] = agent_data
-        data["agents"] = agents
-        
-        store_path.write_text(json.dumps(data, indent=2))
+
+        with self._allowlist_lock:
+            data = self._load_or_create_file(store_path)
+
+            agents = data.get("agents", {})
+            agent_data = agents.get(self.policy.agent_id, {"allowlist": []})
+            allowlist = agent_data.get("allowlist", [])
+
+            entry_dict = entry.model_dump()
+
+            existing_idx = None
+            for i, existing in enumerate(allowlist):
+                if existing.get("pattern") == entry.pattern:
+                    existing_idx = i
+                    break
+
+            if existing_idx is not None:
+                allowlist[existing_idx] = entry_dict
+            else:
+                allowlist.append(entry_dict)
+
+            agent_data["allowlist"] = allowlist
+            agents[self.policy.agent_id] = agent_data
+            data["agents"] = agents
+
+            store_path.write_text(json.dumps(data, indent=2))
     
     def _load_or_create_file(self, store_path: Path) -> Dict:
         """Load existing file or create new exec-approvals.json skeleton."""

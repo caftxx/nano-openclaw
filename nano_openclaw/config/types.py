@@ -10,7 +10,7 @@ Mirrors openclaw's config types from src/config/types.*.ts:
 
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ============================================================================
@@ -427,17 +427,83 @@ class ScheduleConfigInput(BaseModel):
     missedJobsLimit: int = Field(default=5, ge=1, le=50, description="Max missed jobs to run immediately on startup")
 
 
-class WechatConfig(BaseModel):
-    """WeChat bot configuration via iLink API."""
+class WechatAccountConfig(BaseModel):
+    """One WeChat (iLink) account.
+
+    Multi-account: list these under ``wechat.accounts`` and the daemon will
+    spawn one ``WechatChannel`` instance per account, each polling its own
+    ``ilink_token`` against ``ilink_base_url``.
+
+    Notification queue is per-account so two accounts on the same daemon
+    don't fight over the same queue file.
+    """
     model_config = ConfigDict(populate_by_name=True)
 
-    ilink_token: str = Field(default="", description="iLink bot token (or ILINK_TOKEN env var)")
+    id: str = Field(default="default", description="Account identifier (used in created_by markers and channel routing)")
+    ilink_token: str = Field(default="", description="iLink bot token for this account")
     ilink_base_url: str = Field(default="https://ilinkai.weixin.qq.com", description="iLink API base URL")
+    notify_queue_path: str = Field(default="", description="Path to notify-queue.jsonl (default: {stateDir}/notify-queue.{account_id}.jsonl)")
+
+
+class WechatConfig(BaseModel):
+    """WeChat bot configuration via iLink API — multi-account only.
+
+    ::
+       wechat:
+         accounts:
+           - { id: default, ilink_token: ..., ilink_base_url: ... }
+           - { id: work, ilink_token: ... }
+         poll_timeout: 35
+         typing_interval: 5
+         notify_poll_interval: 30
+
+    The legacy single-token form (``ilink_token`` at the top level) is
+    rejected at validation time — please move it under ``accounts: [{...}]``.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    accounts: List[WechatAccountConfig] = Field(
+        default_factory=list,
+        description="Configured WeChat accounts (multi-account)",
+    )
     poll_timeout: int = Field(default=35, ge=5, le=120, description="Long-poll timeout in seconds")
     typing_interval: int = Field(default=5, ge=1, le=30, description="Typing indicator renewal interval in seconds")
-    # Notification queue settings
-    notify_queue_path: str = Field(default="", description="Path to notify-queue.jsonl (default: {stateDir}/notify-queue.jsonl)")
     notify_poll_interval: int = Field(default=30, ge=5, le=300, description="Notification queue poll interval in seconds")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_top_level_fields(cls, value: Any) -> Any:
+        """Hard-fail on legacy top-level keys so users get a clear error
+        pointing at the new schema rather than a silent acceptance.
+        """
+        if not isinstance(value, dict):
+            return value
+        legacy_keys = {"ilink_token", "ilink_base_url", "notify_queue_path"}
+        present_legacy = sorted(legacy_keys & value.keys())
+        if present_legacy:
+            raise ValueError(
+                f"wechat config: legacy top-level fields are no longer supported "
+                f"(found: {', '.join(present_legacy)}). Move them under an "
+                f"``accounts`` entry, e.g.:\n"
+                f"  wechat: {{ accounts: [{{ id: 'default', ilink_token: '…' }}] }}"
+            )
+        return value
+
+
+class GatewayConfig(BaseModel):
+    """Gateway daemon (``nano-openclaw gateway``) network + supervisor settings.
+
+    The daemon binds to ``host:port`` to expose the WebUI HTTP routes and
+    (Phase 4) the WebSocket ``/rpc`` endpoint shared by remote TUI clients.
+
+    v1 has no auth — non-loopback bind triggers a startup warning, since
+    anyone reaching the port can drive the agent runtime.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    host: str = Field(default="127.0.0.1", description="Bind address; default loopback. Non-loopback warns at startup (no auth in v1).")
+    port: int = Field(default=5000, ge=1, le=65535, description="TCP port for the daemon HTTP/WebSocket server")
+    log_path: str = Field(default="", description="Where the detached daemon writes stdout/stderr; empty → state_dir/gateway.log")
 
 
 class LoggingConfig(BaseModel):
@@ -620,6 +686,10 @@ class NanoOpenClawConfig(BaseModel):
     wechat: WechatConfig = Field(
         default_factory=WechatConfig,
         description="WeChat bot configuration (iLink API)"
+    )
+    gateway: GatewayConfig = Field(
+        default_factory=GatewayConfig,
+        description="Gateway daemon (host/port/log_path)"
     )
     logging: LoggingConfig = Field(
         default_factory=lambda: LoggingConfig(),

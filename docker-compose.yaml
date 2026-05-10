@@ -1,39 +1,62 @@
 services:
-  web:
+  # Daemon — runs WebUI HTTP, /rpc WebSocket, WeChat channels, cron scheduler,
+  # subagent runner, and dreaming all in one process. Browser hits port 5000
+  # for the WebUI; remote TUI clients connect via ws://host:5000/rpc.
+  gateway:
     build: .
-    profiles: [web]
+    profiles: [gateway]
+    # Run as the host user so files created inside the container (logs,
+    # transcripts, pidfile) stay owned by the host user — otherwise docker
+    # writes as root, and the host can't delete state_dir/log without sudo.
+    # UID/GID are bash builtins; export them or set in .env if your shell
+    # doesn't expose them to docker-compose's interpolation context.
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
-      - "${WEB_PORT:-8765}:8765"
+      # ``${GATEWAY_PORT:-5000}`` is interpolated by docker-compose at parse
+      # time (it auto-reads .env in the same directory for that). The bind
+      # inside the container stays at 5000.
+      - "${GATEWAY_PORT:-5000}:5000"
     volumes:
-      - ./.nano-openclaw-dev:/root/.nano-openclaw
+      - ./.nano-openclaw:/data/.nano-openclaw
+    # ``env_file: .env`` injects every key in .env into the container's
+    # environment. ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, plus any future
+    # provider creds the user adds — no need to update this compose file.
+    # Run ``cp .env.example .env`` first (see README).
+    env_file: .env
     environment:
-      - NANO_OPENCLAW_STATE_DIR=/root/.nano-openclaw
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    command: web --host 0.0.0.0 --port 8765
+      # Container-internal: tells nano-openclaw where to find sessions /
+      # config / log inside the container (matches the volume above).
+      - NANO_OPENCLAW_STATE_DIR=/data/.nano-openclaw
+    # host/port come from config.gateway.{host,port} in the mounted
+    # nano-openclaw.json5. The bundled template sets host=0.0.0.0 so the
+    # daemon is reachable from the host. If you change config.gateway.port,
+    # update the ports: mapping above to match.
+    command: ["gateway", "run"]
     restart: unless-stopped
 
-  cli:
+  # TUI — interactive REPL. By default tries to connect to the ``gateway``
+  # service over compose's default network (``ws://gateway:5000/rpc``); when
+  # that fails (e.g. you didn't `up` the gateway profile) it falls back to
+  # embedded mode in the TUI container itself.
+  #
+  # Use `docker compose run --rm tui` to drop in. The PID-file based
+  # auto-detect doesn't help here (separate containers = separate PID
+  # namespaces), so we use NANO_OPENCLAW_GATEWAY_URL — see __main__.py.
+  tui:
     build: .
-    profiles: [cli]
+    profiles: [tui]
     stdin_open: true
     tty: true
+    # Run as the host user so files created inside the container (logs,
+    # transcripts, pidfile) stay owned by the host user — otherwise docker
+    # writes as root, and the host can't delete state_dir/log without sudo.
+    # UID/GID are bash builtins; export them in your shell or set in .env
+    # if your editor doesn't pick them up.
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
-      - ./.nano-openclaw-dev:/root/.nano-openclaw
+      - ./.nano-openclaw:/data/.nano-openclaw
+    env_file: .env
     environment:
-      - NANO_OPENCLAW_STATE_DIR=/root/.nano-openclaw
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-
-  # Placeholder for future IM integrations (e.g. Telegram, Discord, Slack)
-  # Replace command with the actual IM bridge entrypoint when implemented.
-  im:
-    build: .
-    profiles: [im]
-    volumes:
-      - ./.nano-openclaw-dev:/root/.nano-openclaw
-    environment:
-      - NANO_OPENCLAW_STATE_DIR=/root/.nano-openclaw
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    command: ["python", "-c", "print('IM integration not yet implemented')"]
+      - NANO_OPENCLAW_STATE_DIR=/data/.nano-openclaw
+      - NANO_OPENCLAW_GATEWAY_URL=ws://gateway:5000/rpc
+    command: ["tui"]

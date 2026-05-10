@@ -6,9 +6,25 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from nano_openclaw.gateway.run_registry import RunRegistry
+    from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+
+
+def _build_run_registry() -> "RunRegistry":
+    """Lazy import to avoid a circular dependency between runtime and gateway."""
+    from nano_openclaw.gateway.run_registry import RunRegistry
+    return RunRegistry()
+
+
+def _build_runtime_guard() -> "RuntimeUpdateGuard":
+    """Lazy import — keeps runtime.py free of gateway imports at module load."""
+    from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+    return RuntimeUpdateGuard()
 
 from nano_openclaw.approvals.exec_approvals import load_exec_approvals
 from nano_openclaw.approvals.manager import ApprovalManager
@@ -48,6 +64,14 @@ class AgentRuntime:
     model_id: str
     image_model_ref: str | None
     dreaming_stop: threading.Event
+    # ``run_registry`` is the single source of truth for in-flight turn_ids
+    # across chat, cron, channels — see gateway/run_registry.py. Created
+    # eagerly in ``build_agent_runtime`` so cron can register against it
+    # before any Backend exists.
+    run_registry: "RunRegistry" = field(default_factory=lambda: _build_run_registry())
+    # ``runtime_guard`` coordinates ``runtime.update`` against in-flight turns
+    # — see gateway/runtime_lock.py. Same lifetime as ``run_registry``.
+    runtime_guard: "RuntimeUpdateGuard" = field(default_factory=lambda: _build_runtime_guard())
     dreaming_task: Any | None = None
     cron_stop: threading.Event | None = None
     cron_task: Any | None = None
@@ -225,6 +249,12 @@ async def build_agent_runtime(
     if dreaming_cfg.enabled and workspace_dir:
         dreaming_task = start_dreaming_scheduler(str(workspace_dir), dreaming_cfg, model_id, client, dreaming_stop)
 
+    # Build the RunRegistry + RuntimeUpdateGuard up front so the scheduler
+    # (started below) shares the same instances the EmbeddedBackend will use
+    # — see gateway/run_registry.py + gateway/runtime_lock.py.
+    run_registry = _build_run_registry()
+    runtime_guard = _build_runtime_guard()
+
     cron_stop = threading.Event()
     cron_task = None
     if config.schedule.enabled and not no_tools:
@@ -240,6 +270,9 @@ async def build_agent_runtime(
             max_concurrent=config.schedule.maxConcurrentRuns,
             missed_jobs_limit=config.schedule.missedJobsLimit,
             stop_event=cron_stop,
+            run_registry=run_registry,
+            approval_manager=registry.approval_manager,
+            runtime_guard=runtime_guard,
         )
 
     runtime = AgentRuntime(
@@ -259,6 +292,8 @@ async def build_agent_runtime(
         model_id=model_id,
         image_model_ref=image_model_ref,
         dreaming_stop=dreaming_stop,
+        run_registry=run_registry,
+        runtime_guard=runtime_guard,
         dreaming_task=dreaming_task,
         cron_stop=cron_stop,
         cron_task=cron_task,

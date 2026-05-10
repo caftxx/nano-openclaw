@@ -33,10 +33,15 @@ def start_cron_scheduler(
     max_concurrent: int,
     missed_jobs_limit: int,
     stop_event: threading.Event,
+    run_registry: Any | None = None,  # gateway.run_registry.RunRegistry; None → no abort plumbing
+    approval_manager: Any | None = None,  # consulted by NonInteractiveApprovalHandler
+    runtime_guard: Any | None = None,  # gateway.runtime_lock.RuntimeUpdateGuard
 ) -> asyncio.Task:
     """Start the cron scheduler as a background asyncio task.
 
-    Returns the Task so the caller can cancel it on shutdown.
+    Returns the Task so the caller can cancel it on shutdown. Phase 6 added
+    ``run_registry`` so each cron job's turn is registered under
+    ``cron:{job:8}:{run:8}`` and can be aborted via ``chat.abort(turn_id)``.
     """
 
     async def _loop() -> None:
@@ -44,7 +49,7 @@ def start_cron_scheduler(
         cron_dir.mkdir(parents=True, exist_ok=True)
 
         _recover_interrupted(store)
-        await _run_missed_jobs(store, state_dir, session_dir, workspace_dir, client, base_cfg, missed_jobs_limit)
+        await _run_missed_jobs(store, state_dir, session_dir, workspace_dir, client, base_cfg, missed_jobs_limit, run_registry, approval_manager, runtime_guard)
 
         active_tasks: set[asyncio.Task] = set()
 
@@ -66,7 +71,7 @@ def start_cron_scheduler(
 
             for job in due:
                 task = asyncio.create_task(
-                    _execute_job(job, store, state_dir, session_dir, workspace_dir, client, base_cfg),
+                    _execute_job(job, store, state_dir, session_dir, workspace_dir, client, base_cfg, run_registry, approval_manager, runtime_guard),
                     name=f"cron-{job.id[:8]}",
                 )
                 active_tasks.add(task)
@@ -103,19 +108,24 @@ async def _run_missed_jobs(
     client: Any,
     base_cfg: Any,
     limit: int,
+    run_registry: Any | None = None,
+    approval_manager: Any | None = None,
+    runtime_guard: Any | None = None,
 ) -> None:
     """Execute jobs whose nextRunAtMs has already passed (up to `limit`)."""
     jobs = store.load_jobs()
     states = store.load_state()
 
-    # Recompute nextRunAtMs for all jobs on startup
+    # Recompute nextRunAtMs for all jobs on startup. Use the recovery-aware
+    # variant so a daemon restart doesn't re-fire jobs that already ran for
+    # the most recent scheduled slot — see _set_next_run_recovery.
     now_ms = int(time.time() * 1000)
     now_dt = datetime.now()
     for job in jobs.values():
         if not job.enabled:
             continue
         state = states.setdefault(job.id, CronJobState(job_id=job.id))
-        _set_next_run(job, state, now_dt)
+        _set_next_run_recovery(job, state, now_dt)
     store.save_state(states)
 
     # Reload and find missed
@@ -128,7 +138,7 @@ async def _run_missed_jobs(
 
     tasks = [
         asyncio.create_task(
-            _execute_job(j, store, state_dir, session_dir, workspace_dir, client, base_cfg),
+            _execute_job(j, store, state_dir, session_dir, workspace_dir, client, base_cfg, run_registry, approval_manager, runtime_guard),
             name=f"cron-missed-{j.id[:8]}",
         )
         for j in immediate
@@ -180,16 +190,29 @@ async def _execute_job(
     workspace_dir: Path | None,
     client: Any,
     base_cfg: Any,
+    run_registry: Any | None = None,
+    approval_manager: Any | None = None,
+    runtime_guard: Any | None = None,
 ) -> None:
-    """Run one cron job and update state + run log."""
+    """Run one cron job and update state + run log.
+
+    Phase 6: registers the run under a deterministic ``turn_id`` so
+    ``chat.abort(turn_id)`` can target it; uses
+    ``NonInteractiveApprovalHandler`` so any tool that would have prompted
+    a human gets the allowlist check (allow → run, deny → fail) without
+    blocking forever.
+    """
     from dataclasses import replace as dc_replace
-    from nano_openclaw.loop import AgentSession, Message
+    from nano_openclaw.gateway.approval_broker import NonInteractiveApprovalHandler
+    from nano_openclaw.gateway.run_registry import cron_turn_id
+    from nano_openclaw.loop import AgentSession, CancellationToken, Message, TurnCancelled
     from nano_openclaw.tools import build_core_registry
 
     run_id = str(uuid.uuid4())
+    turn_id = cron_turn_id(job.id, run_id)
     started_at = datetime.now()
     started_ms = int(started_at.timestamp() * 1000)
-    log.info("cron.job.start", f"Cron job '{job.name}' ({job.id[:8]}) started")
+    log.info("cron.job.start", f"Cron job '{job.name}' ({job.id[:8]}) started turn={turn_id}")
 
     # Mark running
     states = store.load_state()
@@ -201,10 +224,27 @@ async def _execute_job(
     error: str | None = None
     history: list[Message] = []
 
+    cancellation_token = CancellationToken()
+    if run_registry is not None:
+        run_registry.register(
+            turn_id=turn_id,
+            origin="cron",
+            cancellation_token=cancellation_token,
+            session_key=f"cron-{job.id[:8]}-{run_id[:8]}",
+            label=f"cron job: {job.name}",
+        )
+
     try:
         registry = build_core_registry()
         if workspace_dir:
             registry.set_workspace_dir(workspace_dir)
+        # Wire the non-interactive approval path so cron-triggered tool calls
+        # never wait on a human. The handler consults the existing per-agent
+        # allowlist via ``approval_manager.check_request``: allowlist hit →
+        # ALLOW; otherwise DENY (per user decision).
+        if approval_manager is not None:
+            registry.approval_manager = approval_manager
+            registry.approval_handler = NonInteractiveApprovalHandler(approval_manager)
 
         cfg = dc_replace(
             base_cfg,
@@ -222,12 +262,26 @@ async def _execute_job(
             on_event=lambda _: None,
             client=client,
             cfg=cfg,
+            cancellation_token=cancellation_token,
         )
-        await session.run_turn(job.prompt)
+        # Hold the runtime-update reader for the cron turn — so a daemon-side
+        # ``runtime.update`` finds this turn in flight and returns BUSY rather
+        # than torpedoing the cron job mid-run.
+        if runtime_guard is not None:
+            async with runtime_guard.reader():
+                await session.run_turn(job.prompt)
+        else:
+            await session.run_turn(job.prompt)
 
+    except TurnCancelled:
+        status = "interrupted"
+        error = "cancelled via chat.abort"
     except Exception as exc:
         status = "error"
         error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if run_registry is not None:
+            run_registry.unregister(turn_id)
 
     ended_at = datetime.now()
     elapsed_ms = int((ended_at - started_at).total_seconds() * 1000)
@@ -269,31 +323,61 @@ async def _execute_job(
         elapsed_ms=elapsed_ms,
     ))
 
-    # ── Directed WeChat notification ────────────────────────────────────────────
+    # ── Directed channel notification ───────────────────────────────────────────
+    #
+    # Phase 2 routes via ChannelRegistry.dispatch_notify when the originating
+    # channel is registered + running (the daemon/Phase 3 path). Falls back to
+    # the legacy direct-write path when no channel instance owns the
+    # notification — that's the case for jobs created in the standalone
+    # `nano-openclaw wechat` subcommand which runs WechatBot without going
+    # through the registry.
 
-    if job.notify_wechat and job.created_by.startswith("wechat:"):
-        target_uid = job.created_by.split(":", 1)[1]
-        should_notify = (status == "ok" and job.notify_on_success) or \
-                        (status == "error" and job.notify_on_error)
-        if should_notify:
-            from nano_openclaw.wechat.notify import NotifyQueue, NotifyItem
-            # Use state_dir for notify-queue path (same as wechat bot)
+    should_notify = job.notify_wechat and (
+        (status == "ok" and job.notify_on_success)
+        or (status == "error" and job.notify_on_error)
+    )
+
+    if should_notify:
+        from nano_openclaw.channels.registry import get_channel_registry
+
+        if status == "error":
+            summary = (
+                f"定时任务「{job.name}」执行失败\n"
+                f"错误: {error}\n"
+                f"耗时: {elapsed_ms}ms"
+            )
+        else:
+            model_text = _extract_last_assistant_text(history)
+            summary = model_text if model_text else f"定时任务「{job.name}」已完成（无文本输出）"
+
+        record = CronRunRecord(
+            job_id=job.id,
+            run_id=run_id,
+            started_at=started_at.isoformat(),
+            ended_at=ended_at.isoformat(),
+            status=status,
+            error=error,
+            elapsed_ms=elapsed_ms,
+        )
+
+        registry = get_channel_registry()
+        delivered = await registry.dispatch_notify(
+            created_by=job.created_by,
+            status=status,
+            summary=summary,
+            job=job,
+            record=record,
+        )
+
+        if not delivered and job.created_by.startswith("wechat:"):
+            # Fallback: legacy single-account path. When the daemon isn't
+            # running but a standalone `nano-openclaw wechat` bot is, the
+            # bot polls the default state_dir/notify-queue.jsonl directly.
+            from nano_openclaw.wechat.notify import NotifyItem, NotifyQueue
+            parts = job.created_by.split(":", 2)
+            target_uid = parts[2] if len(parts) == 3 else parts[1]
             notify_path = state_dir / "notify-queue.jsonl"
             queue = NotifyQueue(notify_path)
-
-            if status == "error":
-                summary = (
-                    f"定时任务「{job.name}」执行失败\n"
-                    f"错误: {error}\n"
-                    f"耗时: {elapsed_ms}ms"
-                )
-            else:
-                model_text = _extract_last_assistant_text(history)
-                if model_text:
-                    summary = model_text
-                else:
-                    summary = f"定时任务「{job.name}」已完成（无文本输出）"
-
             queue.append(NotifyItem(
                 job_id=job.id,
                 job_name=job.name,
@@ -303,7 +387,7 @@ async def _execute_job(
                 target_uid=target_uid,
                 sent=False,
             ))
-            log.info("cron.notify.queued", f"Notification queued for {target_uid:.16} (job={job.name})")
+            log.info("cron.notify.queued.legacy", f"Notification queued (legacy) for {target_uid:.16} (job={job.name})")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -350,3 +434,52 @@ def _set_next_run(
         nxt = last if last is not None else _next_cron_occurrence(job.expression, reference)
 
     state.next_run_at_ms = int(nxt.timestamp() * 1000) if nxt else None
+
+
+def _set_next_run_recovery(
+    job: CronJob,
+    state: CronJobState,
+    reference: datetime,
+) -> None:
+    """Recompute ``next_run_at_ms`` at daemon startup, **skipping slots
+    that already ran**.
+
+    Without this dedupe, a daemon restart after a successful run would set
+    ``next_run_at_ms`` back to the just-fired slot — and ``_collect_due``
+    would re-trigger the job. We compare the most-recent scheduled
+    occurrence against ``last_run_at_ms``: if the job already ran at or
+    after that slot, skip ahead to the next future occurrence.
+
+    One-shot jobs are deleted post-fire, so a one-shot still in the store
+    with ``last_run_at_ms`` set means the deletion didn't complete (rare
+    crash window) — treat it as "already done, don't re-fire".
+    """
+    if job.one_shot:
+        if state.last_run_at_ms is not None:
+            state.next_run_at_ms = None
+            return
+        state.next_run_at_ms = job.fire_at_ms
+        return
+
+    if not job.expression:
+        state.next_run_at_ms = None
+        return
+
+    last_occ = _last_cron_occurrence(job.expression, reference)
+    if last_occ is None:
+        # No past occurrence yet — schedule the next future one.
+        nxt = _next_cron_occurrence(job.expression, reference)
+        state.next_run_at_ms = int(nxt.timestamp() * 1000) if nxt else None
+        return
+
+    last_occ_ms = int(last_occ.timestamp() * 1000)
+    last_run = state.last_run_at_ms or 0
+    # last_run within the same minute as last_occ counts as "ran for that slot"
+    # — cron expressions resolve to minute granularity, so a slight clock skew
+    # between when we computed last_occ and when the job actually ran shouldn't
+    # cause a re-fire.
+    if last_run + 60_000 > last_occ_ms:
+        nxt = _next_cron_occurrence(job.expression, reference)
+        state.next_run_at_ms = int(nxt.timestamp() * 1000) if nxt else None
+    else:
+        state.next_run_at_ms = last_occ_ms

@@ -6,11 +6,10 @@
 
 | 优先级 | 路径 | 说明 |
 |--------|------|------|
-| 1 | `--config <path>` | 命令行显式指定 |
-| 2 | `$NANO_OPENCLAW_CONFIG_PATH` | 环境变量 |
-| 3 | `{stateDir}/nano-openclaw.json5` | 状态目录下 |
-| 4 | `{cwd}/workspace/nano-openclaw.json5` | 项目 workspace 目录 |
-| 5 | `~/.nano-openclaw/nano-openclaw.json5` | 用户全局配置 |
+| 1 | `$NANO_OPENCLAW_CONFIG_PATH` | 环境变量 |
+| 2 | `{stateDir}/nano-openclaw.json5` | 状态目录下 |
+| 3 | `{cwd}/workspace/nano-openclaw.json5` | 项目 workspace 目录 |
+| 4 | `~/.nano-openclaw/nano-openclaw.json5` | 用户全局配置 |
 
 **状态目录** (`stateDir`) 解析优先级：
 1. `$NANO_OPENCLAW_STATE_DIR` 环境变量
@@ -114,6 +113,68 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `idleMinutes` | number | `60` | 空闲超时分钟数 |
 | `reset.mode` | string | `"idle"` | 重置模式：`daily` \| `idle` |
 | `reset.idleMinutes` | number | `120` | 空闲多少分钟后重置 |
+
+### gateway — Gateway daemon 配置
+
+`gateway` 子命令（`gateway start/status/stop/run`）启动一个 daemon 进程，内部跑 WebUI、WeChat channels、cron、subagent runner，并暴露 `/rpc` WebSocket 给远程 TUI（`tui --connect`）。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `host` | string | `"127.0.0.1"` | 绑定地址。改成 `"0.0.0.0"` 等非 loopback 时启动会打 warning（v1 无 auth） |
+| `port` | number | `5000` | TCP 端口（范围 1-65535） |
+| `log_path` | string | `""` | daemon 后台模式的 stdout/stderr 写入位置；留空 → `state_dir/log/gateway.log` |
+
+**优先级**（高 → 低）：CLI 参数（`--host` / `--port`）> `config.gateway.*` > 默认值。
+
+```json5
+gateway: {
+  host: "127.0.0.1",
+  port: 5000,
+  log_path: "",
+}
+```
+
+### wechat — WeChat 多账号配置
+
+WeChat 现在作为 daemon 内的 Channel 运行（不再是独立子命令）。每个 uid 自动绑定持久化 session，三个前端（TUI / WebUI / WeChat）共享同一份 `/sessions` 列表。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `accounts` | array | `[]` | 配置的账号列表（v1 启动需至少一个有 `ilink_token`） |
+| `poll_timeout` | number | `35` | iLink 长轮询超时（秒，范围 5-120） |
+| `typing_interval` | number | `5` | "正在输入"指示符续命间隔（秒，范围 1-30） |
+| `notify_poll_interval` | number | `30` | cron 通知队列的轮询间隔（秒，范围 5-300） |
+
+#### accounts[] — 单账号
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `id` | string | `"default"` | 账号标识，用于 `created_by` 三段格式 + uid 映射文件名 |
+| `ilink_token` | string | `""` | iLink bot token（必填） |
+| `ilink_base_url` | string | `"https://ilinkai.weixin.qq.com"` | iLink API 地址 |
+| `notify_queue_path` | string | `""` | 留空 → `state_dir/notify-queue.{id}.jsonl` |
+
+```json5
+wechat: {
+  accounts: [
+    {
+      id: "default",
+      ilink_token: "${ILINK_TOKEN}",
+    },
+    {
+      id: "work",
+      ilink_token: "...",
+    },
+  ],
+}
+```
+
+> 旧的 `wechat.ilink_token`（顶层）形式已不再支持。启动时会报错并指向新 schema。
+
+**uid → session 映射**：daemon 启动后，每个 wechat uid 第一次发消息时自动通过 `BackendSessionManager.create()` 拿到一个真实 session，映射持久化到 `state_dir/wechat-sessions.{account}.json`。后续消息复用同一个 session，daemon 重启也能继续。
+
+**cron 通知路由**：cron 任务的 `created_by` 三段格式 `wechat:{account}:{uid}`，完成后 daemon 通过 ChannelRegistry 路由到对应账号的通知队列，再由 WechatBot 读取并推送给原 uid。
+
 
 ### exec-approvals.json — 审批门禁配置
 

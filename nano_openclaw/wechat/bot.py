@@ -15,6 +15,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 import base64
 
@@ -42,8 +43,15 @@ from nano_openclaw.wechat.notify import NotifyQueue, NotifyItem
 log = get_logger(__name__)
 
 
-def _clone_registry(registry: ToolRegistry, uid: str) -> ToolRegistry:
-    """Clone registry and inject uid into cron_create tool for directed notifications."""
+def _clone_registry(registry: ToolRegistry, uid: str, account_id: str = "default") -> ToolRegistry:
+    """Clone registry and inject sender into cron_create / schedule_wakeup.
+
+    Phase 2 changed the ``created_by`` format from two-segment ``wechat:{uid}``
+    to three-segment ``wechat:{account_id}:{uid}`` so the channel registry
+    can route notifications to the right account on multi-account daemons.
+    The cron scheduler accepts both formats (legacy two-segment is mapped to
+    account ``"default"``).
+    """
     clone = ToolRegistry(
         _tools=dict(registry._tools),
         approval_manager=registry.approval_manager,
@@ -58,11 +66,13 @@ def _clone_registry(registry: ToolRegistry, uid: str) -> ToolRegistry:
     if hook_reg is not None:
         clone.set_hook_registry(hook_reg)
 
+    created_by = f"wechat:{account_id}:{uid}"
+
     # Wrap cron_create to auto-bind created_by and enable notification
     if "cron_create" in clone._tools:
         cron_create = clone._tools["cron_create"]
         def wrapped_run(args: dict[str, Any]) -> str:
-            args["created_by"] = f"wechat:{uid}"
+            args["created_by"] = created_by
             args.setdefault("notify_wechat", True)  # 微信创建默认开启通知
             return cron_create.run(args)
 
@@ -77,7 +87,7 @@ def _clone_registry(registry: ToolRegistry, uid: str) -> ToolRegistry:
     if "schedule_wakeup" in clone._tools:
         schedule_wakeup = clone._tools["schedule_wakeup"]
         def wrapped_wakeup(args: dict[str, Any]) -> str:
-            args["created_by"] = f"wechat:{uid}"
+            args["created_by"] = created_by
             args.setdefault("notify_wechat", True)
             return schedule_wakeup.run(args)
 
@@ -101,10 +111,86 @@ class WechatBot:
     notify_queue: NotifyQueue | None = None
     notify_poll_interval: int = 30
     heartbeat_interval: float = 30.0  # seconds of silence before a tool-status line is sent
-    # uid -> history list (in-memory per-user session)
+    # Account identifier for created_by markers on cron jobs created by this bot's
+    # users. Multi-account daemons spawn one WechatBot per account, each with a
+    # distinct ``account_id`` so cron notifications route correctly.
+    account_id: str = "default"
+    # ``session_manager`` (set in daemon mode) routes per-uid conversations
+    # through ``BackendSessionManager`` — same store the WebUI/TUI ``/sessions``
+    # surface reads. ``None`` falls back to the legacy in-memory dict (only
+    # the deprecated standalone path which Phase 3 already removed).
+    session_manager: Any | None = None
+    # Persistence path for the uid → session_id mapping; without it, restarts
+    # forget which uid maps to which session and the next message creates a
+    # fresh empty session.
+    uid_map_path: Path | None = None
+    # uid -> history list (legacy fallback when session_manager is None)
     _sessions: dict[str, list[Any]] = field(default_factory=dict)
+    # uid -> session_id (loaded from uid_map_path on first use)
+    _uid_to_session_id: dict[str, str] = field(default_factory=dict)
+    _uid_map_loaded: bool = False
+
+    def _ensure_uid_map_loaded(self) -> None:
+        """Lazy-load the uid → session_id JSON mapping. Idempotent."""
+        if self._uid_map_loaded or self.uid_map_path is None:
+            self._uid_map_loaded = True
+            return
+        try:
+            if self.uid_map_path.exists():
+                import json
+                self._uid_to_session_id = json.loads(self.uid_map_path.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "wechat.uid_map.load.error",
+                f"failed to load {self.uid_map_path}: {type(exc).__name__}: {exc}",
+            )
+            self._uid_to_session_id = {}
+        self._uid_map_loaded = True
+
+    def _save_uid_map(self) -> None:
+        """Atomic write of the uid → session_id mapping. No-op if no path."""
+        if self.uid_map_path is None:
+            return
+        try:
+            import json
+            self.uid_map_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.uid_map_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._uid_to_session_id, indent=2), encoding="utf-8")
+            os.replace(tmp, self.uid_map_path)
+        except OSError as exc:
+            log.warning(
+                "wechat.uid_map.save.error",
+                f"failed to save {self.uid_map_path}: {exc}",
+            )
+
+    def _resolve_session(self, uid: str):
+        """Return an ``AgentBackendSession`` for a wechat uid (daemon mode).
+
+        First contact → manager.create() and persist the mapping.
+        Subsequent → manager.get_or_load(stored_id); if the file vanished
+        somehow (manual deletion etc.) → fall through to a fresh session.
+
+        ``None`` only when ``session_manager`` isn't wired (legacy path).
+        """
+        if self.session_manager is None:
+            return None
+        self._ensure_uid_map_loaded()
+
+        existing_id = self._uid_to_session_id.get(uid)
+        if existing_id:
+            try:
+                return self.session_manager.get_or_load(existing_id)
+            except KeyError:
+                # mapping points at a deleted session — fall through to create
+                self._uid_to_session_id.pop(uid, None)
+
+        new_session = self.session_manager.create()
+        self._uid_to_session_id[uid] = new_session.session_id
+        self._save_uid_map()
+        return new_session
 
     def _get_or_create_history(self, uid: str) -> list[Any]:
+        # Legacy fallback only — daemon path uses _resolve_session(uid) directly.
         if uid not in self._sessions:
             self._sessions[uid] = []
         return self._sessions[uid]
@@ -145,11 +231,28 @@ class WechatBot:
             return "⚠️ **Bot cannot quit via WeChat command.** Send `/help` for available commands."
 
         if cmd_lower == "/clear":
-            history = self._get_or_create_history(uid)
-            history.clear()
+            backend_session = self._resolve_session(uid)
+            if backend_session is not None and self.session_manager is not None:
+                # Daemon path — use the manager's clear() so transcript file
+                # is rewritten to header-only and sessions.json sees the
+                # update; mirrors what gateway/slash.py's /clear does.
+                try:
+                    await self.session_manager.clear(backend_session.session_id)
+                except RuntimeError as exc:
+                    return f"⚠️ {exc}"
+            else:
+                history = self._get_or_create_history(uid)
+                history.clear()
             return "✅ **History cleared** for this session."
 
         if cmd_lower == "/new":
+            if self.session_manager is not None:
+                # Bind a fresh session for this uid; old session stays on disk.
+                self._ensure_uid_map_loaded()
+                new_session = self.session_manager.create()
+                self._uid_to_session_id[uid] = new_session.session_id
+                self._save_uid_map()
+                return f"✅ **New session started** (`{new_session.session_id[:8]}…`)."
             history = self._get_or_create_history(uid)
             history.clear()
             return "✅ **New session started** (history cleared)."
@@ -173,10 +276,17 @@ class WechatBot:
             )
 
         if cmd_lower == "/context":
-            history = self._get_or_create_history(uid)
+            backend_session = self._resolve_session(uid)
+            history = backend_session.history if backend_session is not None else self._get_or_create_history(uid)
             msg_count = len(history)
-            user_msgs = sum(1 for m in history if m.get("role") == "user")
-            assistant_msgs = sum(1 for m in history if m.get("role") == "assistant")
+            def _role(m: Any) -> str:
+                if hasattr(m, "role"):
+                    return getattr(m, "role", "")
+                if isinstance(m, dict):
+                    return str(m.get("role", ""))
+                return ""
+            user_msgs = sum(1 for m in history if _role(m) == "user")
+            assistant_msgs = sum(1 for m in history if _role(m) == "assistant")
             from nano_openclaw.compact import estimate_tokens
             tokens = estimate_tokens(history)
             return (
@@ -186,7 +296,8 @@ class WechatBot:
             )
 
         if cmd_lower == "/compact":
-            history = self._get_or_create_history(uid)
+            backend_session = self._resolve_session(uid)
+            history = backend_session.history if backend_session is not None else self._get_or_create_history(uid)
             cfg = self.runtime.cfg
             if len(history) < cfg.context_recent_turns * 2:
                 return "📊 **Compact**: Not enough history to compact."
@@ -408,7 +519,21 @@ class WechatBot:
         if not text.strip() and not attachments:
             return
 
-        history = self._get_or_create_history(uid)
+        # Prefer the daemon's BackendSessionManager when wired (Phase 9): each
+        # uid gets a real persisted session that shows up in /sessions / WebUI.
+        # The legacy in-memory dict is only used by the deprecated standalone
+        # path which Phase 3 already removed from the CLI.
+        backend_session = self._resolve_session(uid)
+        if backend_session is not None:
+            history = backend_session.history
+            transcript_writer = backend_session.writer
+            session_id_for_cfg = backend_session.session_id
+            session_lock = backend_session.lock
+        else:
+            history = self._get_or_create_history(uid)
+            transcript_writer = None
+            session_id_for_cfg = None
+            session_lock = None
         # Buffer of TextDeltas that have not yet been flushed as a wechat message.
         # On every ToolUseStart we cut here and ship the buffered text as one
         # standalone message — that gives the user incremental visibility into the
@@ -493,17 +618,48 @@ class WechatBot:
             heartbeat_task = asyncio.create_task(heartbeat())
 
             try:
-                agent_session = AgentSession(
-                    history=history,
-                    registry=_clone_registry(self.runtime.registry, uid),
-                    on_event=on_event,
-                    client=self.runtime.client,
-                    cfg=self.runtime.cfg,
-                )
-                await agent_session.run_turn(
-                    text or "(no text, maybe just attachments)",
-                    attachments=attachments or None,
-                )
+                # Build the session config — when daemon-mode, point cfg at
+                # the resolved session_id so any code reading cfg.session_key
+                # (cron, subagent context, etc.) sees the real id.
+                from dataclasses import replace as _dc_replace
+                turn_cfg = self.runtime.cfg
+                if session_id_for_cfg is not None:
+                    turn_cfg = _dc_replace(self.runtime.cfg, session_key=session_id_for_cfg)
+
+                # Hold the session lock so two concurrent messages from the
+                # same wechat user serialize on the same backend session
+                # (otherwise they'd race on history mutation). Skip when no
+                # backend (legacy path).
+                if session_lock is not None:
+                    if session_lock.locked():
+                        log.info(
+                            "wechat.session.busy",
+                            f"uid={uid:.16}: previous turn still running, will queue",
+                        )
+                    await session_lock.acquire()
+                try:
+                    agent_session = AgentSession(
+                        history=history,
+                        registry=_clone_registry(self.runtime.registry, uid, self.account_id),
+                        on_event=on_event,
+                        client=self.runtime.client,
+                        cfg=turn_cfg,
+                        transcript_writer=transcript_writer,
+                    )
+                    await agent_session.run_turn(
+                        text or "(no text, maybe just attachments)",
+                        attachments=attachments or None,
+                    )
+                    # Persist sessions.json metadata so /sessions sees the
+                    # updated message count after each turn.
+                    if backend_session is not None and self.session_manager is not None:
+                        try:
+                            self.session_manager.save_metadata(backend_session)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("wechat.save_metadata.error", f"{type(exc).__name__}: {exc}")
+                finally:
+                    if session_lock is not None:
+                        session_lock.release()
             except Exception as exc:
                 log.error("wechat.turn.failed", f"run_turn failed for {uid:.16}: {exc}")
             finally:
@@ -541,18 +697,23 @@ async def run_wechat_bot(
         )
 
     cfg = runtime.config.wechat
-    token = token_override or cfg.ilink_token or os.getenv("ILINK_TOKEN", "")
+    # Phase 2 schema: legacy single-token form is auto-migrated by the Pydantic
+    # validator into a one-element accounts list. The legacy `wechat` subcommand
+    # only ever ran one account, so we use accounts[0]; multi-account support
+    # ships through the Phase 3 daemon (`gateway start`).
+    primary = cfg.accounts[0] if cfg.accounts else None
+    token = token_override or (primary.ilink_token if primary else "") or os.getenv("ILINK_TOKEN", "")
     if not token:
         console.print(
-            "[red]error:[/red] iLink token required. Set wechat.ilink_token in config, "
+            "[red]error:[/red] iLink token required. Set wechat.accounts[0].ilink_token in config, "
             "pass --token, or set ILINK_TOKEN env var."
         )
         return
 
-    base_url = cfg.ilink_base_url
+    base_url = primary.ilink_base_url if primary else "https://ilinkai.weixin.qq.com"
 
     # Initialize notification queue
-    notify_path_str = cfg.notify_queue_path or ""
+    notify_path_str = (primary.notify_queue_path if primary else "") or ""
     if notify_path_str:
         notify_path = Path(notify_path_str)
     else:

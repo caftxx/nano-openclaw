@@ -5,7 +5,7 @@ and `src/tui/components/tool-execution.ts:55-137` (tool panels).
 Production OpenClaw uses pi-tui — a custom React-like terminal lib.
 nano uses ``rich``: simpler, less to learn, same visual idea.
 
-Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions`` (interactive picker; ``/sessions all`` for plain list), ``/save``, ``/session [prefix|#]``. No multiline editor.
+Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (new session + new ID), ``/help``, ``/context``, ``/compact``, ``/sessions`` (interactive picker; ``/sessions all`` for plain list), ``/session [prefix|#]``. No multiline editor.
 """
 
 from __future__ import annotations
@@ -92,7 +92,6 @@ _BASE_COMMANDS = [
     "/context",
     "/compact",
     "/sessions \\[all]",
-    "/save",
     "/session \\[prefix|#]",
     "/skills",
     "/plugins",
@@ -111,10 +110,42 @@ async def repl(
     session_id: str = "",
     store_path: Path | None = None,
     initial_history: list[Message] | None = None,
+    backend: Any = None,
 ) -> None:
-    """Interactive read-eval-print loop. Runs until /quit or Ctrl-D."""
+    """Interactive read-eval-print loop. Runs until /quit or Ctrl-D.
+
+    ``backend`` (Phase 1 of the gateway port) routes chat dispatch through
+    an ``EmbeddedBackend`` when supplied. Slash commands and history
+    bookkeeping continue to operate on the same in-memory ``history`` and
+    ``transcript_writer`` — when ``backend`` is provided, those are bound to
+    the backend's session entity so the data is shared, not duplicated.
+
+    When ``backend`` is None, the legacy direct-AgentSession path runs
+    unchanged. This keeps existing tests + ``__main__.py`` working until the
+    CLI entry is migrated.
+    """
     console = Console()
-    history: list[Message] = list(initial_history) if initial_history else []
+
+    # If a backend is supplied, bind history + transcript_writer + session_id to
+    # the backend's session entity. Slash commands keep working unchanged because
+    # they mutate `history` (a list reference) and call methods on
+    # `transcript_writer`; both come straight from the backend's session, so
+    # mutations are visible through the backend too.
+    if backend is not None:
+        try:
+            backend_session = backend.manager.get_or_load(session_id or None)
+        except KeyError:
+            # session_id pointed at a transcript that doesn't exist (or was
+            # mid-creation by a legacy path) — fall through to a fresh session.
+            backend_session = backend.manager.create()
+        session_id = backend_session.session_id
+        history = backend_session.history
+        transcript_writer = backend_session.writer
+        if cfg.session_key != session_id:
+            cfg.session_key = session_id
+    else:
+        history = list(initial_history) if initial_history else []
+
     _load_input_history(history)
 
     # Wire spawn context so sessions_spawn / subagents tools are callable and
@@ -150,7 +181,7 @@ async def repl(
 
         # Drain completed subagent results as early as possible — before any
         # slash command handling — so results are persisted even when the user
-        # runs /save, /new, /session, /quit, etc. instead of normal input.
+        # runs /new, /session, /quit, etc. instead of normal input.
         if _spawn_ctx is not None:
             from nano_openclaw.subagent.runner import get_runner
             _pending = get_runner().drain_announcements(_spawn_ctx.requester_session_key)
@@ -162,6 +193,44 @@ async def repl(
                 n = len(_pending)
                 console.print(f"[dim]({n} subagent result{'s' if n > 1 else ''} added to context)[/]")
 
+        # ── Slash command dispatch ────────────────────────────────────────
+        # When ``backend`` is wired (the default tui invocation), delegate to
+        # ``gateway.slash.handle_slash`` so embedded + remote modes share one
+        # surface and one set of Rich renderers. When backend is None (legacy
+        # direct invocation paths), fall through to the inline branches below.
+        if backend is not None and user_input.startswith("/"):
+            from nano_openclaw.gateway.slash import QuitREPL, handle_slash
+            slash_state = {"session_key": session_id, "session_changed": False}
+            try:
+                handled = await handle_slash(user_input, backend, console, slash_state)
+            except QuitREPL:
+                console.print("[dim]bye.[/]")
+                return
+            if handled:
+                if slash_state.get("session_changed"):
+                    # Slash mutated which session future turns should target.
+                    # Re-bind local references to the new session entity so
+                    # legacy variables (history, transcript_writer, session_id)
+                    # all point to the same place the backend now uses.
+                    new_key = slash_state.get("session_key") or session_id
+                    if new_key:
+                        try:
+                            new_sess = backend.manager.get_or_load(new_key)
+                        except KeyError:
+                            new_sess = backend.manager.create()
+                            new_key = new_sess.session_id
+                        history = new_sess.history
+                        transcript_writer = new_sess.writer
+                        session_id = new_sess.session_id
+                        cfg.session_key = session_id
+                        if _spawn_ctx is not None:
+                            _spawn_ctx.requester_session_key = session_id
+                        _load_input_history(history)
+                continue
+            console.print(f"[dim]unknown command: {markup.escape(user_input)}[/]")
+            continue
+
+        # ── Legacy inline slash dispatch (backend=None path) ──────────────
         if user_input in {"/quit", "/exit", "/q"}:
             console.print("[dim]bye.[/]")
             return
@@ -244,12 +313,6 @@ async def repl(
             else:
                 console.print("[dim](no session store configured)[/]")
             continue
-        if user_input == "/save":
-            if transcript_writer and store_path and session_id:
-                _save_session_now(console, store_path, transcript_writer, session_id, cfg.model)
-            else:
-                console.print("[dim](no active session to save)[/]")
-            continue
         if user_input.startswith("/session"):
             parts = user_input.split(None, 1)
             if len(parts) == 1:
@@ -306,16 +369,35 @@ async def repl(
         on_event = _make_event_handler(console, registry=registry)
         try:
             with _escape_cancellation_token() as cancellation_token:
-                session = AgentSession(
-                    history=history,
-                    registry=registry,
-                    on_event=on_event,
-                    client=client,
-                    cfg=cfg,
-                    transcript_writer=transcript_writer,
-                    cancellation_token=cancellation_token,
-                )
-                await session.run_turn(user_input)
+                if backend is not None:
+                    # Phase 1: route turn through Backend. Identical observable
+                    # behavior — events still fire synchronously into on_event,
+                    # cancellation token is honored, history mutates in place.
+                    try:
+                        turn_id = await backend.chat_send(
+                            session_key=session_id,
+                            text=user_input,
+                            on_local_event=on_event,
+                            cancellation_token=cancellation_token,
+                        )
+                    except Exception as exc:  # BusyError or worse
+                        from nano_openclaw.gateway.backend import BusyError
+                        if isinstance(exc, BusyError):
+                            console.print(f"\n[yellow]busy:[/] {exc} (retry in {exc.retry_after_ms}ms)")
+                            continue
+                        raise
+                    await backend.await_turn(turn_id)
+                else:
+                    session = AgentSession(
+                        history=history,
+                        registry=registry,
+                        on_event=on_event,
+                        client=client,
+                        cfg=cfg,
+                        transcript_writer=transcript_writer,
+                        cancellation_token=cancellation_token,
+                    )
+                    await session.run_turn(user_input)
         except TurnCancelled:
             console.print("\n[dim](turn cancelled)[/]")
             continue
@@ -954,18 +1036,6 @@ def _update_session_metadata(
         compaction_count=transcript_writer.compaction_count,
     )
     save_session_store(store_path, store)
-
-
-def _save_session_now(
-    console: Console,
-    store_path: Path,
-    transcript_writer: TranscriptWriter,
-    session_id: str,
-    model: str,
-) -> None:
-    """Force-save session metadata to sessions.json."""
-    _update_session_metadata(store_path, session_id, transcript_writer, model)
-    console.print(f"[dim]session {session_id[:8]}… saved[/]")
 
 
 def _load_input_history(messages: list[Message]) -> None:

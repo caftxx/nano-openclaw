@@ -91,26 +91,62 @@ class RuntimeSetRequest(BaseModel):
     thinking_level: str | None = None
 
 
-def create_app(*, config_path: str | None, agent_id: str, token: str | None) -> FastAPI:
+def create_app(
+    *,
+    config_path: str | None = None,
+    agent_id: str = "default",
+    token: str | None = None,
+    runtime: Any = None,
+    backend: Any = None,
+) -> FastAPI:
+    """Build the FastAPI app for the WebUI.
+
+    Three modes:
+
+    - **Standalone**: both ``runtime`` and ``backend`` are None (legacy
+      tests). Lifespan builds its own AgentRuntime and a fresh
+      BackendSessionManager.
+    - **Daemon-mounted (runtime only)**: ``runtime`` provided, ``backend``
+      is None. Lifespan reuses the daemon's runtime but builds its own
+      manager — sessions show up in WebUI from disk only.
+    - **Daemon-mounted (backend shared)**: both ``runtime`` and ``backend``
+      provided. Lifespan reuses the daemon's runtime AND the daemon's
+      ``backend.manager`` — webui + /rpc + channels see the SAME in-memory
+      session entities. This is the path ``run_daemon`` takes; it's why
+      a wechat or TUI-created session is immediately visible in WebUI.
+    """
     static_dir = Path(__file__).with_name("static")
+    _external_runtime = runtime
+    _external_backend = backend
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runtime = await build_agent_runtime(config_path=config_path, agent_id=agent_id)
-        sessions = WebSessionManager(
-            session_dir=runtime.session_dir,
-            store_path=runtime.store_path,
-            model=runtime.model_id,
-            cwd=str(runtime.workspace_dir),
-        )
-        sessions.get_or_load(None)
-        app.state.runtime = runtime
+        if _external_runtime is None:
+            owned_runtime = await build_agent_runtime(config_path=config_path, agent_id=agent_id)
+        else:
+            owned_runtime = _external_runtime
+        # Share the daemon's manager when available so all surfaces see the
+        # same session set; otherwise build an owned one (legacy + standalone).
+        if _external_backend is not None:
+            sessions = _external_backend.manager
+        else:
+            sessions = WebSessionManager(
+                session_dir=owned_runtime.session_dir,
+                store_path=owned_runtime.store_path,
+                model=owned_runtime.model_id,
+                cwd=str(owned_runtime.workspace_dir),
+            )
+            sessions.get_or_load(None)
+        app.state.runtime = owned_runtime
         app.state.sessions = sessions
         app.state.token = token
         try:
             yield
         finally:
-            await runtime.close()
+            # Only close the runtime we built ourselves; an externally-supplied
+            # runtime is owned by the daemon caller.
+            if _external_runtime is None:
+                await owned_runtime.close()
 
     app = FastAPI(title="nano-openclaw WebUI", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -1033,7 +1069,6 @@ async def handle_slash_command(
             "| `/context` | Context window usage |",
             "| `/compact` | Compact session history |",
             "| `/clear` | Clear session history |",
-            "| `/save` | Save current session |",
             "| `/tools` | List all registered tools |",
             "| `/skills` | List available skills |",
             "| `/plugins` | List loaded plugins |",
@@ -1204,12 +1239,6 @@ async def handle_slash_command(
             lines.append(f"| `{name}` | {desc} |")
         lines += ["", f"*{len(names)} tool{'s' if len(names) != 1 else ''} registered*"]
         return "\n".join(lines), False
-
-    if verb == "save":
-        # Mirror _save_session_now() in cli.py
-        session = manager.get_or_load(session_id)
-        manager.save_metadata(session)
-        return f"session `{session.session_id[:8]}…` saved", False
 
     if verb == "subagents":
         # Mirror _handle_subagents_command() in cli.py — full sub-command support
