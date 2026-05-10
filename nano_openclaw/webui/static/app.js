@@ -1322,9 +1322,28 @@ $("sendBtn").onclick = (event) => {
   }
 };
 
+// Mirror of gateway/slash.py::_HANDLERS so the WebUI front-end routes the
+// same set of commands through ``command.run`` instead of leaking them to
+// chat.send (where the agent would treat ``/model`` as a regular message
+// and likely fire the ``switch_model`` tool). Keep in sync with
+// ``_HANDLERS`` and ``HELP_TEXT`` in nano_openclaw/gateway/slash.py.
 const BUILTIN_COMMANDS = new Set([
-  "help", "context", "compact", "clear", "save",
-  "tools", "skills", "plugins", "hooks", "models", "subagents", "active-memory", "dreaming",
+  // banner / lifecycle
+  "help", "quit", "exit", "q", "save",
+  // session lifecycle
+  "clear", "new", "sessions", "session",
+  // context
+  "context", "compact",
+  // introspection
+  "tools", "skills", "plugins", "hooks", "subagents",
+  // memory
+  "active-memory", "dreaming",
+  // daemon-introspection
+  "health", "channels", "runtime",
+  // models
+  "models", "model",
+  // gateway lifecycle
+  "restart",
 ]);
 
 $("composer").onsubmit = async (event) => {
