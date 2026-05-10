@@ -18,6 +18,7 @@ BUILTIN_PLUGINS = {
     "mcp": "nano_openclaw.plugins.builtin.mcp_plugin.McpPlugin",
     "subagent": "nano_openclaw.plugins.builtin.subagent_plugin.SubagentPlugin",
     "schedule": "nano_openclaw.plugins.builtin.schedule_plugin.SchedulePlugin",
+    "review-fork": "nano_openclaw.plugins.builtin.review_fork_plugin.ReviewForkPlugin",
 }
 
 

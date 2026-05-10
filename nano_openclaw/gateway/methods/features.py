@@ -45,10 +45,31 @@ async def dreaming_run(ctx: GatewayContext, params: dict[str, Any]) -> dict[str,
     return await ctx.backend.dreaming_run()
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Review Fork
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def review_fork_get(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.backend.review_fork_get()
+
+
+async def review_fork_set(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.backend.review_fork_set(**params)
+
+
+async def review_fork_run(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    session_key = params.get("session_key") if params else None
+    return await ctx.backend.review_fork_run(session_key=session_key)
+
+
 HANDLERS = {
     "active_memory.get": active_memory_get,
     "active_memory.set": active_memory_set,
     "dreaming.get": dreaming_get,
     "dreaming.set": dreaming_set,
     "dreaming.run": dreaming_run,
+    "review_fork.get": review_fork_get,
+    "review_fork.set": review_fork_set,
+    "review_fork.run": review_fork_run,
 }

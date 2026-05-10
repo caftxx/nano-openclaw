@@ -51,7 +51,7 @@ HELP_TEXT = (
     "/quit  /clear  /new  /help  /context  /compact  /sessions [all|delete <id>]  "
     "/session [prefix|#]  /skills  /plugins  /hooks  /tools  "
     "/subagents [list|kill <id>|all]  /active-memory [status|on|off|mode|style]  "
-    "/dreaming [status|on|off|run]  /health  /channels  /runtime  "
+    "/dreaming [status|on|off|run]  /review-fork [status|on|off|run]  /health  /channels  /runtime  "
     "/models  /model [<provider/model-id>]  "
     "/thinking [off|minimal|low|medium|high|xhigh|adaptive|max]  /restart"
 )
@@ -134,6 +134,7 @@ async def handle_slash(
                 ["/subagents (list | kill <id> | all)", "Active subagent runs"],
                 ["/active-memory (status | on | off | mode | style)", "Active memory config"],
                 ["/dreaming (status | on | off | run)", "Dreaming config"],
+                ["/review-fork (status | on | off | run)", "Background review fork"],
                 ["/health", "Daemon health snapshot"],
                 ["/channels", "Running channels"],
                 ["/runtime", "Active runtime summary"],
@@ -744,6 +745,68 @@ async def _cmd_dreaming(backend, renderer: SlashRenderer, state, args, cmd):
     renderer.dim("usage: /dreaming [status|on|off|run]")
 
 
+async def _cmd_review_fork(backend, renderer: SlashRenderer, state, args, cmd):
+    """Inspect / toggle / force-trigger the Background Review Fork plugin.
+
+    All operations go through the Backend protocol so embedded + remote modes
+    behave identically.
+    """
+    sub = args[0].lower() if args else "status"
+
+    def _render_status(s: dict[str, Any]) -> None:
+        if not s.get("configured"):
+            renderer.panel(
+                "Review Fork: plugin not loaded.\n"
+                "Add nano-review-fork to plugins (default builtin) and restart.",
+                title="Review Fork",
+                style="info",
+            )
+            return
+        body = (
+            f"State: {'enabled' if s.get('enabled') else 'disabled'}\n"
+            f"Trigger every: {s.get('trigger_n')} end_turn(s)  ·  Cooldown: {s.get('cooldown_s')}s  ·  Timeout: {s.get('timeout_s')}s\n"
+            f"Aux Model: {s.get('model_aux') or '(follow parent)'}\n"
+            f"Counter: {s.get('turn_counter')}  ·  Total Runs: {s.get('total_runs')}  ·  Skipped: {s.get('total_skipped')}\n"
+            f"Cooldown Remaining: {(s.get('cooldown_remaining_s') or 0):.1f}s\n"
+            f"Active Run: {s.get('active_run_id') or '(none)'}\n"
+            f"Last Skip Reason: {s.get('last_skip_reason') or '(n/a)'}"
+        )
+        renderer.panel(body, title="Review Fork", style="info")
+
+    if sub == "status":
+        try:
+            s = await backend.review_fork_get()
+        except BackendError as exc:
+            renderer.dim(f"review_fork.get failed: {exc}")
+            return
+        _render_status(s)
+        return
+    if sub in ("on", "off"):
+        try:
+            s = await backend.review_fork_set(enabled=(sub == "on"))
+        except (BackendError, NotFoundError) as exc:
+            renderer.dim(f"review_fork.set failed: {exc}")
+            return
+        _render_status(s)
+        return
+    if sub == "run":
+        try:
+            result = await backend.review_fork_run(session_key=state.get("session_key") or None)
+        except (BackendError, NotFoundError) as exc:
+            renderer.dim(f"review_fork.run failed: {exc}")
+            return
+        if result.get("skipped"):
+            renderer.dim(f"review fork skipped: {result.get('reason') or 'unknown'}")
+        else:
+            renderer.panel(
+                f"Spawned review fork.\nrun_id: {result.get('run_id')}",
+                title="Review Fork",
+                style="info",
+            )
+        return
+    renderer.dim("usage: /review-fork [status|on|off|run]")
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Renderers reused by the embedded REPL banner
 # ────────────────────────────────────────────────────────────────────────────
@@ -853,6 +916,7 @@ _HANDLERS = {
     "/runtime": _cmd_runtime,
     "/active-memory": _cmd_active_memory,
     "/dreaming": _cmd_dreaming,
+    "/review-fork": _cmd_review_fork,
     "/restart": _cmd_restart,
     "/models": _cmd_models,
     "/model": _cmd_model,

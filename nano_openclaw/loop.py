@@ -793,6 +793,51 @@ async def _run_agent_session_turn(
 
     tools_schema = registry.schemas()
     already_flushed_for_compaction = False
+    tools_used_set: set[str] = set()
+
+    async def fire_after_turn_hook(stop_reason_label: str, iteration: int) -> None:
+        """Fire `after_turn` hook for plugins (e.g. ReviewFork)."""
+        if not cfg.hook_registry:
+            return
+        try:
+            transcript_path = (
+                str(session.transcript_writer.path)
+                if session.transcript_writer
+                else None
+            )
+            session_dir = (
+                str(session.transcript_writer.path.parent)
+                if session.transcript_writer
+                else ""
+            )
+            agent_id = "default"
+            try:
+                from nano_openclaw.subagent.types import parse_session_key
+                parsed = parse_session_key(cfg.session_key)
+                agent_id = parsed.get("agentId", "default")
+            except Exception:
+                pass
+            payload = {
+                "session_id": session.session_id,
+                "agent_id": agent_id,
+                "session_key": cfg.session_key,
+                "session_dir": session_dir,
+                "transcript_path": transcript_path,
+                "workspace_dir": str(cfg.workspace_dir) if cfg.workspace_dir else "",
+                "stop_reason": stop_reason_label,
+                "iteration_count": iteration,
+                "tools_used": sorted(tools_used_set),
+                "messages_snapshot": [
+                    {"role": m.role, "content": m.content} for m in scratch_history
+                ],
+                "user_input": user_input,
+                "client": client,
+                "loop_config": cfg,
+                "tool_registry": registry,
+            }
+            await cfg.hook_registry.run("after_turn", payload)
+        except Exception as exc:
+            logger.warning("loop.after_turn.hook_error", f"after_turn hook failed: {exc}")
 
     for i in range(cfg.max_iterations):
         await check_cancelled()
@@ -892,10 +937,15 @@ async def _run_agent_session_turn(
 
         if stop_reason != "tool_use":
             session._commit_turn(scratch_history, pending_transcript_ops)
+            await fire_after_turn_hook(stop_reason or "end_turn", i + 1)
             await drain_loop_event_hooks()
             return history  # end_turn / stop_sequence — terminal
 
         tool_use_blocks = [b for b in assistant_blocks if b.get("type") == "tool_use"]
+        for _b in tool_use_blocks:
+            _name = _b.get("name")
+            if isinstance(_name, str):
+                tools_used_set.add(_name)
 
         await check_cancelled()
         tool_results, has_denial = await session._dispatch_tool_batch(
@@ -937,6 +987,7 @@ async def _run_agent_session_turn(
             scratch_history.append(Message("assistant", final_blocks))
             pending_transcript_ops.append(("message", scratch_history[-1]))
             session._commit_turn(scratch_history, pending_transcript_ops)
+            await fire_after_turn_hook("denial" if has_denial else "max_iter", i + 1)
             await drain_loop_event_hooks()
             return history
 

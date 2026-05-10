@@ -291,7 +291,7 @@ class SubagentRunner:
                         result_text=result_text,
                         elapsed_ms=elapsed_ms,
                     ))
-                if should_announce(runner_result):
+                if should_announce(runner_result) and record.label != "review":
                     self._pending_announcements.setdefault(record.requester_session_key, []).append(
                         build_announce_message(runner_result, record)
                     )
@@ -315,7 +315,7 @@ class SubagentRunner:
                         elapsed_ms=elapsed_ms,
                         error_message=runner_result.error_message,
                     ))
-                if should_announce(runner_result):
+                if should_announce(runner_result) and record.label != "review":
                     self._pending_announcements.setdefault(record.requester_session_key, []).append(
                         build_announce_message(runner_result, record)
                     )
@@ -332,7 +332,7 @@ class SubagentRunner:
                 )
                 if parent_on_event:
                     parent_on_event(SubagentKilled(run_id=record.run_id, task=record.task))
-                if should_announce(runner_result):  # → False for KILLED; LLM need not know about user-cancelled runs
+                if should_announce(runner_result) and record.label != "review":  # → False for KILLED; LLM need not know about user-cancelled runs
                     self._pending_announcements.setdefault(record.requester_session_key, []).append(
                         build_announce_message(runner_result, record)
                     )
@@ -357,7 +357,7 @@ class SubagentRunner:
                         elapsed_ms=elapsed_ms,
                         error_message=error_message,
                     ))
-                if should_announce(runner_result):
+                if should_announce(runner_result) and record.label != "review":
                     self._pending_announcements.setdefault(record.requester_session_key, []).append(
                         build_announce_message(runner_result, record)
                     )

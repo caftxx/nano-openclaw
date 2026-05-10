@@ -82,6 +82,7 @@ def test_methods_v1_includes_features():
     expected = {
         "active_memory.get", "active_memory.set",
         "dreaming.get", "dreaming.set", "dreaming.run",
+        "review_fork.get", "review_fork.set", "review_fork.run",
     }
     assert expected.issubset(METHODS_V1)
 
@@ -371,3 +372,164 @@ def test_rpc_dreaming_run_unconfigured_returns_not_found(tmp_path):
     resp = asyncio.run(run())
     assert resp.ok is False
     assert resp.error.code == ErrorCode.NOT_FOUND
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# review_fork.get / set / run
+# ────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def _reset_review_fork_state():
+    from nano_openclaw.plugins.builtin.review_fork_plugin import reset_state
+    reset_state()
+    yield
+    reset_state()
+
+
+def _install_review_fork_state(enabled: bool = True):
+    """Install a module-level ReviewForkState (mimic plugin.register)."""
+    from nano_openclaw.plugins.builtin.review_fork_plugin import (
+        ReviewForkConfig, ReviewForkState, _set_state,
+    )
+    state = ReviewForkState(ReviewForkConfig(enabled=enabled, trigger_n=10))
+    _set_state(state)
+    return state
+
+
+def test_review_fork_get_unloaded_returns_minimal(tmp_path, _reset_review_fork_state):
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            payload = await backend.review_fork_get()
+            assert payload["configured"] is False
+            assert payload["enabled"] is False
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_review_fork_get_loaded_returns_status(tmp_path, _reset_review_fork_state):
+    _install_review_fork_state(enabled=False)
+
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            payload = await backend.review_fork_get()
+            assert payload["configured"] is True
+            assert payload["enabled"] is False
+            assert payload["trigger_n"] == 10
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_review_fork_set_flips_enabled(tmp_path, _reset_review_fork_state):
+    _install_review_fork_state(enabled=False)
+
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            payload = await backend.review_fork_set(enabled=True, trigger_n=5)
+            assert payload["enabled"] is True
+            assert payload["trigger_n"] == 5
+            again = await backend.review_fork_get()
+            assert again["enabled"] is True
+            assert again["trigger_n"] == 5
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_review_fork_set_unloaded_raises_not_found(tmp_path, _reset_review_fork_state):
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            with pytest.raises(NotFoundError):
+                await backend.review_fork_set(enabled=True)
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_review_fork_run_disabled_returns_skip(tmp_path, _reset_review_fork_state):
+    _install_review_fork_state(enabled=False)
+
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            payload = await backend.review_fork_run()
+            assert payload["skipped"] is True
+            assert payload["run_id"] is None
+            assert "disabled" in (payload.get("reason") or "")
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_review_fork_run_unloaded_raises_not_found(tmp_path, _reset_review_fork_state):
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            with pytest.raises(NotFoundError):
+                await backend.review_fork_run()
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_rpc_review_fork_get_succeeds(tmp_path, _reset_review_fork_state):
+    async def run():
+        ctx, backend = _make_ctx(tmp_path)
+        try:
+            raw = json.dumps({"id": "rf1", "method": "review_fork.get"})
+            return await _dispatch_one(ctx, raw)
+        finally:
+            await backend.aclose()
+
+    resp = asyncio.run(run())
+    assert resp.ok is True
+    assert resp.payload["configured"] is False
+
+
+def test_rpc_review_fork_set_round_trip(tmp_path, _reset_review_fork_state):
+    _install_review_fork_state(enabled=False)
+
+    async def run():
+        ctx, backend = _make_ctx(tmp_path)
+        try:
+            raw = json.dumps({
+                "id": "rf2",
+                "method": "review_fork.set",
+                "params": {"enabled": True, "cooldown_s": 30},
+            })
+            return await _dispatch_one(ctx, raw)
+        finally:
+            await backend.aclose()
+
+    resp = asyncio.run(run())
+    assert resp.ok is True
+    assert resp.payload["enabled"] is True
+    assert resp.payload["cooldown_s"] == 30
+
+
+def test_rpc_review_fork_run_disabled_returns_skip(tmp_path, _reset_review_fork_state):
+    _install_review_fork_state(enabled=False)
+
+    async def run():
+        ctx, backend = _make_ctx(tmp_path)
+        try:
+            raw = json.dumps({"id": "rf3", "method": "review_fork.run"})
+            return await _dispatch_one(ctx, raw)
+        finally:
+            await backend.aclose()
+
+    resp = asyncio.run(run())
+    assert resp.ok is True
+    assert resp.payload["skipped"] is True

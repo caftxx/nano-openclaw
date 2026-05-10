@@ -432,6 +432,24 @@ class ScheduleConfigInput(BaseModel):
     missedJobsLimit: int = Field(default=5, ge=1, le=50, description="Max missed jobs to run immediately on startup")
 
 
+class ReviewForkConfigInput(BaseModel):
+    """Background Review Fork plugin configuration.
+
+    Off by default; enable to spawn a restricted review subagent every N
+    end_turns (with cooldown) to distill durable lessons into MEMORY.md /
+    existing SKILL.md. See nano_openclaw/plugins/builtin/review_fork_plugin.py.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=False, description="Enable Review Fork (off by default)")
+    trigger_n: int = Field(default=10, ge=1, alias="trigger_n", description="Trigger every N end_turns")
+    cooldown_s: int = Field(default=60, ge=0, alias="cooldown_s", description="Min seconds between review forks")
+    timeout_s: int = Field(default=90, ge=10, alias="timeout_s", description="Subagent run timeout in seconds")
+    model_aux: Optional[str] = Field(default=None, alias="model_aux", description="Aux model override (provider/id); None = follow parent")
+    debug: bool = Field(default=False, description="Verbose logging")
+
+
+
 class GatewayConfig(BaseModel):
     """Gateway daemon (``nano-openclaw gateway``) network + supervisor settings.
 
@@ -542,7 +560,7 @@ class ToolsConfig(BaseModel):
 # Plugin Types (nano-openclaw lightweight plugin loader)
 # ============================================================================
 
-BUILTIN_PLUGIN_IDS = ("memory", "web", "subagent", "mcp", "schedule")
+BUILTIN_PLUGIN_IDS = ("memory", "web", "subagent", "mcp", "schedule", "review-fork")
 
 
 class PluginEntryConfig(BaseModel):
@@ -629,6 +647,11 @@ class NanoOpenClawConfig(BaseModel):
     schedule: ScheduleConfigInput = Field(
         default_factory=ScheduleConfigInput,
         description="Cron schedule configuration"
+    )
+    review_fork: ReviewForkConfigInput = Field(
+        default_factory=ReviewForkConfigInput,
+        alias="reviewFork",
+        description="Background Review Fork plugin configuration (off by default)"
     )
     gateway: GatewayConfig = Field(
         default_factory=GatewayConfig,

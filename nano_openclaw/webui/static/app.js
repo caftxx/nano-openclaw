@@ -1337,7 +1337,7 @@ const BUILTIN_COMMANDS = new Set([
   // introspection
   "tools", "skills", "plugins", "hooks", "subagents",
   // memory
-  "active-memory", "dreaming",
+  "active-memory", "dreaming", "review-fork",
   // daemon-introspection
   "health", "channels", "runtime",
   // models

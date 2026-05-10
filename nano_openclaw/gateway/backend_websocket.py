@@ -594,6 +594,20 @@ class WebSocketBackend(Backend):
         finally:
             self.request_timeout = prev_timeout
 
+    async def review_fork_get(self) -> dict[str, Any]:
+        return await self._call("review_fork.get") or {"configured": False, "enabled": False}
+
+    async def review_fork_set(self, **fields: Any) -> dict[str, Any]:
+        return await self._call("review_fork.set", dict(fields)) or {"configured": False, "enabled": False}
+
+    async def review_fork_run(self, session_key: str | None = None) -> dict[str, Any]:
+        # Review-fork run dispatches a fire-and-forget subagent so the call itself
+        # is fast; default RPC timeout is fine.
+        params: dict[str, Any] = {}
+        if session_key:
+            params["session_key"] = session_key
+        return await self._call("review_fork.run", params) or {}
+
     # ─── Introspection (tools / skills / plugins / hooks) ───
 
     async def tools_list(self) -> list[dict[str, Any]]:

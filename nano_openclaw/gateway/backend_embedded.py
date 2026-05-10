@@ -1076,6 +1076,114 @@ class EmbeddedBackend(Backend):
             ],
         }
 
+    # ─── Review Fork ───
+
+    async def review_fork_get(self) -> dict[str, Any]:
+        """Snapshot review-fork config + runtime status.
+
+        ``configured=False`` indicates the plugin never registered (e.g. it's
+        not in the plugin loader output). ``enabled`` reflects the live cfg
+        flag — flipping it via ``review_fork_set`` takes effect immediately.
+        """
+        from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
+
+        st = get_state()
+        if st is None:
+            return {"configured": False, "enabled": False}
+        payload = {"configured": True}
+        payload.update(st.status())
+        return payload
+
+    async def review_fork_set(self, **fields: Any) -> dict[str, Any]:
+        """Mutate review-fork config in place.
+
+        Accepts a subset of: enabled / trigger_n / cooldown_s / timeout_s /
+        model_aux / debug. Unknown keys are ignored. Returns the updated
+        snapshot. ``NotFoundError`` if the plugin never registered.
+        """
+        from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
+
+        st = get_state()
+        if st is None:
+            raise NotFoundError("review-fork plugin not loaded")
+        cfg = st.cfg
+        if "enabled" in fields:
+            cfg.enabled = bool(fields["enabled"])
+        if "trigger_n" in fields:
+            cfg.trigger_n = max(1, int(fields["trigger_n"]))
+        if "cooldown_s" in fields:
+            cfg.cooldown_s = max(0, int(fields["cooldown_s"]))
+        if "timeout_s" in fields:
+            cfg.timeout_s = max(1, int(fields["timeout_s"]))
+        if "model_aux" in fields:
+            v = fields["model_aux"]
+            cfg.model_aux = str(v) if v else None
+        if "debug" in fields:
+            cfg.debug = bool(fields["debug"])
+        return await self.review_fork_get()
+
+    async def review_fork_run(self, session_key: str | None = None) -> dict[str, Any]:
+        """Force-trigger a review-fork run for the given session, bypassing N + cooldown.
+
+        Returns ``{"run_id": "...", "skipped": False}`` on spawn success, or
+        ``{"run_id": None, "skipped": True, "reason": "..."}`` when the plugin
+        decided not to spawn (e.g. concurrency cap, plugin disabled).
+        ``NotFoundError`` if the plugin never registered.
+        """
+        from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
+
+        st = get_state()
+        if st is None:
+            raise NotFoundError("review-fork plugin not loaded")
+        if not st.cfg.enabled:
+            return {"run_id": None, "skipped": True, "reason": "plugin disabled (set enabled=true first)"}
+        target_session_key = session_key or self.runtime.cfg.session_key
+        try:
+            session = self._resolve_session(target_session_key)
+        except Exception as exc:  # noqa: BLE001
+            raise BackendError(f"could not resolve session {target_session_key!r}: {exc}") from exc
+        messages_snapshot = [
+            {"role": m.role, "content": m.content} for m in session.history
+        ]
+        transcript_path = (
+            str(session.transcript_path) if getattr(session, "transcript_path", None) else None
+        )
+        session_dir = str(self.runtime.session_dir) if self.runtime.session_dir else ""
+        workspace_dir = str(self.runtime.workspace_dir) if self.runtime.workspace_dir else ""
+        if not workspace_dir:
+            raise BackendError("no workspace_dir on this runtime; review_fork.run unavailable")
+        agent_id = "default"
+        try:
+            from nano_openclaw.subagent.types import parse_session_key
+            parsed = parse_session_key(target_session_key)
+            agent_id = parsed.get("agentId", "default")
+        except Exception:
+            pass
+        payload = {
+            "session_id": session.session_id,
+            "agent_id": agent_id,
+            "session_key": target_session_key,
+            "session_dir": session_dir,
+            "transcript_path": transcript_path,
+            "workspace_dir": workspace_dir,
+            "stop_reason": "manual",
+            "iteration_count": 0,
+            "tools_used": [],
+            "messages_snapshot": messages_snapshot,
+            "user_input": "",
+            "client": self.runtime.client,
+            "loop_config": self.runtime.cfg,
+            "tool_registry": self.runtime.registry,
+        }
+        run_id = await st.force_fork(payload)
+        if run_id is None:
+            return {
+                "run_id": None,
+                "skipped": True,
+                "reason": st.last_skip_reason or "unknown",
+            }
+        return {"run_id": run_id, "skipped": False}
+
     # ─── Introspection (tools / skills / plugins / hooks) ───
 
     async def tools_list(self) -> list[dict[str, Any]]:

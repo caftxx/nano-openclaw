@@ -39,8 +39,16 @@ def test_default_config_loads_builtin_plugins():
         "nano-subagent",
         "nano-mcp",
         "nano-schedule",
+        "nano-review-fork",
     ]
-    assert [plugin.entry for plugin in hooks.plugins()] == ["memory", "web", "subagent", "mcp", "schedule"]
+    assert [plugin.entry for plugin in hooks.plugins()] == [
+        "memory",
+        "web",
+        "subagent",
+        "mcp",
+        "schedule",
+        "review-fork",
+    ]
 
 
 def test_explicit_empty_plugin_load_still_loads_builtin_plugins():

@@ -222,6 +222,7 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
 | `/subagents [list\|kill <id>\|all]` | 后台子 agent 状态 |
 | `/active-memory [status\|on\|off\|mode\|style]` | Active Memory 配置 |
 | `/dreaming [status\|on\|off\|run]` | Dreaming 配置 + 立即跑一次 |
+| `/review-fork [status\|on\|off\|run]` | Background Review Fork 配置 + 立即触发一次 |
 | `/health` | daemon 健康状态（runtime_ready, channels, in-flight） |
 | `/channels` | 已运行的 channel 列表 |
 | `/runtime` | agent / model / workspace 摘要 |
@@ -337,6 +338,23 @@ Memory 系统：包含四层机制：
 - **Memory Tools**：`memory_get` / `memory_search` 工具。nano 用词法匹配而非 embedding 搜索。
 - **Active Memory**：可选，启用后在每次用户消息前自动子 agent 搜索记忆。通过 `activeMemory` 配置。
 - **Dreaming**：可选，定期将高频记忆提升到 MEMORY.md。通过 `dreaming` 配置。
+
+Background Review Fork（自进化）：可选，每 N 个 `end_turn` 后台启动一个受限 sub-agent，让它读最近对话决定是否把"用户偏好/教训/可复用方法"沉淀进 `MEMORY.md` 或现有 `SKILL.md`。**默认关闭**（成本：每次触发 ~1 次 LLM 调用），通过 `reviewFork` 顶层字段配置：
+
+```jsonc
+{
+  "reviewFork": {
+    "enabled": true,        // 默认 false；设为 true 后每 N 个 end_turn 触发一次
+    "trigger_n": 10,        // 每 N 个 end_turn 触发（默认 10）
+    "cooldown_s": 60,       // 两次触发之间的最短间隔（秒）
+    "timeout_s": 90,        // sub-agent 单次 run 的硬超时
+    "model_aux": null,      // null = 跟父 agent 模型；可指定如 "anthropic/claude-haiku-4-5" 省钱
+    "debug": false
+  }
+}
+```
+
+运行时控制：`/review-fork on/off` 即时切换；`/review-fork run` 绕过 N + cooldown 立即触发一次（debug 用）。每次 spawn 写一行到 `state_dir/review-fork.jsonl`（含 ts/run_id/session_key/messages_count）方便观测。Active-Update Bias：sub-agent 系统提示要求"9/10 turn 默认 NOOP，写则优先 update 现有条目，禁止凭空新建 SKILL.md"。
 
 Cron 任务：通过 `cron_create` 工具或配置文件定义；daemon 内部跑 cron scheduler；任务完成可定向通知发起方（wechat 用户收到 daemon 推送的消息）。daemon 重启不会重复触发同一时间窗已经跑过的任务（`last_run_at_ms` 去重）。
 

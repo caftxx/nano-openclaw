@@ -17,6 +17,7 @@ HookName = Literal[
     "session_start",
     "session_end",
     "on_loop_event",
+    "after_turn",
 ]
 
 HookHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
