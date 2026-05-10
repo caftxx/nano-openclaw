@@ -120,6 +120,10 @@ class WechatBot:
     # surface reads. ``None`` falls back to the legacy in-memory dict (only
     # the deprecated standalone path which Phase 3 already removed).
     session_manager: Any | None = None
+    # ``backend`` is the daemon's shared EmbeddedBackend; routing slash
+    # commands through it gives WeChat the same surface as TUI/WebUI via
+    # ``gateway/slash.py``. ``None`` keeps the legacy hand-rolled handler.
+    backend: Any | None = None
     # Persistence path for the uid → session_id mapping; without it, restarts
     # forget which uid maps to which session and the next message creates a
     # fresh empty session.
@@ -224,18 +228,53 @@ class WechatBot:
         """Handle slash commands like /clear, /help, /tools, etc.
 
         Returns reply text if command matched, None if not a command.
+
+        Daemon mode: defer to the shared ``gateway/slash.py`` dispatcher via
+        a ``PlainRenderer``. That gives WeChat the same surface (incl.
+        ``/models`` ``/model`` ``/runtime`` …) as TUI / WebUI. Standalone /
+        legacy mode (no backend wired): fall through to the legacy hand-rolled
+        branches below.
         """
-        cmd_lower = cmd.lower().strip()
+        cmd_stripped = cmd.strip()
+        cmd_lower = cmd_stripped.lower()
 
         if cmd_lower in ("/quit", "/exit", "/q"):
             return "⚠️ **Bot cannot quit via WeChat command.** Send `/help` for available commands."
 
+        if self.backend is not None:
+            from nano_openclaw.gateway.slash import handle_slash, QuitREPL
+            from nano_openclaw.gateway.slash_renderer import PlainRenderer
+
+            # Bind a session for this uid so /clear / /context / etc. operate
+            # on it; pre-resolve so handle_slash sees a non-empty session_key.
+            sess = self._resolve_session(uid)
+            session_key = sess.session_id if sess is not None else ""
+            slash_state = {"session_key": session_key, "session_changed": False}
+            renderer = PlainRenderer(emoji=True, max_chars=1500, width=50)
+            try:
+                handled = await handle_slash(cmd_stripped, self.backend, renderer, slash_state)
+            except QuitREPL:
+                return "⚠️ Bot cannot quit via WeChat command."
+            if not handled:
+                return None
+            # /new and /clear may have rebound which session_key we should
+            # carry forward for this uid; persist so the next inbound message
+            # routes into the new transcript instead of recreating the old.
+            if slash_state.get("session_changed"):
+                new_key = slash_state.get("session_key") or ""
+                self._ensure_uid_map_loaded()
+                if new_key:
+                    self._uid_to_session_id[uid] = new_key
+                else:
+                    self._uid_to_session_id.pop(uid, None)
+                self._save_uid_map()
+            text = renderer.collect()
+            return text or "(done)"
+
+        # ---- Legacy fallback (standalone bot, no backend wired) ----
         if cmd_lower == "/clear":
             backend_session = self._resolve_session(uid)
             if backend_session is not None and self.session_manager is not None:
-                # Daemon path — use the manager's clear() so transcript file
-                # is rewritten to header-only and sessions.json sees the
-                # update; mirrors what gateway/slash.py's /clear does.
                 try:
                     await self.session_manager.clear(backend_session.session_id)
                 except RuntimeError as exc:
@@ -247,7 +286,6 @@ class WechatBot:
 
         if cmd_lower == "/new":
             if self.session_manager is not None:
-                # Bind a fresh session for this uid; old session stays on disk.
                 self._ensure_uid_map_loaded()
                 new_session = self.session_manager.create()
                 self._uid_to_session_id[uid] = new_session.session_id

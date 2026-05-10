@@ -87,6 +87,7 @@ class WechatChannel(Channel):
             uid_map_path = runtime.state_dir / f"wechat-sessions{suffix}.json"
 
         wechat_cfg = runtime.config.wechat
+        backend = getattr(gateway, "backend", None) if gateway is not None else None
         self._bot = WechatBot(
             runtime=runtime,
             base_url=base_url,
@@ -97,6 +98,7 @@ class WechatChannel(Channel):
             notify_poll_interval=wechat_cfg.notify_poll_interval,
             account_id=self.account.id,
             session_manager=session_manager,
+            backend=backend,
             uid_map_path=uid_map_path,
         )
         self._task = asyncio.create_task(

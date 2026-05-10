@@ -168,6 +168,22 @@ class EmbeddedBackend(Backend):
         self._subscribers: list[_Subscriber] = []
         self._seq = 0
         self._closed = False
+        # Wire LLM-facing runtime introspection tools (list_models /
+        # switch_model / get_runtime / …). These need a live ``Backend``
+        # reference, which only exists once we've built ``self`` — that's why
+        # registration happens here rather than in build_agent_runtime.
+        # Skip when the runtime opted out via ``no_tools`` so prompt-only
+        # / pure-chat configs stay tool-free.
+        cfg = getattr(runtime, "config", None)
+        no_tools = bool(getattr(cfg, "noTools", False)) or bool(
+            getattr(getattr(cfg, "tools", None), "noTools", False)
+        )
+        if not no_tools:
+            try:
+                from nano_openclaw.tools_runtime import register_runtime_tools
+                register_runtime_tools(runtime.registry, self)
+            except Exception as exc:  # noqa: BLE001 — tool wiring is non-fatal
+                log.warning("backend.runtime_tools.register_failed", f"{type(exc).__name__}: {exc}")
 
     @property
     def _run_registry(self):
@@ -711,17 +727,43 @@ class EmbeddedBackend(Backend):
     # ─── Models / runtime ───
 
     async def models_list(self) -> list[ModelChoice]:
-        # config.models has the catalog; v1 returns just the configured primary.
-        # Phase 4 will enumerate all models.providers.* entries.
-        return [
-            ModelChoice(
-                ref=self.runtime.model_ref,
-                id=self.runtime.model_id,
-                provider=self.runtime.model_ref.split("/", 1)[0] if "/" in self.runtime.model_ref else "",
-                context_window=self.runtime.cfg.context_window or None,
-                is_default=True,
+        # Enumerate every model declared under ``config.models.providers``,
+        # marking ``is_default=True`` for the row whose ``ref`` matches the
+        # active runtime. When providers is empty (e.g. minimal config), fall
+        # back to a single-entry list synthesized from the runtime so the
+        # caller never sees an empty catalog.
+        current_ref = self.runtime.model_ref
+        providers = getattr(getattr(self.runtime.config, "models", None), "providers", None) or {}
+        choices: list[ModelChoice] = []
+        for provider_id, provider in providers.items():
+            for model in getattr(provider, "models", []) or []:
+                ref = f"{provider_id}/{model.id}"
+                choices.append(
+                    ModelChoice(
+                        ref=ref,
+                        id=model.id,
+                        provider=provider_id,
+                        context_window=model.contextWindow or None,
+                        is_default=(ref == current_ref),
+                        name=model.name or model.id,
+                        input=tuple(model.input or ()),
+                        reasoning=bool(model.reasoning),
+                        max_tokens=model.maxTokens or None,
+                    )
+                )
+        if not choices:
+            choices.append(
+                ModelChoice(
+                    ref=current_ref,
+                    id=self.runtime.model_id,
+                    provider=current_ref.split("/", 1)[0] if "/" in current_ref else "",
+                    context_window=self.runtime.cfg.context_window or None,
+                    is_default=True,
+                    name=self.runtime.model_id,
+                    input=("text",),
+                )
             )
-        ]
+        return choices
 
     async def runtime_get(self) -> RuntimeSnapshot:
         cfg = self.runtime.cfg
@@ -747,13 +789,57 @@ class EmbeddedBackend(Backend):
         image_model_ref: str | None = None,
         thinking_level: str | None = None,
     ) -> RuntimeSnapshot:
-        # Phase 7 wires the writer-side coordination: ``RuntimeUpdateGuard``
-        # raises BusyError immediately if any reader (chat / cron) holds. The
-        # actual hot-reload (rebuild client + swap registry + emit
-        # runtime.changed) is deferred — tests cover the lock semantics, and
-        # the current API still raises NotImplementedError for the apply step.
+        # Hot-reload: ``RuntimeUpdateGuard.writer()`` raises BusyError
+        # immediately if any reader (chat / cron) holds, so callers see a
+        # quick "model busy" instead of a half-swapped runtime. Inside the
+        # writer block we rebuild via ``build_agent_runtime`` and swap
+        # ``self.runtime``. Because ``agent_id`` is preserved (or carried
+        # over from the old runtime), ``session_dir`` / ``store_path`` /
+        # transcript files are unchanged — every loaded session continues
+        # working transparently. We update ``self.manager.model`` (not the
+        # manager instance) so any AgentBackendSession that callers already
+        # hold remains connected to the same per-session transcripts.
+        from nano_openclaw.runtime import build_agent_runtime
+
         async with self.runtime.runtime_guard.writer():
-            raise NotImplementedError("runtime_update: full hot-reload deferred")
+            old = self.runtime
+            target_agent = agent_id or old.agent_id
+            # ``image_model_ref=None`` means "leave alone"; passing it through
+            # would otherwise zero out the image model in build_agent_runtime.
+            target_image_ref = image_model_ref if image_model_ref is not None else old.image_model_ref
+            new_runtime = await build_agent_runtime(
+                config_path=old.config_path,
+                agent_id=target_agent,
+                model_ref_override=model_ref or old.model_ref,
+                image_model_ref_override=target_image_ref,
+            )
+            if thinking_level is not None:
+                new_runtime.cfg.thinking_level = thinking_level
+            self.runtime = new_runtime
+            # Keep the same manager instance (callers hold references to its
+            # AgentBackendSession objects); just refresh metadata new
+            # transcripts will be tagged with.
+            self.manager.model = new_runtime.model_id
+            self.manager.cwd = str(new_runtime.workspace_dir)
+            snapshot = await self.runtime_get()
+            self._emit(
+                PushEvent(
+                    event="runtime.changed",
+                    payload={
+                        "agent_id": snapshot.agent_id,
+                        "model_ref": snapshot.model_ref,
+                        "model_id": snapshot.model_id,
+                        "image_model_ref": snapshot.image_model_ref,
+                        "thinking_level": snapshot.thinking_level,
+                    },
+                    seq=self._next_seq(),
+                )
+            )
+            try:
+                await old.close()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("runtime_update.old_close", f"{type(exc).__name__}: {exc}")
+            return snapshot
 
     # ─── Channels ───
 

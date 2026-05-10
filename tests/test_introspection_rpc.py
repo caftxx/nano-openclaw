@@ -43,10 +43,17 @@ def _fake_runtime(tmp_path: Path, *, registry: ToolRegistry | None = None) -> Si
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     cfg = LoopConfig(model="test-model", workspace_dir=workspace, session_key="default")
+    # ``noTools=True`` so EmbeddedBackend skips its runtime introspection
+    # tool registration (list_models / switch_model / get_runtime / …) —
+    # these tests assert exact tool counts and the runtime-tool surface is
+    # covered separately in test_runtime_tools.
     return SimpleNamespace(
         agent_id="default",
         session_id="default",
-        config=SimpleNamespace(wechat=SimpleNamespace(accounts=[])),
+        config=SimpleNamespace(
+            wechat=SimpleNamespace(accounts=[]),
+            noTools=True,
+        ),
         warnings=[],
         client=None,
         registry=registry or ToolRegistry(),

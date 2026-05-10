@@ -17,6 +17,10 @@ async def models_list(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, 
                 "provider": m.provider,
                 "context_window": m.context_window,
                 "is_default": m.is_default,
+                "name": m.name,
+                "input": list(m.input),
+                "reasoning": m.reasoning,
+                "max_tokens": m.max_tokens,
             }
             for m in choices
         ],

@@ -438,16 +438,27 @@ class WebSocketBackend(Backend):
 
     async def models_list(self) -> list[ModelChoice]:
         payload = await self._call("models.list")
-        return [
-            ModelChoice(
-                ref=str(m.get("ref") or ""),
-                id=str(m.get("id") or ""),
-                provider=str(m.get("provider") or ""),
-                context_window=m.get("context_window"),
-                is_default=bool(m.get("is_default")),
+        result: list[ModelChoice] = []
+        for m in (payload.get("models") or []):
+            inputs = m.get("input") or ()
+            if isinstance(inputs, list):
+                inputs = tuple(str(x) for x in inputs)
+            elif not isinstance(inputs, tuple):
+                inputs = ()
+            result.append(
+                ModelChoice(
+                    ref=str(m.get("ref") or ""),
+                    id=str(m.get("id") or ""),
+                    provider=str(m.get("provider") or ""),
+                    context_window=m.get("context_window"),
+                    is_default=bool(m.get("is_default")),
+                    name=m.get("name"),
+                    input=inputs,
+                    reasoning=bool(m.get("reasoning") or False),
+                    max_tokens=m.get("max_tokens"),
+                )
             )
-            for m in (payload.get("models") or [])
-        ]
+        return result
 
     async def runtime_get(self) -> RuntimeSnapshot:
         payload = await self._call("runtime.get")

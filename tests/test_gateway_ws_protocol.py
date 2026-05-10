@@ -231,20 +231,29 @@ def test_dispatch_not_found_returns_not_found_code(tmp_path: Path):
 
 
 def test_dispatch_unimplemented_method_returns_unavailable(tmp_path: Path):
-    """``runtime.update`` is the last remaining NotImplementedError stub
-    (full hot-reload is deferred). It must surface as UNAVAILABLE on the
-    wire so clients can present a clear "feature not ready" message.
+    """The dispatcher must translate ``NotImplementedError`` into the wire
+    ``UNAVAILABLE`` code so clients can present a clear "feature not ready"
+    message. We patch a known method to raise NotImplementedError to exercise
+    that branch independent of which specific method happens to be a stub
+    (``runtime.update`` used to be one but is now implemented).
     """
+    from unittest.mock import patch
+
     ctx, backend = _make_ctx(tmp_path)
     raw = json.dumps({
         "id": "rid",
-        "method": "runtime.update",
-        "params": {"model_ref": "anthropic/claude-sonnet-4-5"},
+        "method": "health",
+        "params": {},
     })
 
     async def run():
         try:
-            return await _dispatch_one(ctx, raw)
+            with patch.object(
+                backend,
+                "health",
+                side_effect=NotImplementedError("forced for test"),
+            ):
+                return await _dispatch_one(ctx, raw)
         finally:
             await backend.aclose()
 

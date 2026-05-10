@@ -59,6 +59,7 @@ PushEventKind = Literal[
     "approval.resolved", # Approval was decided (any client can observe)
     "session.changed",   # Session metadata or list changed
     "channel.changed",   # Channel start/stop/error
+    "runtime.changed",   # ``runtime_update`` completed (model / agent / thinking swap)
     "gap",               # Subscriber's bounded queue overflowed; client should chat_history
 ]
 
@@ -151,6 +152,12 @@ class ModelChoice:
     provider: str                      # "anthropic"
     context_window: int | None = None
     is_default: bool = False
+    # Phase 1: extended catalog fields. ``input`` is a tuple (frozen=True needs
+    # hashable; jsonable() coerces to list at serialize time).
+    name: str | None = None
+    input: tuple[str, ...] = ()
+    reasoning: bool = False
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)

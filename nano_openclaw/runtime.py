@@ -64,6 +64,10 @@ class AgentRuntime:
     model_id: str
     image_model_ref: str | None
     dreaming_stop: threading.Event
+    # The config path used to build this runtime — needed by Backend's
+    # ``runtime_update`` so a hot-reload can re-invoke ``build_agent_runtime``
+    # with the same source. ``None`` means "use default discovery".
+    config_path: str | None = None
     # ``run_registry`` is the single source of truth for in-flight turn_ids
     # across chat, cron, channels — see gateway/run_registry.py. Created
     # eagerly in ``build_agent_runtime`` so cron can register against it
@@ -302,6 +306,7 @@ async def build_agent_runtime(
         dreaming_task=dreaming_task,
         cron_stop=cron_stop,
         cron_task=cron_task,
+        config_path=config_path,
     )
     if not no_tools:
         _register_restart_tool(runtime)

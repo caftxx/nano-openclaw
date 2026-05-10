@@ -121,28 +121,36 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+
         if _external_runtime is None:
             owned_runtime = await build_agent_runtime(config_path=config_path, agent_id=agent_id)
         else:
             owned_runtime = _external_runtime
-        # Share the daemon's manager when available so all surfaces see the
-        # same session set; otherwise build an owned one (legacy + standalone).
+        # Share the daemon's manager / backend when available so WebUI, /rpc,
+        # channels and the LLM tool surface all see the same in-memory session
+        # entities. When standalone, build a private EmbeddedBackend so the
+        # WebUI can still route slash commands through ``handle_slash`` (the
+        # shared dispatcher) — the backend is the single source of truth for
+        # ``models_list`` / ``runtime_update`` etc.
         if _external_backend is not None:
+            backend = _external_backend
             sessions = _external_backend.manager
+            owns_backend = False
         else:
-            sessions = WebSessionManager(
-                session_dir=owned_runtime.session_dir,
-                store_path=owned_runtime.store_path,
-                model=owned_runtime.model_id,
-                cwd=str(owned_runtime.workspace_dir),
-            )
+            backend = EmbeddedBackend(owned_runtime)
+            sessions = backend.manager
             sessions.get_or_load(None)
+            owns_backend = True
         app.state.runtime = owned_runtime
         app.state.sessions = sessions
+        app.state.backend = backend
         app.state.token = token
         try:
             yield
         finally:
+            if owns_backend:
+                await backend.aclose()
             # Only close the runtime we built ourselves; an externally-supplied
             # runtime is owned by the daemon caller.
             if _external_runtime is None:
@@ -336,38 +344,27 @@ def create_app(
                     )
 
                     if agent_changed or model_changed:
-                        old_runtime = runtime
+                        # Delegate to the Backend's hot-reload — single source
+                        # of truth for runtime swaps. ``RuntimeUpdateGuard``
+                        # raises BusyError if a turn is in flight; we surface
+                        # that as ``turn.error``.
                         try:
-                            runtime = await build_agent_runtime(
-                                config_path=config_path,
-                                agent_id=next_agent_id,
-                                model_ref_override=next_model_ref if model_changed else None,
-                                image_model_ref_override=next_image_model_ref,
+                            await app.state.backend.runtime_update(
+                                agent_id=next_agent_id if agent_changed else None,
+                                model_ref=next_model_ref if model_changed else None,
+                                image_model_ref=next_image_model_ref,
+                                thinking_level=req.thinking_level,
                             )
-                            if req.thinking_level is not None:
-                                runtime.cfg.thinking_level = req.thinking_level
-                            manager = WebSessionManager(
-                                session_dir=runtime.session_dir,
-                                store_path=runtime.store_path,
-                                model=runtime.model_id,
-                                cwd=str(runtime.workspace_dir),
-                            )
-                            current = manager.get_or_load(None)
+                            runtime = app.state.backend.runtime
                             app.state.runtime = runtime
-                            app.state.sessions = manager
+                            current = manager.get_or_load(None)
                             await emit({"type": "state.updated", **_state_payload(runtime)})
                             await emit({
                                 "type": "session.updated",
                                 "session": _session_payload(manager, current),
                                 "sessions": manager.list(),
                             })
-                            try:
-                                await old_runtime.close()
-                            except Exception:  # noqa: BLE001
-                                pass
                         except Exception as exc:  # noqa: BLE001
-                            runtime = old_runtime
-                            app.state.runtime = old_runtime
                             await emit({"type": "turn.error", "message": f"runtime update failed: {type(exc).__name__}: {exc}"})
                     else:
                         if req.image_model_ref is not None:
@@ -379,84 +376,63 @@ def create_app(
                 elif msg_type == "command.run":
                     cmd_text = message.get("command", "")
                     session_id_cmd = message.get("session_id")
-                    if _slash_verb(cmd_text) == "models":
-                        model_query = _slash_arg_text(cmd_text)
-                        if not model_query:
-                            await emit({
-                                "type": "command.result",
-                                "command": cmd_text,
-                                "text": _models_list_markdown(runtime),
-                            })
-                            continue
-                        if _has_active_turn(manager):
-                            await emit({
-                                "type": "command.result",
-                                "command": cmd_text,
-                                "text": "## Models\n\nCannot change models while a turn is active.",
-                            })
-                            continue
-                        try:
-                            target_model = _resolve_model_option(runtime.config, model_query)
-                        except (KeyError, ValueError) as exc:
-                            await emit({
-                                "type": "command.result",
-                                "command": cmd_text,
-                                "text": f"## Models\n\n{exc}",
-                            })
-                            continue
-                        target_ref = target_model["ref"]
-                        if target_ref == runtime.model_ref:
-                            await emit({
-                                "type": "command.result",
-                                "command": cmd_text,
-                                "text": f"model already set to `{target_model['name']}` (`{target_ref}`)",
-                            })
-                            continue
-                        old_runtime = runtime
-                        try:
-                            runtime = await build_agent_runtime(
-                                config_path=config_path,
-                                agent_id=runtime.agent_id,
-                                model_ref_override=target_ref,
-                                image_model_ref_override=runtime.image_model_ref,
-                            )
-                            manager = WebSessionManager(
-                                session_dir=runtime.session_dir,
-                                store_path=runtime.store_path,
-                                model=runtime.model_id,
-                                cwd=str(runtime.workspace_dir),
-                            )
-                            current = manager.get_or_load(session_id_cmd)
-                            app.state.runtime = runtime
-                            app.state.sessions = manager
+
+                    # Try the shared dispatcher first (gateway/slash.py). It
+                    # handles all 19 core commands — including /models /model
+                    # — through Backend RPCs, so webui no longer needs its own
+                    # branches for /clear /new /sessions /model /context …
+                    from nano_openclaw.gateway.slash import handle_slash, QuitREPL
+                    from nano_openclaw.gateway.slash_renderer import MarkdownRenderer
+                    backend = app.state.backend
+                    md = MarkdownRenderer()
+                    slash_state = {
+                        "session_key": session_id_cmd or "",
+                        "session_changed": False,
+                    }
+                    try:
+                        handled_by_shared = await handle_slash(cmd_text, backend, md, slash_state)
+                    except QuitREPL:
+                        # WebUI cannot quit a daemon-mounted server.
+                        await emit({
+                            "type": "command.result",
+                            "command": cmd_text,
+                            "text": "_(WebUI cannot quit the gateway — close the tab instead)_",
+                        })
+                        handled_by_shared = True
+
+                    if handled_by_shared:
+                        text = md.collect()
+                        if text:
+                            await emit({"type": "command.result", "command": cmd_text, "text": text})
+                        # The shared dispatcher may have swapped backend.runtime
+                        # (via /model) or mutated session bindings (via /new
+                        # /clear /session). Re-sync local references so this
+                        # ws handler keeps using the current runtime + session
+                        # set, and broadcast state.updated for the front-end.
+                        new_runtime = backend.runtime
+                        if new_runtime is not runtime:
+                            runtime = new_runtime
+                            app.state.runtime = new_runtime
                             await emit({"type": "state.updated", **_state_payload(runtime)})
+                        if slash_state.get("session_changed"):
+                            target_id = slash_state.get("session_key") or session_id_cmd
+                            try:
+                                refreshed = manager.get_or_load(target_id) if target_id else manager.get_or_load(None)
+                            except KeyError:
+                                refreshed = manager.get_or_load(None)
                             await emit({
                                 "type": "session.updated",
-                                "session": _session_payload(manager, current),
+                                "session": _session_payload(manager, refreshed),
                                 "sessions": manager.list(),
-                            })
-                            await emit({
-                                "type": "command.result",
-                                "command": cmd_text,
-                                "text": f"model set to `{target_model['name']}` (`{target_ref}`)",
-                            })
-                            try:
-                                await old_runtime.close()
-                            except Exception:  # noqa: BLE001
-                                pass
-                        except Exception as exc:  # noqa: BLE001
-                            runtime = old_runtime
-                            app.state.runtime = old_runtime
-                            await emit({
-                                "type": "command.result",
-                                "command": cmd_text,
-                                "text": f"## Models\n\nModel update failed: {type(exc).__name__}: {exc}",
                             })
                         continue
 
+                    # Fallback: WebUI's legacy markdown-tailored handler still
+                    # serves a few extras (/help, custom /context layout). It
+                    # also returns ``None`` for skill-shaped commands so they
+                    # bypass to the agent loop like CLI does.
                     cmd_result = await handle_slash_command(cmd_text, runtime, manager, session_id_cmd)
                     if cmd_result is None:
-                        # Not a built-in command (e.g. a skill) — route to agent loop like CLI does
                         asyncio.create_task(_run_turn(
                             runtime=runtime,
                             manager=manager,

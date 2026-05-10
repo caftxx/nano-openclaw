@@ -99,7 +99,7 @@ class ApprovalPolicy(BaseModel):
         description="deny=block dangerous, allowlist=check whitelist, full=allow all"
     )
     dangerous_tools: List[str] = Field(
-        default_factory=lambda: ["bash", "write_file", "restart"],
+        default_factory=lambda: ["bash", "write_file", "restart", "switch_model"],
         description="Tools that may require approval"
     )
     tool_configs: Dict[str, ToolApprovalConfig] = Field(
@@ -108,6 +108,11 @@ class ApprovalPolicy(BaseModel):
             # ask in interactive sessions; deny in non-interactive (cron /
             # channel auto) unless explicitly allowlisted.
             "restart": ToolApprovalConfig(tool_name="restart", requires_approval=True),
+            # ``switch_model`` shifts cost / behavior for the rest of the
+            # session. Same gating semantics as ``restart``: humans say yes
+            # interactively; cron / channel auto-turns deny without an
+            # explicit allowlist.
+            "switch_model": ToolApprovalConfig(tool_name="switch_model", requires_approval=True),
         },
         description="Per-tool approval settings"
     )

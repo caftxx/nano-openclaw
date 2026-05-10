@@ -147,6 +147,11 @@ def test_restart_slash_registered():
 
 
 def test_restart_slash_calls_backend_gateway_restart():
+    """Direct-call test against the underlying handler. ``_cmd_restart`` now
+    expects a ``SlashRenderer``-shaped collaborator; we supply a tiny capture
+    object with the methods the handler actually invokes (``warning`` /
+    ``dim`` / ``error``).
+    """
     calls: list[str] = []
 
     class _Backend:
@@ -154,23 +159,24 @@ def test_restart_slash_calls_backend_gateway_restart():
             calls.append("called")
             return {"strategy": "exec", "pid": 4242}
 
-    class _Console:
+    class _CaptureRenderer:
         def __init__(self):
             self.lines: list[str] = []
 
-        def print(self, msg):
-            self.lines.append(str(msg))
+        def warning(self, s): self.lines.append(s)
+        def dim(self, s): self.lines.append(s)
+        def error(self, s): self.lines.append(s)
 
     handler = SLASH_HANDLERS["/restart"]
-    console = _Console()
+    renderer = _CaptureRenderer()
 
     async def run():
-        await handler(_Backend(), console, {}, [], None)
+        await handler(_Backend(), renderer, {}, [], None)
 
     asyncio.run(run())
     assert calls == ["called"]
     # Sanity: the user sees a confirmation, not a silent restart.
-    assert any("restart" in line.lower() for line in console.lines)
+    assert any("restart" in line.lower() for line in renderer.lines)
 
 
 # ─── LLM tool ───
