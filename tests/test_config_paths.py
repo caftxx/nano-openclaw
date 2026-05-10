@@ -277,6 +277,40 @@ class TestResolveAgentWorkspaceDir:
                 ws = resolve_agent_workspace_dir(config, "default", env)
                 assert ws == Path.home() / STATE_DIRNAME / "workspace"
 
+    def test_relative_workspace_path_anchors_to_state_dir(self, tmp_path):
+        """Relative ``agents.defaults.workspace`` must resolve against
+        state_dir, not cwd — otherwise daemon (cwd=/) and CLI (cwd=project)
+        produce different workspaces from the same config string."""
+        state_dir = tmp_path / "explicit-state"
+        state_dir.mkdir()
+        unrelated_cwd = tmp_path / "unrelated-cwd"
+        unrelated_cwd.mkdir()
+
+        config = NanoOpenClawConfig(
+            agents=AgentsConfig(
+                defaults=AgentDefaultsConfig(workspace="./workspace"),
+            )
+        )
+        env = {"NANO_OPENCLAW_STATE_DIR": str(state_dir)}
+
+        with patch("pathlib.Path.cwd", return_value=unrelated_cwd):
+            ws = resolve_agent_workspace_dir(config, "default", env)
+            assert ws == (state_dir / "workspace").resolve()
+            # Crucially NOT cwd-relative:
+            assert ws != (unrelated_cwd / "workspace").resolve()
+
+    def test_absolute_workspace_path_unchanged(self, tmp_path):
+        """Absolute config paths must pass through verbatim — no anchoring."""
+        abs_path = tmp_path / "abs-ws"
+        config = NanoOpenClawConfig(
+            agents=AgentsConfig(
+                defaults=AgentDefaultsConfig(workspace=str(abs_path)),
+            )
+        )
+        env = {"NANO_OPENCLAW_STATE_DIR": str(tmp_path / "state")}
+        ws = resolve_agent_workspace_dir(config, "default", env)
+        assert ws == abs_path.resolve()
+
     def test_relative_path_resolved_from_config_dir(self, tmp_path):
         """Relative workspace paths are resolved from cwd."""
         workspace_path = "./workspace"

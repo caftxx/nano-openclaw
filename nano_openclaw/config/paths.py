@@ -143,6 +143,21 @@ def resolve_default_agent_workspace_dir(env: Optional[dict[str, str]] = None) ->
     return resolve_home(env) / STATE_DIRNAME / "workspace"
 
 
+def _resolve_config_path(raw: str, base: Path) -> Path:
+    """Resolve a config-supplied path.
+
+    Absolute and ``~``-prefixed paths win as-is. Relative paths are
+    anchored to *base* (typically state_dir) instead of the current cwd —
+    that's the whole point of this helper. Without it, daemon-vs-CLI vs
+    systemd-vs-docker each get a different cwd and the same config string
+    produces different filesystem locations.
+    """
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    return (base / p).resolve()
+
+
 def resolve_agent_workspace_dir(
     config: "NanoOpenClawConfig",
     agent_id: str = DEFAULT_AGENT_ID,
@@ -170,33 +185,41 @@ def resolve_agent_workspace_dir(
     """
     if env is None:
         env = os.environ
-    
+
     # Strip null bytes from paths (security hardening, aligns with openclaw)
     agent_id = agent_id.replace("\x00", "")
-    
+
+    # Pre-resolve state_dir so we can anchor relative config paths to it
+    # (rather than cwd). Why: config-driven relative paths like
+    # ``./.nano-openclaw/workspace`` would otherwise resolve against whatever
+    # cwd the daemon happened to be launched from — systemd / docker / a
+    # user shell each give a different answer, leading to silently
+    # divergent workspace dirs across runs.
+    state_dir_for_relative = resolve_state_dir(env)
+
     # 1. Check per-agent workspace config
     for agent in config.agents.list:
         if agent.id == agent_id and agent.workspace:
             workspace_path = agent.workspace.replace("\x00", "").strip()
             if workspace_path:
-                return Path(workspace_path).expanduser().resolve()
-    
+                return _resolve_config_path(workspace_path, state_dir_for_relative)
+
     # 2. Check defaults.workspace
     defaults_workspace = config.agents.defaults.workspace
     if defaults_workspace:
         workspace_path = defaults_workspace.replace("\x00", "").strip()
         if workspace_path:
-            base_dir = Path(workspace_path).expanduser().resolve()
-            
+            base_dir = _resolve_config_path(workspace_path, state_dir_for_relative)
+
             # Default agent uses base_dir directly
             if agent_id == DEFAULT_AGENT_ID:
                 return base_dir
-            
+
             # Non-default agents get subdirectory
             return base_dir / agent_id
-    
+
     # 3. Fallback: state dir for non-default agents, profile-aware default for default agent
-    state_dir = resolve_state_dir(env)
+    state_dir = state_dir_for_relative
 
     if agent_id == DEFAULT_AGENT_ID:
         # Default agent uses profile-aware workspace (NANO_OPENCLAW_PROFILE support),
