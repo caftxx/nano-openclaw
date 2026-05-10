@@ -114,6 +114,13 @@ def _verb_status(state_dir: Path) -> int:
 
     if not status.running and not status.stale:
         console.print("[dim]gateway[/dim]: not running")
+        # Always print state_dir + pidfile path on the not-running branch:
+        # the most common cause of false-negative "not running" is the CLI
+        # resolving a different state_dir than the daemon (cwd-local
+        # `.nano-openclaw/` vs `~/.nano-openclaw/`). One glance at the path
+        # tells the user whether they should rerun from another directory.
+        console.print(f"  state:     {_short_home(state_dir)}")
+        console.print(f"  pidfile:   {_short_home(pidfile_path(state_dir))}")
         config_path = _find_config_path()
         if config_path:
             console.print(f"  config:    {_short_home(config_path)}")
@@ -121,6 +128,8 @@ def _verb_status(state_dir: Path) -> int:
 
     if status.stale:
         console.print(f"[yellow]gateway[/yellow]: {status.as_summary()}")
+        console.print(f"  state:     {_short_home(state_dir)}")
+        console.print(f"  pidfile:   {_short_home(pidfile_path(state_dir))}")
         return 1
 
     # ── Running — gather rich info ────────────────────────────────────────
@@ -136,6 +145,7 @@ def _verb_status(state_dir: Path) -> int:
     if uptime:
         console.print(f"  uptime:    {uptime}")
 
+    console.print(f"  state:     {_short_home(state_dir)}")
     config_path = _find_config_path()
     if config_path:
         console.print(f"  config:    {_short_home(config_path)}")

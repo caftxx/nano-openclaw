@@ -65,16 +65,31 @@ class TestResolveStateDir:
         assert state_dir == Path("/custom/state").resolve()
 
     def test_project_level_state_dir(self, tmp_path):
-        """Uses {cwd}/.nano-openclaw if it exists."""
+        """Uses {cwd}/.nano-openclaw only when it contains nano-openclaw.json5."""
         env = {}
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         state_dir = project_dir / STATE_DIRNAME
         state_dir.mkdir()
+        (state_dir / CONFIG_FILENAME).write_text("{}")
 
         with patch('pathlib.Path.cwd', return_value=project_dir):
             resolved = resolve_state_dir(env)
             assert resolved == state_dir.resolve()
+
+    def test_project_state_dir_without_config_ignored(self, tmp_path):
+        """An empty / partial cwd/.nano-openclaw must NOT be adopted —
+        tools / workspace bootstrap can auto-create it as a side-effect, and
+        adopting it would silently desync from the daemon's state dir."""
+        env = {}
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / STATE_DIRNAME).mkdir()
+        # No nano-openclaw.json5 inside — should be ignored
+
+        with patch('pathlib.Path.cwd', return_value=project_dir):
+            resolved = resolve_state_dir(env)
+            assert resolved == Path.home() / STATE_DIRNAME
 
     def test_global_state_dir_fallback(self):
         """Falls back to ~/.nano-openclaw if no project-level dir."""

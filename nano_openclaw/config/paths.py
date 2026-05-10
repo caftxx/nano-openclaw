@@ -57,7 +57,11 @@ def resolve_state_dir(env: Optional[dict[str, str]] = None) -> Path:
 
     Priority:
     1. NANO_OPENCLAW_STATE_DIR environment variable
-    2. {cwd}/.nano-openclaw (project-level, if exists)
+    2. {cwd}/.nano-openclaw (project-level, only if it contains
+       ``nano-openclaw.json5`` — empty / partial subdirs that get auto-created
+       by tools or workspace bootstrap don't qualify, otherwise the same
+       machine resolves to different state dirs depending on what happens
+       to be on disk at lookup time)
     3. ~/.nano-openclaw (global)
     """
     if env is None:
@@ -68,9 +72,9 @@ def resolve_state_dir(env: Optional[dict[str, str]] = None) -> Path:
     if state_dir:
         return Path(state_dir).expanduser().resolve()
 
-    # 2. Project-level state directory
+    # 2. Project-level state directory — must look like a real one
     cwd_state = Path(Path.cwd()) / STATE_DIRNAME
-    if cwd_state.exists():
+    if (cwd_state / CONFIG_FILENAME).exists():
         return cwd_state.resolve()
 
     # 3. Global state directory
