@@ -99,6 +99,41 @@ def test_plain_renderer_truncates_long_output():
     assert out.endswith("(truncated)")
 
 
+def test_markdown_renderer_escapes_pipe_and_newline_in_cells():
+    """Cells containing ``|``, ``<...>``, or newlines must be escaped.
+
+    Regressions for the WebUI ``/help`` table:
+      - ``|`` would split one cell into multiple columns
+        (``/sessions (all`` + ``delete <id>)``).
+      - ``<id>`` would render as an empty inline HTML element and disappear
+        (``/sessions (all | delete )`` after the pipe fix).
+      - Newlines would terminate the row early.
+    """
+    r = MarkdownRenderer()
+    r.table(
+        ["Command", "Description"],
+        [
+            ["/sessions (all | delete <id>)", "List or delete saved sessions"],
+            ["/multi", "line one\nline two"],
+            ["/amp", "a & b"],
+        ],
+    )
+    out = r.collect()
+    # Pipe inside the cell is backslash-escaped so GFM keeps it in one cell.
+    assert "(all \\| delete" in out
+    # Angle brackets HTML-escaped so marked.js doesn't eat ``<id>``.
+    assert "&lt;id&gt;" in out
+    assert "<id>" not in out
+    # The row stays on a single source line.
+    assert "line one<br>line two" in out
+    # Ampersand also escaped so it doesn't combine with surrounding text into
+    # an HTML entity.
+    assert "a &amp; b" in out
+    # Header/separator column count still 2.
+    header_line = next(line for line in out.splitlines() if line.startswith("| Command"))
+    assert header_line.count("|") == 3
+
+
 def test_markdown_renderer_strips_rich_markup_input():
     """Handlers may pass Rich markup (e.g. '[cyan]foo[/]') for visual hints;
     non-Rich renderers must strip cleanly without leaking square brackets.

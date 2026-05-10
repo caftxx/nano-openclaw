@@ -46,6 +46,27 @@ def _strip_markup(s: str) -> str:
         return s
 
 
+def _escape_md_cell(s: str) -> str:
+    """Escape a cell value for GFM table embedding.
+
+    GFM tables use ``|`` as the column separator and require each row on a
+    single line; downstream renderers (marked.js / GitHub) also pass inline
+    HTML through, so a literal ``<id>`` becomes an empty unknown element and
+    disappears from the rendered cell. Escape ``|``, normalize newlines to
+    ``<br>``, and HTML-escape ``<`` / ``>`` / ``&`` so argument hints like
+    ``/sessions (all | delete <id>)`` render verbatim.
+    """
+    return (
+        s.replace("\\", "\\\\")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("|", "\\|")
+        .replace("\r\n", "\n")
+        .replace("\n", "<br>")
+    )
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Protocol
 # ────────────────────────────────────────────────────────────────────────────
@@ -195,11 +216,11 @@ class MarkdownRenderer:
             self.heading(title)
         if not headers:
             return
-        head = "| " + " | ".join(_strip_markup(h) for h in headers) + " |"
+        head = "| " + " | ".join(_escape_md_cell(_strip_markup(h)) for h in headers) + " |"
         sep = "| " + " | ".join("---" for _ in headers) + " |"
         lines = [head, sep]
         for idx, row in enumerate(rows):
-            cells = [_strip_markup(c) for c in row]
+            cells = [_escape_md_cell(_strip_markup(c)) for c in row]
             if current_row_idx is not None and idx == current_row_idx:
                 cells = [f"**{c}**" for c in cells]
                 if cells:
