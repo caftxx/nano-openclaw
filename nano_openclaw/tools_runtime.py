@@ -145,9 +145,9 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
     ))
 
     # ─── set_thinking ───
-    # Same gating semantics as ``switch_model`` — toggling to ``max`` /
-    # ``xhigh`` quietly inflates token cost, so cron / channel auto-turns
-    # are denied unless allowlisted; interactive turns prompt the user.
+    # Not in ``dangerous_tools`` — adjusting thinking budget mid-conversation
+    # is a routine UX knob (mirrors ``/thinking`` slash). The model can flip
+    # it the same way it flips other knobs, no approval round-trip.
     async def _set_thinking(args: dict[str, Any]) -> str:
         from nano_openclaw.gateway.slash import THINKING_LEVELS
 
@@ -183,9 +183,8 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
             "Adjust the thinking-budget level for the current conversation. "
             "Argument: `level` ∈ {off, minimal, low, medium, high, xhigh, "
             "adaptive, max}. Higher levels give the model more tokens to "
-            "deliberate before responding (xhigh/max ~32k tokens) at higher "
-            "cost. Requires user approval in interactive sessions; cron / "
-            "channel-driven turns are denied by default."
+            "deliberate before responding (xhigh / max ~32k tokens). Use "
+            "when a task warrants more deliberation than the current level."
         ),
         input_schema={
             "type": "object",
