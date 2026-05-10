@@ -50,13 +50,19 @@ def _hermetic_env(state_dir: Path) -> dict[str, str]:
     return env
 
 
-def _run(cmd: list[str], *, env: dict[str, str], timeout: float = 30.0) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    cwd: Path,
+    timeout: float = 30.0,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
-        cwd="/home/caft/nano-openclaw-dev",
+        cwd=str(cwd),
         env=env,
     )
 
@@ -73,7 +79,7 @@ def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
     port = _free_port()
 
     # Status before start
-    pre = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env)
+    pre = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env, cwd=tmp_path)
     assert "not running" in pre.stdout or "not running" in pre.stderr
 
     started = False
@@ -83,7 +89,7 @@ def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
         start = _run([
             sys.executable, "-m", "nano_openclaw", "gateway", "start",
             "--host", "127.0.0.1", "--port", str(port),
-        ], env=env)
+        ], env=env, cwd=tmp_path)
         assert start.returncode == 0, f"start failed: {start.stdout}{start.stderr}"
         assert "started" in start.stdout, start.stdout
         started = True
@@ -92,7 +98,7 @@ def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
         time.sleep(0.5)
 
         # Status while running
-        running = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env)
+        running = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env, cwd=tmp_path)
         assert running.returncode == 0
         assert f"127.0.0.1:{port}" in running.stdout
         assert "running" in running.stdout
@@ -106,9 +112,9 @@ def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
 
     finally:
         if started:
-            _run([sys.executable, "-m", "nano_openclaw", "gateway", "stop"], env=env)
+            _run([sys.executable, "-m", "nano_openclaw", "gateway", "stop"], env=env, cwd=tmp_path)
             time.sleep(0.5)
 
     # After stop, status should report not running
-    post = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env)
+    post = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env, cwd=tmp_path)
     assert "not running" in post.stdout or "stale" in post.stdout

@@ -78,6 +78,11 @@ NANO_OPENCLAW_CONFIG_PATH=./my-config.json5 uv run nano-openclaw
 不想装 Python 环境？用 Docker Compose 一键启动 gateway daemon：
 
 ```bash
+
+# 仓库自带一份 .nano-openclaw-dev/ 作为模板。nano-openclaw 默认识别项目根的
+# .nano-openclaw/ —— 把模板拷过去再改：
+cp -r .nano-openclaw-dev .nano-openclaw
+
 # 复制环境变量模板并填入 API key
 cp .env.example .env
 
@@ -387,19 +392,6 @@ uv run nano-openclaw tui
 # 浏览器：打开 http://127.0.0.1:5000，应该看到刚才在 TUI 里发的会话
 # WeChat：给配置的账号发消息，TUI 的 /sessions 也能看到那个会话
 ```
-
-## 显式 Non-Goals（被刻意砍掉的功能 = 进阶练习）
-
-读懂 nano 之后，把以下任意一项加回去就是很棒的练习：
-
-- 工具内 `onUpdate` 流式进度回调（看 `bash` 长输出实时滚动）
-- Gemini / Vertex 等第三方 provider（仿 `_provider_openai.py` 再加一个 transport）
-- 显式 prompt cache 控制（在 system prompt 上加 `cache_control`）
-- `runtime.update` 的 hot-reload 实现（目前 RPC 接口存在但抛 NotImplementedError）
-- daemon 的 auth（v1 故意省略，loopback only；加 token 鉴权 + remote bind 是合理扩展）
-- gateway 系统服务集成（launchd / systemd / schtasks，参考 openclaw 的 `daemon/`）
-
-每完成一项，回到 OpenClaw 源码里看它真实的实现，对比你和它的设计差异——这就是从"会读"到"会写"的最快路径。
 
 ## License
 
