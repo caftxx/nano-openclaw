@@ -100,10 +100,12 @@ async def handle_slash(
         # The TUI banner is happy with a single ``dim`` line; non-Rich
         # renderers (Markdown / Plain) read better with a structured table
         # so a WebUI user sees clickable command names instead of one long
-        # CSV. We emit both — RichRenderer formats the dim line; the others
-        # buffer the table.
-        renderer.dim(f"commands: {HELP_TEXT} — anything else is sent to the agent")
-        if not isinstance(renderer, RichRenderer):
+        # CSV, and a WeChat user sees one command per line. Only emit the
+        # one-line CSV in Rich mode — for the others the table below is
+        # already a complete listing.
+        if isinstance(renderer, RichRenderer):
+            renderer.dim(f"commands: {HELP_TEXT} — anything else is sent to the agent")
+        else:
             # Use angle brackets / parens for argument hints — square
             # brackets get parsed as Rich markup by non-Rich renderers and
             # the contents disappear (e.g. `/sessions [all|delete <id>]`).

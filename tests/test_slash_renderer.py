@@ -63,10 +63,12 @@ def test_markdown_renderer_emits_gfm_table_with_current_marker():
     assert "## Models" in out
 
 
-def test_plain_renderer_table_uses_rich_layout_without_color():
-    """PlainRenderer reuses Rich's Table laid out via a no-color StringIO
-    Console — that gives ASCII alignment for free. Verify the current-row
-    marker (``* ``) lands on the right row and color/markup is stripped."""
+def test_plain_renderer_table_emits_one_line_per_row():
+    """PlainRenderer emits ``- key — value | value`` per row rather than an
+    ASCII grid — WeChat collapses consecutive spaces, which would destroy
+    column alignment. The separator chars survive whitespace collapse, so
+    the structure stays readable. Current row gets ``* `` instead of ``- ``.
+    """
     r = PlainRenderer(emoji=False, width=60)
     r.table(
         ["Ref", "Name"],
@@ -76,14 +78,13 @@ def test_plain_renderer_table_uses_rich_layout_without_color():
     )
     r.success("done")
     out = r.collect()
-    # Rich-rendered ASCII table: contains both refs and the title.
-    assert "Models" in out
-    assert "a/b" in out and "a/c" in out
-    # ``* `` prefix marks the current row (first one in this test).
     lines = out.splitlines()
-    star_line = next(line for line in lines if "* a/b" in line)
-    assert "Beta" in star_line
-    # Non-emoji success prefix
+    # Title is its own line (no leading marker), followed by per-row lines.
+    assert lines[0] == "Models"
+    # Current row → "* "; non-current → "- ". Both rows hold both columns
+    # joined by " — ".
+    assert "* a/b — Beta" in lines
+    assert "- a/c — Gamma" in lines
     assert "[ok] done" in out
 
 

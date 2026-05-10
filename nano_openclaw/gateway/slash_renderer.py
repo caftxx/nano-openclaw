@@ -294,18 +294,29 @@ class PlainRenderer:
         title: str | None = None,
         current_row_idx: int | None = None,
     ) -> None:
-        # Reuse Rich's Table layout via a no-color StringIO Console — ASCII
-        # alignment "for free" instead of hand-writing column padding.
-        table = Table(title=title, show_header=True, box=None, padding=(0, 1))
-        for h in headers:
-            table.add_column(_strip_markup(h))
+        # WeChat (and similar plain-text channels) collapse consecutive
+        # whitespace, which destroys ASCII column alignment from Rich's
+        # Table renderer. Emit one line per row instead — separator chars
+        # survive whitespace collapse so the structure stays readable on
+        # wechat / dingtalk / sms.
+        lines: list[str] = []
+        if title:
+            lines.append(_strip_markup(title))
+        sep = " — "
         for idx, row in enumerate(rows):
             cells = [_strip_markup(c) for c in row]
-            if current_row_idx is not None and idx == current_row_idx:
-                marker = "* " if self._emoji else "* "
-                cells = [marker + cells[0]] + cells[1:] if cells else cells
-            table.add_row(*cells)
-        self._push(self._render_via_rich(table))
+            if not cells:
+                continue
+            mark = "* " if (current_row_idx is not None and idx == current_row_idx) else "- "
+            if len(cells) == 1:
+                lines.append(f"{mark}{cells[0]}")
+            else:
+                # First cell is the "label" (e.g. command name, model ref);
+                # the rest collapse into a value joined by " | ".
+                head = cells[0]
+                tail = " | ".join(c for c in cells[1:] if c)
+                lines.append(f"{mark}{head}{sep}{tail}" if tail else f"{mark}{head}")
+        self._push("\n".join(lines))
 
     def panel(
         self,
