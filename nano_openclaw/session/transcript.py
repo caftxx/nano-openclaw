@@ -14,6 +14,7 @@ The .jsonl format uses one JSON object per line:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,33 @@ from .types import (
     TranscriptMessage,
     TranscriptEntry,
 )
+
+
+SUMMARY_PREFIX = "[Previous conversation summary]\n"
+
+
+def is_synthetic_summary(message: Message) -> bool:
+    """True when the message is the synthetic summary injected by compact_if_needed."""
+    if message.role != "user" or not message.content:
+        return False
+    block = message.content[0]
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return False
+    text = block.get("text", "")
+    return isinstance(text, str) and text.startswith(SUMMARY_PREFIX)
+
+
+def _summary_text_from_message(message: Message) -> str:
+    if not is_synthetic_summary(message):
+        return ""
+    return message.content[0].get("text", "")[len(SUMMARY_PREFIX):]
+
+
+def _build_synthetic_summary_message(summary: str) -> Message:
+    return Message(
+        role="user",
+        content=[{"type": "text", "text": f"{SUMMARY_PREFIX}{summary}"}],
+    )
 
 
 @dataclass
@@ -117,6 +145,61 @@ class TranscriptWriter:
     def append_activity(self, activity: dict[str, Any]) -> None:
         """Append WebUI-only activity metadata to the transcript."""
         self._append_raw({"type": "activity", **activity})
+
+    def rotate(self, summary: str, kept_messages: list[Message]) -> None:
+        """Atomically rewrite the transcript to ``header + compaction(summary) + kept_messages``.
+
+        Used after context compaction to keep the on-disk transcript in sync with
+        the in-memory post-compaction history. Without this, the file keeps
+        growing forever and a daemon restart re-loads the full pre-compaction
+        history (defeating compaction). Activity entries from before the
+        rotation are dropped — the WebUI activity log only reflects events
+        produced after the most recent rotation.
+        """
+        # Resolve a header even if the file was never started (so rotate() works
+        # before the lazy header has been flushed). Otherwise reuse what's on disk.
+        header_obj: Any = self._lazy_header
+        if header_obj is None and self.path.exists():
+            for line in self.path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "session":
+                    header_obj = entry
+                    break
+        if header_obj is None:
+            header_obj = SessionHeader(id=self._session_id or "")
+
+        header_dict = header_obj if isinstance(header_obj, dict) else asdict(header_obj)
+        compaction = TranscriptCompaction(parent_id="", summary=summary)
+
+        new_entries: list[dict[str, Any]] = [header_dict, asdict(compaction)]
+        last_id = compaction.id
+        for msg in kept_messages:
+            entry = TranscriptMessage(
+                parent_id=last_id,
+                role=msg.role,
+                content=_prepare_content_for_persistence(msg.content),
+            )
+            new_entries.append(asdict(entry))
+            last_id = entry.id
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            for entry in new_entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        os.replace(tmp_path, self.path)
+
+        self._lazy_header = None
+        self._started = True
+        self._message_count = len(kept_messages)
+        self._compaction_count = 1
+        self._last_message_id = last_id
 
     def clear(self) -> None:
         """Rewrite the transcript keeping only the session header; reset counters."""
@@ -230,5 +313,14 @@ class TranscriptReader:
                     last_message_id = entry.get("id", "")
                 elif entry_type == "compaction":
                     compaction_count += 1
+                    # Only materialize compactions written by rotate(): those
+                    # appear before any message in the file, so the in-memory
+                    # shape matches what compact_if_needed would produce.
+                    # Mid-file compactions in legacy (non-rotated) transcripts
+                    # stay as markers — the original messages are still on
+                    # disk and would be the load source.
+                    summary = entry.get("summary", "")
+                    if summary and message_count == 0:
+                        history.append(_build_synthetic_summary_message(summary))
 
         return history, session_id, message_count, compaction_count, last_message_id

@@ -29,6 +29,7 @@ from nano_openclaw.session import (
     save_session_store,
     update_session,
 )
+from nano_openclaw.session.transcript import is_synthetic_summary
 
 
 def message_to_json(message: Message) -> dict[str, Any]:
@@ -51,7 +52,11 @@ def is_subagent_announcement(message: Message) -> bool:
 
 
 def display_history(history: list[Message]) -> list[Message]:
-    return [message for message in history if not is_subagent_announcement(message)]
+    return [
+        message
+        for message in history
+        if not is_subagent_announcement(message) and not is_synthetic_summary(message)
+    ]
 
 
 def session_title(history: list[Message], fallback: str) -> str:

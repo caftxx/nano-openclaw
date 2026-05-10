@@ -215,6 +215,11 @@ class ContextConfig(BaseModel):
     budget: Optional[int] = Field(default=None, ge=1000, description="Maximum token budget for context window; defaults to model contextWindow when unset")
     threshold: float = Field(default=0.8, ge=0.1, le=1.0, description="Trigger compaction at this fraction of budget")
     recent_turns: int = Field(default=3, ge=1, alias="recent_turns", description="Recent turns to preserve during compaction")
+    truncate_after_compaction: bool = Field(
+        default=True,
+        alias="truncate_after_compaction",
+        description="After compaction, rewrite the on-disk transcript to drop summarized messages so restarts load the post-compaction history.",
+    )
 
 
 class MemoryFlushConfig(BaseModel):

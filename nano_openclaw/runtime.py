@@ -215,6 +215,7 @@ async def build_agent_runtime(
         context_window=model_context_window,
         context_threshold=config.context.threshold,
         context_recent_turns=config.context.recent_turns,
+        truncate_after_compaction=config.context.truncate_after_compaction,
         image_model=image_model_id,
         thinking_level=config.resolve_thinking_level(model_ref),
         workspace_dir=workspace_dir,

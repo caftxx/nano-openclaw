@@ -264,6 +264,11 @@ class LoopConfig:
     context_threshold: float = 0.8  # Trigger compaction at 80% of budget
     context_recent_turns: int = 3  # Number of recent turns to preserve
     context_window: int = 0  # Model physical context window (0 = unknown)
+    # When True, after a turn that triggered compaction the transcript file is
+    # rewritten to header + compaction marker + kept messages, so a daemon
+    # restart loads the post-compaction history instead of replaying the full
+    # pre-compaction transcript and re-paying the compaction cost.
+    truncate_after_compaction: bool = True
     # Image model (mirrors openclaw agents.defaults.imageModel)
     # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
     # str   → Media Understanding: images described to text by this model (apply.ts)
@@ -354,11 +359,34 @@ class AgentSession:
         self.history[:] = scratch_history
         if not self.transcript_writer:
             return
+
+        from nano_openclaw.session.transcript import is_synthetic_summary
+
+        latest_summary: str | None = None
         for op, payload in pending_ops:
-            if op == "message":
-                self.transcript_writer.append_message(payload)  # type: ignore[arg-type]
-            else:
-                self.transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+            if op == "compaction":
+                latest_summary = payload  # type: ignore[assignment]
+
+        should_rotate = (
+            latest_summary is not None
+            and self.cfg.truncate_after_compaction
+        )
+
+        if not should_rotate:
+            for op, payload in pending_ops:
+                if op == "message":
+                    self.transcript_writer.append_message(payload)  # type: ignore[arg-type]
+                else:
+                    self.transcript_writer.append_compaction(payload)  # type: ignore[arg-type]
+            return
+
+        # Compaction happened this turn. Drop the synthetic summary that
+        # compact_if_needed prepended to scratch_history — it's about to be
+        # represented on disk by a TranscriptCompaction entry instead.
+        kept = list(scratch_history)
+        if kept and is_synthetic_summary(kept[0]):
+            kept = kept[1:]
+        self.transcript_writer.rotate(latest_summary or "", kept)
 
     def _load_turn_skills(self) -> tuple[list[SkillEntry], list[Skill] | None]:
         eligible_entries: list[SkillEntry] = []
