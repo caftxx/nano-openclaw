@@ -199,6 +199,7 @@ async def _execute_job(
 
     status = "ok"
     error: str | None = None
+    history: list[Message] = []
 
     try:
         registry = build_core_registry()
@@ -214,7 +215,7 @@ async def _execute_job(
             hook_registry=None,
         )
 
-        history: list[Message] = [Message("user", [{"type": "text", "text": job.prompt}])]
+        history = [Message("user", [{"type": "text", "text": job.prompt}])]
         session = AgentSession(
             history=history,
             registry=registry,
@@ -252,7 +253,10 @@ async def _execute_job(
         # Reload states (remove_state already saved)
         states = store.load_state()
     else:
-        _set_next_run(job, state, ended_at)
+        # After a run, advance to a strictly-future occurrence — otherwise
+        # _last_cron_occurrence would re-select today's slot and the main loop
+        # would re-trigger this job on the next 60s tick.
+        _set_next_run(job, state, ended_at, force_future=True)
         store.save_state(states)
 
     store.append_run(CronRunRecord(
@@ -277,9 +281,18 @@ async def _execute_job(
             notify_path = state_dir / "notify-queue.jsonl"
             queue = NotifyQueue(notify_path)
 
-            summary = f"定时任务「{job.name}」执行完成\n状态: {status}\n耗时: {elapsed_ms}ms"
-            if error:
-                summary += f"\n错误: {error}"
+            if status == "error":
+                summary = (
+                    f"定时任务「{job.name}」执行失败\n"
+                    f"错误: {error}\n"
+                    f"耗时: {elapsed_ms}ms"
+                )
+            else:
+                model_text = _extract_last_assistant_text(history)
+                if model_text:
+                    summary = model_text
+                else:
+                    summary = f"定时任务「{job.name}」已完成（无文本输出）"
 
             queue.append(NotifyItem(
                 job_id=job.id,
@@ -291,6 +304,24 @@ async def _execute_job(
                 sent=False,
             ))
             log.info("cron.notify.queued", f"Notification queued for {target_uid:.16} (job={job.name})")
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extract_last_assistant_text(history: list[Any]) -> str:
+    """Return concatenated text blocks from the last assistant message, or ''."""
+    for msg in reversed(history):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        parts = [
+            block.get("text", "")
+            for block in getattr(msg, "content", []) or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        text = "\n".join(p for p in parts if p).strip()
+        if text:
+            return text
+    return ""
 
 
 # ── Next-run calculation ──────────────────────────────────────────────────────
