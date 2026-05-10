@@ -144,6 +144,64 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
         run=_switch_model,
     ))
 
+    # ─── set_thinking ───
+    # Same gating semantics as ``switch_model`` — toggling to ``max`` /
+    # ``xhigh`` quietly inflates token cost, so cron / channel auto-turns
+    # are denied unless allowlisted; interactive turns prompt the user.
+    async def _set_thinking(args: dict[str, Any]) -> str:
+        from nano_openclaw.gateway.slash import THINKING_LEVELS
+
+        level = str(args.get("level") or "").strip().lower()
+        if not level:
+            return _err(
+                "level is required (one of: " + " | ".join(THINKING_LEVELS) + ")"
+            )
+        if level not in THINKING_LEVELS:
+            return _err(
+                f"unknown thinking level: {level}",
+                allowed=list(THINKING_LEVELS),
+            )
+        snap_before = await backend.runtime_get()
+        if snap_before.thinking_level == level:
+            return _ok({
+                "noop": True,
+                "thinking_level": level,
+                "message": f"already on {level}",
+            })
+        try:
+            new_snap = await backend.runtime_update(thinking_level=level)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"runtime_update failed: {type(exc).__name__}: {exc}")
+        return _ok({
+            "from": snap_before.thinking_level,
+            "to": new_snap.thinking_level,
+        })
+
+    registry.register(Tool(
+        name="set_thinking",
+        description=(
+            "Adjust the thinking-budget level for the current conversation. "
+            "Argument: `level` ∈ {off, minimal, low, medium, high, xhigh, "
+            "adaptive, max}. Higher levels give the model more tokens to "
+            "deliberate before responding (xhigh/max ~32k tokens) at higher "
+            "cost. Requires user approval in interactive sessions; cron / "
+            "channel-driven turns are denied by default."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"],
+                    "description": "Thinking level to switch to.",
+                },
+            },
+            "required": ["level"],
+            "additionalProperties": False,
+        },
+        run=_set_thinking,
+    ))
+
     # ─── get_runtime ───
     async def _get_runtime(args: dict[str, Any]) -> str:
         snap = await backend.runtime_get()

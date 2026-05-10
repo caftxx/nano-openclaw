@@ -1342,6 +1342,8 @@ const BUILTIN_COMMANDS = new Set([
   "health", "channels", "runtime",
   // models
   "models", "model",
+  // runtime tuning
+  "thinking",
   // gateway lifecycle
   "restart",
 ]);

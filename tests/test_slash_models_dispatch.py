@@ -157,6 +157,61 @@ def test_slash_model_unknown_returns_error(tmp_path):
     assert runtime.model_ref == "anthropic/claude-sonnet-4-5"
 
 
+def test_slash_thinking_no_args_reports_current(tmp_path):
+    """``/thinking`` (no args) prints the active level and the allowed set."""
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+    md = MarkdownRenderer()
+
+    async def run():
+        try:
+            await handle_slash("/thinking", backend, md, {"session_key": ""})
+            return md.collect()
+        finally:
+            await backend.aclose()
+
+    out = asyncio.run(run())
+    assert "thinking:" in out
+    assert "off" in out and "max" in out  # allowed set is rendered
+
+
+def test_slash_thinking_switch_updates_runtime(tmp_path):
+    """``/thinking high`` calls runtime_update — the active level moves and
+    the success line names both endpoints."""
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+    md = MarkdownRenderer()
+
+    async def run():
+        try:
+            await handle_slash("/thinking high", backend, md, {"session_key": ""})
+            return md.collect()
+        finally:
+            await backend.aclose()
+
+    out = asyncio.run(run())
+    assert "high" in out
+    assert runtime.cfg.thinking_level == "high"
+
+
+def test_slash_thinking_unknown_level_returns_error(tmp_path):
+    """Unknown levels are rejected without touching runtime."""
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+    md = MarkdownRenderer()
+
+    async def run():
+        try:
+            await handle_slash("/thinking turbo", backend, md, {"session_key": ""})
+            return md.collect()
+        finally:
+            await backend.aclose()
+
+    out = asyncio.run(run())
+    assert "unknown thinking level" in out.lower()
+    assert runtime.cfg.thinking_level == "off"  # untouched (LoopConfig default)
+
+
 def test_resolve_model_option_disambiguation():
     """Bare model id matches one provider — accepted; provider/id form
     matches exact ref; unknown raises KeyError."""

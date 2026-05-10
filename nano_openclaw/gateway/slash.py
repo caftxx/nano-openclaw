@@ -52,7 +52,16 @@ HELP_TEXT = (
     "/session [prefix|#]  /skills  /plugins  /hooks  /tools  "
     "/subagents [list|kill <id>|all]  /active-memory [status|on|off|mode|style]  "
     "/dreaming [status|on|off|run]  /health  /channels  /runtime  "
-    "/models  /model [<provider/model-id>]  /restart"
+    "/models  /model [<provider/model-id>]  "
+    "/thinking [off|minimal|low|medium|high|xhigh|adaptive|max]  /restart"
+)
+
+
+# Mirrors ``loop.ThinkingLevel`` Literal — kept here as a runtime-iterable set
+# so the slash handler and the LLM tool can validate input without importing
+# typing internals. See ``loop.THINKING_BUDGETS`` for the per-level token map.
+THINKING_LEVELS: tuple[str, ...] = (
+    "off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max",
 )
 
 
@@ -130,6 +139,7 @@ async def handle_slash(
                 ["/runtime", "Active runtime summary"],
                 ["/models", "List configured models"],
                 ["/model (<provider/model-id>)", "Show / switch active model"],
+                ["/thinking (off | minimal | low | medium | high | xhigh | adaptive | max)", "Show / set thinking level"],
                 ["/restart", "Restart the gateway"],
             ]
             renderer.table(["Command", "Description"], rows, title="Commands")
@@ -613,6 +623,41 @@ async def _cmd_model(backend, renderer: SlashRenderer, state, args, cmd):
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Thinking level
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def _cmd_thinking(backend, renderer: SlashRenderer, state, args, cmd):
+    """``/thinking`` (no args) shows the active level; ``/thinking <level>``
+    sets it. Goes through ``backend.runtime_update`` so the change is
+    coordinated by ``RuntimeUpdateGuard.writer()`` — no in-flight turn
+    races a half-applied ``thinking_level`` field.
+    """
+    if not args:
+        snap = await backend.runtime_get()
+        renderer.text(
+            f"thinking: {snap.thinking_level}  (allowed: {' | '.join(THINKING_LEVELS)})"
+        )
+        return
+
+    target = args[0].lower()
+    if target not in THINKING_LEVELS:
+        renderer.error(
+            f"unknown thinking level: {target}. allowed: {' | '.join(THINKING_LEVELS)}"
+        )
+        return
+
+    snap_before = await backend.runtime_get()
+    if snap_before.thinking_level == target:
+        renderer.dim(f"thinking already set to {target}")
+        return
+    new_snap = await backend.runtime_update(thinking_level=target)
+    renderer.success(
+        f"thinking: {snap_before.thinking_level} → {new_snap.thinking_level}"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Active Memory / Dreaming
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -811,4 +856,5 @@ _HANDLERS = {
     "/restart": _cmd_restart,
     "/models": _cmd_models,
     "/model": _cmd_model,
+    "/thinking": _cmd_thinking,
 }

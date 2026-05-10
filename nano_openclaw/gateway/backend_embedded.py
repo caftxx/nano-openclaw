@@ -799,28 +799,51 @@ class EmbeddedBackend(Backend):
         # working transparently. We update ``self.manager.model`` (not the
         # manager instance) so any AgentBackendSession that callers already
         # hold remains connected to the same per-session transcripts.
-        from nano_openclaw.runtime import build_agent_runtime
+        from nano_openclaw.runtime import build_agent_runtime, image_model_id_from_ref
 
         async with self.runtime.runtime_guard.writer():
             old = self.runtime
-            target_agent = agent_id or old.agent_id
-            # ``image_model_ref=None`` means "leave alone"; passing it through
-            # would otherwise zero out the image model in build_agent_runtime.
-            target_image_ref = image_model_ref if image_model_ref is not None else old.image_model_ref
-            new_runtime = await build_agent_runtime(
-                config_path=old.config_path,
-                agent_id=target_agent,
-                model_ref_override=model_ref or old.model_ref,
-                image_model_ref_override=target_image_ref,
-            )
-            if thinking_level is not None:
-                new_runtime.cfg.thinking_level = thinking_level
-            self.runtime = new_runtime
-            # Keep the same manager instance (callers hold references to its
-            # AgentBackendSession objects); just refresh metadata new
-            # transcripts will be tagged with.
-            self.manager.model = new_runtime.model_id
-            self.manager.cwd = str(new_runtime.workspace_dir)
+            # Heavy rebuild only when agent_id or model_ref actually change —
+            # those swap the model client + tool registry. ``thinking_level``
+            # and ``image_model_ref`` are pure config-field updates and don't
+            # need build_agent_runtime; doing them in place avoids tearing
+            # down the LLM client and dropping in-memory caches every time
+            # the user toggles thinking.
+            agent_changed = agent_id is not None and agent_id != old.agent_id
+            model_changed = model_ref is not None and model_ref != old.model_ref
+
+            if agent_changed or model_changed:
+                target_agent = agent_id or old.agent_id
+                # ``image_model_ref=None`` means "leave alone"; passing through
+                # would zero out the image model in build_agent_runtime.
+                target_image_ref = (
+                    image_model_ref if image_model_ref is not None else old.image_model_ref
+                )
+                new_runtime = await build_agent_runtime(
+                    config_path=old.config_path,
+                    agent_id=target_agent,
+                    model_ref_override=model_ref or old.model_ref,
+                    image_model_ref_override=target_image_ref,
+                )
+                if thinking_level is not None:
+                    new_runtime.cfg.thinking_level = thinking_level
+                self.runtime = new_runtime
+                # Keep the manager instance (callers hold its sessions); just
+                # refresh metadata new transcripts will be tagged with.
+                self.manager.model = new_runtime.model_id
+                self.manager.cwd = str(new_runtime.workspace_dir)
+                close_old = True
+            else:
+                # Light path — mutate the existing runtime in place. Still
+                # under writer() so we don't race a chat turn reading the
+                # field mid-flight.
+                if thinking_level is not None:
+                    old.cfg.thinking_level = thinking_level
+                if image_model_ref is not None:
+                    old.image_model_ref = image_model_ref
+                    old.cfg.image_model = image_model_id_from_ref(image_model_ref)
+                close_old = False
+
             snapshot = await self.runtime_get()
             self._emit(
                 PushEvent(
@@ -835,10 +858,11 @@ class EmbeddedBackend(Backend):
                     seq=self._next_seq(),
                 )
             )
-            try:
-                await old.close()
-            except Exception as exc:  # noqa: BLE001
-                log.warning("runtime_update.old_close", f"{type(exc).__name__}: {exc}")
+            if close_old:
+                try:
+                    await old.close()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("runtime_update.old_close", f"{type(exc).__name__}: {exc}")
             return snapshot
 
     # ─── Channels ───

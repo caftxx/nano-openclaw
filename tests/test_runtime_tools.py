@@ -89,7 +89,8 @@ def test_runtime_tools_registered_after_backend_init(tmp_path):
     finally:
         asyncio.run(backend.aclose())
     expected = {
-        "list_models", "switch_model", "get_runtime", "get_context",
+        "list_models", "switch_model", "set_thinking",
+        "get_runtime", "get_context",
         "list_sessions", "list_tools", "list_skills", "list_channels",
         "get_health",
     }
@@ -154,6 +155,52 @@ def test_switch_model_in_dangerous_tools_and_requires_approval(tmp_path):
         assert "switch_model" in manager.policy.tool_configs
     finally:
         asyncio.run(backend.aclose())
+
+
+def test_set_thinking_tool_changes_runtime_when_no_approval_gate(tmp_path):
+    """No approval_manager → tool runs straight; the active runtime's
+    ``thinking_level`` reflects the new value and the JSON envelope reports
+    from/to."""
+    import json
+
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+
+    async def run():
+        try:
+            tool = runtime.registry._tools["set_thinking"]
+            raw = tool.run({"level": "high"})
+            return await raw if asyncio.iscoroutine(raw) else raw
+        finally:
+            await backend.aclose()
+
+    out = asyncio.run(run())
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["from"] == "off"
+    assert payload["to"] == "high"
+    assert runtime.cfg.thinking_level == "high"
+
+
+def test_set_thinking_tool_rejects_unknown_level(tmp_path):
+    import json
+
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+
+    async def run():
+        try:
+            tool = runtime.registry._tools["set_thinking"]
+            raw = tool.run({"level": "turbo"})
+            return await raw if asyncio.iscoroutine(raw) else raw
+        finally:
+            await backend.aclose()
+
+    out = asyncio.run(run())
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "unknown" in payload["error"].lower()
+    assert runtime.cfg.thinking_level == "off"  # untouched
 
 
 def test_switch_model_tool_unknown_ref_returns_ok_false(tmp_path):

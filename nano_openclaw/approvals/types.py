@@ -99,7 +99,7 @@ class ApprovalPolicy(BaseModel):
         description="deny=block dangerous, allowlist=check whitelist, full=allow all"
     )
     dangerous_tools: List[str] = Field(
-        default_factory=lambda: ["bash", "write_file", "restart", "switch_model"],
+        default_factory=lambda: ["bash", "write_file", "restart", "switch_model", "set_thinking"],
         description="Tools that may require approval"
     )
     tool_configs: Dict[str, ToolApprovalConfig] = Field(
@@ -113,6 +113,10 @@ class ApprovalPolicy(BaseModel):
             # interactively; cron / channel auto-turns deny without an
             # explicit allowlist.
             "switch_model": ToolApprovalConfig(tool_name="switch_model", requires_approval=True),
+            # ``set_thinking`` to ``xhigh`` / ``max`` quietly inflates token
+            # spend per turn. Same approval flow as switch_model so the
+            # human sees the cost change before it lands.
+            "set_thinking": ToolApprovalConfig(tool_name="set_thinking", requires_approval=True),
         },
         description="Per-tool approval settings"
     )
