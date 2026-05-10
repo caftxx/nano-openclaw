@@ -157,4 +157,6 @@ METHODS_V1 = frozenset({
     "tools.list", "skills.list", "plugins.list", "hooks.list",
     # Misc
     "health",
+    # Gateway lifecycle
+    "gateway.restart",
 })

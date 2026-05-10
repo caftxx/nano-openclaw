@@ -123,6 +123,20 @@ async def _cmd_new(backend, console, state, args, cmd):
     console.print(f"[dim]new session: {info.session_id[:8]}…[/]")
 
 
+async def _cmd_restart(backend, console, state, args, cmd):
+    """Restart the daemon NOW. Drops in-flight turns; user message is
+    already on disk so the session resumes after restart."""
+    console.print("[yellow]restarting gateway…[/]")
+    try:
+        info = await backend.gateway_restart()
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]restart failed:[/] {type(exc).__name__}: {exc}")
+        return
+    strategy = info.get("strategy", "exec")
+    pid = info.get("pid")
+    console.print(f"[dim]strategy={strategy} pid={pid} — connection will drop[/]")
+
+
 async def _cmd_sessions(backend, console, state, args, cmd):
     """Render the saved-sessions Table and handle the ``delete`` sub-verb."""
     if args and args[0].lower() == "delete":
@@ -595,4 +609,5 @@ _HANDLERS = {
     "/runtime": _cmd_runtime,
     "/active-memory": _cmd_active_memory,
     "/dreaming": _cmd_dreaming,
+    "/restart": _cmd_restart,
 }

@@ -18,6 +18,7 @@ from nano_openclaw.gateway.methods import (
     channels as _channels,
     chat as _chat,
     features as _features,
+    gateway as _gateway,
     health as _health,
     introspection as _introspection,
     models as _models,
@@ -41,6 +42,7 @@ CORE_HANDLERS: dict[str, Handler] = {
     **_features.HANDLERS,
     **_introspection.HANDLERS,
     **_health.HANDLERS,
+    **_gateway.HANDLERS,
 }
 
 

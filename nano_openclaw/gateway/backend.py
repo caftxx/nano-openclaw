@@ -322,6 +322,20 @@ class Backend(Protocol):
     # ─── Health ───
     async def health(self) -> HealthSummary: ...
 
+    # ─── Gateway lifecycle ───
+    async def gateway_restart(self) -> dict[str, Any]:
+        """Restart the daemon. Immediate — does not wait for in-flight turns.
+
+        Returns ``{"strategy": "exec"|"exit", "pid": int}`` synchronously
+        BEFORE the actual restart fires (the swap happens on a short delay
+        so the response can flush back to the caller). After that the
+        connection drops; clients should reconnect on the same port.
+
+        For deferred (turn-end) restart, the LLM-facing ``restart`` tool
+        sets ``runtime.pending_restart`` instead — see gateway/server.py.
+        """
+        ...
+
     # ─── Push event subscription ───
     def subscribe(
         self,

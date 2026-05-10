@@ -12,6 +12,7 @@ WebSocket backend, no remote IPC.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -1089,6 +1090,34 @@ class EmbeddedBackend(Backend):
             sessions_loaded=len(self.manager._loaded),
             in_flight_turns=len(self._run_registry),
         )
+
+    # ─── Gateway lifecycle ───
+
+    async def gateway_restart(self) -> dict[str, Any]:
+        """Schedule an immediate daemon restart.
+
+        Returns synchronously so the caller's response/push can flush. The
+        actual restart fires from a 0.3s ``call_later`` — long enough for
+        the WebSocket frame and any logger writes to make it out before the
+        process is swapped (or exits).
+        """
+        import asyncio
+        from nano_openclaw.gateway.restart import perform_restart
+
+        strategy = self.runtime.config.gateway.restart_strategy
+        pid = os.getpid()
+
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.3, perform_restart, strategy)
+
+        self._emit(
+            PushEvent(
+                event="session.changed",
+                payload={"reason": "gateway-restart", "strategy": strategy},
+                seq=self._next_seq(),
+            )
+        )
+        return {"strategy": strategy, "pid": pid}
 
     # ─── Push event subscription ───
 

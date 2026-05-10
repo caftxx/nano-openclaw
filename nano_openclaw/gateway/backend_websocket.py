@@ -614,6 +614,11 @@ class WebSocketBackend(Backend):
             extra=extra_keys,
         )
 
+    async def gateway_restart(self) -> dict[str, Any]:
+        # The daemon restarts ~0.3s after acking; the WebSocket will drop.
+        # The caller is expected to print "restarting…" and (optionally) reconnect.
+        return await self._call("gateway.restart") or {}
+
     # ─── Push event subscription ───
 
     def subscribe(

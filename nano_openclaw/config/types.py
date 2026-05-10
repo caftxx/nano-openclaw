@@ -509,6 +509,11 @@ class GatewayConfig(BaseModel):
     host: str = Field(default="127.0.0.1", description="Bind address; default loopback. Non-loopback warns at startup (no auth in v1).")
     port: int = Field(default=5000, ge=1, le=65535, description="TCP port for the daemon HTTP/WebSocket server")
     log_path: str = Field(default="", description="Where the detached daemon writes stdout/stderr; empty → state_dir/gateway.log")
+    restart_strategy: Literal["exec", "exit"] = Field(
+        default="exec",
+        alias="restart_strategy",
+        description="How /restart and the restart tool restart the daemon. 'exec' re-execs in place (works in standalone + systemd Type=simple). 'exit' exits 0 and relies on a supervisor (systemd Restart=always, docker restart policy) — do NOT use without one.",
+    )
 
 
 class LoggingConfig(BaseModel):

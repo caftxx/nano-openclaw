@@ -99,11 +99,16 @@ class ApprovalPolicy(BaseModel):
         description="deny=block dangerous, allowlist=check whitelist, full=allow all"
     )
     dangerous_tools: List[str] = Field(
-        default_factory=lambda: ["bash", "write_file"],
+        default_factory=lambda: ["bash", "write_file", "restart"],
         description="Tools that may require approval"
     )
     tool_configs: Dict[str, ToolApprovalConfig] = Field(
-        default_factory=dict,
+        default_factory=lambda: {
+            # ``restart`` is gateway-wide and irreversible mid-turn — always
+            # ask in interactive sessions; deny in non-interactive (cron /
+            # channel auto) unless explicitly allowlisted.
+            "restart": ToolApprovalConfig(tool_name="restart", requires_approval=True),
+        },
         description="Per-tool approval settings"
     )
     allow_always_store: Optional[str] = Field(
