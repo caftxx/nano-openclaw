@@ -539,16 +539,40 @@ async def web_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
 
 
 def _current_time(args: dict[str, Any]) -> str:
+    import json
     from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-    return now.isoformat()
+
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone()
+
+    def fmt(dt: datetime) -> dict[str, str]:
+        return {
+            "iso": dt.isoformat(timespec="seconds"),
+            "date": dt.strftime("%Y-%m-%d"),
+            "time": dt.strftime("%H:%M:%S"),
+            "weekday": dt.strftime("%A"),
+        }
+
+    return json.dumps(
+        {
+            "local": {
+                **fmt(now_local),
+                "timezone": now_local.tzname() or "local",
+                "utc_offset": now_local.strftime("%z"),
+            },
+            "utc": fmt(now_utc),
+            "unix_ms": int(now_utc.timestamp() * 1000),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _build_core_tools() -> list[Tool]:
     tools: list[Tool] = [
         Tool(
             name="current_time",
-            description="Get the current UTC time in ISO 8601 format.",
+            description="Get the current time with explicit weekday, local timezone offset, UTC, ISO 8601, and Unix epoch. Call this before any reasoning that depends on today's date or day-of-week — do not infer the weekday from a date string.",
             input_schema={
                 "type": "object",
                 "properties": {},
