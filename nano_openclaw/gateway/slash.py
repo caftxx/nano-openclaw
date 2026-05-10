@@ -52,7 +52,7 @@ HELP_TEXT = (
     "/session [prefix|#]  /skills  /plugins  /hooks  /tools  "
     "/subagents [list|kill <id>|all]  /active-memory [status|on|off|mode|style]  "
     "/dreaming [status|on|off|run]  /health  /channels  /runtime  "
-    "/models  /model [<provider/model-id>]"
+    "/models  /model [<provider/model-id>]  /restart"
 )
 
 
