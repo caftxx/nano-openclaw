@@ -104,7 +104,8 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 - **`workspace/`** — bootstrap 文件加载（AGENTS.md 等 8 个标准文件）+ budget 截断
 - **`webui/`** — FastAPI 路由（mount 到 daemon 的 FastAPI app；不再独立子命令）
 - **`schedule/`** — cron scheduler + recovery（restart 不重触发已跑过任务，按 `last_run_at_ms` 去重）
-- **`wechat/bot.py`** — `WechatBot` long-poll runner（被 `WechatChannel` 拉起；不再有独立子命令）
+- **`wechat/bot.py`** — `WechatBot` long-poll runner（被 `WechatChannel` 拉起；token 来自扫码登录写入的 `state_dir/wechat-tokens.{id}.json`）
+- **`wechat/login_cli.py`** — `nano-openclaw wechat login` 入口；执行 QR 状态机 + 持久化 token 到 state_dir;daemon 通过 `discover_persisted_account_ids` 发现账号
 - **`cli.py`** — 单进程 REPL（embedded 模式）+ slash 命令通过 `gateway/slash.py` dispatch
 - **`__main__.py`** — 顶层 argparse：`tui` / `gateway`
 
@@ -130,8 +131,9 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 
 ```jsonc
 gateway: { host: "127.0.0.1", port: 5000, log_path: "" }
-wechat:  { accounts: [{ id: "default", ilink_token: "..." }] }
 ```
+
+WeChat 不在配置里 —— 通过 `nano-openclaw wechat login [--account=ID]` 扫码登录,token 持久化在 `state_dir/wechat-tokens.{id}.json`,daemon 启动时自动发现并为每个文件起一个 `WechatChannel`。
 
 CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。
 
@@ -148,6 +150,7 @@ state_dir/
 ├── agents/{agentId}/sessions/
 │   ├── sessions.json                       # session 索引
 │   └── {sessionId}.jsonl                   # transcript（per session）
+├── wechat-tokens.{account}.json            # 扫码登录写入的 token（per account；daemon 启动时枚举）
 ├── wechat-sessions.{account}.json          # uid → session_id 映射（per account）
 ├── notify-queue.{account}.jsonl            # cron 完成通知队列（per account）
 └── cron/

@@ -51,7 +51,6 @@ def _fake_runtime(tmp_path: Path, *, registry: ToolRegistry | None = None) -> Si
         agent_id="default",
         session_id="default",
         config=SimpleNamespace(
-            wechat=SimpleNamespace(accounts=[]),
             noTools=True,
         ),
         warnings=[],

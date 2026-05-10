@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from nano_openclaw.config import load_config, resolve_state_dir
+from nano_openclaw.config import resolve_state_dir
 from nano_openclaw.logger import get_logger
 from nano_openclaw.wechat.ilink import (
     LoginCallbacks,
@@ -56,9 +56,9 @@ def discover_persisted_account_ids(state_dir: Path) -> list[str]:
         ``wechat-tokens.json``        → ``"default"``
         ``wechat-tokens.{id}.json``   → ``id``
 
-    Used by the daemon at startup so that running ``nano-openclaw wechat login``
-    is sufficient to bring an account online — the user doesn't have to also
-    duplicate the account id under ``wechat.accounts`` in the config.
+    Used by the daemon at startup: each wechat-tokens file = one account to
+    host. ``nano-openclaw wechat login`` is the only way to register a wechat
+    account; there is no config-file equivalent.
     """
     if not state_dir.exists():
         return []
@@ -102,21 +102,17 @@ def load_persisted_token(state_dir: Path, account_id: str) -> tuple[str, str]:
 
 async def run_wechat_login(
     *,
-    config_path: str | None = None,
     account_id: str = "default",
 ) -> int:
-    """Run the QR login flow and persist the resulting token. Returns exit code."""
-    cfg, _warnings = load_config(config_path)
-    state_dir = resolve_state_dir()
+    """Run the QR login flow and persist the resulting token. Returns exit code.
 
-    # Pick the configured base_url for this account if any; otherwise default.
-    # The server may overwrite this in the LoginResult so we treat it only as
-    # the bootstrap address for fetching the QR code.
+    There's no longer a config-file fallback for the iLink base URL — the
+    bootstrap URL is always :data:`DEFAULT_BASE_URL`, and the server can
+    redirect us to a sharded instance via ``LoginResult.base_url``, which
+    we then persist alongside the token.
+    """
+    state_dir = resolve_state_dir()
     base_url = DEFAULT_BASE_URL
-    accounts = list(cfg.wechat.accounts) if cfg.wechat else []
-    matched = next((a for a in accounts if a.id == account_id), None)
-    if matched and matched.ilink_base_url:
-        base_url = matched.ilink_base_url
 
     print(f"使用 iLink 地址: {base_url}", flush=True)
     print(f"账号 ID:         {account_id}", flush=True)

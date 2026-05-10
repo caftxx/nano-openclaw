@@ -46,7 +46,7 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
         agent_id="default",
         session_id="default",
-        config=SimpleNamespace(wechat=SimpleNamespace(accounts=[])),
+        config=SimpleNamespace(),
         warnings=[],
         client=None,
         registry=ToolRegistry(),

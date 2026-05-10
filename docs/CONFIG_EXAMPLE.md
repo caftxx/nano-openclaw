@@ -134,46 +134,24 @@ gateway: {
 }
 ```
 
-### wechat — WeChat 多账号配置
+### wechat — 没有 wechat 配置块
 
-WeChat 现在作为 daemon 内的 Channel 运行（不再是独立子命令）。每个 uid 自动绑定持久化 session，三个前端（TUI / WebUI / WeChat）共享同一份 `/sessions` 列表。
+WeChat 已经从 nano-openclaw.json5 里彻底移除。**唯一接入方式是扫码登录**：
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `accounts` | array | `[]` | 配置的账号列表（v1 启动需至少一个有 `ilink_token`） |
-| `poll_timeout` | number | `35` | iLink 长轮询超时（秒，范围 5-120） |
-| `typing_interval` | number | `5` | "正在输入"指示符续命间隔（秒，范围 1-30） |
-| `notify_poll_interval` | number | `30` | cron 通知队列的轮询间隔（秒，范围 5-300） |
-
-#### accounts[] — 单账号
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `id` | string | `"default"` | 账号标识，用于 `created_by` 三段格式 + uid 映射文件名 |
-| `ilink_token` | string | `""` | iLink bot token（必填） |
-| `ilink_base_url` | string | `"https://ilinkai.weixin.qq.com"` | iLink API 地址 |
-| `notify_queue_path` | string | `""` | 留空 → `state_dir/notify-queue.{id}.jsonl` |
-
-```json5
-wechat: {
-  accounts: [
-    {
-      id: "default",
-      ilink_token: "${ILINK_TOKEN}",
-    },
-    {
-      id: "work",
-      ilink_token: "...",
-    },
-  ],
-}
+```bash
+uv run nano-openclaw wechat login                  # 默认账号 'default'
+uv run nano-openclaw wechat login --account=work   # 多账号:换标签即可
 ```
 
-> 旧的 `wechat.ilink_token`（顶层）形式已不再支持。启动时会报错并指向新 schema。
+登录写入 `state_dir/wechat-tokens.{account}.json`(`default` 无后缀,其余 `wechat-tokens.{id}.json`),内容包括 token + iLink 服务器返回的 base_url + bot_id + login_at 时间戳。
 
-**uid → session 映射**：daemon 启动后，每个 wechat uid 第一次发消息时自动通过 `BackendSessionManager.create()` 拿到一个真实 session，映射持久化到 `state_dir/wechat-sessions.{account}.json`。后续消息复用同一个 session，daemon 重启也能继续。
+daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个文件一个 `WechatChannel`。运行时调优参数(long-poll 超时、typing 续命间隔等)使用代码内默认值,与 openilink-sdk-python 对齐,不再可配置。
 
-**cron 通知路由**：cron 任务的 `created_by` 三段格式 `wechat:{account}:{uid}`，完成后 daemon 通过 ChannelRegistry 路由到对应账号的通知队列，再由 WechatBot 读取并推送给原 uid。
+**uid → session 映射**:每个 wechat uid 第一次发消息时通过 `BackendSessionManager.create()` 拿到真实 session,映射持久化到 `state_dir/wechat-sessions.{account}.json`。
+
+**cron 通知路由**:cron 任务的 `created_by` 三段格式 `wechat:{account}:{uid}`,完成后通过 ChannelRegistry 路由到对应账号的通知队列,由 WechatBot 读取并推送给原 uid。
+
+**Token 失效时重新登录**:服务器返 `errcode=-14` 时 daemon 长退避 5 分钟并日志高优先级提示;直接重新跑 `wechat login` 写新 token 即可,daemon 下一轮长轮询自动捡起。
 
 
 ### exec-approvals.json — 审批门禁配置

@@ -36,19 +36,10 @@ async def channels_start(ctx: GatewayContext, params: dict[str, Any]) -> dict[st
     if not isinstance(raw_config, dict):
         raw_config = {}
 
-    # Merge config from ``runtime.config.<channel_id>.accounts`` when caller
-    # didn't supply one explicitly. v1: only wechat populated this way.
-    if not raw_config and channel_id == "wechat":
-        wechat_cfg = ctx.runtime.config.wechat
-        for acc in wechat_cfg.accounts:
-            if acc.id == account_id:
-                raw_config = {
-                    "ilink_token": acc.ilink_token,
-                    "ilink_base_url": acc.ilink_base_url,
-                    "notify_queue_path": acc.notify_queue_path,
-                }
-                break
-
+    # For wechat: caller may pass ``config={}`` and let WechatChannel.start()
+    # load the token + base_url from ``state_dir/wechat-tokens.{id}.json``
+    # (written by ``nano-openclaw wechat login``). There's no config-file
+    # fallback any more — login is the single source of truth.
     account = ChannelAccount(id=account_id, config=raw_config)
     instance = await ctx.channel_registry.start(channel_id, account, ctx.runtime)
     return _entry_to_dict(instance.status())

@@ -24,8 +24,10 @@ Subcommands:
 
 Phase 3 dropped the standalone ``web`` and ``wechat`` subcommands — both now
 run inside the daemon. To get a webui, ``nano-openclaw gateway start`` and
-open ``http://127.0.0.1:5000``. To run wechat, configure ``wechat.accounts``
-in nano-openclaw.json5 and start the gateway.
+open ``http://127.0.0.1:5000``. To run wechat, scan-login first
+(``nano-openclaw wechat login [--account=ID]``) and then start the gateway —
+the daemon auto-discovers any persisted login under
+``state_dir/wechat-tokens.{id}.json``.
 """
 
 from __future__ import annotations
@@ -113,7 +115,7 @@ def main() -> None:
     wechat_login_p.add_argument(
         "--account",
         default="default",
-        help="Account id to log in (matches wechat.accounts[*].id; default: 'default')",
+        help="Account id (free-form label; default: 'default'). Token will persist as state_dir/wechat-tokens.{id}.json",
     )
 
     args = parser.parse_args()
@@ -137,10 +139,7 @@ def main() -> None:
     if args.command == "wechat":
         if args.wechat_command == "login":
             from nano_openclaw.wechat.login_cli import run_wechat_login
-            sys.exit(asyncio.run(run_wechat_login(
-                config_path=config_path,
-                account_id=args.account,
-            )))
+            sys.exit(asyncio.run(run_wechat_login(account_id=args.account)))
         wechat_parser.error("missing wechat subcommand (try `wechat login`)")
 
     # ── tui (explicit or default) ───────────────────────────────────────────

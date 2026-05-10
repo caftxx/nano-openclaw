@@ -56,7 +56,7 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
     cfg = LoopConfig(model="test-model", workspace_dir=workspace, session_key="default")
     return SimpleNamespace(
         agent_id="default",
-        config=SimpleNamespace(wechat=SimpleNamespace(accounts=[])),
+        config=SimpleNamespace(),
         warnings=[],
         client=None,
         registry=ToolRegistry(),

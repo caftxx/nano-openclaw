@@ -61,7 +61,6 @@ def _fake_runtime(tmp_path: Path, *, providers: dict | None = None) -> SimpleNam
         agent_id="default",
         session_id="default",
         config=SimpleNamespace(
-            wechat=SimpleNamespace(accounts=[]),
             models=SimpleNamespace(providers=providers or {}),
             noTools=True,
         ),

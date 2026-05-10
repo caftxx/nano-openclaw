@@ -154,25 +154,28 @@ gateway: {
 
 CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。
 
-### WeChat 多账号配置
+### WeChat 扫码登录（唯一接入方式）
 
-```json5
-wechat: {
-  accounts: [
-    {
-      id: "default",
-      ilink_token: "${ILINK_TOKEN}",         // 支持 ${ENV_VAR} 替换
-    },
-    { id: "work", ilink_token: "..." },      // 多账号继续加
-  ],
-}
+WeChat 通过 iLink 协议接入，**只支持扫码登录**，nano-openclaw.json5 不再有 `wechat` 配置块。
+
+```bash
+# 1. 扫码登录（默认账号）
+uv run nano-openclaw wechat login
+
+# 多账号：换个 --account 标签即可（默认是 'default'）
+uv run nano-openclaw wechat login --account=work
+uv run nano-openclaw wechat login --account=personal
+
+# 2. 启动 daemon — 自动发现 state_dir/wechat-tokens.*.json，每个文件 = 一个账号
+uv run nano-openclaw gateway start
+uv run nano-openclaw gateway status         # channels: 应列出所有登录账号
 ```
 
-> `ilink_token` 获取方式：先用 openclaw 或 hermes 连接微信 bot，然后从其 token 文件中读取。
+登录流程：终端打印 ASCII 二维码 → 微信扫码 → 手机端确认。登录成功后 token 写入 `state_dir/wechat-tokens.{account}.json`（`default` 账号无后缀），daemon 启动时自动加载。
 
-WeChat 作为 daemon 内的 Channel 运行；用户每个 uid 自动绑定一个真实的持久化 session（与 TUI/WebUI 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。
+会话过期（iLink `errcode=-14`）时 daemon 不会疯狂重试，而是 long-poll 退避 5 分钟并在日志里高优先级提示重新运行 `wechat login`。再登录后 daemon 会自动捡起新 token，不需要重启。
 
-**完整配置字段说明见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。**
+WeChat 作为 daemon 内的 Channel 运行；每个 uid 自动绑定一个真实的持久化 session（与 TUI/WebUI 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。
 
 ## 日志系统
 

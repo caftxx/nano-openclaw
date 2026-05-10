@@ -25,7 +25,7 @@ from nano_openclaw.attachments import PromptAttachment
 from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import AgentSession, TextDelta
 from nano_openclaw._stream_events import ToolUseEnd, ToolUseStart
-from nano_openclaw.runtime import AgentRuntime, build_agent_runtime
+from nano_openclaw.runtime import AgentRuntime
 from nano_openclaw.tools import ToolRegistry, Tool
 from nano_openclaw.wechat.ilink import (
     download_wechat_file,
@@ -798,66 +798,3 @@ class WechatBot:
                 await sender_task
 
 
-async def run_wechat_bot(
-    *,
-    config_path: str | None,
-    agent_id: str = "wechat",
-    token_override: str | None = None,
-) -> None:
-    """Entry point called from __main__.py for the `wechat` subcommand."""
-    from rich.console import Console
-    from pathlib import Path
-
-    console = Console()
-    runtime = await build_agent_runtime(
-        config_path=config_path,
-        agent_id=agent_id,
-        console=console,
-    )
-
-    for var_name, cfg_path in runtime.warnings:
-        console.print(
-            f"[yellow]warning:[/yellow] missing env var \"{var_name}\" at {cfg_path}"
-        )
-
-    cfg = runtime.config.wechat
-    # Phase 2 schema: legacy single-token form is auto-migrated by the Pydantic
-    # validator into a one-element accounts list. The legacy `wechat` subcommand
-    # only ever ran one account, so we use accounts[0]; multi-account support
-    # ships through the Phase 3 daemon (`gateway start`).
-    primary = cfg.accounts[0] if cfg.accounts else None
-    token = token_override or (primary.ilink_token if primary else "") or os.getenv("ILINK_TOKEN", "")
-    if not token:
-        console.print(
-            "[red]error:[/red] iLink token required. Set wechat.accounts[0].ilink_token in config, "
-            "pass --token, or set ILINK_TOKEN env var."
-        )
-        return
-
-    base_url = primary.ilink_base_url if primary else "https://ilinkai.weixin.qq.com"
-
-    # Initialize notification queue
-    notify_path_str = (primary.notify_queue_path if primary else "") or ""
-    if notify_path_str:
-        notify_path = Path(notify_path_str)
-    else:
-        notify_path = runtime.state_dir / "notify-queue.jsonl"
-    notify_queue = NotifyQueue(notify_path)
-    notify_poll_interval = cfg.notify_poll_interval or 30
-
-    bot = WechatBot(
-        runtime=runtime,
-        base_url=base_url,
-        token=token,
-        poll_timeout=cfg.poll_timeout,
-        typing_interval=cfg.typing_interval,
-        notify_queue=notify_queue,
-        notify_poll_interval=notify_poll_interval,
-    )
-
-    console.print(f"[green]WeChat bot running[/green] (agent={agent_id}, url={base_url})")
-    console.print(f"[green]Notification queue[/green] at {notify_path}")
-    try:
-        await bot.run()
-    finally:
-        await runtime.close()

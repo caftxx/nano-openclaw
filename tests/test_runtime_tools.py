@@ -51,7 +51,6 @@ def _fake_runtime(tmp_path: Path, *, no_tools: bool = False) -> SimpleNamespace:
         agent_id="default",
         session_id="default",
         config=SimpleNamespace(
-            wechat=SimpleNamespace(accounts=[]),
             models=SimpleNamespace(providers={
                 "anthropic": SimpleNamespace(
                     api="anthropic-messages", baseUrl=None, apiKey=None,

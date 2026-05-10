@@ -103,16 +103,15 @@ class WechatChannel(Channel):
             suffix = "" if self.account.id == "default" else f".{self.account.id}"
             uid_map_path = runtime.state_dir / f"wechat-sessions{suffix}.json"
 
-        wechat_cfg = runtime.config.wechat
+        # Polling / typing / notify intervals use ``WechatBot``'s built-in
+        # defaults — they're not exposed via config any more (no real-world
+        # demand to override and the values mirror openilink-sdk-python).
         backend = getattr(gateway, "backend", None) if gateway is not None else None
         self._bot = WechatBot(
             runtime=runtime,
             base_url=base_url,
             token=token,
-            poll_timeout=wechat_cfg.poll_timeout,
-            typing_interval=wechat_cfg.typing_interval,
             notify_queue=self._notify_queue,
-            notify_poll_interval=wechat_cfg.notify_poll_interval,
             account_id=self.account.id,
             session_manager=session_manager,
             backend=backend,

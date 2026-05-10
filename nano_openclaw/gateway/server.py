@@ -7,10 +7,11 @@ this same coroutine via ``subprocess.Popen([... "gateway", "run"], ...)``.
 
 Channel hosting (Phase 3 v1):
 
-- Iterate ``runtime.config.wechat.accounts`` and start a ``WechatChannel``
+- Discover wechat accounts from ``state_dir/wechat-tokens.{id}.json`` files
+  (written by ``nano-openclaw wechat login``) and start a ``WechatChannel``
   per account through the global ``ChannelRegistry``. Other channels (when
   added later) follow the same pattern: import for side-effect registration,
-  iterate config, ``await registry.start(...)``.
+  enumerate accounts, ``await registry.start(...)``.
 - Channels share the daemon's single ``AgentRuntime`` instance — that's
   what makes cron / dreaming / subagent runner singletons safe.
 
@@ -209,53 +210,34 @@ async def _start_configured_channels(
     alongside webui/tui sessions in the unified ``/sessions`` list.
     """
     from nano_openclaw.channels.base import ChannelAccount
-    from nano_openclaw.config.types import WechatAccountConfig
-    from nano_openclaw.wechat.login_cli import discover_persisted_account_ids, load_persisted_token
+    from nano_openclaw.wechat.login_cli import discover_persisted_account_ids
 
-    wechat_cfg = runtime.config.wechat
-
-    # Build the effective account list:
-    #   1. Anything explicitly listed under wechat.accounts in config.
-    #   2. Anything discovered as state_dir/wechat-tokens.{id}.json that
-    #      isn't already in (1) — lets `wechat login` work without anyone
-    #      having to also remember to add the account to config.
-    accounts_by_id: dict[str, WechatAccountConfig] = {a.id: a for a in wechat_cfg.accounts}
-    for discovered_id in discover_persisted_account_ids(runtime.state_dir):
-        if discovered_id not in accounts_by_id:
-            accounts_by_id[discovered_id] = WechatAccountConfig(id=discovered_id)
-            log.info(
-                "gateway.channel.discovered",
-                f"wechat/{discovered_id}: persisted login found, account auto-registered",
-            )
-
-    for account_cfg in accounts_by_id.values():
-        # A persisted token from `wechat login` counts the same as a configured
-        # one — only skip when *both* sources are empty.
-        if not account_cfg.ilink_token:
-            persisted, _ = load_persisted_token(runtime.state_dir, account_cfg.id)
-            if not persisted:
-                log.info(
-                    "gateway.channel.skip.no_token",
-                    f"wechat/{account_cfg.id}: no ilink_token configured and no persisted "
-                    f"login found, skipping (run `nano-openclaw wechat login --account={account_cfg.id}`)",
-                )
-                continue
-        account = ChannelAccount(
-            id=account_cfg.id,
-            config={
-                "ilink_token": account_cfg.ilink_token,
-                "ilink_base_url": account_cfg.ilink_base_url,
-                "notify_queue_path": account_cfg.notify_queue_path,
-            },
+    # Wechat accounts are discovered purely from persisted login tokens —
+    # there's no config-file accounts list any more. Run
+    # ``nano-openclaw wechat login --account=ID`` for each account you want
+    # the daemon to host; that writes ``state_dir/wechat-tokens.{id}.json``
+    # which we pick up here.
+    discovered = discover_persisted_account_ids(runtime.state_dir)
+    if not discovered:
+        log.info(
+            "gateway.channel.no_wechat_logins",
+            "no wechat-tokens.*.json files in state_dir — "
+            "run `nano-openclaw wechat login` to add a wechat account",
         )
+        return
+
+    for account_id in discovered:
+        # WechatChannel.start() reads the persisted token + base_url from
+        # state_dir directly, so an empty config dict is fine here.
+        account = ChannelAccount(id=account_id, config={})
         try:
             await registry.start("wechat", account, runtime, gateway)
-            started_channels.append(("wechat", account.id))
+            started_channels.append(("wechat", account_id))
         except Exception as exc:  # noqa: BLE001 — one bad account shouldn't kill the daemon
             log.error(
                 "gateway.channel.start.error",
-                f"wechat/{account.id}: {type(exc).__name__}: {exc}",
+                f"wechat/{account_id}: {type(exc).__name__}: {exc}",
             )
             console.print(
-                f"[red]channel start failed:[/red] wechat/{account.id}: {type(exc).__name__}: {exc}"
+                f"[red]channel start failed:[/red] wechat/{account_id}: {type(exc).__name__}: {exc}"
             )

@@ -16,7 +16,6 @@ import pytest
 
 from nano_openclaw.channels.base import Channel, ChannelAccount, ChannelStatus
 from nano_openclaw.channels.registry import ChannelRegistry
-from nano_openclaw.config.types import WechatConfig
 from nano_openclaw.schedule.types import CronJob, CronRunRecord
 
 
@@ -50,9 +49,7 @@ def _fake_runtime() -> SimpleNamespace:
     return SimpleNamespace(
         agent_id="default",
         state_dir=Path("/tmp/fake-state"),
-        config=SimpleNamespace(wechat=SimpleNamespace(
-            poll_timeout=35, typing_interval=5, notify_poll_interval=30,
-        )),
+        config=SimpleNamespace(),
     )
 
 
@@ -314,47 +311,6 @@ def test_dispatch_notify_swallows_handler_errors():
         await reg.stop_all()
 
     asyncio.run(run())
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# WechatConfig migration
-# ────────────────────────────────────────────────────────────────────────────
-
-
-def test_wechat_config_legacy_top_level_token_rejected():
-    """Legacy single-token form is no longer migrated — fail loudly so users
-    update to the ``accounts: [...]`` schema instead.
-    """
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError) as exc_info:
-        WechatConfig.model_validate({"ilink_token": "abc123"})
-    assert "accounts" in str(exc_info.value)
-
-
-def test_wechat_config_legacy_multiple_top_level_keys_rejected():
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError):
-        WechatConfig.model_validate({
-            "ilink_token": "abc",
-            "ilink_base_url": "https://example.com",
-            "notify_queue_path": "/tmp/q.jsonl",
-        })
-
-
-def test_wechat_config_multi_account_passthrough():
-    cfg = WechatConfig.model_validate({
-        "accounts": [
-            {"id": "personal", "ilink_token": "tok1"},
-            {"id": "work", "ilink_token": "tok2"},
-        ],
-    })
-    assert {a.id for a in cfg.accounts} == {"personal", "work"}
-    assert cfg.accounts[0].ilink_token == "tok1"
-
-
-def test_wechat_config_empty_is_valid():
-    cfg = WechatConfig.model_validate({})
-    assert cfg.accounts == []
 
 
 # ────────────────────────────────────────────────────────────────────────────
