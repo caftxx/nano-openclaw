@@ -13,6 +13,9 @@ This is a simplified version of OpenClaw's compaction for educational purposes.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -301,6 +304,288 @@ def _sanitize_tool_pairs(history: list[Message]) -> None:
         history.insert(idx + 1, stub_msg)
 
 
+# ---------------------------------------------------------------------------
+# Pre-summarization prune (Stage 2)
+#
+# Before spending an LLM call to summarize the older region, do a cheap local
+# pass to (1) dedupe identical tool outputs, (2) replace large old tool
+# results with a one-line tool-aware summary, (3) strip image blocks from
+# old tool results, and (4) shrink large tool_use input dicts. Often this is
+# enough to bring the conversation back under threshold and skip the LLM
+# summary call entirely.
+# ---------------------------------------------------------------------------
+
+
+_PRUNE_RESULT_THRESHOLD_CHARS = 200       # tool_result text shorter than this is left alone
+_PRUNE_INPUT_THRESHOLD_CHARS = 500        # tool_use input JSON shorter than this is left alone
+_PRUNE_INPUT_LEAF_HEAD_CHARS = 200        # max chars per string leaf inside a shrunk input
+_DUPLICATE_TOOL_RESULT_TEXT = "[Duplicate tool output — same content as a more recent call]"
+_IMAGE_REMOVED_PLACEHOLDER = "[image removed to save context]"
+
+
+def _tool_result_text(block: dict[str, Any]) -> str:
+    """Concatenated text from a tool_result block's content list (or "")."""
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                t = item.get("text", "")
+                if isinstance(t, str):
+                    parts.append(t)
+        return "\n".join(parts)
+    return ""
+
+
+def _strip_image_blocks_from_tool_result(content: Any) -> tuple[Any, bool]:
+    """Replace image blocks inside a tool_result content list with a text
+    placeholder. Returns (new_content, had_image)."""
+    if not isinstance(content, list):
+        return content, False
+    had_image = False
+    out: list[Any] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image":
+            had_image = True
+            out.append({"type": "text", "text": _IMAGE_REMOVED_PLACEHOLDER})
+        else:
+            out.append(block)
+    return out, had_image
+
+
+def _summarize_tool_result(tool_name: str, tool_input: dict[str, Any], content: str) -> str:
+    """Replace a verbose tool_result with a 1-line informative summary.
+
+    Tool list mirrors nano's built-in registry (``tools.py``). Unknown tools
+    fall through to a generic format that still names the tool and the
+    leading args.
+    """
+    content_len = len(content)
+    line_count = content.count("\n") + 1 if content.strip() else 0
+
+    if tool_name == "bash":
+        cmd = tool_input.get("command", "") or ""
+        if len(cmd) > 80:
+            cmd = cmd[:77] + "..."
+        # nano's bash tool may include exit_code in JSON-shaped output; pluck
+        # it out if present, otherwise just report line count.
+        exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
+        exit_code = exit_match.group(1) if exit_match else "?"
+        return f"[bash] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+
+    if tool_name == "read_file":
+        path = tool_input.get("path", "?")
+        offset = tool_input.get("offset", 1)
+        return f"[read_file] read {path} from line {offset} ({content_len:,} chars)"
+
+    if tool_name == "write_file":
+        path = tool_input.get("path", "?")
+        body = tool_input.get("content", "") or ""
+        wlines = body.count("\n") + 1 if body else 0
+        return f"[write_file] wrote {path} ({wlines} lines)"
+
+    if tool_name == "list_dir":
+        path = tool_input.get("path", ".")
+        return f"[list_dir] {path} ({line_count} entries)"
+
+    if tool_name == "web_search":
+        query = tool_input.get("query", "?")
+        return f"[web_search] '{query}' ({content_len:,} chars result)"
+
+    if tool_name == "web_fetch":
+        url = tool_input.get("url", "?")
+        return f"[web_fetch] {url} ({content_len:,} chars)"
+
+    if tool_name == "skill":
+        name = tool_input.get("name", "?")
+        return f"[skill] {name} ({content_len:,} chars)"
+
+    if tool_name == "skill_install":
+        name = tool_input.get("name", "?")
+        return f"[skill_install] {name}"
+
+    if tool_name == "memory_get":
+        target = tool_input.get("path", tool_input.get("name", "?"))
+        return f"[memory_get] {target} ({content_len:,} chars)"
+
+    if tool_name == "memory_search":
+        query = tool_input.get("query", "?")
+        return f"[memory_search] '{query}' ({content_len:,} chars)"
+
+    if tool_name == "current_time":
+        return "[current_time] queried"
+
+    if tool_name == "session_status":
+        return "[session_status] queried"
+
+    # Generic fallback: name + first 2 args, capped.
+    args_str = ""
+    for k, v in list(tool_input.items())[:2]:
+        sv = str(v)
+        if len(sv) > 40:
+            sv = sv[:40] + "..."
+        args_str += f" {k}={sv}"
+    return f"[{tool_name}]{args_str} ({content_len:,} chars)"
+
+
+def _truncate_tool_use_input(inp: dict[str, Any], head_chars: int = _PRUNE_INPUT_LEAF_HEAD_CHARS) -> dict[str, Any]:
+    """Recursively shrink long string leaves in a tool_use input dict.
+
+    Keeps the dict structure intact (so the LLM can still parse it as a
+    valid call) but caps individual string values. Numbers, booleans, and
+    short strings pass through unchanged.
+
+    nano's ``tool_use.input`` is already a dict (decoded from JSON in
+    ``loop.py:1419``), so unlike hermes we don't need to parse first.
+    """
+
+    def _shrink(obj: Any) -> Any:
+        if isinstance(obj, str):
+            if len(obj) > head_chars:
+                return obj[:head_chars] + "...[truncated]"
+            return obj
+        if isinstance(obj, dict):
+            return {k: _shrink(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_shrink(v) for v in obj]
+        return obj
+
+    return _shrink(inp)
+
+
+def _prune_old_tool_results(
+    history: list[Message],
+    *,
+    protect_tail_count: int = 6,
+) -> int:
+    """Cheap, no-LLM pre-pass that replaces old verbose tool I/O with
+    informative shorthand. Modifies ``history`` in place; returns the
+    number of blocks pruned (not including dedupe-only and input-only
+    tweaks, which are reported but not included in the count beyond the
+    hash dedupe pass).
+
+    Three passes:
+
+      1. Dedupe identical tool_result text bodies (oldest duplicates →
+         back-reference text). This survives even inside the protected
+         tail because it's safe and cheap.
+      2. For tool_result blocks OUTSIDE the protected tail, replace large
+         text bodies with a 1-line ``_summarize_tool_result`` and strip
+         image blocks.
+      3. For tool_use blocks OUTSIDE the protected tail with large input
+         dicts, recursively shrink long string leaves while keeping the
+         JSON structure intact.
+
+    Mirrors hermes ``agent/context_compressor.py:_prune_old_tool_results``
+    but adapted to nano's Anthropic-native dict shape (no OpenAI
+    tool_calls list, ``tool_use.input`` is already a dict).
+    """
+    n = len(history)
+    if n == 0:
+        return 0
+
+    # Build tool_use_id -> (tool_name, tool_input) lookup so Pass 2 can
+    # generate a tool-aware summary instead of a generic placeholder.
+    call_id_to_tool: dict[str, tuple[str, dict[str, Any]]] = {}
+    for msg in history:
+        if msg.role != "assistant":
+            continue
+        for block in msg.content:
+            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            tid = block.get("id")
+            if not tid:
+                continue
+            raw_input = block.get("input")
+            tool_input: dict[str, Any] = raw_input if isinstance(raw_input, dict) else {}
+            call_id_to_tool[tid] = (block.get("name", "unknown"), tool_input)
+
+    prune_until = max(0, n - protect_tail_count)
+    pruned = 0
+
+    # Pass 1: dedupe identical tool_result text bodies (whole history).
+    # Walking newest-first means we keep the most recent full copy and
+    # replace older duplicates with a back-reference.
+    seen_hashes: set[str] = set()
+    for i in range(n - 1, -1, -1):
+        msg = history[i]
+        if msg.role != "user":
+            continue
+        for j, block in enumerate(msg.content):
+            if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                continue
+            text = _tool_result_text(block)
+            if len(text) < _PRUNE_RESULT_THRESHOLD_CHARS:
+                continue
+            h = hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+            if h in seen_hashes:
+                msg.content[j] = {
+                    **block,
+                    "content": [{"type": "text", "text": _DUPLICATE_TOOL_RESULT_TEXT}],
+                }
+                pruned += 1
+            else:
+                seen_hashes.add(h)
+
+    # Pass 2: replace large tool_result text bodies (older region only).
+    # Also strip image blocks from old tool_results — they survive every
+    # compaction otherwise (base64 PNGs are several KB each).
+    for i in range(prune_until):
+        msg = history[i]
+        if msg.role != "user":
+            continue
+        for j, block in enumerate(msg.content):
+            if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                continue
+            # Strip images regardless of text size (they're always heavy).
+            new_content, had_image = _strip_image_blocks_from_tool_result(
+                block.get("content")
+            )
+            if had_image:
+                block = {**block, "content": new_content}
+                msg.content[j] = block
+                pruned += 1
+            text = _tool_result_text(block)
+            if not text:
+                continue
+            # Skip already-pruned blocks (avoid double-summarizing).
+            if text.startswith(_DUPLICATE_TOOL_RESULT_TEXT) or text.startswith("["):
+                continue
+            if len(text) > _PRUNE_RESULT_THRESHOLD_CHARS:
+                tid = block.get("tool_use_id", "")
+                tool_name, tool_input = call_id_to_tool.get(tid, ("unknown", {}))
+                summary = _summarize_tool_result(tool_name, tool_input, text)
+                msg.content[j] = {
+                    **block,
+                    "content": [{"type": "text", "text": summary}],
+                }
+                pruned += 1
+
+    # Pass 3: shrink large tool_use input dicts (older region only).
+    # naive truncation breaks JSON; we recurse into the structure and only
+    # cap long string leaves.
+    for i in range(prune_until):
+        msg = history[i]
+        if msg.role != "assistant":
+            continue
+        for j, block in enumerate(msg.content):
+            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            inp = block.get("input")
+            if not isinstance(inp, dict):
+                continue
+            inp_size = len(json.dumps(inp, ensure_ascii=False))
+            if inp_size <= _PRUNE_INPUT_THRESHOLD_CHARS:
+                continue
+            new_inp = _truncate_tool_use_input(inp)
+            if new_inp != inp:
+                msg.content[j] = {**block, "input": new_inp}
+
+    return pruned
+
+
 async def summarize_history(
     messages: list[Message],
     *,
@@ -365,6 +650,7 @@ async def compact_if_needed(
     api: str = "anthropic",
     threshold_ratio: float = DEFAULT_THRESHOLD_RATIO,
     recent_turns: int = DEFAULT_RECENT_TURNS,
+    last_input_tokens: int | None = None,
 ) -> tuple[list[Message], str | None]:
     """Check token budget and compact history if over threshold.
 
@@ -376,15 +662,36 @@ async def compact_if_needed(
         api: API type ("anthropic" or "openai")
         threshold_ratio: Trigger compaction when tokens exceed this ratio of budget
         recent_turns: Number of recent turns to preserve (1 turn = user + assistant)
+        last_input_tokens: Real prompt-token count from the previous turn's
+            ``MessageEnd.usage``. When provided and > 0, used in place of the
+            character-based ``estimate_tokens`` fallback for the trigger
+            decision — real API counts are ~30% more accurate so compaction
+            fires at the right time. Estimate is still used for the
+            post-prune re-check (local mutation that hasn't hit the API yet).
 
     Returns:
         Tuple of (possibly modified history, summary if compaction occurred else None)
     """
-    current_tokens = estimate_tokens(history)
+    if last_input_tokens is not None and last_input_tokens > 0:
+        current_tokens = last_input_tokens
+    else:
+        current_tokens = estimate_tokens(history)
     threshold = int(budget * threshold_ratio)
 
     if current_tokens < threshold:
         return history, None
+
+    # Cheap pre-prune (no LLM call). Replaces verbose old tool I/O with
+    # short summaries and dedupes identical results. Often pulls the
+    # estimate back under threshold, letting us skip the LLM summary entirely.
+    # Use estimate_tokens for the post-prune check — the API hasn't seen
+    # the pruned shape yet so last_input_tokens is stale.
+    keep_count = recent_turns * 2
+    _prune_old_tool_results(history, protect_tail_count=keep_count)
+    post_prune_tokens = estimate_tokens(history)
+    if post_prune_tokens < threshold:
+        return history, None
+    current_tokens = post_prune_tokens
 
     # Import here to avoid circular import at runtime
     from .loop import Message
@@ -394,8 +701,6 @@ async def compact_if_needed(
     # Both must still preserve the user's latest real request (Stage 1.2
     # invariant) — anchor the tail at the last real user message instead of
     # discarding everything into a single summary message.
-    keep_count = recent_turns * 2
-
     if current_tokens >= budget * 2 or len(history) <= 2 or len(history) <= keep_count:
         last_user_idx = _find_last_real_user_message_idx(history, head_end=0)
         # We need to summarize at least 1 message to make progress; if the

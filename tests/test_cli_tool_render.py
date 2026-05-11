@@ -251,7 +251,7 @@ def test_consume_assistant_turn_keeps_interleaved_tool_calls(monkeypatch):
 
     monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 
-    blocks, stop_reason = asyncio.run(
+    blocks, stop_reason, _usage = asyncio.run(
         _consume_one_assistant_turn(
             client=object(),
             api="openai",

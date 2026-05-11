@@ -63,6 +63,10 @@ async def stream_response(
         "messages": oai_messages,
         "max_tokens": max_tokens,
         "stream": True,
+        # Ask the OpenAI-compatible provider to send a final usage chunk so
+        # compact_if_needed can use real prompt_tokens for the trigger
+        # decision instead of the character-based estimate.
+        "stream_options": {"include_usage": True},
     }
     if tools:
         kwargs["tools"] = _to_openai_tools(tools)
@@ -73,12 +77,22 @@ async def stream_response(
         }
 
     pending_stop_reason = "end_turn"
+    pending_usage: dict[str, Any] = {}
     tool_ids_by_index: dict[int, str] = {}
     started_tool_indices: set[int] = set()
     thinking_buf = ""
 
     response = await client.chat.completions.create(**kwargs)
     async for chunk in response:
+        # The final chunk emitted under stream_options.include_usage carries
+        # usage on the chunk itself with empty choices — capture it before
+        # the empty-choices guard skips the chunk.
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            pending_usage = {
+                "input_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                "output_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
+            }
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -120,7 +134,7 @@ async def stream_response(
             elif fr == "length":
                 pending_stop_reason = "max_tokens"
 
-    yield MessageEnd(stop_reason=pending_stop_reason, usage={})
+    yield MessageEnd(stop_reason=pending_stop_reason, usage=pending_usage)
 
 
 # ---------------------------------------------------------------------------

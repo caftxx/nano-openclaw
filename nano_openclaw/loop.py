@@ -325,6 +325,12 @@ class AgentSession:
     cfg: LoopConfig
     transcript_writer: "TranscriptWriter | None" = None
     cancellation_token: "CancellationToken | None" = None
+    # Real prompt-token count from the previous turn's ``MessageEnd.usage``.
+    # Fed into ``compact_if_needed`` so the trigger decision uses the
+    # provider-reported number instead of the character-based estimate.
+    # Reset to 0 on session reset; lives in-process only (Stage 2).
+    last_input_tokens: int = 0
+    last_output_tokens: int = 0
 
     @property
     def session_id(self) -> str:
@@ -861,7 +867,10 @@ async def _run_agent_session_turn(
             )
             already_flushed_for_compaction = True
 
-        # Check context budget and compact if needed (mirrors OpenClaw's compaction)
+        # Check context budget and compact if needed (mirrors OpenClaw's compaction).
+        # Pass last_input_tokens so the trigger uses the provider-reported
+        # prompt token count from the previous turn rather than the
+        # character-based estimate (Stage 2.1).
         _, summary = await compact_if_needed(
             scratch_history,
             budget=cfg.context_budget,
@@ -870,6 +879,7 @@ async def _run_agent_session_turn(
             api=cfg.api,
             threshold_ratio=cfg.context_threshold,
             recent_turns=cfg.context_recent_turns,
+            last_input_tokens=session.last_input_tokens,
         )
         if summary:
             logger.info("loop.compaction", f"Context compacted: {summary[:100]}...")
@@ -878,7 +888,7 @@ async def _run_agent_session_turn(
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
         try:
-            assistant_blocks, stop_reason = await _retry_assistant_turn(
+            assistant_blocks, stop_reason, usage = await _retry_assistant_turn(
                 client=client,
                 api=cfg.api,
                 model=cfg.model,
@@ -894,6 +904,13 @@ async def _run_agent_session_turn(
             await drain_loop_event_hooks()
             raise
 
+        # Update session token state from real usage (Stage 2.1). Empty dict
+        # means the provider didn't surface usage — keep the previous value
+        # rather than zeroing out and falling back to estimate.
+        if usage:
+            session.last_input_tokens = usage.get("input_tokens", session.last_input_tokens)
+            session.last_output_tokens = usage.get("output_tokens", session.last_output_tokens)
+
         await check_cancelled()
 
         # max_tokens means the model's output was truncated. Force compact and retry once
@@ -908,6 +925,7 @@ async def _run_agent_session_turn(
                 api=cfg.api,
                 threshold_ratio=1.0,
                 recent_turns=cfg.context_recent_turns,
+                last_input_tokens=session.last_input_tokens,
             )
             if summary:
                 logger.info("loop.compaction.max_tokens", f"Context compacted due to max_tokens: {summary[:100]}...")
@@ -915,7 +933,7 @@ async def _run_agent_session_turn(
                 pending_transcript_ops.append(("compaction", summary))
             wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
             try:
-                assistant_blocks, stop_reason = await _retry_assistant_turn(
+                assistant_blocks, stop_reason, usage = await _retry_assistant_turn(
                     client=client,
                     api=cfg.api,
                     model=cfg.model,
@@ -930,6 +948,9 @@ async def _run_agent_session_turn(
             except TurnCancelled:
                 await drain_loop_event_hooks()
                 raise
+            if usage:
+                session.last_input_tokens = usage.get("input_tokens", session.last_input_tokens)
+                session.last_output_tokens = usage.get("output_tokens", session.last_output_tokens)
             await check_cancelled()
 
         scratch_history.append(Message("assistant", assistant_blocks))
@@ -969,7 +990,7 @@ async def _run_agent_session_turn(
             await check_cancelled()
             wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
             try:
-                final_blocks, _ = await _retry_assistant_turn(
+                final_blocks, _, final_usage = await _retry_assistant_turn(
                     client=client,
                     api=cfg.api,
                     model=cfg.model,
@@ -984,6 +1005,9 @@ async def _run_agent_session_turn(
             except TurnCancelled:
                 await drain_loop_event_hooks()
                 raise
+            if final_usage:
+                session.last_input_tokens = final_usage.get("input_tokens", session.last_input_tokens)
+                session.last_output_tokens = final_usage.get("output_tokens", session.last_output_tokens)
             scratch_history.append(Message("assistant", final_blocks))
             pending_transcript_ops.append(("message", scratch_history[-1]))
             session._commit_turn(scratch_history, pending_transcript_ops)
@@ -1042,7 +1066,10 @@ async def _run_memory_flush_turn(
     for _ in range(cfg.max_iterations):
         _check_cancelled(cancellation_token)
         wire_messages = [{"role": m.role, "content": m.content} for m in temp_history]
-        assistant_blocks, stop_reason = await _consume_one_assistant_turn(
+        # Memory flush is a "silent" sub-conversation — we don't propagate its
+        # usage onto the parent session because it's measured against an
+        # ephemeral temp_history, not the user-visible one.
+        assistant_blocks, stop_reason, _ = await _consume_one_assistant_turn(
             client=client,
             api=cfg.api,
             model=cfg.model,
@@ -1318,10 +1345,16 @@ async def _retry_assistant_turn(
     cancellation_token: "CancellationToken | None" = None,
     max_attempts: int = 3,
     **kwargs: Any,
-) -> tuple[list[dict[str, Any]], str | None]:
+) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
     """Wrap _consume_one_assistant_turn with up to max_attempts retries on API errors.
 
     TurnCancelled is never retried. Other exceptions are retried with 1s / 2s backoff.
+
+    Returns ``(blocks, stop_reason, usage)`` — usage is the dict carried by
+    the final ``MessageEnd`` event (Anthropic populates input_tokens /
+    output_tokens; OpenAI fills it via ``stream_options.include_usage``).
+    Empty dict if the provider didn't surface usage (e.g. mid-stream
+    cancellation or older OpenAI-compatible backends).
     """
     for attempt in range(max_attempts):
         try:
@@ -1351,13 +1384,19 @@ async def _consume_one_assistant_turn(
     thinking_budget_tokens: int | None,
     on_event: EventCallback,
     cancellation_token: "CancellationToken | None" = None,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Stream one model response, accumulating mixed text + tool_use blocks."""
+) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
+    """Stream one model response, accumulating mixed text + tool_use blocks.
+
+    Returns ``(blocks, stop_reason, usage)``. ``usage`` carries the
+    provider-reported input_tokens / output_tokens from the final
+    ``MessageEnd`` (empty dict if the provider didn't surface them).
+    """
     blocks: list[dict[str, Any]] = []
     text_buf = ""
     tool_bufs: dict[str, dict[str, Any]] = {}
     tool_order: list[str] = []
     stop_reason: str | None = None
+    usage: dict[str, Any] = {}
 
     def _flush_text():
         nonlocal text_buf
@@ -1429,5 +1468,6 @@ async def _consume_one_assistant_turn(
         elif isinstance(ev, MessageEnd):
             _flush_text()
             stop_reason = ev.stop_reason
+            usage = ev.usage or {}
 
-    return blocks, stop_reason
+    return blocks, stop_reason, usage
