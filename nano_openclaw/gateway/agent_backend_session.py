@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nano_openclaw.loop import Message
+from nano_openclaw.compact import CompactionState
+from nano_openclaw.loop import Message, SessionUsageStats
 from nano_openclaw.session import (
     TranscriptReader,
     TranscriptWriter,
@@ -109,6 +110,11 @@ class AgentBackendSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn_id: str | None = None
     created_at: float = field(default_factory=time.time)
+    # Per-conversation runtime state shared by reference into the per-turn
+    # AgentSession. Survives across turns so /usage shows cumulative totals
+    # and Stage 3 iterative summary updates actually fire.
+    usage_stats: SessionUsageStats = field(default_factory=SessionUsageStats)
+    compaction_state: CompactionState = field(default_factory=CompactionState)
 
 
 @dataclass

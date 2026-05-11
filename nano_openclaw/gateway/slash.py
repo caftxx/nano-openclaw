@@ -48,7 +48,7 @@ from nano_openclaw.gateway.slash_renderer import (
 
 
 HELP_TEXT = (
-    "/quit  /clear  /new  /help  /context  /compact  /sessions [all|delete <id>]  "
+    "/quit  /clear  /new  /help  /context  /compact  /usage  /sessions [all|delete <id>]  "
     "/session [prefix|#]  /skills  /plugins  /hooks  /tools  "
     "/subagents [list|kill <id>|all]  /active-memory [status|on|off|mode|style]  "
     "/dreaming [status|on|off|run]  /review-fork [status|on|off|run]  /health  /channels  /runtime  "
@@ -125,8 +125,9 @@ async def handle_slash(
                 ["/new", "Start a new session"],
                 ["/sessions (all | delete <id>)", "List or delete saved sessions"],
                 ["/session (prefix | #)", "Show or switch active session"],
-                ["/context", "Context-window usage"],
+                ["/context", "Context-window budget snapshot"],
                 ["/compact", "Summarize / compact history"],
+                ["/usage", "Per-session token + cache + compaction stats"],
                 ["/tools", "Registered tools"],
                 ["/skills", "Available skills"],
                 ["/plugins", "Loaded plugins"],
@@ -311,6 +312,45 @@ async def _cmd_compact(backend, renderer: SlashRenderer, state, args, cmd):
     renderer.dim(
         f"compacted: {result.tokens_before:,} → {result.tokens_after:,} tokens"
     )
+
+
+async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
+    """Render this session's token, cache, and compaction counters."""
+    session_key = state.get("session_key") or ""
+    if not session_key:
+        renderer.dim("(no active session)")
+        return
+    report = await backend.sessions_usage(session_key)
+
+    pct = (
+        report.last_input_tokens / report.context_budget * 100
+        if report.context_budget else 0.0
+    )
+    cache_hit_pct = (
+        f"{report.cache_hit_ratio * 100:.0f}%"
+        if report.cache_hit_ratio is not None
+        else "—"
+    )
+    cache_status = (
+        f"on ({markup.escape(report.cache_ttl)} TTL)"
+        if report.cache_ttl else "off"
+    )
+    body_lines = [
+        f"last turn:   input  [cyan]{report.last_input_tokens:,}[/]   "
+        f"output  [cyan]{report.last_output_tokens:,}[/]",
+        f"cumulative:  input  [cyan]{report.total_input_tokens:,}[/]   "
+        f"output  [cyan]{report.total_output_tokens:,}[/]   "
+        f"({report.turns_recorded} turn{'s' if report.turns_recorded != 1 else ''})",
+        f"context:     [cyan]{report.last_input_tokens:,}[/] / "
+        f"[cyan]{report.context_budget:,}[/] "
+        f"([cyan]{pct:.1f}%[/] of budget)",
+        f"cache:       {cache_status}   "
+        f"hit ratio [cyan]{cache_hit_pct}[/]   "
+        f"read [cyan]{report.total_cache_read_tokens:,}[/]   "
+        f"creation [cyan]{report.total_cache_creation_tokens:,}[/]",
+        f"compactions: [cyan]{report.compactions_fired}[/] this session",
+    ]
+    renderer.panel("\n".join(body_lines), title="Usage", style="info")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -906,6 +946,7 @@ _HANDLERS = {
     "/session": _cmd_session,
     "/context": _cmd_context,
     "/compact": _cmd_compact,
+    "/usage": _cmd_usage,
     "/tools": _cmd_tools,
     "/skills": _cmd_skills,
     "/plugins": _cmd_plugins,

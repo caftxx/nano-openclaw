@@ -50,6 +50,7 @@ from nano_openclaw.gateway.backend import (
     SessionDetails,
     SessionInfo,
     SessionList,
+    SessionUsageReport,
     SubagentInfo,
 )
 from nano_openclaw.gateway.protocol import ErrorCode
@@ -403,6 +404,27 @@ class WebSocketBackend(Backend):
             summary=payload.get("summary"),
             tokens_before=int(payload.get("tokens_before") or 0),
             tokens_after=int(payload.get("tokens_after") or 0),
+        )
+
+    async def sessions_usage(self, session_key: str) -> SessionUsageReport:
+        payload = await self._call("sessions.usage", {"session_key": session_key})
+        ratio_raw = payload.get("cache_hit_ratio")
+        return SessionUsageReport(
+            session_id=payload.get("session_id"),
+            last_input_tokens=int(payload.get("last_input_tokens") or 0),
+            last_output_tokens=int(payload.get("last_output_tokens") or 0),
+            last_cache_read_tokens=int(payload.get("last_cache_read_tokens") or 0),
+            last_cache_creation_tokens=int(payload.get("last_cache_creation_tokens") or 0),
+            total_input_tokens=int(payload.get("total_input_tokens") or 0),
+            total_output_tokens=int(payload.get("total_output_tokens") or 0),
+            total_cache_read_tokens=int(payload.get("total_cache_read_tokens") or 0),
+            total_cache_creation_tokens=int(payload.get("total_cache_creation_tokens") or 0),
+            compactions_fired=int(payload.get("compactions_fired") or 0),
+            turns_recorded=int(payload.get("turns_recorded") or 0),
+            cache_hit_ratio=float(ratio_raw) if ratio_raw is not None else None,
+            context_budget=int(payload.get("context_budget") or 0),
+            context_window=int(payload.get("context_window") or 0),
+            cache_ttl=payload.get("cache_ttl"),
         )
 
     async def approvals_list(self) -> list[PendingApproval]:

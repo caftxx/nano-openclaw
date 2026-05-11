@@ -1333,7 +1333,7 @@ const BUILTIN_COMMANDS = new Set([
   // session lifecycle
   "clear", "new", "sessions", "session",
   // context
-  "context", "compact",
+  "context", "compact", "usage",
   // introspection
   "tools", "skills", "plugins", "hooks", "subagents",
   // memory

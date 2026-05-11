@@ -133,9 +133,18 @@ async def stream_response(
                 if event.delta.stop_reason is not None:
                     pending_stop_reason = event.delta.stop_reason
                 if event.usage is not None:
+                    # Cache fields are only populated when prompt caching is on
+                    # (cache_ttl != None). Anthropic returns 0 (or absent) when
+                    # caching wasn't requested or there was no cache hit.
                     pending_usage = {
-                        "input_tokens": getattr(event.usage, "input_tokens", 0),
-                        "output_tokens": getattr(event.usage, "output_tokens", 0),
+                        "input_tokens": getattr(event.usage, "input_tokens", 0) or 0,
+                        "output_tokens": getattr(event.usage, "output_tokens", 0) or 0,
+                        "cache_read_input_tokens": (
+                            getattr(event.usage, "cache_read_input_tokens", 0) or 0
+                        ),
+                        "cache_creation_input_tokens": (
+                            getattr(event.usage, "cache_creation_input_tokens", 0) or 0
+                        ),
                     }
 
             elif etype == "message_stop":

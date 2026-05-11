@@ -49,6 +49,7 @@ from nano_openclaw.gateway.backend import (
     SessionDetails,
     SessionInfo,
     SessionList,
+    SessionUsageReport,
     SubagentInfo,
 )
 from nano_openclaw.logger import get_logger
@@ -430,6 +431,11 @@ class EmbeddedBackend(Backend):
                         cfg=cfg,
                         transcript_writer=session.writer,
                         cancellation_token=token,
+                        # Share long-lived per-conversation state by reference so
+                        # cumulative tokens, last_input_tokens, and
+                        # previous_summary survive across turns.
+                        usage_stats=session.usage_stats,
+                        compaction_state=session.compaction_state,
                     )
                     await agent_session.run_turn(
                         text,
@@ -690,6 +696,38 @@ class EmbeddedBackend(Backend):
             summary=None,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
+        )
+
+    async def sessions_usage(self, session_key: str) -> SessionUsageReport:
+        """Snapshot one session's token + cache + compaction counters.
+
+        Reads ``AgentBackendSession.usage_stats`` (maintained by the loop
+        on every ``MessageEnd``) and combines it with budget / cache_ttl
+        from the active runtime config.
+        """
+        try:
+            session = self.manager.get_or_load(session_key or None)
+        except KeyError as exc:
+            raise NotFoundError(str(exc)) from exc
+
+        stats = session.usage_stats
+        cfg = self.runtime.cfg
+        return SessionUsageReport(
+            session_id=session.session_id,
+            last_input_tokens=stats.last_input_tokens,
+            last_output_tokens=stats.last_output_tokens,
+            last_cache_read_tokens=stats.last_cache_read_tokens,
+            last_cache_creation_tokens=stats.last_cache_creation_tokens,
+            total_input_tokens=stats.total_input_tokens,
+            total_output_tokens=stats.total_output_tokens,
+            total_cache_read_tokens=stats.total_cache_read_tokens,
+            total_cache_creation_tokens=stats.total_cache_creation_tokens,
+            compactions_fired=stats.compactions_fired,
+            turns_recorded=stats.turns_recorded,
+            cache_hit_ratio=stats.cache_hit_ratio(),
+            context_budget=cfg.context_budget,
+            context_window=cfg.context_window,
+            cache_ttl=cfg.cache_ttl,
         )
 
     # ─── Approvals ───

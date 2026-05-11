@@ -140,6 +140,7 @@ METHODS_V1 = frozenset({
     "chat.send", "chat.abort", "chat.history",
     # Sessions
     "sessions.list", "sessions.get", "sessions.delete", "sessions.reset", "sessions.compact",
+    "sessions.usage",
     # Approvals
     "approvals.list", "approvals.respond",
     # Models

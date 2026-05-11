@@ -79,10 +79,33 @@ async def sessions_compact(ctx: GatewayContext, params: dict[str, Any]) -> dict[
     }
 
 
+async def sessions_usage(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    session_key = str(params.get("session_key") or "")
+    report = await ctx.backend.sessions_usage(session_key)
+    return {
+        "session_id": report.session_id,
+        "last_input_tokens": report.last_input_tokens,
+        "last_output_tokens": report.last_output_tokens,
+        "last_cache_read_tokens": report.last_cache_read_tokens,
+        "last_cache_creation_tokens": report.last_cache_creation_tokens,
+        "total_input_tokens": report.total_input_tokens,
+        "total_output_tokens": report.total_output_tokens,
+        "total_cache_read_tokens": report.total_cache_read_tokens,
+        "total_cache_creation_tokens": report.total_cache_creation_tokens,
+        "compactions_fired": report.compactions_fired,
+        "turns_recorded": report.turns_recorded,
+        "cache_hit_ratio": report.cache_hit_ratio,
+        "context_budget": report.context_budget,
+        "context_window": report.context_window,
+        "cache_ttl": report.cache_ttl,
+    }
+
+
 HANDLERS = {
     "sessions.list": sessions_list,
     "sessions.get": sessions_get,
     "sessions.delete": sessions_delete,
     "sessions.reset": sessions_reset,
     "sessions.compact": sessions_compact,
+    "sessions.usage": sessions_usage,
 }

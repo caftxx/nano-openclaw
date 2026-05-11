@@ -131,6 +131,31 @@ class CompactionResult:
 
 
 @dataclass(frozen=True)
+class SessionUsageReport:
+    """Per-session token + cache + compaction snapshot returned by ``/usage``.
+
+    Sources: ``AgentBackendSession.usage_stats`` (cumulative + last-turn
+    counters maintained by the loop) plus context budget / window from
+    the active runtime config.
+    """
+    session_id: str | None
+    last_input_tokens: int
+    last_output_tokens: int
+    last_cache_read_tokens: int
+    last_cache_creation_tokens: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cache_creation_tokens: int
+    compactions_fired: int
+    turns_recorded: int
+    cache_hit_ratio: float | None         # None when no caching traffic yet
+    context_budget: int
+    context_window: int                   # 0 when unknown
+    cache_ttl: str | None                 # None when caching disabled / OpenAI
+
+
+@dataclass(frozen=True)
 class PendingApproval:
     request_id: str
     tool_name: str
@@ -264,6 +289,7 @@ class Backend(Protocol):
         """``reset`` clears the current session in place; ``new`` starts a fresh session."""
         ...
     async def sessions_compact(self, session_key: str) -> CompactionResult: ...
+    async def sessions_usage(self, session_key: str) -> SessionUsageReport: ...
 
     # ─── Approvals ───
     async def approvals_list(self) -> list[PendingApproval]: ...

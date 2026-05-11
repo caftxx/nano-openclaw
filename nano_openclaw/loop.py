@@ -320,6 +320,66 @@ class LoopConfig:
 
 
 @dataclass
+class SessionUsageStats:
+    """Per-conversation token / cache counters surfaced by ``/usage``.
+
+    Lives on the long-lived holder (``AgentBackendSession`` for the gateway,
+    a CLI outer-scope variable for the standalone CLI) and is shared by
+    reference into the per-turn ``AgentSession``. Every ``MessageEnd``
+    in the loop calls :meth:`update_from_usage` so counters survive across
+    turns; the ``last_*`` fields are the most recent turn's snapshot,
+    ``total_*`` accumulates across the whole conversation.
+    """
+
+    last_input_tokens: int = 0
+    last_output_tokens: int = 0
+    last_cache_read_tokens: int = 0
+    last_cache_creation_tokens: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    compactions_fired: int = 0
+    turns_recorded: int = 0
+
+    def update_from_usage(self, usage: dict[str, Any]) -> None:
+        """Fold a ``MessageEnd.usage`` dict into the running counters.
+
+        Empty dict is a no-op (some OpenAI-compatible providers don't
+        surface usage on every chunk). Cache-related fields default to 0
+        when not present (e.g. when prompt caching is disabled or for
+        OpenAI which doesn't carry the field at all).
+        """
+        if not usage:
+            return
+        in_tok = usage.get("input_tokens", 0) or 0
+        out_tok = usage.get("output_tokens", 0) or 0
+        cr_tok = usage.get("cache_read_input_tokens", 0) or 0
+        cc_tok = usage.get("cache_creation_input_tokens", 0) or 0
+        self.last_input_tokens = in_tok or self.last_input_tokens
+        self.last_output_tokens = out_tok or self.last_output_tokens
+        self.last_cache_read_tokens = cr_tok
+        self.last_cache_creation_tokens = cc_tok
+        self.total_input_tokens += in_tok
+        self.total_output_tokens += out_tok
+        self.total_cache_read_tokens += cr_tok
+        self.total_cache_creation_tokens += cc_tok
+        self.turns_recorded += 1
+
+    def cache_hit_ratio(self) -> float | None:
+        """Return cache hit ratio as a fraction in [0, 1], or None when
+        there's no cached prompt traffic to score (denominator zero).
+
+        Hit = cache_read; miss is approximated as cache_creation (the
+        tokens that just became cacheable but weren't a hit yet).
+        """
+        denom = self.total_cache_read_tokens + self.total_cache_creation_tokens
+        if denom <= 0:
+            return None
+        return self.total_cache_read_tokens / denom
+
+
+@dataclass
 class AgentSession:
     """Runtime state for one agent session.
 
@@ -334,15 +394,23 @@ class AgentSession:
     cfg: LoopConfig
     transcript_writer: "TranscriptWriter | None" = None
     cancellation_token: "CancellationToken | None" = None
-    # Real prompt-token count from the previous turn's ``MessageEnd.usage``.
-    # Fed into ``compact_if_needed`` so the trigger decision uses the
-    # provider-reported number instead of the character-based estimate.
-    # Reset to 0 on session reset; lives in-process only (Stage 2).
-    last_input_tokens: int = 0
-    last_output_tokens: int = 0
+    # Per-conversation usage / cache counters. Long-lived holders
+    # (e.g. AgentBackendSession) inject the same instance every turn so
+    # ``/usage`` sees cumulative totals + the previous turn's last_input_tokens
+    # as a real-token compaction trigger across turns (Stage 2 fix).
+    usage_stats: SessionUsageStats = field(default_factory=SessionUsageStats)
     # Per-session compaction tracking (previous_summary for iterative
-    # updates + cooldown bookkeeping). In-process only; Stage 3.
+    # updates + cooldown bookkeeping). Same long-lived-instance pattern as
+    # usage_stats so iterative summary updates work across turns (Stage 3 fix).
     compaction_state: CompactionState = field(default_factory=CompactionState)
+
+    @property
+    def last_input_tokens(self) -> int:
+        return self.usage_stats.last_input_tokens
+
+    @property
+    def last_output_tokens(self) -> int:
+        return self.usage_stats.last_output_tokens
 
     @property
     def session_id(self) -> str:
@@ -898,6 +966,7 @@ async def _run_agent_session_turn(
             logger.info("loop.compaction", f"Context compacted: {summary[:100]}...")
             on_event(Compaction(summary=summary))
             pending_transcript_ops.append(("compaction", summary))
+            session.usage_stats.compactions_fired += 1
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
         try:
@@ -918,12 +987,10 @@ async def _run_agent_session_turn(
             await drain_loop_event_hooks()
             raise
 
-        # Update session token state from real usage (Stage 2.1). Empty dict
-        # means the provider didn't surface usage — keep the previous value
-        # rather than zeroing out and falling back to estimate.
-        if usage:
-            session.last_input_tokens = usage.get("input_tokens", session.last_input_tokens)
-            session.last_output_tokens = usage.get("output_tokens", session.last_output_tokens)
+        # Update per-conversation usage counters from real provider usage
+        # (Stage 2.1, refined for cross-turn persistence). Empty dict is a
+        # no-op so providers that don't surface usage don't zero us out.
+        session.usage_stats.update_from_usage(usage)
 
         await check_cancelled()
 
@@ -946,6 +1013,7 @@ async def _run_agent_session_turn(
                 logger.info("loop.compaction.max_tokens", f"Context compacted due to max_tokens: {summary[:100]}...")
                 on_event(Compaction(summary=summary))
                 pending_transcript_ops.append(("compaction", summary))
+                session.usage_stats.compactions_fired += 1
             wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
             try:
                 assistant_blocks, stop_reason, usage = await _retry_assistant_turn(
@@ -964,9 +1032,7 @@ async def _run_agent_session_turn(
             except TurnCancelled:
                 await drain_loop_event_hooks()
                 raise
-            if usage:
-                session.last_input_tokens = usage.get("input_tokens", session.last_input_tokens)
-                session.last_output_tokens = usage.get("output_tokens", session.last_output_tokens)
+            session.usage_stats.update_from_usage(usage)
             await check_cancelled()
 
         scratch_history.append(Message("assistant", assistant_blocks))
@@ -1022,9 +1088,7 @@ async def _run_agent_session_turn(
             except TurnCancelled:
                 await drain_loop_event_hooks()
                 raise
-            if final_usage:
-                session.last_input_tokens = final_usage.get("input_tokens", session.last_input_tokens)
-                session.last_output_tokens = final_usage.get("output_tokens", session.last_output_tokens)
+            session.usage_stats.update_from_usage(final_usage)
             scratch_history.append(Message("assistant", final_blocks))
             pending_transcript_ops.append(("message", scratch_history[-1]))
             session._commit_turn(scratch_history, pending_transcript_ops)
