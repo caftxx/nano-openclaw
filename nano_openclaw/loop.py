@@ -24,7 +24,12 @@ from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
-from nano_openclaw.compact import compact_if_needed, estimate_tokens, should_run_memory_flush
+from nano_openclaw.compact import (
+    CompactionState,
+    compact_if_needed,
+    estimate_tokens,
+    should_run_memory_flush,
+)
 from nano_openclaw.config.types import MemoryFlushConfig
 from nano_openclaw.logger import get_logger
 from nano_openclaw.attachments import (
@@ -331,6 +336,9 @@ class AgentSession:
     # Reset to 0 on session reset; lives in-process only (Stage 2).
     last_input_tokens: int = 0
     last_output_tokens: int = 0
+    # Per-session compaction tracking (previous_summary for iterative
+    # updates + cooldown bookkeeping). In-process only; Stage 3.
+    compaction_state: CompactionState = field(default_factory=CompactionState)
 
     @property
     def session_id(self) -> str:
@@ -880,6 +888,7 @@ async def _run_agent_session_turn(
             threshold_ratio=cfg.context_threshold,
             recent_turns=cfg.context_recent_turns,
             last_input_tokens=session.last_input_tokens,
+            state=session.compaction_state,
         )
         if summary:
             logger.info("loop.compaction", f"Context compacted: {summary[:100]}...")
@@ -926,6 +935,7 @@ async def _run_agent_session_turn(
                 threshold_ratio=1.0,
                 recent_turns=cfg.context_recent_turns,
                 last_input_tokens=session.last_input_tokens,
+                state=session.compaction_state,
             )
             if summary:
                 logger.info("loop.compaction.max_tokens", f"Context compacted due to max_tokens: {summary[:100]}...")

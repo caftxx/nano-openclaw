@@ -16,11 +16,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from .logger import get_logger
 
 if TYPE_CHECKING:
     from .config.types import MemoryFlushConfig
     from .loop import Message
+
+logger = get_logger(__name__)
 
 # Approximation: 4 characters ≈ 1 token (rough average across models)
 CHARS_PER_TOKEN = 4
@@ -48,6 +54,119 @@ SUMMARY_PREFIX = (
 # Older summaries on disk used this prefix; recognized so re-loaded transcripts
 # don't get a doubled-up prefix on subsequent compactions.
 LEGACY_SUMMARY_PREFIX = "[Previous conversation summary]"
+
+# How long to skip the summarizer LLM after a failure. Pre-prune still runs
+# in cooldown; only the LLM call is gated.
+_SUMMARY_FAILURE_COOLDOWN_S = 60.0
+
+# Reasonable cap for the structured summary's max_tokens. Hermes scales the
+# budget with content size and caps at 12K; nano keeps it simpler — the
+# template is verbose enough that 4K covers most realistic compactions and
+# nothing in nano needs the full 12K extreme.
+_SUMMARY_MAX_TOKENS_DEFAULT = 4096
+
+
+@dataclass
+class CompactionState:
+    """Per-session compaction tracking carried alongside ``AgentSession``.
+
+    Three pieces of state survive across iterations of one conversation:
+
+      * ``previous_summary`` — last summary text produced for this session.
+        Passed back to ``summarize_history`` so the model UPDATES the prior
+        summary instead of rewriting from scratch. Preserves continuity
+        across multiple compactions in a long conversation.
+      * ``summary_cooldown_until`` — ``time.monotonic()`` deadline. While
+        in cooldown ``compact_if_needed`` still runs the local prune pass
+        but skips the LLM summary call (drops middle turns with a
+        placeholder note instead).
+      * ``last_summary_error`` — short human-readable failure reason for
+        introspection / logging.
+
+    All in-process state; reset when the session is reset.
+    """
+
+    previous_summary: str | None = None
+    summary_cooldown_until: float = 0.0
+    last_summary_error: str | None = None
+
+    def in_cooldown(self) -> bool:
+        return time.monotonic() < self.summary_cooldown_until
+
+
+# ---------------------------------------------------------------------------
+# Structured summary template (Stage 3)
+#
+# Replaces the original 5-line freeform prompt with a typed checkpoint
+# format that survives iterative updates and keeps the most important field
+# ("## Active Task") at the top. Trimmed from hermes
+# ``agent/context_compressor.py:840-913`` — fields irrelevant to nano (e.g.
+# Working Directory / branch) are dropped.
+# ---------------------------------------------------------------------------
+
+
+_SUMMARIZER_PREAMBLE = (
+    "You are a summarization agent creating a context checkpoint. "
+    "Treat the conversation turns below as source material for a compact "
+    "record of prior work. Produce only the structured summary; do not add "
+    "a greeting, preamble, or prefix. "
+    "Write the summary in the same language the user was using in the "
+    "conversation — do not translate or switch to English. "
+    "NEVER include API keys, tokens, passwords, secrets, credentials, or "
+    "connection strings in the summary — replace any that appear with "
+    "[REDACTED]. Note that the user had credentials present, but do not "
+    "preserve their values."
+)
+
+
+_SUMMARY_TEMPLATE = """## Active Task
+[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
+task assignment verbatim — the exact words they used. If multiple tasks
+were requested and only some are done, list only the ones NOT yet completed.
+Continuation should pick up exactly here. If no outstanding task exists,
+write "None."]
+
+## Goal
+[What the user is trying to accomplish overall]
+
+## Constraints & Preferences
+[User preferences, coding style, constraints, important decisions]
+
+## Completed Actions
+[Numbered list of concrete actions taken — include tool used, target,
+and outcome. Format each as: N. ACTION target — outcome [tool: name].
+Be specific with file paths, commands, line numbers, and results.]
+
+## In Progress
+[Work currently underway — what was being done when compaction fired]
+
+## Blocked
+[Any blockers, errors, or issues not yet resolved. Include exact error
+messages.]
+
+## Key Decisions
+[Important technical decisions and WHY they were made]
+
+## Resolved Questions
+[Questions the user asked that were ALREADY answered — include the answer
+so it is not repeated]
+
+## Pending User Asks
+[Questions or requests from the user that have NOT yet been answered or
+fulfilled. If none, write "None."]
+
+## Relevant Files
+[Files read, modified, or created — with brief note on each]
+
+## Remaining Work
+[What remains to be done — framed as context, not instructions]
+
+## Critical Context
+[Specific values, error messages, configuration details that would be lost
+without explicit preservation. NEVER include API keys, tokens, passwords,
+or credentials — write [REDACTED] instead.]
+
+Write only the summary body. Do not include any preamble or prefix."""
 
 
 def estimate_tokens(messages: list[Message]) -> int:
@@ -586,40 +705,79 @@ def _prune_old_tool_results(
     return pruned
 
 
+def _build_summary_prompt(
+    formatted_conversation: str,
+    *,
+    previous_summary: str | None = None,
+) -> str:
+    """Assemble the LLM prompt used by ``summarize_history``.
+
+    Two modes:
+      * ``previous_summary is None`` — first compaction, summarize from scratch.
+      * ``previous_summary is not None`` — iterative update; the model is
+        asked to UPDATE the prior summary instead of rewriting, preserving
+        Completed Actions numbering and Resolved Questions across passes.
+
+    Mirrors hermes ``agent/context_compressor.py:899-925``.
+    """
+    if previous_summary:
+        return (
+            f"{_SUMMARIZER_PREAMBLE}\n\n"
+            "You are updating a context compaction summary. A previous "
+            "compaction produced the summary below. New conversation turns "
+            "have occurred since then and need to be incorporated.\n\n"
+            "PREVIOUS SUMMARY:\n"
+            f"{previous_summary}\n\n"
+            "NEW TURNS TO INCORPORATE:\n"
+            f"{formatted_conversation}\n\n"
+            "Update the summary using this exact structure. PRESERVE all "
+            "existing information that is still relevant. ADD new completed "
+            "actions to the numbered list (continue numbering). Move items "
+            "from \"In Progress\" to \"Completed Actions\" when done. Move "
+            "answered questions to \"Resolved Questions\". Remove information "
+            "only if it is clearly obsolete. CRITICAL: Update \"## Active "
+            "Task\" to reflect the user's most recent unfulfilled request — "
+            "this is the most important field for task continuity.\n\n"
+            f"{_SUMMARY_TEMPLATE}"
+        )
+    return (
+        f"{_SUMMARIZER_PREAMBLE}\n\n"
+        "Create a structured checkpoint summary for the conversation after "
+        "earlier turns are compacted. The summary should preserve enough "
+        "detail for continuity without re-reading the original turns.\n\n"
+        "TURNS TO SUMMARIZE:\n"
+        f"{formatted_conversation}\n\n"
+        "Use this exact structure:\n\n"
+        f"{_SUMMARY_TEMPLATE}"
+    )
+
+
 async def summarize_history(
     messages: list[Message],
     *,
     client: Any,
     model: str,
     api: str = "anthropic",
-    max_tokens: int = 1024,
+    max_tokens: int = _SUMMARY_MAX_TOKENS_DEFAULT,
+    previous_summary: str | None = None,
 ) -> str:
-    """Call LLM to generate a concise summary of conversation history.
+    """Call LLM to generate a structured checkpoint summary.
 
-    Preserves:
-    - Active tasks and their status
-    - Decisions made
-    - Important identifiers (file paths, URLs, UUIDs)
-    - Unresolved questions or TODOs
+    Produces a typed multi-section summary (``## Active Task`` / ``## Goal``
+    / ``## Completed Actions`` / ...) — see ``_SUMMARY_TEMPLATE``. When
+    ``previous_summary`` is supplied the model is asked to UPDATE that
+    summary rather than rewrite from scratch, preserving info across
+    multiple compactions.
+
+    Raises on API failure — the caller (``compact_if_needed``) catches and
+    enters cooldown.
     """
     if not messages:
         return ""
 
     formatted = _format_messages_for_summary(messages)
+    summary_prompt = _build_summary_prompt(formatted, previous_summary=previous_summary)
 
-    summary_prompt = f"""Summarize the following conversation history concisely.
-Preserve:
-- Active tasks and their current status
-- Important decisions made
-- Key identifiers (file paths, URLs, UUIDs, function names)
-- Unresolved questions or TODOs
-
-Conversation:
-{formatted}
-
-Reply with the summary only, no meta-commentary."""
-
-    # Use non-streaming API for summarization
     if api == "anthropic":
         response = await client.messages.create(
             model=model,
@@ -641,6 +799,80 @@ Reply with the summary only, no meta-commentary."""
         raise ValueError(f"Unsupported api for summarization: {api!r}")
 
 
+async def _safe_summarize_history(
+    messages: list[Message],
+    *,
+    client: Any,
+    model: str,
+    api: str,
+    state: CompactionState | None,
+) -> tuple[str | None, bool]:
+    """Wrap ``summarize_history`` with cooldown + failure tracking.
+
+    Returns ``(summary_text_or_none, did_call_llm)``. On success returns
+    the summary string. On failure or cooldown returns ``None`` and updates
+    ``state.summary_cooldown_until`` / ``state.last_summary_error``.
+
+    The fallback when the LLM is skipped is up to the caller — typically
+    inject a placeholder summary message so context is still trimmed.
+    """
+    if state is not None and state.in_cooldown():
+        return None, False
+
+    try:
+        previous = state.previous_summary if state is not None else None
+        summary = await summarize_history(
+            messages,
+            client=client,
+            model=model,
+            api=api,
+            previous_summary=previous,
+        )
+    except Exception as exc:  # noqa: BLE001 — recover from any LLM error
+        err_text = str(exc).strip() or exc.__class__.__name__
+        if len(err_text) > 220:
+            err_text = err_text[:217].rstrip() + "..."
+        logger.warning(
+            "compact.summarize.failed",
+            f"summarize_history raised {type(exc).__name__}: {err_text}; "
+            f"entering {_SUMMARY_FAILURE_COOLDOWN_S:.0f}s cooldown",
+        )
+        if state is not None:
+            state.summary_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_S
+            state.last_summary_error = err_text
+        return None, True
+
+    if state is not None:
+        state.previous_summary = summary
+        state.last_summary_error = None
+        state.summary_cooldown_until = 0.0
+    return summary, True
+
+
+def _fallback_summary_text(
+    summary: str | None,
+    *,
+    dropped_count: int,
+    state: CompactionState | None,
+) -> str:
+    """Return either the LLM-generated summary or a fallback placeholder.
+
+    When ``_safe_summarize_history`` returns ``None`` (cooldown or failure)
+    we still trim the conversation, but the summary message body is a short
+    note explaining that N earlier turns were dropped without summary so
+    the next model turn doesn't pretend continuity that isn't there.
+    """
+    if summary:
+        return summary
+    reason = ""
+    if state is not None and state.last_summary_error:
+        reason = f": {state.last_summary_error}"
+    return (
+        f"[Note: {dropped_count} earlier turn(s) were dropped without summary "
+        f"due to summarizer failure or cooldown{reason}]"
+    )
+
+
 async def compact_if_needed(
     history: list[Message],
     *,
@@ -651,6 +883,7 @@ async def compact_if_needed(
     threshold_ratio: float = DEFAULT_THRESHOLD_RATIO,
     recent_turns: int = DEFAULT_RECENT_TURNS,
     last_input_tokens: int | None = None,
+    state: CompactionState | None = None,
 ) -> tuple[list[Message], str | None]:
     """Check token budget and compact history if over threshold.
 
@@ -668,6 +901,12 @@ async def compact_if_needed(
             decision — real API counts are ~30% more accurate so compaction
             fires at the right time. Estimate is still used for the
             post-prune re-check (local mutation that hasn't hit the API yet).
+        state: Optional per-session ``CompactionState``. When provided:
+            * ``state.previous_summary`` is passed to the summarizer for
+              iterative updates (Stage 3.2)
+            * On summary failure ``state.summary_cooldown_until`` /
+              ``state.last_summary_error`` are updated so subsequent calls
+              skip the LLM but still run local prune + trim (Stage 3.3)
 
     Returns:
         Tuple of (possibly modified history, summary if compaction occurred else None)
@@ -714,17 +953,19 @@ async def compact_if_needed(
             older = list(history)
             recent = []
 
-        summary = await summarize_history(
+        summary, _called = await _safe_summarize_history(
             older,
             client=client,
             model=model,
             api=api,
+            state=state,
         )
+        summary_text = _fallback_summary_text(summary, dropped_count=len(older), state=state)
         summary_msg: Message = Message(
             role="user",
             content=[{
                 "type": "text",
-                "text": f"{SUMMARY_PREFIX}\n{summary}",
+                "text": f"{SUMMARY_PREFIX}\n{summary_text}",
             }],
         )
         history.clear()
@@ -748,18 +989,22 @@ async def compact_if_needed(
     older_messages = history[:cut_idx]
     recent_messages = history[cut_idx:]
 
-    summary = await summarize_history(
+    summary, _called = await _safe_summarize_history(
         older_messages,
         client=client,
         model=model,
         api=api,
+        state=state,
+    )
+    summary_text = _fallback_summary_text(
+        summary, dropped_count=len(older_messages), state=state
     )
 
     summary_msg = Message(
         role="user",
         content=[{
             "type": "text",
-            "text": f"{SUMMARY_PREFIX}\n{summary}",
+            "text": f"{SUMMARY_PREFIX}\n{summary_text}",
         }],
     )
 
@@ -774,7 +1019,7 @@ async def compact_if_needed(
     # boilerplate, not real conversation content. Counting it would make the
     # trim fire on prefix size alone.
     remaining_tokens = (
-        len(summary or "") // CHARS_PER_TOKEN + estimate_tokens(recent_messages)
+        len(summary_text or "") // CHARS_PER_TOKEN + estimate_tokens(recent_messages)
     )
     if remaining_tokens >= threshold:
         # Find the last real user message inside recent_messages so we never
