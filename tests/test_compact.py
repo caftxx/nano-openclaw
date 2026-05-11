@@ -15,6 +15,7 @@ from nano_openclaw.compact import (
     CHARS_PER_TOKEN,
     DEFAULT_RECENT_TURNS,
     DEFAULT_THRESHOLD_RATIO,
+    SUMMARY_PREFIX,
     estimate_tokens,
     should_run_memory_flush,
     should_compact,
@@ -267,7 +268,7 @@ def test_compact_preserves_recent_turns_count():
     # Should have: 1 summary + 4 recent messages = 5
     assert len(result) == 5
     # First message should be the summary
-    assert result[0].content[0]["text"].startswith("[Previous conversation summary]")
+    assert result[0].content[0]["text"].startswith(SUMMARY_PREFIX)
     # Recent messages should be preserved
     assert result[1].content[0]["text"] == "U0"
 
@@ -305,7 +306,7 @@ def test_compact_triggers_secondary_compaction():
     assert summary is not None
     # Secondary compaction: summary + last 2 messages (1 turn)
     assert len(result) == 3
-    assert result[0].content[0]["text"].startswith("[Previous conversation summary]")
+    assert result[0].content[0]["text"].startswith(SUMMARY_PREFIX)
     # Last 2 preserved messages should be the final user+assistant pair
     assert "Recent user message 1" in result[1].content[0]["text"]
     assert "Recent assistant reply 1" in result[2].content[0]["text"]
@@ -481,7 +482,7 @@ def test_full_compaction_workflow():
     
     # Verify structure
     assert len(result) == 5  # 1 summary + 4 recent messages
-    assert result[0].content[0]["text"].startswith("[Previous conversation summary]")
+    assert result[0].content[0]["text"].startswith(SUMMARY_PREFIX)
     
     # Verify recent messages preserved
     recent_user_found = any("Recent user 1" in str(m.content) for m in result)
