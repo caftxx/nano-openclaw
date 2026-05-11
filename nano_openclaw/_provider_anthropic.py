@@ -44,11 +44,23 @@ async def stream_response(
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
     thinking_budget_tokens: int | None = None,
+    cache_ttl: str | None = None,
 ) -> AsyncIterator[StreamEvent]:
+    # Apply prompt caching markers if enabled. system_and_3 strategy: the
+    # system prompt + the last 3 non-system messages each get a cache_control
+    # breakpoint (Anthropic max is 4 per request). See prompt_caching.py.
+    if cache_ttl is not None:
+        from .prompt_caching import apply_anthropic_cache_control, build_cacheable_system
+        request_system: Any = build_cacheable_system(system, cache_ttl=cache_ttl)
+        request_messages = apply_anthropic_cache_control(messages, cache_ttl=cache_ttl)
+    else:
+        request_system = system
+        request_messages = messages
+
     request: dict[str, Any] = {
         "model": model,
-        "system": system,
-        "messages": messages,
+        "system": request_system,
+        "messages": request_messages,
         "max_tokens": max_tokens,
     }
     if tools:

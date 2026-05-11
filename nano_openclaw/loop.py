@@ -274,6 +274,10 @@ class LoopConfig:
     # restart loads the post-compaction history instead of replaying the full
     # pre-compaction transcript and re-paying the compaction cost.
     truncate_after_compaction: bool = True
+    # Prompt caching TTL (Stage 4). When set to "5m" or "1h" and api=="anthropic",
+    # the provider transport applies ``cache_control`` markers on the system
+    # prompt + last 3 messages. None disables caching entirely.
+    cache_ttl: str | None = None
     # Image model (mirrors openclaw agents.defaults.imageModel)
     # None  → Native Vision: images sent as base64 blocks to main model (runner.ts:819-857)
     # str   → Media Understanding: images described to text by this model (apply.ts)
@@ -906,6 +910,7 @@ async def _run_agent_session_turn(
                 tools=tools_schema,
                 max_tokens=cfg.max_tokens,
                 thinking_budget_tokens=cfg.thinking_budget_tokens,
+                cache_ttl=cfg.cache_ttl,
                 on_event=on_event,
                 cancellation_token=cancellation_token,
             )
@@ -952,6 +957,7 @@ async def _run_agent_session_turn(
                     tools=tools_schema,
                     max_tokens=cfg.max_tokens,
                     thinking_budget_tokens=cfg.thinking_budget_tokens,
+                    cache_ttl=cfg.cache_ttl,
                     on_event=on_event,
                     cancellation_token=cancellation_token,
                 )
@@ -1009,6 +1015,7 @@ async def _run_agent_session_turn(
                     tools=[],
                     max_tokens=cfg.max_tokens,
                     thinking_budget_tokens=cfg.thinking_budget_tokens,
+                    cache_ttl=cfg.cache_ttl,
                     on_event=on_event,
                     cancellation_token=cancellation_token,
                 )
@@ -1394,6 +1401,7 @@ async def _consume_one_assistant_turn(
     thinking_budget_tokens: int | None,
     on_event: EventCallback,
     cancellation_token: "CancellationToken | None" = None,
+    cache_ttl: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
     """Stream one model response, accumulating mixed text + tool_use blocks.
 
@@ -1431,6 +1439,7 @@ async def _consume_one_assistant_turn(
         tools=tools,
         max_tokens=max_tokens,
         thinking_budget_tokens=thinking_budget_tokens,
+        cache_ttl=cache_ttl,
     ):
         _check_cancelled(cancellation_token)
         on_event(ev)

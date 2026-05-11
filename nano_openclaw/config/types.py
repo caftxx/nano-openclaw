@@ -222,6 +222,26 @@ class ContextConfig(BaseModel):
     )
 
 
+class PromptCachingConfig(BaseModel):
+    """Anthropic prompt caching settings (Stage 4).
+
+    Enables the ``system_and_3`` cache_control breakpoint strategy for
+    multi-turn Anthropic conversations — typically saves ~75% of input
+    token cost. OpenAI provider ignores this entirely.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable Anthropic prompt caching (system_and_3 strategy)",
+    )
+    cache_ttl: Literal["5m", "1h"] = Field(
+        default="5m",
+        alias="cache_ttl",
+        description="Cache TTL: '5m' (ephemeral) or '1h' (long-lived sessions)",
+    )
+
+
 class MemoryFlushConfig(BaseModel):
     """Pre-compaction memory flush settings."""
     model_config = ConfigDict(populate_by_name=True)
@@ -624,6 +644,11 @@ class NanoOpenClawConfig(BaseModel):
     noTools: bool = Field(default=False, description="Run as plain chatbot, no tools")
     maxIterations: int = Field(default=12, ge=1, description="Max tool-use rounds per user turn")
     context: ContextConfig = Field(default_factory=ContextConfig)
+    promptCaching: PromptCachingConfig = Field(
+        default_factory=PromptCachingConfig,
+        alias="promptCaching",
+        description="Anthropic prompt caching settings (Stage 4)",
+    )
     memoryFlush: MemoryFlushConfig = Field(
         default_factory=MemoryFlushConfig,
         description="Pre-compaction silent memory flush configuration",

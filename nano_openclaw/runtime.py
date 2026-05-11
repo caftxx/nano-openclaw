@@ -212,6 +212,15 @@ async def build_agent_runtime(
         if model_context_window > 0 and context_budget > model_context_window:
             context_budget = model_context_window
 
+    # Resolve prompt caching: only meaningful for Anthropic; OpenAI provider
+    # ignores cache_ttl entirely. Disabled when api != "anthropic" or when
+    # the user turned it off in config (default is on with 5m TTL).
+    cache_ttl: str | None
+    if api == "anthropic" and config.promptCaching.enabled:
+        cache_ttl = config.promptCaching.cache_ttl
+    else:
+        cache_ttl = None
+
     cfg = LoopConfig(
         model=model_id,
         api=api,
@@ -224,6 +233,7 @@ async def build_agent_runtime(
         context_threshold=config.context.threshold,
         context_recent_turns=config.context.recent_turns,
         truncate_after_compaction=config.context.truncate_after_compaction,
+        cache_ttl=cache_ttl,
         image_model=image_model_id,
         thinking_level=config.resolve_thinking_level(model_ref),
         workspace_dir=workspace_dir,

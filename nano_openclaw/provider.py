@@ -42,8 +42,14 @@ async def stream_response(
     tools: list[dict[str, Any]],
     max_tokens: int = 4096,
     thinking_budget_tokens: int | None = None,
+    cache_ttl: str | None = None,
 ) -> AsyncIterator[StreamEvent]:
-    """Route a streaming completion request to the correct provider transport."""
+    """Route a streaming completion request to the correct provider transport.
+
+    ``cache_ttl`` is forwarded to the Anthropic transport (which applies
+    ``system_and_3`` prompt caching when non-None) and ignored by the
+    OpenAI transport.
+    """
     if api == "anthropic":
         async for event in _provider_anthropic.stream_response(
             client=client,
@@ -53,6 +59,7 @@ async def stream_response(
             tools=tools,
             max_tokens=max_tokens,
             thinking_budget_tokens=thinking_budget_tokens,
+            cache_ttl=cache_ttl,
         ):
             yield event
         return
