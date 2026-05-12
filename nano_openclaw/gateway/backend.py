@@ -135,8 +135,8 @@ class SessionUsageReport:
     """Per-session token + cache + compaction snapshot returned by ``/usage``.
 
     Sources: ``AgentBackendSession.usage_stats`` (cumulative + last-turn
-    counters maintained by the loop) plus context budget / window from
-    the active runtime config.
+    counters maintained by the loop) plus the current history's char-based
+    ``estimate_tokens`` and the active runtime config's context budget.
     """
     session_id: str | None
     last_input_tokens: int
@@ -153,6 +153,11 @@ class SessionUsageReport:
     context_budget: int
     context_window: int                   # 0 when unknown
     cache_ttl: str | None                 # None when caching disabled / OpenAI
+    # Estimate of the *current* history size — what the next turn will send,
+    # not what the last turn sent. Use this (not last_input_tokens) as the
+    # "% of budget" indicator. Char-based estimate; matches what
+    # compact_if_needed uses as the trigger fallback.
+    current_context_tokens: int
 
 
 @dataclass(frozen=True)

@@ -315,7 +315,16 @@ async def _cmd_compact(backend, renderer: SlashRenderer, state, args, cmd):
 
 
 async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
-    """Render this session's token, cache, and compaction counters."""
+    """Render this session's token, cache, and compaction counters.
+
+    The ``last prompt`` line shows what the API actually saw on the
+    previous turn (real provider-reported number). The ``context`` line
+    shows what the *next* turn will send — the in-memory history estimate,
+    which is bigger because the last assistant response and any
+    tool_results have been appended after the API saw the prompt. That's
+    the right "% of budget" indicator (matches what compact_if_needed
+    measures against threshold).
+    """
     session_key = state.get("session_key") or ""
     if not session_key:
         renderer.dim("(no active session)")
@@ -323,7 +332,7 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
     report = await backend.sessions_usage(session_key)
 
     pct = (
-        report.last_input_tokens / report.context_budget * 100
+        report.current_context_tokens / report.context_budget * 100
         if report.context_budget else 0.0
     )
     cache_hit_pct = (
@@ -336,14 +345,14 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
         if report.cache_ttl else "off"
     )
     body_lines = [
-        f"last turn:   input  [cyan]{report.last_input_tokens:,}[/]   "
-        f"output  [cyan]{report.last_output_tokens:,}[/]",
-        f"cumulative:  input  [cyan]{report.total_input_tokens:,}[/]   "
-        f"output  [cyan]{report.total_output_tokens:,}[/]   "
+        f"last prompt: [cyan]{report.last_input_tokens:,}[/] in   "
+        f"[cyan]{report.last_output_tokens:,}[/] out",
+        f"cumulative:  [cyan]{report.total_input_tokens:,}[/] in   "
+        f"[cyan]{report.total_output_tokens:,}[/] out   "
         f"({report.turns_recorded} turn{'s' if report.turns_recorded != 1 else ''})",
-        f"context:     [cyan]{report.last_input_tokens:,}[/] / "
+        f"context:     ~[cyan]{report.current_context_tokens:,}[/] / "
         f"[cyan]{report.context_budget:,}[/] "
-        f"([cyan]{pct:.1f}%[/] of budget)",
+        f"([cyan]{pct:.1f}%[/] of budget, char-estimate)",
         f"cache:       {cache_status}   "
         f"hit ratio [cyan]{cache_hit_pct}[/]   "
         f"read [cyan]{report.total_cache_read_tokens:,}[/]   "
