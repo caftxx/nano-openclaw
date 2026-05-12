@@ -1,6 +1,6 @@
 """Shared slash-command dispatcher used by every frontend.
 
-TUI (cli.py / ws_repl.py), WebUI (webui/server.py) and WeChat
+TUI (cli.py / ws_repl.py), WebUI (gateway/webui/server.py) and WeChat
 (channels/wechat) all delegate to ``handle_slash`` here, so users see
 identical command behavior regardless of which frontend is talking to the
 Backend. Each handler talks to the ``Backend`` Protocol — never to

@@ -86,6 +86,7 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 - **`gateway/approval_broker.py`** — `ApprovalBroker`（人交互）+ `NonInteractiveApprovalHandler`（cron/channel 自动决策走 allowlist）
 - **`gateway/pidfile.py`** — `gateway start/stop/status` 的 PID 文件 + 端口存活检查
 - **`gateway/cli.py`** — gateway 子命令 argparse handler（含 RPC probe 状态报告）
+- **`gateway/webui/`** — FastAPI 路由（mount 到 daemon 的 FastAPI app；不再独立子命令）
 
 #### Channels
 - **`channels/base.py`** — `Channel` ABC + `ChannelAccount` + `ChannelStatus`
@@ -102,7 +103,6 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 - **`mcp/`** — MCP 服务器连接管理（stdio/SSE/streamable-http）→ 工具注册
 - **`skills/`** — SKILL.md 加载 + slash commands + model-invokable Skill tool + `skill_install` 隔离依赖安装
 - **`workspace/`** — bootstrap 文件加载（AGENTS.md 等 8 个标准文件）+ budget 截断
-- **`webui/`** — FastAPI 路由（mount 到 daemon 的 FastAPI app；不再独立子命令）
 - **`schedule/`** — cron scheduler + recovery（restart 不重触发已跑过任务，按 `last_run_at_ms` 去重）
 - **`wechat/bot.py`** — `WechatBot` long-poll runner（被 `WechatChannel` 拉起；token 来自扫码登录写入的 `state_dir/wechat-tokens.{id}.json`）
 - **`wechat/login_cli.py`** — `nano-openclaw wechat login` 入口；执行 QR 状态机 + 持久化 token 到 state_dir;daemon 通过 `discover_persisted_account_ids` 发现账号

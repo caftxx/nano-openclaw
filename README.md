@@ -280,6 +280,7 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
                      ├─ slash.py: 共享 slash dispatch + Rich 渲染（embedded + remote 共用）
                      ├─ run_registry.py: turn_id ↔ asyncio.Task（chat.abort 统一接口）
                      ├─ runtime_lock.py: RuntimeUpdateGuard（runtime hot-reload reader/writer）
+                     ├─ webui/: FastAPI 路由（mount 到 daemon FastAPI app；不再独立子命令）
                      └─ pidfile.py + cli.py: gateway start/stop/status/run
   channels/        = Channel 抽象（id × accountId 多账号）
                      └─ wechat/: WechatChannel (per-uid 持久 session)
@@ -295,7 +296,6 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
                        NonInteractiveApprovalHandler（cron / channel 自动决策）
   plugins/          = 轻量 Plugin Protocol + HookRegistry + builtin wrappers
   subagent/         = 后台子 agent runner + registry + completion auto-announce
-  webui/            = FastAPI 路由（mount 到 daemon FastAPI app；不再独立子命令）
   schedule/         = cron scheduler + recovery（restart 不重触发已跑过的任务）
   images.py         = parse_image_refs → load_image → describe_image
   mcp/              = MCP 服务器连接管理（stdio/SSE/streamable-http）

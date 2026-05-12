@@ -1,7 +1,7 @@
 """Drift detection: WebUI's BUILTIN_COMMANDS must cover every server-side
 slash handler.
 
-The WebUI front-end (``nano_openclaw/webui/static/app.js``) maintains a
+The WebUI front-end (``nano_openclaw/gateway/webui/static/app.js``) maintains a
 hand-written set of slash verbs it routes through ``command.run``. Verbs
 not in this set fall through to ``chat.send`` and the agent receives the
 slash as a plain user message — at best it gets ignored, at worst the LLM
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from nano_openclaw.gateway.slash import _HANDLERS
 
-APP_JS = Path(__file__).resolve().parent.parent / "nano_openclaw" / "webui" / "static" / "app.js"
+APP_JS = Path(__file__).resolve().parent.parent / "nano_openclaw" / "gateway" / "webui" / "static" / "app.js"
 
 
 def _parse_builtin_commands(source: str) -> set[str]:

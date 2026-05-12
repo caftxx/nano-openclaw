@@ -12,8 +12,9 @@ require approval at all) it returns ALLOW; otherwise DENY. This is the
 fix for "cron triggered a tool needing approval and there's no human to
 answer the prompt → daemon hangs forever".
 
-Originally ``webui/approvals.py`` (Phase 0 promotion). Old name
-``WebApprovalBroker`` re-exported by the shim for back-compat.
+Originally ``gateway/webui/approvals.py`` (Phase 0 promotion); since the
+``webui/`` → ``gateway/webui/`` move the shim has been removed and callers
+import ``ApprovalBroker`` directly from this module.
 """
 
 from __future__ import annotations

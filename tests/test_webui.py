@@ -2,38 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from nano_openclaw.attachments import AttachmentAttached, AttachmentError
-from nano_openclaw.loop import CancellationToken, LoopConfig, SubagentAnnounced, SubagentEvent, ToolResult
+from nano_openclaw.gateway.backend import PushEvent
+from nano_openclaw.loop import CancellationToken, SubagentAnnounced, SubagentEvent, ToolResult
 from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
 from nano_openclaw.tools import Tool, ToolRegistry
-from nano_openclaw.webui.approvals import WebApprovalBroker
+from nano_openclaw.gateway.approval_broker import ApprovalBroker
 from nano_openclaw.config.types import AgentDefaultsConfig, AgentsConfig, ModelDefinition, ModelProvider, ModelsConfig, NanoOpenClawConfig
-from nano_openclaw.webui.server import (
+from nano_openclaw.gateway.webui.server import (
     _event_to_payload,
     _image_model_options,
     _model_options,
-    _models_list_markdown,
     _read_assistant_name,
     _read_user_name,
-    _resolve_model_option,
-    _run_turn,
     _session_payload,
-    _wire_spawn_context,
     _is_replayable_activity_payload,
-    run_webui,
+    _webui_payloads_from_push,
 )
-from nano_openclaw.webui.sessions import WebSessionManager
+from nano_openclaw.gateway.agent_backend_session import BackendSessionManager
 
 
 def test_webui_event_serializer_core_stream_events():
@@ -135,34 +130,11 @@ def test_webui_serializes_subagent_internal_event_for_activity():
     assert _is_replayable_activity_payload(payload)
 
 
-def test_webui_spawn_context_forwards_subagent_events():
-    registry = ToolRegistry()
-    registry.register(Tool(
-        name="sessions_spawn",
-        description="spawn",
-        input_schema={"type": "object"},
-        run=lambda args: "ok",
-    ))
-    callback = object()
-    runtime = SimpleNamespace(
-        session_dir=Path("sessions"),
-        workspace_dir=Path("."),
-        client=object(),
-        cfg=LoopConfig(model="model"),
-    )
-
-    _wire_spawn_context(registry, runtime, "session-1", on_event=callback)
-
-    context = registry._spawn_tool_context
-    assert context.requester_session_key == "session-1"
-    assert context.on_event is callback
-
-
 def test_web_approval_broker_waits_for_decision():
     emitted = []
 
     async def run():
-        broker = WebApprovalBroker(lambda payload: _emit(emitted, payload))
+        broker = ApprovalBroker(lambda payload: _emit(emitted, payload))
         request = ApprovalRequest(
             request_id="req-1",
             tool_name="bash",
@@ -183,7 +155,7 @@ def test_web_approval_broker_denies_on_cancellation():
     emitted = []
 
     async def run():
-        broker = WebApprovalBroker(lambda payload: _emit(emitted, payload))
+        broker = ApprovalBroker(lambda payload: _emit(emitted, payload))
         request = ApprovalRequest(
             request_id="req-1",
             tool_name="bash",
@@ -205,7 +177,7 @@ def test_web_approval_broker_decision_wins_over_cancel_watcher():
     emitted = []
 
     async def run():
-        broker = WebApprovalBroker(lambda payload: _emit(emitted, payload))
+        broker = ApprovalBroker(lambda payload: _emit(emitted, payload))
         request = ApprovalRequest(
             request_id="req-1",
             tool_name="bash",
@@ -244,7 +216,7 @@ def test_web_session_manager_create_select_clear():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         assert session.session_id
@@ -272,7 +244,7 @@ def test_web_session_manager_keeps_multiple_pending_sessions_independent():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         first = manager.create()
         second = manager.create()
@@ -290,218 +262,125 @@ def test_web_session_manager_keeps_multiple_pending_sessions_independent():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_web_run_turn_sends_stream_events_before_done(monkeypatch: pytest.MonkeyPatch):
+def test_webui_push_adapter_maps_backend_turn_started_to_chat_accepted():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
-        runtime = SimpleNamespace(
-            cfg=LoopConfig(),
-            registry=ToolRegistry(),
-            client=object(),
-        )
-        emitted: list[dict] = []
-
-        async def fake_run_turn(self, _text, **_kwargs):
-            self.on_event(TextDelta("final conclusion"))
-            self.history.extend([
-                _message("user", "run a tool"),
-                _message("assistant", "final conclusion"),
-            ])
-            return self.history
-
-        async def slow_send(payload):
-            if payload["type"] == "text.delta":
-                await asyncio.sleep(0.01)
-            emitted.append(payload)
-
-        monkeypatch.setattr("nano_openclaw.loop.AgentSession.run_turn", fake_run_turn)
-
-        asyncio.run(_run_turn(
-            runtime=runtime,
-            manager=manager,
-            send=slow_send,
-            approvals=WebApprovalBroker(slow_send),
-            active_tokens={},
-            session_id=None,
-            text="run a tool",
-            attachments=[],
-        ))
-
-        event_types = [payload["type"] for payload in emitted]
-        assert event_types.index("text.delta") < event_types.index("turn.done")
-        done = emitted[event_types.index("turn.done")]
-        assert done["session"]["active_turn_id"] is None
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def test_web_run_turn_deny_emits_final_conclusion(monkeypatch: pytest.MonkeyPatch):
-    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
-    try:
-        session_dir = tmp_dir / "sessions"
-        store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
-        registry = ToolRegistry()
-        registry.register(Tool("demo", "demo", {"type": "object", "properties": {}}, lambda _args: "ok"))
-        runtime = SimpleNamespace(
-            cfg=LoopConfig(),
-            registry=registry,
-            client=object(),
-        )
-        emitted: list[dict] = []
-        approvals: WebApprovalBroker | None = None
-
-        async def fake_stream_response(**_kwargs):
-            call_index = fake_stream_response.call_count
-            fake_stream_response.call_count += 1
-            if call_index == 0:
-                yield ToolUseStart(id="tool-1", name="demo")
-                yield ToolUseEnd(id="tool-1")
-                yield MessageEnd(stop_reason="tool_use", usage={})
-            else:
-                yield TextDelta("final after deny")
-                yield MessageEnd(stop_reason="end_turn", usage={})
-
-        fake_stream_response.call_count = 0
-
-        async def fake_dispatch(self, tool_use_id, name, args, cancellation_token=None):
-            return {
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "is_error": True,
-                "_denied": True,
-                "content": [{"type": "text", "text": f"approval denied for {name}"}],
-            }
-
-        async def send_and_deny(payload):
-            emitted.append(payload)
-
-        approvals = WebApprovalBroker(send_and_deny)
-        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
-        monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
-
-        asyncio.run(_run_turn(
-            runtime=runtime,
-            manager=manager,
-            send=send_and_deny,
-            approvals=approvals,
-            active_tokens={},
-            session_id=None,
-            text="run a tool",
-            attachments=[],
-        ))
-
-        event_types = [payload["type"] for payload in emitted]
-        assert "turn.cancelled" not in event_types
-        assert "turn.error" not in event_types
-        assert "text.delta" in event_types
-        assert emitted[event_types.index("text.delta")]["text"] == "final after deny"
-        assert event_types.index("text.delta") < event_types.index("turn.done")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def test_web_run_turn_persists_two_new_sessions_concurrently(monkeypatch: pytest.MonkeyPatch):
-    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
-    try:
-        session_dir = tmp_dir / "sessions"
-        store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
-        first = manager.create()
-        second = manager.create()
-        runtime = SimpleNamespace(
-            cfg=LoopConfig(),
-            registry=ToolRegistry(),
-            client=object(),
-        )
-        emitted: list[dict] = []
-
-        async def fake_stream_response(**kwargs):
-            text = kwargs["messages"][-1]["content"][0]["text"]
-            await asyncio.sleep(0.01)
-            yield TextDelta(f"reply to {text}")
-            yield MessageEnd(stop_reason="end_turn", usage={})
-
-        async def send(payload):
-            emitted.append(payload)
-
-        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
-
-        async def run_both():
-            await asyncio.gather(
-                _run_turn(
-                    runtime=runtime,
-                    manager=manager,
-                    send=send,
-                    approvals=WebApprovalBroker(send),
-                    active_tokens={},
-                    session_id=first.session_id,
-                    text="first",
-                    attachments=[],
-                ),
-                _run_turn(
-                    runtime=runtime,
-                    manager=manager,
-                    send=send,
-                    approvals=WebApprovalBroker(send),
-                    active_tokens={},
-                    session_id=second.session_id,
-                    text="second",
-                    attachments=[],
-                ),
-            )
-
-        asyncio.run(run_both())
-
-        store = load_session_store(store_path)
-        assert first.session_id in store["sessions"]
-        assert second.session_id in store["sessions"]
-        assert first.transcript_path.exists()
-        assert second.transcript_path.exists()
-        assert [message.role for message in first.history] == ["user", "assistant"]
-        assert [message.role for message in second.history] == ["user", "assistant"]
-        assert {item["session_id"] for item in manager.list()} == {first.session_id, second.session_id}
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def test_web_run_turn_rejects_second_turn_for_same_active_session():
-    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
-    try:
-        session_dir = tmp_dir / "sessions"
-        store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
         session = manager.create()
-        session.active_turn_id = "turn-1"
-        runtime = SimpleNamespace(
-            cfg=LoopConfig(),
-            registry=ToolRegistry(),
-            client=object(),
+        turn_sessions: dict[str, str] = {}
+
+        payloads = _webui_payloads_from_push(
+            PushEvent(
+                event="agent.event",
+                payload={
+                    "type": "turn.started",
+                    "turn_id": "turn-1",
+                    "session_id": session.session_id,
+                    "user_text": "hello",
+                    "attachments": [],
+                },
+                seq=1,
+            ),
+            manager,
+            runtime=object(),
+            turn_sessions=turn_sessions,
         )
-        emitted: list[dict] = []
 
-        async def send(payload):
-            emitted.append(payload)
+        assert payloads[0]["type"] == "chat.accepted"
+        assert payloads[0]["turn_id"] == "turn-1"
+        assert turn_sessions == {"turn-1": session.session_id}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        asyncio.run(_run_turn(
-            runtime=runtime,
-            manager=manager,
-            send=send,
-            approvals=WebApprovalBroker(send),
-            active_tokens={},
-            session_id=session.session_id,
-            text="second",
-            attachments=[],
-        ))
 
-        assert emitted == [{
-            "type": "turn.error",
-            "session_id": session.session_id,
-            "message": "session already has an active turn",
-        }]
-        assert not session.transcript_path.exists()
+def test_webui_push_adapter_enriches_turn_done_with_session_payload():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        session = manager.create()
+        session.history.extend([
+            _message("user", "hello"),
+            _message("assistant", "world"),
+        ])
+        for message in session.history:
+            session.writer.append_message(message)
+        manager.save_metadata(session)
+
+        payloads = _webui_payloads_from_push(
+            PushEvent(
+                event="agent.event",
+                payload={"type": "turn.done", "turn_id": "turn-1", "session_id": session.session_id},
+                seq=1,
+            ),
+            manager,
+            runtime=object(),
+            turn_sessions={"turn-1": session.session_id},
+        )
+
+        assert payloads[0]["type"] == "turn.done"
+        assert payloads[0]["session"]["session_id"] == session.session_id
+        assert payloads[0]["session"]["history"][-1]["content"][0]["text"] == "world"
+        assert payloads[0]["sessions"][0]["session_id"] == session.session_id
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_webui_push_adapter_routes_approval_to_turn_session():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        session = manager.create()
+
+        payloads = _webui_payloads_from_push(
+            PushEvent(
+                event="approval.request",
+                payload={"type": "approval.requested", "turn_id": "turn-1", "request_id": "req-1"},
+                seq=1,
+            ),
+            manager,
+            runtime=object(),
+            turn_sessions={"turn-1": session.session_id},
+        )
+
+        assert payloads == [
+            {
+                "type": "approval.requested",
+                "turn_id": "turn-1",
+                "request_id": "req-1",
+                "session_id": session.session_id,
+            }
+        ]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_webui_push_adapter_maps_session_changed_to_session_updated():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        session = manager.create()
+
+        payloads = _webui_payloads_from_push(
+            PushEvent(
+                event="session.changed",
+                payload={"session_id": session.session_id},
+                seq=1,
+            ),
+            manager,
+            runtime=object(),
+            turn_sessions={},
+        )
+
+        assert payloads[0]["type"] == "session.updated"
+        assert payloads[0]["session"]["session_id"] == session.session_id
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -511,7 +390,7 @@ def test_web_session_select_uses_store_id_not_transcript_header_id():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session_id = str(uuid.uuid4())
         header_id = str(uuid.uuid4())
@@ -538,7 +417,7 @@ def test_web_session_clear_rejects_active_turn():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         session.active_turn_id = "turn-1"
@@ -554,7 +433,7 @@ def test_web_session_list_uses_conversation_text_for_title_and_search():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         session.history.extend([
@@ -580,7 +459,7 @@ def test_web_session_list_uses_stored_summary_without_reloading_transcript(monke
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         session.history.extend([
@@ -610,7 +489,7 @@ def test_web_session_display_hides_subagent_announcements():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         subagent_announcement = (
             '<subagent_completion runId="run-1" status="completed">\n'
@@ -646,7 +525,7 @@ def test_web_session_payload_truncates_long_history():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         for index in range(90):
@@ -666,7 +545,7 @@ def test_web_session_list_sorts_by_creation_time_not_completion_time():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         older = manager.create()
         newer = manager.create()
@@ -694,7 +573,7 @@ def test_web_session_list_hides_zero_message_sessions():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         session.history.append(_message("user", "旧对话标题"))
@@ -709,7 +588,7 @@ def test_web_session_payload_reloads_activity_history():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         session = manager.create()
         session.history.extend([
@@ -742,7 +621,7 @@ def test_web_session_list_hides_store_entries_without_valid_transcript():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
         store = load_session_store(store_path)
         update_session(store, "missing-session", model="model", message_count=88, compaction_count=0)
         save_session_store(store_path, store)
@@ -757,7 +636,7 @@ def test_web_session_select_invalid_explicit_session_does_not_create_new_session
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
         store = load_session_store(store_path)
         update_session(store, "missing-session", model="model", message_count=88, compaction_count=0)
         save_session_store(store_path, store)
@@ -775,7 +654,7 @@ def test_web_session_select_legacy_header_alias_opens_canonical_file():
     try:
         session_dir = tmp_dir / "sessions"
         store_path = session_dir / "sessions.json"
-        manager = WebSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
 
         canonical = manager.create()
         canonical.history.append(_message("user", "旧别名 session 内容"))
@@ -839,42 +718,6 @@ def test_runtime_image_model_options_only_include_image_capable_models():
     ]
 
 
-def test_models_command_resolves_by_name_ref_and_id():
-    cfg = NanoOpenClawConfig(
-        models=ModelsConfig(
-            providers={
-                "ali-coding": ModelProvider(
-                    models=[
-                        ModelDefinition(id="glm-5", name="GLM 5", input=["text"]),
-                    ]
-                )
-            }
-        ),
-    )
-
-    assert _resolve_model_option(cfg, "GLM 5")["ref"] == "ali-coding/glm-5"
-    assert _resolve_model_option(cfg, "ali-coding/glm-5")["name"] == "GLM 5"
-    assert _resolve_model_option(cfg, "glm-5")["ref"] == "ali-coding/glm-5"
-
-
-def test_models_command_list_marks_current_model():
-    cfg = NanoOpenClawConfig(
-        agents=AgentsConfig(defaults=AgentDefaultsConfig(model="ali-coding/glm-5")),
-        models=ModelsConfig(
-            providers={
-                "ali-coding": ModelProvider(
-                    models=[ModelDefinition(id="glm-5", name="GLM 5", input=["text"])]
-                )
-            }
-        ),
-    )
-    runtime = SimpleNamespace(config=cfg, model_ref="ali-coding/glm-5")
-
-    text = _models_list_markdown(runtime)
-
-    assert "| ✓ | GLM 5 | `ali-coding/glm-5` | text |" in text
-
-
 def _message(role: str, text: str):
     from nano_openclaw.loop import Message
 
@@ -887,28 +730,6 @@ def _json_text(message: dict) -> str:
         for block in message.get("content", [])
         if isinstance(block, dict) and block.get("type") == "text"
     )
-
-
-def test_webui_token_is_optional_for_non_local_host(monkeypatch: pytest.MonkeyPatch):
-    calls = []
-    app = object()
-
-    def fake_create_app(*, config_path, agent_id, token):
-        calls.append(("create_app", config_path, agent_id, token))
-        return app
-
-    def fake_run(run_app, *, host, port):
-        calls.append(("run", run_app, host, port))
-
-    monkeypatch.setattr("nano_openclaw.webui.server.create_app", fake_create_app)
-    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=fake_run))
-
-    run_webui(config_path=None, agent_id="default", host="0.0.0.0", port=8765, token=None)
-
-    assert calls == [
-        ("create_app", None, "default", None),
-        ("run", app, "0.0.0.0", 8765),
-    ]
 
 
 def test_webui_reads_assistant_name_from_identity():

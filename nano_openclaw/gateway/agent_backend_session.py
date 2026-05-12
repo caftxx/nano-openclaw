@@ -5,8 +5,8 @@ writer, activity log, and a per-session lock that ``EmbeddedBackend.chat_send``
 holds across one ``run_turn`` to keep two concurrent turns from racing on
 ``history``.
 
-Originally lived in ``webui/sessions.py``; promoted here in Phase 0 so the
-TUI, WebUI, and (future) WebSocket clients share one session entity.
+Originally lived in ``gateway/webui/sessions.py``; promoted here in Phase 0
+so the TUI, WebUI, and (future) WebSocket clients share one session entity.
 """
 
 from __future__ import annotations

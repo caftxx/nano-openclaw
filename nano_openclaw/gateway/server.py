@@ -69,7 +69,7 @@ async def run_daemon(
     """
     import uvicorn  # local import to keep cold-start cheap for non-daemon paths
 
-    from nano_openclaw.webui.server import create_app
+    from nano_openclaw.gateway.webui.server import create_app
 
     console = Console()
 
@@ -117,10 +117,7 @@ async def run_daemon(
         # /rpc WebSocket see the same session list (including any active
         # in-memory sessions that haven't yet hit disk).
         app = create_app(
-            config_path=config_path,
-            agent_id=agent_id,
             token=None,           # Phase 3: no auth (per user decision)
-            runtime=runtime,
             backend=backend,
         )
 
