@@ -121,9 +121,9 @@ class WechatBot:
     # surface reads. ``None`` falls back to the legacy in-memory dict (only
     # the deprecated standalone path which Phase 3 already removed).
     session_manager: Any | None = None
-    # ``backend`` is the daemon's shared EmbeddedBackend; routing slash
-    # commands through it gives WeChat the same surface as TUI/WebUI via
-    # ``gateway/slash.py``. ``None`` keeps the legacy hand-rolled handler.
+    # ``backend`` is the daemon's shared EmbeddedBackend; slash commands
+    # require it so WeChat uses the same dispatcher as TUI/WebUI. ``None`` is
+    # only tolerated by low-level tests that don't exercise slash handling.
     backend: Any | None = None
     # Persistence path for the uid → session_id mapping; without it, restarts
     # forget which uid maps to which session and the next message creates a
@@ -236,15 +236,12 @@ class WechatBot:
                     self.notify_queue.mark_sent(item.job_id, item.created_at)
 
     async def _handle_slash_command(self, uid: str, cmd: str) -> str | None:
-        """Handle slash commands like /clear, /help, /tools, etc.
+        """Defer to the shared ``gateway/slash.py`` dispatcher via a
+        ``PlainRenderer`` so WeChat sees the exact same surface as TUI / WebUI
+        (single source of truth, including ``/help`` ordering + content).
 
-        Returns reply text if command matched, None if not a command.
-
-        Daemon mode: defer to the shared ``gateway/slash.py`` dispatcher via
-        a ``PlainRenderer``. That gives WeChat the same surface (incl.
-        ``/models`` ``/model`` ``/runtime`` …) as TUI / WebUI. Standalone /
-        legacy mode (no backend wired): fall through to the legacy hand-rolled
-        branches below.
+        Returns reply text if the command was handled, ``None`` if it should
+        be routed to the agent loop instead (skill-shaped or unknown).
         """
         cmd_stripped = cmd.strip()
         cmd_lower = cmd_stripped.lower()
@@ -252,200 +249,41 @@ class WechatBot:
         if cmd_lower in ("/quit", "/exit", "/q"):
             return "⚠️ **Bot cannot quit via WeChat command.** Send `/help` for available commands."
 
-        if self.backend is not None:
-            from nano_openclaw.gateway.slash import handle_slash, QuitREPL
-            from nano_openclaw.gateway.slash_renderer import PlainRenderer
+        if self.backend is None:
+            log.error(
+                "wechat.slash.no_backend",
+                f"slash command {cmd_lower!r} received without daemon backend",
+            )
+            return "⚠️ Slash commands require the daemon backend. Start WeChat through `gateway run`."
 
-            # Bind a session for this uid so /clear / /context / etc. operate
-            # on it; pre-resolve so handle_slash sees a non-empty session_key.
-            sess = self._resolve_session(uid)
-            session_key = sess.session_id if sess is not None else ""
-            slash_state = {"session_key": session_key, "session_changed": False}
-            renderer = PlainRenderer(emoji=True, max_chars=1500, width=50)
-            try:
-                handled = await handle_slash(cmd_stripped, self.backend, renderer, slash_state)
-            except QuitREPL:
-                return "⚠️ Bot cannot quit via WeChat command."
-            if not handled:
-                return None
-            # /new and /clear may have rebound which session_key we should
-            # carry forward for this uid; persist so the next inbound message
-            # routes into the new transcript instead of recreating the old.
-            if slash_state.get("session_changed"):
-                new_key = slash_state.get("session_key") or ""
-                self._ensure_uid_map_loaded()
-                if new_key:
-                    self._uid_to_session_id[uid] = new_key
-                else:
-                    self._uid_to_session_id.pop(uid, None)
-                self._save_uid_map()
-            text = renderer.collect()
-            return text or "(done)"
+        from nano_openclaw.gateway.slash import handle_slash, QuitREPL
+        from nano_openclaw.gateway.slash_renderer import PlainRenderer
 
-        # ---- Legacy fallback (standalone bot, no backend wired) ----
-        if cmd_lower == "/clear":
-            backend_session = self._resolve_session(uid)
-            if backend_session is not None and self.session_manager is not None:
-                try:
-                    await self.session_manager.clear(backend_session.session_id)
-                except RuntimeError as exc:
-                    return f"⚠️ {exc}"
+        # Bind a session for this uid so /clear / /context / etc. operate on
+        # it; pre-resolve so handle_slash sees a non-empty session_key.
+        sess = self._resolve_session(uid)
+        session_key = sess.session_id if sess is not None else ""
+        slash_state = {"session_key": session_key, "session_changed": False}
+        renderer = PlainRenderer(emoji=True, max_chars=1500, width=50)
+        try:
+            handled = await handle_slash(cmd_stripped, self.backend, renderer, slash_state)
+        except QuitREPL:
+            return "⚠️ Bot cannot quit via WeChat command."
+        if not handled:
+            return None
+        # /new and /clear may have rebound which session_key we should carry
+        # forward for this uid; persist so the next inbound message routes into
+        # the new transcript instead of recreating the old.
+        if slash_state.get("session_changed"):
+            new_key = slash_state.get("session_key") or ""
+            self._ensure_uid_map_loaded()
+            if new_key:
+                self._uid_to_session_id[uid] = new_key
             else:
-                history = self._get_or_create_history(uid)
-                history.clear()
-            return "✅ **History cleared** for this session."
-
-        if cmd_lower == "/new":
-            if self.session_manager is not None:
-                self._ensure_uid_map_loaded()
-                new_session = self.session_manager.create()
-                self._uid_to_session_id[uid] = new_session.session_id
-                self._save_uid_map()
-                return f"✅ **New session started** (`{new_session.session_id[:8]}…`)."
-            history = self._get_or_create_history(uid)
-            history.clear()
-            return "✅ **New session started** (history cleared)."
-
-        if cmd_lower == "/help":
-            return (
-                "📖 **Commands**\n\n"
-                "- `/clear` — Clear history\n"
-                "- `/new` — New session\n"
-                "- `/help` — Show this help\n"
-                "- `/context` — Show context stats\n"
-                "- `/compact` — Compact context\n"
-                "- `/tools` — List available tools\n"
-                "- `/skills` — List installed skills\n"
-                "- `/hooks` — List registered hooks\n"
-                "- `/plugins` — List loaded plugins\n"
-                "- `/active-memory` — Active memory status\n"
-                "- `/dreaming` — Dreaming status\n"
-                "- `/subagents` — Subagent status\n\n"
-                "Anything else → sent to AI"
-            )
-
-        if cmd_lower == "/context":
-            backend_session = self._resolve_session(uid)
-            history = backend_session.history if backend_session is not None else self._get_or_create_history(uid)
-            msg_count = len(history)
-            def _role(m: Any) -> str:
-                if hasattr(m, "role"):
-                    return getattr(m, "role", "")
-                if isinstance(m, dict):
-                    return str(m.get("role", ""))
-                return ""
-            user_msgs = sum(1 for m in history if _role(m) == "user")
-            assistant_msgs = sum(1 for m in history if _role(m) == "assistant")
-            from nano_openclaw.compact import estimate_tokens
-            tokens = estimate_tokens(history)
-            return (
-                f"📊 **Context stats**\n\n"
-                f"- Messages: `{msg_count}` (user: `{user_msgs}`, assistant: `{assistant_msgs}`)\n"
-                f"- Estimated tokens: `{tokens}`"
-            )
-
-        if cmd_lower == "/compact":
-            backend_session = self._resolve_session(uid)
-            history = backend_session.history if backend_session is not None else self._get_or_create_history(uid)
-            cfg = self.runtime.cfg
-            if len(history) < cfg.context_recent_turns * 2:
-                return "📊 **Compact**: Not enough history to compact."
-            from nano_openclaw.compact import compact_if_needed
-            try:
-                await compact_if_needed(
-                    history,
-                    budget=1,
-                    client=self.runtime.client,
-                    model=cfg.model,
-                    api=cfg.api,
-                    threshold_ratio=1.0,
-                    recent_turns=cfg.context_recent_turns,
-                )
-                from nano_openclaw.compact import estimate_tokens
-                new_tokens = estimate_tokens(history)
-                return f"✅ **Compacted**\n\nNew token estimate: `{new_tokens}`"
-            except Exception as exc:
-                return f"❌ **Compact failed**: {exc}"
-
-        if cmd_lower == "/tools":
-            tools = list(self.runtime.registry._tools.keys())
-            tool_list = "- " + "\n- ".join(f"`{t}`" for t in sorted(tools))
-            return f"🔧 **Tools** ({len(tools)})\n\n{tool_list}"
-
-        if cmd_lower == "/skills":
-            from nano_openclaw.skills import get_or_load_skills, filter_eligible_skills
-            workspace = self.runtime.cfg.workspace_dir
-            if workspace:
-                entries = get_or_load_skills(
-                    workspace,
-                    self.runtime.cfg.session_key,
-                    extra_dirs=self.runtime.cfg.extra_skill_dirs,
-                    max_bytes=self.runtime.cfg.max_skill_file_bytes,
-                )
-                eligible = filter_eligible_skills(entries, skill_filter=self.runtime.cfg.skill_filter)
-                names = [e.skill.name for e in eligible if e.eligible]
-                skill_list = "- " + "\n- ".join(f"`{n}`" for n in sorted(names))
-                return f"🧩 **Skills** ({len(names)})\n\n{skill_list}"
-            return "🧩 **Skills**: (no workspace configured)"
-
-        if cmd_lower == "/hooks":
-            hooks = self.runtime.hook_registry
-            hook_list = hooks._hooks if hooks else []
-            if hook_list:
-                hook_events = [h.event for h in hook_list]
-                events_str = "- " + "\n- ".join(f"`{e}`" for e in sorted(set(hook_events)))
-                return f"🪝 **Hooks** ({len(hook_list)} callbacks)\n\n{events_str}"
-            return "🪝 **Hooks**: No hooks registered"
-
-        if cmd_lower == "/plugins":
-            hooks = self.runtime.hook_registry
-            hook_list = hooks._hooks if hooks else []
-            if hook_list:
-                plugin_names = set(h.plugin_name for h in hook_list)
-                plugins_str = "- " + "\n- ".join(f"`{p}`" for p in sorted(plugin_names))
-                return f"🔌 **Plugins** ({len(plugin_names)})\n\n{plugins_str}"
-            return "🔌 **Plugins**: No plugins loaded"
-
-        if cmd_lower.startswith("/active-memory"):
-            cfg = self.runtime.cfg
-            am_cfg = cfg.active_memory_config
-            if not am_cfg:
-                return "🧠 **Active Memory**: Not configured."
-            return (
-                f"🧠 **Active Memory**\n\n"
-                f"- Enabled: `{am_cfg.enabled}`\n"
-                f"- Query mode: `{am_cfg.query_mode.value}`\n"
-                f"- Prompt style: `{am_cfg.prompt_style.value}`\n"
-                f"- Timeout: `{am_cfg.timeout_ms}ms`"
-            )
-
-        if cmd_lower.startswith("/dreaming"):
-            cfg = self.runtime.cfg
-            dc = cfg.dreaming_config
-            if not dc or not dc.enabled:
-                return "💤 **Dreaming**: Not configured or disabled."
-            from nano_openclaw.memory.dreaming import get_dreaming_status
-            workspace_dir = str(cfg.workspace_dir) if cfg.workspace_dir else ""
-            status = get_dreaming_status(workspace_dir, dc)
-            return (
-                f"💤 **Dreaming**\n\n"
-                f"- Enabled: `{status.get('enabled', False)}`\n"
-                f"- Frequency: `{dc.frequency}`\n"
-                f"- Min score: `{dc.min_score}`\n"
-                f"- Max promotions: `{dc.max_promotions}`"
-            )
-
-        if cmd_lower.startswith("/subagents"):
-            sa_cfg = self.runtime.config.subagents
-            return (
-                f"🤖 **Subagents**\n\n"
-                f"- Max concurrent: `{sa_cfg.max_concurrent}`\n"
-                f"- Max spawn depth: `{sa_cfg.max_spawn_depth}`\n"
-                f"- Timeout: `{sa_cfg.run_timeout_seconds}s`"
-            )
-
-        # Not a recognized command, return None to let agent handle it
-        return None
+                self._uid_to_session_id.pop(uid, None)
+            self._save_uid_map()
+        text = renderer.collect()
+        return text or "(done)"
 
     # Long-poll backoff schedule. Mirrors openilink-sdk-python/monitor.py
     # constants so behavior matches the reference SDK: a couple of fast
@@ -806,5 +644,3 @@ class WechatBot:
                 flush_buf()
                 send_queue.put_nowait(None)
                 await sender_task
-
-

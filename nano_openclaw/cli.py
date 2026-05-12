@@ -28,6 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nano_openclaw.compact import compact_if_needed, estimate_tokens
+from nano_openclaw.gateway import slash
 from nano_openclaw.logger import get_logger
 from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.loop import (
@@ -84,20 +85,6 @@ logger = get_logger(__name__)
 
 _PREVIEW_LINES = 12
 _MAX_HISTORY_PREVIEW_TURNS = 10  # turns shown when replaying history after session switch
-_BASE_COMMANDS = [
-    "/quit",
-    "/clear",
-    "/new",
-    "/help",
-    "/context",
-    "/compact",
-    "/sessions \\[all]",
-    "/session \\[prefix|#]",
-    "/skills",
-    "/plugins",
-    "/hooks",
-    "/tools",
-]
 
 
 async def repl(
@@ -167,7 +154,7 @@ async def repl(
         )
         registry.set_spawn_tool_context(_spawn_ctx)
 
-    _print_banner(console, cfg.model, registry, session_id, cfg=cfg)
+    _print_banner(console, cfg.model, registry, session_id)
 
     while True:
         try:
@@ -264,7 +251,7 @@ async def repl(
             continue
         if user_input == "/help":
             console.print(
-                f"[dim]commands: {_commands_help(registry, cfg)} — anything else is sent to the model[/]"
+                f"[dim]commands: {slash.HELP_TEXT} — anything else is sent to the model[/]"
             )
             continue
         if user_input == "/context":
@@ -419,22 +406,11 @@ def _subagents_command_available(registry: ToolRegistry) -> bool:
     return registry.get("sessions_spawn") is not None or registry.get("subagents") is not None
 
 
-def _commands_help(registry: ToolRegistry, cfg: LoopConfig | None = None) -> str:
-    commands = list(_BASE_COMMANDS)
-    if _subagents_command_available(registry):
-        commands.append("/subagents \\[list|kill|all]")
-    if _memory_commands_available(registry):
-        commands.append("/active-memory \\[status|on|off|mode|style]")
-        commands.append("/dreaming \\[status|on|off|run]")
-    return "  ".join(commands) + "  — /sessions launches interactive picker"
-
-
 def _print_banner(
     console: Console,
     model: str,
     registry: ToolRegistry,
     session_id: str = "",
-    cfg: LoopConfig | None = None,
 ) -> None:
     tools = ", ".join(registry.names()) or "(none)"
     session_line = f"session: {session_id[:8]}..." if session_id else ""
@@ -445,7 +421,7 @@ def _print_banner(
                 f"model:  [cyan]{markup.escape(model)}[/]\n"
                 f"tools:  {markup.escape(tools)}"
                 + (f"\n{session_line}" if session_line else "")
-                + f"\ncommands: {_commands_help(registry, cfg)}"
+                + f"\ncommands: {slash.HELP_TEXT}"
             ),
             border_style="cyan",
         )

@@ -41,7 +41,10 @@ async def channels_start(ctx: GatewayContext, params: dict[str, Any]) -> dict[st
     # (written by ``nano-openclaw wechat login``). There's no config-file
     # fallback any more — login is the single source of truth.
     account = ChannelAccount(id=account_id, config=raw_config)
-    instance = await ctx.channel_registry.start(channel_id, account, ctx.runtime)
+    # Pass ``ctx`` as gateway so channels (e.g. WechatChannel) can wire
+    # ``backend`` into their bot. Without this, WechatBot would fall back to
+    # its hand-rolled slash handler — drift from TUI/WebUI ``/help``.
+    instance = await ctx.channel_registry.start(channel_id, account, ctx.runtime, ctx)
     return _entry_to_dict(instance.status())
 
 

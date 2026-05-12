@@ -219,3 +219,36 @@ def test_resolve_session_returns_none_when_no_manager(tmp_path):
     assert bot._resolve_session("anyone") is None
     history = bot._get_or_create_history("anyone")
     assert history == []
+
+
+def test_slash_without_backend_is_rejected_instead_of_using_legacy_history(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    bot = WechatBot(
+        runtime=runtime,
+        base_url="https://example",
+        token="t",
+    )
+    history = bot._get_or_create_history("anyone")
+    history.append(Message("user", [{"type": "text", "text": "hello"}]))
+
+    reply = asyncio.run(bot._handle_slash_command("anyone", "/clear"))
+
+    assert "daemon backend" in (reply or "")
+    assert len(history) == 1
+
+
+def test_slash_without_backend_does_not_raise_attribute_error(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    bot = WechatBot(
+        runtime=runtime,
+        base_url="https://example",
+        token="t",
+    )
+
+    help_reply = asyncio.run(bot._handle_slash_command("anyone", "/help"))
+    tools_reply = asyncio.run(bot._handle_slash_command("anyone", "/tools"))
+
+    assert "daemon backend" in (help_reply or "")
+    assert "daemon backend" in (tools_reply or "")
+    assert "AttributeError" not in help_reply
+    assert "AttributeError" not in tools_reply

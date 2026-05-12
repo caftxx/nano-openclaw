@@ -1032,37 +1032,9 @@ async def handle_slash_command(
     verb = parts[0].lower() if parts else ""
     args = parts[1:]
 
-    if verb == "help":
-        hook_registry = runtime.registry.hook_registry()
-        has_memory = (
-            runtime.registry.get("memory_get") is not None
-            and runtime.registry.get("memory_search") is not None
-        )
-        has_subagents = (
-            runtime.registry.get("sessions_spawn") is not None
-            or runtime.registry.get("subagents") is not None
-        )
-        lines = [
-            "## Commands",
-            "",
-            "| Command | Description |",
-            "| --- | --- |",
-            "| `/help` | Show this help |",
-            "| `/context` | Context window usage |",
-            "| `/compact` | Compact session history |",
-            "| `/clear` | Clear session history |",
-            "| `/tools` | List all registered tools |",
-            "| `/skills` | List available skills |",
-            "| `/plugins` | List loaded plugins |",
-            "| `/hooks` | Registered hook handlers |",
-        ]
-        if has_subagents:
-            lines.append("| `/subagents [list\\|all]` | Active subagent runs |")
-        lines.append("| `/models [model]` | List or switch configured models |")
-        if has_memory:
-            lines.append("| `/active-memory [status\\|on\\|off\\|mode\\|style]` | Active memory config |")
-            lines.append("| `/dreaming [status\\|on\\|off\\|run]` | Dreaming config |")
-        return "\n".join(lines), False
+    # /help is handled upstream by gateway.slash.handle_slash (single source
+    # of truth across TUI/WebUI/WeChat). This fallback function only sees
+    # commands the shared dispatcher returned False for.
 
     if verb == "context":
         # Mirror _show_context() in cli.py

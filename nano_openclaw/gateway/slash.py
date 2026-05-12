@@ -28,7 +28,7 @@ shared module out of stdin/exit business.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from rich import markup
 from rich.console import Console
@@ -43,18 +43,70 @@ from nano_openclaw.gateway.slash_renderer import (
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Help text — single source of truth, shared by every banner
+# Help catalogue — single source of truth, shared by every banner + ``/help``
 # ────────────────────────────────────────────────────────────────────────────
 
 
-HELP_TEXT = (
-    "/quit  /clear  /new  /help  /context  /compact  /usage  /sessions [all|delete <id>]  "
-    "/session [prefix|#]  /skills  /plugins  /hooks  /tools  "
-    "/subagents [list|kill <id>|all]  /active-memory [status|on|off|mode|style]  "
-    "/dreaming [status|on|off|run]  /review-fork [status|on|off|run]  /health  /channels  /runtime  "
-    "/models  /model [<provider/model-id>]  "
-    "/thinking [off|minimal|low|medium|high|xhigh|adaptive|max]  /restart"
+class HelpEntry(NamedTuple):
+    """One slash command in the user-facing help.
+
+    ``args`` is the bare arg-hint body (no surrounding brackets). The Rich
+    one-liner wraps it in escaped ``\\[...]``; the structured table wraps it
+    in ``(...)``. Renderers can't share bracket style — Rich treats ``[`` as
+    markup whereas the others render it literally."""
+
+    command: str
+    args: str = ""
+    description: str = ""
+    aliases: tuple[str, ...] = ()
+
+
+# Sorted A→Z by ``command``. Adding a new entry: keep the file sorted so the
+# rendered help in every frontend (TUI banner, TUI ``/help``, WebUI ``/help``,
+# WeChat ``/help``) stays consistent.
+HELP_ENTRIES: tuple[HelpEntry, ...] = (
+    HelpEntry("/active-memory", "status|on|off|mode|style", "Active memory config"),
+    HelpEntry("/channels", "", "Running channels"),
+    HelpEntry("/clear", "", "Clear current session history"),
+    HelpEntry("/compact", "", "Summarize / compact history"),
+    HelpEntry("/context", "", "Context-window budget snapshot"),
+    HelpEntry("/dreaming", "status|on|off|run", "Dreaming config"),
+    HelpEntry("/health", "", "Daemon health snapshot"),
+    HelpEntry("/help", "", "Show this list"),
+    HelpEntry("/hooks", "", "Registered hook handlers"),
+    HelpEntry("/model", "<provider/model-id>", "Show / switch active model"),
+    HelpEntry("/models", "", "List configured models"),
+    HelpEntry("/new", "", "Start a new session"),
+    HelpEntry("/plugins", "", "Loaded plugins"),
+    HelpEntry("/quit", "", "Quit (TUI only)", aliases=("/exit", "/q")),
+    HelpEntry("/restart", "", "Restart the gateway"),
+    HelpEntry("/review-fork", "status|on|off|run", "Background review fork"),
+    HelpEntry("/runtime", "", "Active runtime summary"),
+    HelpEntry("/session", "prefix|#", "Show or switch active session"),
+    HelpEntry("/sessions", "all|delete <id>", "List or delete saved sessions"),
+    HelpEntry("/skills", "", "Available skills"),
+    HelpEntry("/subagents", "list|kill <id>|all", "Active subagent runs"),
+    HelpEntry("/thinking", "off|minimal|low|medium|high|xhigh|adaptive|max", "Show / set thinking level"),
+    HelpEntry("/tools", "", "Registered tools"),
+    HelpEntry("/usage", "", "Per-session token + cache + compaction stats"),
 )
+
+
+def _rich_token(entry: HelpEntry) -> str:
+    """One token of the Rich one-liner: ``/cmd`` or ``/cmd \\[args]``."""
+    return f"{entry.command} \\[{entry.args}]" if entry.args else entry.command
+
+
+def _table_row(entry: HelpEntry) -> list[str]:
+    """One row of the structured table: command (+ aliases + args) and desc."""
+    name = " · ".join((entry.command, *entry.aliases))
+    if entry.args:
+        name = f"{name} ({entry.args})"
+    return [name, entry.description]
+
+
+HELP_TEXT = "  ".join(_rich_token(e) for e in HELP_ENTRIES)
+HELP_TABLE_ROWS: list[list[str]] = [_table_row(e) for e in HELP_ENTRIES]
 
 
 # Mirrors ``loop.ThinkingLevel`` Literal — kept here as a runtime-iterable set
@@ -115,36 +167,9 @@ async def handle_slash(
         if isinstance(renderer, RichRenderer):
             renderer.dim(f"commands: {HELP_TEXT} — anything else is sent to the agent")
         else:
-            # Use angle brackets / parens for argument hints — square
-            # brackets get parsed as Rich markup by non-Rich renderers and
-            # the contents disappear (e.g. `/sessions [all|delete <id>]`).
-            rows = [
-                ["/quit · /exit · /q", "Quit (TUI only)"],
-                ["/help", "Show this list"],
-                ["/clear", "Clear current session history"],
-                ["/new", "Start a new session"],
-                ["/sessions (all | delete <id>)", "List or delete saved sessions"],
-                ["/session (prefix | #)", "Show or switch active session"],
-                ["/context", "Context-window budget snapshot"],
-                ["/compact", "Summarize / compact history"],
-                ["/usage", "Per-session token + cache + compaction stats"],
-                ["/tools", "Registered tools"],
-                ["/skills", "Available skills"],
-                ["/plugins", "Loaded plugins"],
-                ["/hooks", "Registered hook handlers"],
-                ["/subagents (list | kill <id> | all)", "Active subagent runs"],
-                ["/active-memory (status | on | off | mode | style)", "Active memory config"],
-                ["/dreaming (status | on | off | run)", "Dreaming config"],
-                ["/review-fork (status | on | off | run)", "Background review fork"],
-                ["/health", "Daemon health snapshot"],
-                ["/channels", "Running channels"],
-                ["/runtime", "Active runtime summary"],
-                ["/models", "List configured models"],
-                ["/model (<provider/model-id>)", "Show / switch active model"],
-                ["/thinking (off | minimal | low | medium | high | xhigh | adaptive | max)", "Show / set thinking level"],
-                ["/restart", "Restart the gateway"],
-            ]
-            renderer.table(["Command", "Description"], rows, title="Commands")
+            renderer.table(
+                ["Command", "Description"], HELP_TABLE_ROWS, title="Commands"
+            )
         return True
 
     parts = cmd.split()
