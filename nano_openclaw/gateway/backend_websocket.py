@@ -425,7 +425,6 @@ class WebSocketBackend(Backend):
             context_budget=int(payload.get("context_budget") or 0),
             context_window=int(payload.get("context_window") or 0),
             cache_ttl=payload.get("cache_ttl"),
-            current_context_tokens=int(payload.get("current_context_tokens") or 0),
         )
 
     async def approvals_list(self) -> list[PendingApproval]:

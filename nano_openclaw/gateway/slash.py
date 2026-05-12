@@ -317,13 +317,10 @@ async def _cmd_compact(backend, renderer: SlashRenderer, state, args, cmd):
 async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
     """Render this session's token, cache, and compaction counters.
 
-    The ``last prompt`` line shows what the API actually saw on the
-    previous turn (real provider-reported number). The ``context`` line
-    shows what the *next* turn will send — the in-memory history estimate,
-    which is bigger because the last assistant response and any
-    tool_results have been appended after the API saw the prompt. That's
-    the right "% of budget" indicator (matches what compact_if_needed
-    measures against threshold).
+    The "% of budget" is computed off ``last_input_tokens`` rather than a
+    local char-estimate so the user sees the same signal that
+    ``compact_if_needed`` watches for its trigger — that's the value to
+    track when asking "how close am I to compaction firing?".
     """
     session_key = state.get("session_key") or ""
     if not session_key:
@@ -332,7 +329,7 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
     report = await backend.sessions_usage(session_key)
 
     pct = (
-        report.current_context_tokens / report.context_budget * 100
+        report.last_input_tokens / report.context_budget * 100
         if report.context_budget else 0.0
     )
     cache_hit_pct = (
@@ -346,13 +343,11 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
     )
     body_lines = [
         f"last prompt: [cyan]{report.last_input_tokens:,}[/] in   "
-        f"[cyan]{report.last_output_tokens:,}[/] out",
+        f"[cyan]{report.last_output_tokens:,}[/] out   "
+        f"([cyan]{pct:.1f}%[/] of [cyan]{report.context_budget:,}[/] budget)",
         f"cumulative:  [cyan]{report.total_input_tokens:,}[/] in   "
         f"[cyan]{report.total_output_tokens:,}[/] out   "
         f"({report.turns_recorded} turn{'s' if report.turns_recorded != 1 else ''})",
-        f"context:     ~[cyan]{report.current_context_tokens:,}[/] / "
-        f"[cyan]{report.context_budget:,}[/] "
-        f"([cyan]{pct:.1f}%[/] of budget, char-estimate)",
         f"cache:       {cache_status}   "
         f"hit ratio [cyan]{cache_hit_pct}[/]   "
         f"read [cyan]{report.total_cache_read_tokens:,}[/]   "

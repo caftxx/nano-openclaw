@@ -702,17 +702,9 @@ class EmbeddedBackend(Backend):
         """Snapshot one session's token + cache + compaction counters.
 
         Reads ``AgentBackendSession.usage_stats`` (maintained by the loop
-        on every ``MessageEnd``) and combines it with the current history
-        size + budget / cache_ttl from the active runtime config.
-
-        ``current_context_tokens`` is the local estimate of the in-memory
-        history — between turns this is bigger than ``last_input_tokens``
-        because the last assistant response and any tool_results have
-        been appended after the API saw the prompt. It's the right
-        signal for "how full is the context".
+        on every ``MessageEnd``) and combines it with budget / cache_ttl
+        from the active runtime config.
         """
-        from nano_openclaw.compact import estimate_tokens
-
         try:
             session = self.manager.get_or_load(session_key or None)
         except KeyError as exc:
@@ -736,7 +728,6 @@ class EmbeddedBackend(Backend):
             context_budget=cfg.context_budget,
             context_window=cfg.context_window,
             cache_ttl=cfg.cache_ttl,
-            current_context_tokens=estimate_tokens(session.history),
         )
 
     # ─── Approvals ───

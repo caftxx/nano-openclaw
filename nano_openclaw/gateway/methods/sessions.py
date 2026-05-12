@@ -98,7 +98,6 @@ async def sessions_usage(ctx: GatewayContext, params: dict[str, Any]) -> dict[st
         "context_budget": report.context_budget,
         "context_window": report.context_window,
         "cache_ttl": report.cache_ttl,
-        "current_context_tokens": report.current_context_tokens,
     }
 
 

@@ -215,10 +215,6 @@ def test_usage_command_renders_full_report():
         context_budget=200_000,
         context_window=200_000,
         cache_ttl="5m",
-        # Current history estimate is 6,250 — bigger than last_input_tokens
-        # (4,832) because the last assistant response + tool_results were
-        # appended after the API saw the prompt.
-        current_context_tokens=6_250,
     ))
     state = {"session_key": "abc123"}
     asyncio.run(_cmd_usage(backend, renderer, state, [], "/usage"))
@@ -226,16 +222,15 @@ def test_usage_command_renders_full_report():
     assert len(renderer.panels) == 1
     title, body = renderer.panels[0]
     assert title == "Usage"
-    # Last-prompt line uses the real provider number
+    # Last-prompt line uses the real provider number AND drives the budget %
+    # (matches what compact_if_needed watches for its trigger).
     assert "4,832" in body and "1,024" in body
+    assert "200,000" in body
+    # 4,832 / 200,000 = 2.416% (rounds to 2.4%)
+    assert "2.4%" in body
     # Cumulative line
     assert "38,210" in body and "9,456" in body
     assert "12 turn" in body
-    # Context line uses CURRENT estimate (not last_input_tokens) for % of budget
-    assert "6,250" in body
-    assert "200,000" in body
-    # 6,250 / 200,000 = 3.125% (rounds to 3.1%)
-    assert "3.1%" in body
     # Cache row
     assert "5m TTL" in body
     assert "21,300" in body and "4,900" in body
@@ -265,7 +260,6 @@ def test_usage_command_renders_when_caching_disabled():
         context_budget=10_000,
         context_window=10_000,
         cache_ttl=None,
-        current_context_tokens=130,
     ))
     asyncio.run(_cmd_usage(backend, renderer, {"session_key": "abc"}, [], "/usage"))
 
