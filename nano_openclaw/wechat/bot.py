@@ -22,6 +22,7 @@ import base64
 import httpx
 
 from nano_openclaw.attachments import PromptAttachment
+from nano_openclaw.channels.chunking import chunk_text
 from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import AgentSession, TextDelta
 from nano_openclaw._stream_events import ToolUseEnd, ToolUseStart
@@ -42,6 +43,19 @@ from nano_openclaw.wechat.ilink import (
 from nano_openclaw.wechat.notify import NotifyQueue, NotifyItem
 
 log = get_logger(__name__)
+
+
+async def _send_chunked_text(
+    client: httpx.AsyncClient,
+    base_url: str,
+    token: str,
+    to_user: str,
+    text: str,
+    ctx: str | None = None,
+) -> None:
+    """Send text through iLink using the channel's outbound chunking policy."""
+    for segment in chunk_text(text):
+        await send_text(client, base_url, token, to_user, segment, ctx)
 
 
 def _clone_registry(registry: ToolRegistry, uid: str, account_id: str = "default") -> ToolRegistry:
@@ -228,7 +242,13 @@ class WechatBot:
                     if not target_uid:
                         continue
                     try:
-                        await send_text(client, self.base_url, self.token, target_uid, item.result_summary)
+                        await _send_chunked_text(
+                            client,
+                            self.base_url,
+                            self.token,
+                            target_uid,
+                            item.result_summary,
+                        )
                         log.info("wechat.notify.sent", f"notification sent to {target_uid:.16} for job {item.job_name}")
                     except Exception as exc:
                         log.warning("wechat.notify.failed", f"send notification to {target_uid:.16} failed: {exc}")
@@ -441,7 +461,14 @@ class WechatBot:
             reply = await self._handle_slash_command(uid, text.strip())
             if reply:
                 async with httpx.AsyncClient() as send_client:
-                    await send_text(send_client, self.base_url, self.token, uid, reply, ctx)
+                    await _send_chunked_text(
+                        send_client,
+                        self.base_url,
+                        self.token,
+                        uid,
+                        reply,
+                        ctx,
+                    )
                 return
 
         # Download image attachments (type=2) with AES decryption
@@ -513,11 +540,11 @@ class WechatBot:
             last_activity_at = time.monotonic()
 
         def flush_buf() -> None:
-            chunk = "".join(text_buf).strip()
-            if not chunk:
+            buffered = "".join(text_buf).strip()
+            if not buffered:
                 return
             text_buf.clear()
-            send_queue.put_nowait(chunk)
+            send_queue.put_nowait(buffered)
             mark_activity()
 
         def on_event(event: Any) -> None:
@@ -546,7 +573,14 @@ class WechatBot:
                     if segment is None:
                         return
                     try:
-                        await send_text(wechat_client, self.base_url, self.token, uid, segment, ctx)
+                        await _send_chunked_text(
+                            wechat_client,
+                            self.base_url,
+                            self.token,
+                            uid,
+                            segment,
+                            ctx,
+                        )
                     except Exception as exc:
                         log.error("wechat.send.segment.failed", f"send_text failed for {uid:.16}: {exc}")
 
