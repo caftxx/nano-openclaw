@@ -317,10 +317,14 @@ async def _cmd_compact(backend, renderer: SlashRenderer, state, args, cmd):
 async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
     """Render this session's token, cache, and compaction counters.
 
-    The "% of budget" is computed off ``last_input_tokens`` rather than a
-    local char-estimate so the user sees the same signal that
-    ``compact_if_needed`` watches for its trigger — that's the value to
-    track when asking "how close am I to compaction firing?".
+    "% of budget" is computed off ``last_prompt_tokens`` (= input +
+    cache_read + cache_creation, the total prompt the model saw last
+    turn). Same signal ``compact_if_needed`` watches for its trigger,
+    so the number visible here predicts when compaction will fire.
+
+    Note: ``ctx`` rather than ``in`` to make clear that this is the
+    full prompt size including cached portions, not Anthropic's
+    ``input_tokens`` (which is only the billable, non-cached slice).
     """
     session_key = state.get("session_key") or ""
     if not session_key:
@@ -329,7 +333,7 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
     report = await backend.sessions_usage(session_key)
 
     pct = (
-        report.last_input_tokens / report.context_budget * 100
+        report.last_prompt_tokens / report.context_budget * 100
         if report.context_budget else 0.0
     )
     cache_hit_pct = (
@@ -342,10 +346,10 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
         if report.cache_ttl else "off"
     )
     body_lines = [
-        f"last prompt: [cyan]{report.last_input_tokens:,}[/] in   "
+        f"last prompt: [cyan]{report.last_prompt_tokens:,}[/] ctx   "
         f"[cyan]{report.last_output_tokens:,}[/] out   "
         f"([cyan]{pct:.1f}%[/] of [cyan]{report.context_budget:,}[/] budget)",
-        f"cumulative:  [cyan]{report.total_input_tokens:,}[/] in   "
+        f"cumulative:  [cyan]{report.total_prompt_tokens:,}[/] ctx   "
         f"[cyan]{report.total_output_tokens:,}[/] out   "
         f"({report.turns_recorded} turn{'s' if report.turns_recorded != 1 else ''})",
         f"cache:       {cache_status}   "

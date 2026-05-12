@@ -882,7 +882,7 @@ async def compact_if_needed(
     api: str = "anthropic",
     threshold_ratio: float = DEFAULT_THRESHOLD_RATIO,
     recent_turns: int = DEFAULT_RECENT_TURNS,
-    last_input_tokens: int | None = None,
+    last_prompt_tokens: int | None = None,
     state: CompactionState | None = None,
 ) -> tuple[list[Message], str | None]:
     """Check token budget and compact history if over threshold.
@@ -895,12 +895,17 @@ async def compact_if_needed(
         api: API type ("anthropic" or "openai")
         threshold_ratio: Trigger compaction when tokens exceed this ratio of budget
         recent_turns: Number of recent turns to preserve (1 turn = user + assistant)
-        last_input_tokens: Real prompt-token count from the previous turn's
-            ``MessageEnd.usage``. When provided and > 0, used in place of the
-            character-based ``estimate_tokens`` fallback for the trigger
-            decision — real API counts are ~30% more accurate so compaction
-            fires at the right time. Estimate is still used for the
-            post-prune re-check (local mutation that hasn't hit the API yet).
+        last_prompt_tokens: Real total prompt-token count from the previous
+            turn's ``MessageEnd.usage`` — i.e. ``input_tokens +
+            cache_read_input_tokens + cache_creation_input_tokens``, the
+            actual size the model saw. NOT just billable input. When > 0
+            this replaces the char-based ``estimate_tokens`` fallback for
+            the trigger decision — real counts are ~30% more accurate so
+            compaction fires at the right time. Using prompt_total (not
+            billable input) is critical when prompt caching is on: input
+            alone shrinks dramatically on cached turns, but the model still
+            sees the full prompt against context_window — billable-only
+            would never trigger compaction on cached sessions.
         state: Optional per-session ``CompactionState``. When provided:
             * ``state.previous_summary`` is passed to the summarizer for
               iterative updates (Stage 3.2)
@@ -911,8 +916,8 @@ async def compact_if_needed(
     Returns:
         Tuple of (possibly modified history, summary if compaction occurred else None)
     """
-    if last_input_tokens is not None and last_input_tokens > 0:
-        current_tokens = last_input_tokens
+    if last_prompt_tokens is not None and last_prompt_tokens > 0:
+        current_tokens = last_prompt_tokens
     else:
         current_tokens = estimate_tokens(history)
     threshold = int(budget * threshold_ratio)
@@ -924,7 +929,7 @@ async def compact_if_needed(
     # short summaries and dedupes identical results. Often pulls the
     # estimate back under threshold, letting us skip the LLM summary entirely.
     # Use estimate_tokens for the post-prune check — the API hasn't seen
-    # the pruned shape yet so last_input_tokens is stale.
+    # the pruned shape yet so last_prompt_tokens is stale.
     keep_count = recent_turns * 2
     _prune_old_tool_results(history, protect_tail_count=keep_count)
     post_prune_tokens = estimate_tokens(history)

@@ -763,7 +763,7 @@ class WechatBot:
                     await session_lock.acquire()
                 try:
                     # Share long-lived per-conversation state by reference so
-                    # cumulative tokens, last_input_tokens, and previous_summary
+                    # cumulative tokens, last_prompt_tokens, and previous_summary
                     # survive across WeChat turns — otherwise /usage from
                     # WebUI/TUI sees zeros and Stage 3 iterative summary
                     # updates never fire for WeChat sessions.

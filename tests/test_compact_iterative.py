@@ -267,7 +267,7 @@ def test_cooldown_skips_llm_but_still_prunes():
     state = CompactionState(summary_cooldown_until=time.monotonic() + 120)
     assert state.in_cooldown()
 
-    # last_input_tokens forces trigger past pre-prune check; prune dedupes
+    # last_prompt_tokens forces trigger past pre-prune check; prune dedupes
     # the two identical tool_results.
     result, summary = asyncio.run(compact_if_needed(
         history,
@@ -276,7 +276,7 @@ def test_cooldown_skips_llm_but_still_prunes():
         model="test",
         api="anthropic",
         recent_turns=2,
-        last_input_tokens=300,
+        last_prompt_tokens=300,
         state=state,
     ))
 

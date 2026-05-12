@@ -6,7 +6,7 @@ Covers:
   - _strip_image_blocks_from_tool_result swaps image blocks for placeholder
   - _prune_old_tool_results dedupes, summarizes, strips images, truncates
   - compact_if_needed: post-prune below threshold short-circuits the LLM
-  - compact_if_needed: last_input_tokens overrides character estimate
+  - compact_if_needed: last_prompt_tokens overrides character estimate
 """
 
 from __future__ import annotations
@@ -339,8 +339,8 @@ def test_compact_if_needed_skips_llm_when_prune_alone_is_enough():
     assert pruned_text.startswith("[bash]")
 
 
-def test_compact_if_needed_last_input_tokens_triggers_prune_pass():
-    """When last_input_tokens > threshold but the char estimate is BELOW
+def test_compact_if_needed_last_prompt_tokens_triggers_prune_pass():
+    """When last_prompt_tokens > threshold but the char estimate is BELOW
     threshold, compact_if_needed still enters the trigger branch and runs
     the pre-prune pass. Pre-prune dedupe is observable in the returned
     history; LLM is skipped because post-prune drops back under threshold.
@@ -361,8 +361,8 @@ def test_compact_if_needed_last_input_tokens_triggers_prune_pass():
     mock_client.messages.create = AsyncMock()  # must NOT be called
 
     # budget=300 → threshold=240. char estimate of this history is well
-    # under 240, so without last_input_tokens compaction would not fire at
-    # all. last_input_tokens=300 forces the trigger; post-prune estimate
+    # under 240, so without last_prompt_tokens compaction would not fire at
+    # all. last_prompt_tokens=300 forces the trigger; post-prune estimate
     # is also under threshold, so we return without invoking the LLM.
     result, summary = asyncio.run(compact_if_needed(
         history,
@@ -371,7 +371,7 @@ def test_compact_if_needed_last_input_tokens_triggers_prune_pass():
         model="test",
         api="anthropic",
         recent_turns=2,
-        last_input_tokens=300,
+        last_prompt_tokens=300,
     ))
 
     # No LLM call happened — the prune pass alone was enough.
@@ -385,8 +385,8 @@ def test_compact_if_needed_last_input_tokens_triggers_prune_pass():
     assert newer_text == duplicate_text
 
 
-def test_compact_if_needed_falls_back_to_estimate_when_last_input_tokens_zero():
-    """last_input_tokens=0 (no prior turn) triggers the estimate fallback."""
+def test_compact_if_needed_falls_back_to_estimate_when_last_prompt_tokens_zero():
+    """last_prompt_tokens=0 (no prior turn) triggers the estimate fallback."""
     history = [_text("user", "hi"), _text("assistant", "hello")]
 
     mock_client = MagicMock()
@@ -401,7 +401,7 @@ def test_compact_if_needed_falls_back_to_estimate_when_last_input_tokens_zero():
         model="test",
         api="anthropic",
         recent_turns=2,
-        last_input_tokens=0,  # explicit "no real tokens yet"
+        last_prompt_tokens=0,  # explicit "no real tokens yet"
     ))
 
     assert summary is None

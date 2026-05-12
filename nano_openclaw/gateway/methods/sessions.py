@@ -84,11 +84,11 @@ async def sessions_usage(ctx: GatewayContext, params: dict[str, Any]) -> dict[st
     report = await ctx.backend.sessions_usage(session_key)
     return {
         "session_id": report.session_id,
-        "last_input_tokens": report.last_input_tokens,
+        "last_prompt_tokens": report.last_prompt_tokens,
         "last_output_tokens": report.last_output_tokens,
         "last_cache_read_tokens": report.last_cache_read_tokens,
         "last_cache_creation_tokens": report.last_cache_creation_tokens,
-        "total_input_tokens": report.total_input_tokens,
+        "total_prompt_tokens": report.total_prompt_tokens,
         "total_output_tokens": report.total_output_tokens,
         "total_cache_read_tokens": report.total_cache_read_tokens,
         "total_cache_creation_tokens": report.total_cache_creation_tokens,

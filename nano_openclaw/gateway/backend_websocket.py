@@ -411,11 +411,11 @@ class WebSocketBackend(Backend):
         ratio_raw = payload.get("cache_hit_ratio")
         return SessionUsageReport(
             session_id=payload.get("session_id"),
-            last_input_tokens=int(payload.get("last_input_tokens") or 0),
+            last_prompt_tokens=int(payload.get("last_prompt_tokens") or 0),
             last_output_tokens=int(payload.get("last_output_tokens") or 0),
             last_cache_read_tokens=int(payload.get("last_cache_read_tokens") or 0),
             last_cache_creation_tokens=int(payload.get("last_cache_creation_tokens") or 0),
-            total_input_tokens=int(payload.get("total_input_tokens") or 0),
+            total_prompt_tokens=int(payload.get("total_prompt_tokens") or 0),
             total_output_tokens=int(payload.get("total_output_tokens") or 0),
             total_cache_read_tokens=int(payload.get("total_cache_read_tokens") or 0),
             total_cache_creation_tokens=int(payload.get("total_cache_creation_tokens") or 0),

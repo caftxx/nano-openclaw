@@ -29,13 +29,16 @@ from nano_openclaw.loop import SessionUsageStats
 
 def test_usage_stats_initial_state_is_zero():
     s = SessionUsageStats()
-    assert s.last_input_tokens == 0
-    assert s.total_input_tokens == 0
+    assert s.last_prompt_tokens == 0
+    assert s.total_prompt_tokens == 0
     assert s.cache_hit_ratio() is None
     assert s.turns_recorded == 0
 
 
 def test_usage_stats_update_from_anthropic_usage_dict():
+    """``last_prompt_tokens`` and ``total_prompt_tokens`` are the SUM of
+    ``input + cache_read + cache_creation`` — the real total prompt the
+    model saw, not just billable input."""
     s = SessionUsageStats()
     s.update_from_usage({
         "input_tokens": 1000,
@@ -43,11 +46,12 @@ def test_usage_stats_update_from_anthropic_usage_dict():
         "cache_read_input_tokens": 800,
         "cache_creation_input_tokens": 200,
     })
-    assert s.last_input_tokens == 1000
+    # Total prompt = 1000 (new) + 800 (cached read) + 200 (cached creation) = 2000
+    assert s.last_prompt_tokens == 2000
     assert s.last_output_tokens == 200
     assert s.last_cache_read_tokens == 800
     assert s.last_cache_creation_tokens == 200
-    assert s.total_input_tokens == 1000
+    assert s.total_prompt_tokens == 2000
     assert s.total_output_tokens == 200
     assert s.total_cache_read_tokens == 800
     assert s.total_cache_creation_tokens == 200
@@ -58,11 +62,35 @@ def test_usage_stats_accumulates_across_turns():
     s = SessionUsageStats()
     s.update_from_usage({"input_tokens": 100, "output_tokens": 50})
     s.update_from_usage({"input_tokens": 200, "output_tokens": 75})
-    assert s.last_input_tokens == 200
+    # No cache traffic, so prompt total == input alone for each turn
+    assert s.last_prompt_tokens == 200
     assert s.last_output_tokens == 75
-    assert s.total_input_tokens == 300
+    assert s.total_prompt_tokens == 300
     assert s.total_output_tokens == 125
     assert s.turns_recorded == 2
+
+
+def test_usage_stats_cached_turn_inflates_prompt_total_above_billable():
+    """Caching scenario: turn 2 has tiny new input but big cache_read,
+    so the total prompt the model saw is dominated by cached tokens.
+    last_prompt_tokens must reflect that, not just the 240 billable."""
+    s = SessionUsageStats()
+    # Turn 1 — first contact, no cache
+    s.update_from_usage({"input_tokens": 13_352, "output_tokens": 279})
+    assert s.last_prompt_tokens == 13_352
+    # Turn 2 — most prompt served from cache
+    s.update_from_usage({
+        "input_tokens": 240,
+        "output_tokens": 124,
+        "cache_read_input_tokens": 13_312,
+        "cache_creation_input_tokens": 0,
+    })
+    # Model actually saw 240 + 13,312 + 0 = 13,552 — NOT just 240
+    assert s.last_prompt_tokens == 13_552
+    assert s.last_output_tokens == 124
+    assert s.last_cache_read_tokens == 13_312
+    # Cumulative prompt tokens = 13,352 (turn 1) + 13,552 (turn 2)
+    assert s.total_prompt_tokens == 26_904
 
 
 def test_usage_stats_empty_dict_is_no_op():
@@ -71,19 +99,19 @@ def test_usage_stats_empty_dict_is_no_op():
     s = SessionUsageStats()
     s.update_from_usage({"input_tokens": 100, "output_tokens": 50})
     s.update_from_usage({})  # provider didn't send usage this turn
-    assert s.last_input_tokens == 100  # preserved
+    assert s.last_prompt_tokens == 100  # preserved
     assert s.last_output_tokens == 50
-    assert s.total_input_tokens == 100  # not double-counted
+    assert s.total_prompt_tokens == 100  # not double-counted
     assert s.turns_recorded == 1
 
 
 def test_usage_stats_zero_input_tokens_does_not_clobber_last():
     """Some providers send a final empty-content chunk with 0 tokens —
-    treat that as 'no info' for last_input_tokens, not as an actual reset."""
+    treat that as 'no info' for last_prompt_tokens, not as an actual reset."""
     s = SessionUsageStats()
     s.update_from_usage({"input_tokens": 100, "output_tokens": 50})
     s.update_from_usage({"input_tokens": 0, "output_tokens": 0})
-    assert s.last_input_tokens == 100
+    assert s.last_prompt_tokens == 100
     assert s.last_output_tokens == 50
 
 
@@ -143,7 +171,7 @@ def test_backend_session_has_usage_stats_field():
         writer=MM(),
     )
     assert isinstance(sess.usage_stats, SessionUsageStats)
-    assert sess.usage_stats.total_input_tokens == 0
+    assert sess.usage_stats.total_prompt_tokens == 0
 
 
 def test_agent_session_uses_provided_usage_stats_by_reference():
@@ -165,7 +193,7 @@ def test_agent_session_uses_provided_usage_stats_by_reference():
     fake_session.usage_stats.update_from_usage({"input_tokens": 42, "output_tokens": 7})
 
     # Same object — mutation is visible to the holder
-    assert shared.total_input_tokens == 42
+    assert shared.total_prompt_tokens == 42
     assert shared.last_output_tokens == 7
     assert fake_session.usage_stats is shared
 
@@ -201,11 +229,14 @@ def test_usage_command_renders_full_report():
     backend = MagicMock()
     backend.sessions_usage = AsyncMock(return_value=SessionUsageReport(
         session_id="abc123",
-        last_input_tokens=4_832,
+        # Total prompt = input + cache_read + cache_creation. Picking these
+        # numbers so prompt_total > input alone, mimicking a real cached
+        # turn where /usage must reflect the full prompt size.
+        last_prompt_tokens=13_552,   # = 240 input + 13,312 read + 0 creation
         last_output_tokens=1_024,
-        last_cache_read_tokens=3_210,
-        last_cache_creation_tokens=1_622,
-        total_input_tokens=38_210,
+        last_cache_read_tokens=13_312,
+        last_cache_creation_tokens=0,
+        total_prompt_tokens=38_210,
         total_output_tokens=9_456,
         total_cache_read_tokens=21_300,
         total_cache_creation_tokens=4_900,
@@ -222,12 +253,16 @@ def test_usage_command_renders_full_report():
     assert len(renderer.panels) == 1
     title, body = renderer.panels[0]
     assert title == "Usage"
-    # Last-prompt line uses the real provider number AND drives the budget %
-    # (matches what compact_if_needed watches for its trigger).
-    assert "4,832" in body and "1,024" in body
+    # Last-prompt line uses prompt_total (NOT just billable input) and that
+    # drives the budget %. This is what compact_if_needed watches.
+    assert "13,552" in body and "1,024" in body
     assert "200,000" in body
-    # 4,832 / 200,000 = 2.416% (rounds to 2.4%)
-    assert "2.4%" in body
+    # 13,552 / 200,000 = 6.776% (rounds to 6.8%) — bigger than the 0.1% the
+    # billable-only number would have given (240 / 200,000), proving the fix.
+    assert "6.8%" in body
+    # New label is "ctx" not "in" so the meaning (full prompt incl. cache)
+    # is unambiguous to the reader.
+    assert "ctx" in body
     # Cumulative line
     assert "38,210" in body and "9,456" in body
     assert "12 turn" in body
@@ -246,11 +281,11 @@ def test_usage_command_renders_when_caching_disabled():
     backend = MagicMock()
     backend.sessions_usage = AsyncMock(return_value=SessionUsageReport(
         session_id="abc",
-        last_input_tokens=100,
+        last_prompt_tokens=100,
         last_output_tokens=20,
         last_cache_read_tokens=0,
         last_cache_creation_tokens=0,
-        total_input_tokens=100,
+        total_prompt_tokens=100,
         total_output_tokens=20,
         total_cache_read_tokens=0,
         total_cache_creation_tokens=0,

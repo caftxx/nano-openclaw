@@ -432,7 +432,7 @@ class EmbeddedBackend(Backend):
                         transcript_writer=session.writer,
                         cancellation_token=token,
                         # Share long-lived per-conversation state by reference so
-                        # cumulative tokens, last_input_tokens, and
+                        # cumulative tokens, last_prompt_tokens, and
                         # previous_summary survive across turns.
                         usage_stats=session.usage_stats,
                         compaction_state=session.compaction_state,
@@ -714,11 +714,11 @@ class EmbeddedBackend(Backend):
         cfg = self.runtime.cfg
         return SessionUsageReport(
             session_id=session.session_id,
-            last_input_tokens=stats.last_input_tokens,
+            last_prompt_tokens=stats.last_prompt_tokens,
             last_output_tokens=stats.last_output_tokens,
             last_cache_read_tokens=stats.last_cache_read_tokens,
             last_cache_creation_tokens=stats.last_cache_creation_tokens,
-            total_input_tokens=stats.total_input_tokens,
+            total_prompt_tokens=stats.total_prompt_tokens,
             total_output_tokens=stats.total_output_tokens,
             total_cache_read_tokens=stats.total_cache_read_tokens,
             total_cache_creation_tokens=stats.total_cache_creation_tokens,

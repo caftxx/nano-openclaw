@@ -327,15 +327,31 @@ class SessionUsageStats:
     a CLI outer-scope variable for the standalone CLI) and is shared by
     reference into the per-turn ``AgentSession``. Every ``MessageEnd``
     in the loop calls :meth:`update_from_usage` so counters survive across
-    turns; the ``last_*`` fields are the most recent turn's snapshot,
-    ``total_*`` accumulates across the whole conversation.
+    turns.
+
+    Naming note: ``*_prompt_tokens`` is the **total prompt size** the model
+    saw — i.e. ``input_tokens + cache_read_input_tokens +
+    cache_creation_input_tokens`` from Anthropic's ``usage`` object. This
+    is intentionally NOT the same as Anthropic's ``input_tokens`` field
+    (which counts only the billable, non-cached portion). We track the
+    total because:
+
+      * ``compact_if_needed`` measures against ``context_window`` — the
+        model's hard limit applies to the total prompt, not the billable
+        slice. Using billable would never trigger compaction on cached
+        sessions even as the actual context grows.
+      * ``/usage``'s "% of budget" should reflect what the model actually
+        sees, not the cost line item.
+
+    For cost / billable analysis, derive billable = prompt_total -
+    cache_read - cache_creation from the cache fields.
     """
 
-    last_input_tokens: int = 0
+    last_prompt_tokens: int = 0   # input + cache_read + cache_creation, last turn
     last_output_tokens: int = 0
     last_cache_read_tokens: int = 0
     last_cache_creation_tokens: int = 0
-    total_input_tokens: int = 0
+    total_prompt_tokens: int = 0  # cumulative input + cache_read + cache_creation
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
@@ -349,6 +365,11 @@ class SessionUsageStats:
         surface usage on every chunk). Cache-related fields default to 0
         when not present (e.g. when prompt caching is disabled or for
         OpenAI which doesn't carry the field at all).
+
+        ``last_prompt_tokens`` / ``total_prompt_tokens`` are the SUM of
+        ``input + cache_read + cache_creation`` — the real prompt size
+        the model saw. See the class docstring for why we track total
+        rather than just billable input.
         """
         if not usage:
             return
@@ -356,11 +377,12 @@ class SessionUsageStats:
         out_tok = usage.get("output_tokens", 0) or 0
         cr_tok = usage.get("cache_read_input_tokens", 0) or 0
         cc_tok = usage.get("cache_creation_input_tokens", 0) or 0
-        self.last_input_tokens = in_tok or self.last_input_tokens
+        prompt_total = in_tok + cr_tok + cc_tok
+        self.last_prompt_tokens = prompt_total or self.last_prompt_tokens
         self.last_output_tokens = out_tok or self.last_output_tokens
         self.last_cache_read_tokens = cr_tok
         self.last_cache_creation_tokens = cc_tok
-        self.total_input_tokens += in_tok
+        self.total_prompt_tokens += prompt_total
         self.total_output_tokens += out_tok
         self.total_cache_read_tokens += cr_tok
         self.total_cache_creation_tokens += cc_tok
@@ -372,6 +394,10 @@ class SessionUsageStats:
 
         Hit = cache_read; miss is approximated as cache_creation (the
         tokens that just became cacheable but weren't a hit yet).
+        Note: providers that silently cache without reporting
+        ``cache_creation_input_tokens`` (some Anthropic-compatible
+        proxies / aggregators) will inflate this ratio because the first-
+        turn miss is hidden from the denominator.
         """
         denom = self.total_cache_read_tokens + self.total_cache_creation_tokens
         if denom <= 0:
@@ -396,8 +422,9 @@ class AgentSession:
     cancellation_token: "CancellationToken | None" = None
     # Per-conversation usage / cache counters. Long-lived holders
     # (e.g. AgentBackendSession) inject the same instance every turn so
-    # ``/usage`` sees cumulative totals + the previous turn's last_input_tokens
-    # as a real-token compaction trigger across turns (Stage 2 fix).
+    # ``/usage`` sees cumulative totals + the previous turn's
+    # ``last_prompt_tokens`` as a real-token compaction trigger across
+    # turns (Stage 2 fix).
     usage_stats: SessionUsageStats = field(default_factory=SessionUsageStats)
     # Per-session compaction tracking (previous_summary for iterative
     # updates + cooldown bookkeeping). Same long-lived-instance pattern as
@@ -405,8 +432,10 @@ class AgentSession:
     compaction_state: CompactionState = field(default_factory=CompactionState)
 
     @property
-    def last_input_tokens(self) -> int:
-        return self.usage_stats.last_input_tokens
+    def last_prompt_tokens(self) -> int:
+        """Total prompt tokens last turn — input + cache_read + cache_creation.
+        See ``SessionUsageStats`` for why we track total rather than billable."""
+        return self.usage_stats.last_prompt_tokens
 
     @property
     def last_output_tokens(self) -> int:
@@ -948,9 +977,9 @@ async def _run_agent_session_turn(
             already_flushed_for_compaction = True
 
         # Check context budget and compact if needed (mirrors OpenClaw's compaction).
-        # Pass last_input_tokens so the trigger uses the provider-reported
-        # prompt token count from the previous turn rather than the
-        # character-based estimate (Stage 2.1).
+        # Pass last_prompt_tokens (= input + cache_read + cache_creation) so the
+        # trigger watches what the model actually saw last turn — not just the
+        # billable input (which under-counts for cached sessions).
         _, summary = await compact_if_needed(
             scratch_history,
             budget=cfg.context_budget,
@@ -959,7 +988,7 @@ async def _run_agent_session_turn(
             api=cfg.api,
             threshold_ratio=cfg.context_threshold,
             recent_turns=cfg.context_recent_turns,
-            last_input_tokens=session.last_input_tokens,
+            last_prompt_tokens=session.last_prompt_tokens,
             state=session.compaction_state,
         )
         if summary:
@@ -1006,7 +1035,7 @@ async def _run_agent_session_turn(
                 api=cfg.api,
                 threshold_ratio=1.0,
                 recent_turns=cfg.context_recent_turns,
-                last_input_tokens=session.last_input_tokens,
+                last_prompt_tokens=session.last_prompt_tokens,
                 state=session.compaction_state,
             )
             if summary:

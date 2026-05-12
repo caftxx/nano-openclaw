@@ -139,18 +139,18 @@ class SessionUsageReport:
     active runtime config.
 
     Note on the "% of budget" indicator: callers should compute it from
-    ``last_input_tokens`` (not a local char-estimate) to stay aligned with
-    what ``compact_if_needed`` uses as its trigger signal — the provider-
-    reported number is more accurate than the ±30% char estimate, and
-    showing the same value the trigger watches lets the user predict when
-    compaction will fire.
+    ``last_prompt_tokens`` (= total prompt the model saw last turn:
+    input + cache_read + cache_creation). NOT just billable input —
+    cached tokens still count against the model's context window even
+    though they're not billed at full rate. This stays aligned with
+    what ``compact_if_needed`` uses as its trigger signal.
     """
     session_id: str | None
-    last_input_tokens: int
+    last_prompt_tokens: int             # input + cache_read + cache_creation, last turn
     last_output_tokens: int
     last_cache_read_tokens: int
     last_cache_creation_tokens: int
-    total_input_tokens: int
+    total_prompt_tokens: int            # cumulative input + cache_read + cache_creation
     total_output_tokens: int
     total_cache_read_tokens: int
     total_cache_creation_tokens: int
