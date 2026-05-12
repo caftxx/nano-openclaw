@@ -194,7 +194,7 @@ class ToolRegistry:
                 raw = tool.run(args, eligible_skills=self._eligible_skills)
             elif name == "session_status":
                 raw = tool.run(args, **self._session_status_context)
-            elif name in ("read_file", "write_file", "list_dir"):
+            elif name in ("read_file", "write_file", "list_dir", "apply_patch"):
                 raw = tool.run(args, workspace_dir=self._workspace_dir)
             elif name == "bash":
                 raw = tool.run(
@@ -341,6 +341,38 @@ def _list_dir(args: dict[str, Any], workspace_dir: str | None = None) -> str:
         for p in path.iterdir()
     )
     return "\n".join(entries) if entries else "(empty)"
+
+
+def _apply_patch(args: dict[str, Any], workspace_dir: str | None = None) -> str:
+    """Apply a V4A-format patch."""
+    try:
+        from nano_openclaw.patch_parser import apply_v4a_patch
+    except Exception as exc:  # pragma: no cover — defensive import guard
+        raise RuntimeError(f"Patch failed: import error: {exc}") from exc
+
+    patch = args.get("patch", "")
+    if not patch:
+        raise ValueError("patch is empty")
+
+    try:
+        result = apply_v4a_patch(patch, workspace_dir)
+    except Exception as exc:  # noqa: BLE001 — normalize unexpected failures
+        raise RuntimeError(f"Patch failed: {type(exc).__name__}: {exc}") from exc
+
+    if not result.success:
+        raise RuntimeError(f"Patch failed:\n{result.error or '(no error message)'}")
+
+    summary_lines: list[str] = []
+    if result.files_created:
+        summary_lines.append(f"Created: {', '.join(result.files_created)}")
+    if result.files_modified:
+        summary_lines.append(f"Modified: {', '.join(result.files_modified)}")
+    if result.files_deleted:
+        summary_lines.append(f"Deleted: {', '.join(result.files_deleted)}")
+    summary = "\n".join(summary_lines) or "Patch applied (no changes)."
+    if result.diff:
+        return summary + "\n\n" + result.diff
+    return summary
 
 
 _PIP_INSTALL_PATTERNS = (
@@ -591,7 +623,14 @@ def _build_core_tools() -> list[Tool]:
         ),
         Tool(
             name="write_file",
-            description="Write text to a file, creating parent directories. Overwrites existing files.",
+            description=(
+                "Create a new file, or fully replace an existing file's contents. "
+                "Parent directories are auto-created. "
+                "For SURGICAL edits to an existing file (changing a function, fixing a bug, "
+                "adding a few lines), use apply_patch instead — it's cheaper in tokens and "
+                "safer against accidental whole-file overwrite. Use write_file only when you genuinely need "
+                "the whole file (brand-new file, generated output, template render)."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -612,6 +651,35 @@ def _build_core_tools() -> list[Tool]:
                 },
             },
             run=_list_dir,
+        ),
+        Tool(
+            name="apply_patch",
+            description=(
+                "Apply a V4A-format patch to files in the workspace. "
+                "Use this instead of write_file for surgical edits to existing files. "
+                "Supports Add / Update / Delete / Move operations across multiple files in one call.\n\n"
+                "Format:\n"
+                "*** Begin Patch\n"
+                "*** Update File: path/to/file.py\n"
+                "@@ optional context hint @@\n"
+                " context line (space prefix)\n"
+                "-removed line\n"
+                "+added line\n"
+                "*** Add File: path/new.py\n"
+                "+content\n"
+                "*** Delete File: path/old.py\n"
+                "*** Move File: a.py -> b.py\n"
+                "*** End Patch\n\n"
+                "Validation is two-phase: if any hunk fails to locate, NO files are modified."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "patch": {"type": "string", "description": "V4A patch text."},
+                },
+                "required": ["patch"],
+            },
+            run=_apply_patch,
         ),
         Tool(
             name="bash",

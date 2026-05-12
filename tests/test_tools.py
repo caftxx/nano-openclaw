@@ -78,6 +78,28 @@ def test_dispatch_handler_exception_becomes_error(registry):
     assert "FileNotFoundError" in text or "Error" in text
 
 
+def test_apply_patch_validation_failure_is_tool_error(tmp_path):
+    registry = build_core_registry()
+    registry.set_workspace_dir(tmp_path)
+
+    out = registry.dispatch(
+        "id-p",
+        "apply_patch",
+        {
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Update File: missing.py\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            )
+        },
+    )
+
+    assert out["is_error"] is True
+    assert "Patch failed" in out["content"][0]["text"]
+
+
 def test_bash_captures_exit_code(registry):
     out = registry.dispatch("id-b", "bash", {"command": "exit 7"})
     assert out.get("is_error") is None
@@ -88,6 +110,7 @@ def test_schemas_have_required_anthropic_fields(registry):
     schemas = registry.schemas()
     assert {s["name"] for s in schemas} == {
         "current_time", "read_file", "write_file", "list_dir", "bash",
+        "apply_patch",
         "session_status", "skill", "skill_install", "memory_get", "memory_search",
         "web_search", "web_fetch", "sessions_spawn", "subagents"
     }
