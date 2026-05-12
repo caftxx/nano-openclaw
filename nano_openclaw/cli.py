@@ -216,8 +216,9 @@ async def repl(
                             _spawn_ctx.requester_session_key = session_id
                         _load_input_history(history)
                 continue
-            console.print(f"[dim]unknown command: {markup.escape(user_input)}[/]")
-            continue
+            # Unknown slash verbs may be user-invocable skills. Let the agent
+            # loop parse /skill-name instead of stopping at the builtin slash
+            # dispatcher.
 
         # ── Legacy inline slash dispatch (backend=None path) ──────────────
         if user_input in {"/quit", "/exit", "/q"}:

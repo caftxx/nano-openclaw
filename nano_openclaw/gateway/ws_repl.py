@@ -468,8 +468,8 @@ async def ws_repl(
                     session_key = state.get("session_key") or session_key
                     state["session_changed"] = False
                     continue
-                console.print(f"[dim]unknown command: {markup.escape(user_input)}[/]")
-                continue
+                # Unknown slash verbs may be user-invocable skills. Route them
+                # through chat.send so AgentSession can inject the skill.
 
             # ── Send + stream ──
             sub = backend.subscribe(session_key=session_key or None)
