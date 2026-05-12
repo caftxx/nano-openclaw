@@ -762,6 +762,15 @@ class WechatBot:
                         )
                     await session_lock.acquire()
                 try:
+                    # Share long-lived per-conversation state by reference so
+                    # cumulative tokens, last_input_tokens, and previous_summary
+                    # survive across WeChat turns — otherwise /usage from
+                    # WebUI/TUI sees zeros and Stage 3 iterative summary
+                    # updates never fire for WeChat sessions.
+                    shared_kwargs: dict[str, Any] = {}
+                    if backend_session is not None:
+                        shared_kwargs["usage_stats"] = backend_session.usage_stats
+                        shared_kwargs["compaction_state"] = backend_session.compaction_state
                     agent_session = AgentSession(
                         history=history,
                         registry=_clone_registry(self.runtime.registry, uid, self.account_id),
@@ -769,6 +778,7 @@ class WechatBot:
                         client=self.runtime.client,
                         cfg=turn_cfg,
                         transcript_writer=transcript_writer,
+                        **shared_kwargs,
                     )
                     await agent_session.run_turn(
                         text or "(no text, maybe just attachments)",

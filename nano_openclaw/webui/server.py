@@ -573,6 +573,12 @@ async def _run_turn(
                 cfg=cfg,
                 transcript_writer=session.writer,
                 cancellation_token=token,
+                # Share long-lived per-conversation state by reference so
+                # cumulative tokens + previous_summary survive across turns
+                # (otherwise /usage shows zeros for WebUI sessions and
+                # Stage 3 iterative summary updates never fire).
+                usage_stats=session.usage_stats,
+                compaction_state=session.compaction_state,
             )
             await agent_session.run_turn(
                 text,
