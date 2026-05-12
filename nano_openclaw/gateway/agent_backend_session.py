@@ -21,6 +21,7 @@ from typing import Any
 
 from nano_openclaw.compact import CompactionState
 from nano_openclaw.loop import Message, SessionUsageStats
+from nano_openclaw.todo import TodoStore
 from nano_openclaw.session import (
     TranscriptReader,
     TranscriptWriter,
@@ -115,6 +116,9 @@ class AgentBackendSession:
     # and Stage 3 iterative summary updates actually fire.
     usage_stats: SessionUsageStats = field(default_factory=SessionUsageStats)
     compaction_state: CompactionState = field(default_factory=CompactionState)
+    # Per-conversation todo list (持久化到 sessions.json::todo_list；模型
+    # 通过 ``todo`` 工具读写，compact 后 loop.py 会把活跃项重注入 history)。
+    todo_store: TodoStore = field(default_factory=TodoStore)
 
 
 @dataclass
@@ -220,6 +224,7 @@ class BackendSessionManager:
             history=history,
             writer=writer,
             activities=activities,
+            todo_store=self._load_todo_store(canonical_id),
         )
         self._loaded[canonical_id] = session
         self.save_metadata(session, update_time=False)
@@ -242,6 +247,7 @@ class BackendSessionManager:
         async with session.lock:
             session.history.clear()
             session.activities.clear()
+            session.todo_store = TodoStore()
             session.writer.clear()
             self._summary_cache.pop(session.session_id, None)
             self.save_metadata(session)
@@ -269,6 +275,7 @@ class BackendSessionManager:
                 session.history,
                 fallback=session.session_id[:8],
             )
+            store["sessions"][session.session_id]["todo_list"] = session.todo_store.to_json()
             save_session_store(self.store_path, store)
         self._summary_cache.pop(session.session_id, None)
 
@@ -311,6 +318,17 @@ class BackendSessionManager:
 
     def activity_json(self, session: AgentBackendSession) -> list[dict[str, Any]]:
         return [_jsonable_activity(activity) for activity in session.activities]
+
+    def _load_todo_store(self, session_id: str) -> TodoStore:
+        """Read persisted todo_list (if any) from sessions.json."""
+        try:
+            store = load_session_store(self.store_path)
+        except Exception:  # noqa: BLE001 — never break session resume on this
+            return TodoStore()
+        entry = store.get("sessions", {}).get(session_id, {})
+        if not isinstance(entry, dict):
+            return TodoStore()
+        return TodoStore.from_json(entry.get("todo_list") or [])
 
     def _summary_for_list(self, store: dict[str, Any], session_id: str) -> tuple[list[Message], int, int, dict[str, Any]]:
         entry = store.get("sessions", {}).get(session_id, {})

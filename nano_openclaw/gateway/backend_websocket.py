@@ -427,6 +427,13 @@ class WebSocketBackend(Backend):
             cache_ttl=payload.get("cache_ttl"),
         )
 
+    async def get_todos(self, session_key: str) -> list[dict[str, Any]]:
+        payload = await self._call("todos.get", {"session_key": session_key})
+        items = payload.get("todos") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [dict(item) for item in items if isinstance(item, dict)]
+
     async def approvals_list(self) -> list[PendingApproval]:
         payload = await self._call("approvals.list")
         return [

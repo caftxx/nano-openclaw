@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from nano_openclaw.config.types import ToolsConfig
     from nano_openclaw.plugins.registry import HookRegistry
     from nano_openclaw.skills.types import Skill
+    from nano_openclaw.todo import TodoStore
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
 
@@ -41,6 +42,19 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     run: ToolHandler
+
+
+@dataclass(frozen=True)
+class ToolExecutionContext:
+    """Per-dispatch runtime state that should not live on the registry."""
+
+    session_status_context: dict[str, Any] = field(default_factory=dict)
+    eligible_skills: dict[str, "Skill"] = field(default_factory=dict)
+    workspace_dir: str | None = None
+    state_dir: str | None = None
+    allow_global_pip: bool = False
+    spawn_tool_context: Optional[Any] = None
+    todo_store: Optional["TodoStore"] = None
 
 
 @dataclass
@@ -88,6 +102,19 @@ class ToolRegistry:
     def hook_registry(self) -> "HookRegistry | None":
         return self._hook_registry
 
+    def execution_context(self, **overrides: Any) -> ToolExecutionContext:
+        """Build a per-dispatch context from registry-level defaults."""
+        values = {
+            "session_status_context": dict(self._session_status_context),
+            "eligible_skills": dict(self._eligible_skills),
+            "workspace_dir": self._workspace_dir,
+            "state_dir": self._state_dir,
+            "allow_global_pip": self._allow_global_pip,
+            "spawn_tool_context": self._spawn_tool_context,
+        }
+        values.update(overrides)
+        return ToolExecutionContext(**values)
+
     def names(self) -> list[str]:
         return list(self._tools.keys())
 
@@ -111,16 +138,26 @@ class ToolRegistry:
         name: str,
         args: dict[str, Any],
         cancellation_token: Any | None = None,
+        context: ToolExecutionContext | None = None,
     ) -> dict[str, Any]:
         """Dispatch tool with approval check if manager is set."""
         tool = self._tools.get(name)
         if tool is None:
             return _error_result(tool_use_id, f"unknown tool: {name!r}")
 
+        ctx = context or ToolExecutionContext(
+            session_status_context=self._session_status_context,
+            eligible_skills=self._eligible_skills,
+            workspace_dir=self._workspace_dir,
+            state_dir=self._state_dir,
+            allow_global_pip=self._allow_global_pip,
+            spawn_tool_context=self._spawn_tool_context,
+        )
+
         pip_install_protected = (
             name == "bash"
             and _is_python_package_install_command(str(args.get("command") or ""))
-            and not self._allow_global_pip
+            and not ctx.allow_global_pip
         )
 
         # Check approval if manager is configured (sync, fast)
@@ -191,30 +228,32 @@ class ToolRegistry:
         # in a thread pool to avoid blocking the event loop.
         try:
             if name == "skill":
-                raw = tool.run(args, eligible_skills=self._eligible_skills)
+                raw = tool.run(args, eligible_skills=ctx.eligible_skills)
             elif name == "session_status":
-                raw = tool.run(args, **self._session_status_context)
+                raw = tool.run(args, **ctx.session_status_context)
             elif name in ("read_file", "write_file", "list_dir", "apply_patch"):
-                raw = tool.run(args, workspace_dir=self._workspace_dir)
+                raw = tool.run(args, workspace_dir=ctx.workspace_dir)
             elif name == "bash":
                 raw = tool.run(
                     args,
-                    workspace_dir=self._workspace_dir,
-                    state_dir=self._state_dir,
-                    allow_global_pip=self._allow_global_pip,
+                    workspace_dir=ctx.workspace_dir,
+                    state_dir=ctx.state_dir,
+                    allow_global_pip=ctx.allow_global_pip,
                 )
             elif name == "skill_install":
                 raw = tool.run(
                     args,
-                    workspace_dir=self._workspace_dir,
-                    state_dir=self._state_dir,
+                    workspace_dir=ctx.workspace_dir,
+                    state_dir=ctx.state_dir,
                 )
             elif name in ("memory_get", "memory_search"):
-                raw = tool.run(args, workspace_dir=self._workspace_dir)
+                raw = tool.run(args, workspace_dir=ctx.workspace_dir)
             elif name in ("sessions_spawn", "subagents"):
-                if self._spawn_tool_context is None:
+                if ctx.spawn_tool_context is None:
                     return _error_result(tool_use_id, f"tool {name!r} requires spawn context (not configured)")
-                raw = tool.run(args, context=self._spawn_tool_context)
+                raw = tool.run(args, context=ctx.spawn_tool_context)
+            elif name == "todo":
+                raw = tool.run(args, todo_store=ctx.todo_store)
             else:
                 raw = tool.run(args)
 
@@ -570,6 +609,58 @@ async def web_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return await _web_fetch(*args, **kwargs)
 
 
+def _todo_handler(
+    args: dict[str, Any],
+    todo_store: "TodoStore | None" = None,
+) -> str:
+    """Single entry point for the `todo` tool.
+
+    - 传 ``todos`` 参数 → 写入（可选 ``merge=true`` 按 id 增量）
+    - 省略 ``todos`` → 读当前列表
+    - store 未绑定 → 返回错误字符串（保持 dispatch 永不抛异常的不变量）
+    """
+    import json
+
+    if todo_store is None:
+        return json.dumps(
+            {"error": "TodoStore not bound for this session"},
+            ensure_ascii=False,
+        )
+
+    try:
+        todos_arg = args.get("todos")
+        merge = bool(args.get("merge", False))
+        if todos_arg is not None:
+            items = todo_store.write(todos_arg, merge=merge)
+        else:
+            items = todo_store.read()
+
+        pending = sum(1 for i in items if i["status"] == "pending")
+        in_progress = sum(1 for i in items if i["status"] == "in_progress")
+        completed = sum(1 for i in items if i["status"] == "completed")
+        cancelled = sum(1 for i in items if i["status"] == "cancelled")
+
+        return json.dumps(
+            {
+                "todos": items,
+                "summary": {
+                    "total": len(items),
+                    "pending": pending,
+                    "in_progress": in_progress,
+                    "completed": completed,
+                    "cancelled": cancelled,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as exc:  # noqa: BLE001 — keep dispatch contract
+        return json.dumps(
+            {"error": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+        )
+
+
 def _current_time(args: dict[str, Any]) -> str:
     import json
     from datetime import datetime, timezone
@@ -723,6 +814,66 @@ Tool(
                 "required": ["skill"],
             },
             run=_invoke_skill,
+        ),
+        Tool(
+            name="todo",
+            description=(
+                "Manage your task list for the current session. "
+                "Use for complex tasks with 3+ steps or when the user provides multiple tasks. "
+                "Call with no parameters to read the current list.\n\n"
+                "Writing:\n"
+                "- Provide 'todos' array to create/update items\n"
+                "- merge=false (default): replace the entire list with a fresh plan\n"
+                "- merge=true: update existing items by id, add any new ones\n\n"
+                "Each item: {id: string, content: string, "
+                "status: pending|in_progress|completed|cancelled}\n"
+                "List order is priority. **Only ONE item in_progress at a time.**\n"
+                "Mark items completed immediately when done. If something fails, "
+                "cancel it and add a revised item.\n\n"
+                "Always returns the full current list."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "Task items to write. Omit to read the current list.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique item identifier",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Task description",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": [
+                                        "pending",
+                                        "in_progress",
+                                        "completed",
+                                        "cancelled",
+                                    ],
+                                    "description": "Current status",
+                                },
+                            },
+                            "required": ["id", "content", "status"],
+                        },
+                    },
+                    "merge": {
+                        "type": "boolean",
+                        "description": (
+                            "true: update existing items by id, add new ones. "
+                            "false (default): replace the entire list."
+                        ),
+                        "default": False,
+                    },
+                },
+            },
+            run=_todo_handler,
         ),
         Tool(
             name="skill_install",

@@ -25,6 +25,7 @@ from nano_openclaw.gateway.methods import (
     runtime as _runtime,
     sessions as _sessions,
     subagents as _subagents,
+    todos as _todos,
 )
 
 
@@ -34,6 +35,7 @@ Handler = Callable[[GatewayContext, dict], Awaitable[object]]
 CORE_HANDLERS: dict[str, Handler] = {
     **_chat.HANDLERS,
     **_sessions.HANDLERS,
+    **_todos.HANDLERS,
     **_approvals.HANDLERS,
     **_models.HANDLERS,
     **_runtime.HANDLERS,

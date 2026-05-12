@@ -87,6 +87,7 @@ HELP_ENTRIES: tuple[HelpEntry, ...] = (
     HelpEntry("/skills", "", "Available skills"),
     HelpEntry("/subagents", "list|kill <id>|all", "Active subagent runs"),
     HelpEntry("/thinking", "off|minimal|low|medium|high|xhigh|adaptive|max", "Show / set thinking level"),
+    HelpEntry("/todos", "", "Show current TODO list for this session"),
     HelpEntry("/tools", "", "Registered tools"),
     HelpEntry("/usage", "", "Per-session token + cache + compaction stats"),
 )
@@ -384,6 +385,53 @@ async def _cmd_usage(backend, renderer: SlashRenderer, state, args, cmd):
         f"compactions: [cyan]{report.compactions_fired}[/] this session",
     ]
     renderer.panel("\n".join(body_lines), title="Usage", style="info")
+
+
+async def _cmd_todos(backend, renderer: SlashRenderer, state, args, cmd):
+    """Show the current TODO list for the active session.
+
+    Status markers mirror what the model sees post-compact:
+    ``[ ]`` pending / ``[>]`` in_progress / ``[x]`` completed / ``[~]`` cancelled.
+    """
+    session_key = state.get("session_key") or ""
+    if not session_key:
+        renderer.dim("(no active session)")
+        return
+    try:
+        items = await backend.get_todos(session_key)
+    except Exception as exc:  # noqa: BLE001 — surface to user
+        renderer.dim(f"(failed to fetch todos: {type(exc).__name__}: {exc})")
+        return
+
+    if not items:
+        renderer.dim("(no todos in this session)")
+        return
+
+    markers = {
+        "pending": "[ ]",
+        "in_progress": "[>]",
+        "completed": "[x]",
+        "cancelled": "[~]",
+    }
+    rows = []
+    for item in items:
+        status = str(item.get("status", "pending"))
+        marker = markers.get(status, "[?]")
+        rows.append([
+            marker,
+            str(item.get("id", "")),
+            str(item.get("content", "")),
+            status,
+        ])
+    renderer.table(["", "ID", "Content", "Status"], rows, title="Todos")
+    pending = sum(1 for i in items if i.get("status") == "pending")
+    in_progress = sum(1 for i in items if i.get("status") == "in_progress")
+    completed = sum(1 for i in items if i.get("status") == "completed")
+    cancelled = sum(1 for i in items if i.get("status") == "cancelled")
+    renderer.dim(
+        f"{len(items)} total · {in_progress} in_progress · {pending} pending · "
+        f"{completed} completed · {cancelled} cancelled"
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -980,6 +1028,7 @@ _HANDLERS = {
     "/context": _cmd_context,
     "/compact": _cmd_compact,
     "/usage": _cmd_usage,
+    "/todos": _cmd_todos,
     "/tools": _cmd_tools,
     "/skills": _cmd_skills,
     "/plugins": _cmd_plugins,

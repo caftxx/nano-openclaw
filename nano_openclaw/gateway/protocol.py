@@ -141,6 +141,8 @@ METHODS_V1 = frozenset({
     # Sessions
     "sessions.list", "sessions.get", "sessions.delete", "sessions.reset", "sessions.compact",
     "sessions.usage",
+    # Todos
+    "todos.get",
     # Approvals
     "approvals.list", "approvals.respond",
     # Models

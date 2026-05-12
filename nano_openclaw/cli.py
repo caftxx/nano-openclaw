@@ -132,6 +132,8 @@ async def repl(
             cfg.session_key = session_id
     else:
         history = list(initial_history) if initial_history else []
+    from nano_openclaw.todo import TodoStore
+    todo_store = backend_session.todo_store if backend is not None else TodoStore()
 
     _load_input_history(history)
 
@@ -223,6 +225,7 @@ async def repl(
             return
         if user_input == "/clear":
             history.clear()
+            todo_store = TodoStore()
             if transcript_writer:
                 transcript_writer.clear()
             if transcript_writer and store_path and session_id:
@@ -233,6 +236,7 @@ async def repl(
             if transcript_writer and store_path and session_id:
                 _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
             history.clear()
+            todo_store = TodoStore()
             if store_path and session_dir:
                 session_id = new_session_id()
                 new_path = session_dir / f"{session_id}.jsonl"
@@ -258,7 +262,7 @@ async def repl(
             _show_context(console, history, cfg)
             continue
         if user_input == "/compact":
-            await _manual_compact(console, history, cfg, client, registry)
+            await _manual_compact(console, history, cfg, client, registry, todo_store=todo_store)
             continue
         if user_input == "/skills":
             _list_skills(console, cfg)
@@ -383,6 +387,7 @@ async def repl(
                         cfg=cfg,
                         transcript_writer=transcript_writer,
                         cancellation_token=cancellation_token,
+                        todo_store=todo_store,
                     )
                     await session.run_turn(user_input)
         except TurnCancelled:
@@ -434,6 +439,7 @@ async def _manual_compact(
     cfg: LoopConfig,
     client: Any,
     registry: ToolRegistry,
+    todo_store: Any | None = None,
 ) -> None:
     """Manually trigger context compaction."""
     if len(history) < cfg.context_recent_turns * 2:
@@ -462,6 +468,9 @@ async def _manual_compact(
         )
 
         if summary:
+            from nano_openclaw.loop import append_active_todo_reminder
+
+            append_active_todo_reminder(history, todo_store)
             _render_compaction(console, summary=summary)
             current_tokens = estimate_tokens(history)
             _render_status_tree(console, "Context", [("reduced", f"{current_tokens:,} tokens · {len(history)} messages")])

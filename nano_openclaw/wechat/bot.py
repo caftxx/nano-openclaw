@@ -643,6 +643,7 @@ class WechatBot:
                     if backend_session is not None:
                         shared_kwargs["usage_stats"] = backend_session.usage_stats
                         shared_kwargs["compaction_state"] = backend_session.compaction_state
+                        shared_kwargs["todo_store"] = backend_session.todo_store
                     agent_session = AgentSession(
                         history=history,
                         registry=_clone_registry(self.runtime.registry, uid, self.account_id),

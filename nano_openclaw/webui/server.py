@@ -38,6 +38,7 @@ from nano_openclaw.loop import (
     ToolResult,
     TurnCancelled,
     AgentSession,
+    append_active_todo_reminder,
     run_pre_compaction_memory_flush,
 )
 from nano_openclaw.provider import (
@@ -237,7 +238,10 @@ def create_app(
                 recent_turns=runtime.cfg.context_recent_turns,
             )
             if summary:
+                reminder = append_active_todo_reminder(session.history, session.todo_store)
                 session.writer.append_compaction(summary)
+                if reminder is not None:
+                    session.writer.append_message(reminder)
                 manager.save_metadata(session)
             return {
                 "compacted": bool(summary),
@@ -579,6 +583,7 @@ async def _run_turn(
                 # Stage 3 iterative summary updates never fire).
                 usage_stats=session.usage_stats,
                 compaction_state=session.compaction_state,
+                todo_store=session.todo_store,
             )
             await agent_session.run_turn(
                 text,
@@ -1409,7 +1414,10 @@ async def handle_slash_command(
                 recent_turns=runtime.cfg.context_recent_turns,
             )
             if summary:
+                reminder = append_active_todo_reminder(session.history, session.todo_store)
                 session.writer.append_compaction(summary)
+                if reminder is not None:
+                    session.writer.append_message(reminder)
                 manager.save_metadata(session)
                 tokens_after = estimate_tokens(session.history)
                 preview = summary[:400] + ("…" if len(summary) > 400 else "")

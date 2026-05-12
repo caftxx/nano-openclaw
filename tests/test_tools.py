@@ -112,7 +112,8 @@ def test_schemas_have_required_anthropic_fields(registry):
         "current_time", "read_file", "write_file", "list_dir", "bash",
         "apply_patch",
         "session_status", "skill", "skill_install", "memory_get", "memory_search",
-        "web_search", "web_fetch", "sessions_spawn", "subagents"
+        "web_search", "web_fetch", "sessions_spawn", "subagents",
+        "todo",
     }
     for s in schemas:
         assert "description" in s and isinstance(s["description"], str)

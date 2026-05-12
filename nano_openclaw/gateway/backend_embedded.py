@@ -57,6 +57,7 @@ from nano_openclaw.loop import (
     AgentSession,
     CancellationToken,
     TurnCancelled,
+    append_active_todo_reminder,
 )
 from nano_openclaw.tools import ToolRegistry
 
@@ -436,6 +437,7 @@ class EmbeddedBackend(Backend):
                         # previous_summary survive across turns.
                         usage_stats=session.usage_stats,
                         compaction_state=session.compaction_state,
+                        todo_store=session.todo_store,
                     )
                     await agent_session.run_turn(
                         text,
@@ -682,7 +684,11 @@ class EmbeddedBackend(Backend):
                 recent_turns=cfg.context_recent_turns,
             )
             if summary:
+                reminder = append_active_todo_reminder(session.history, session.todo_store)
                 session.writer.append_compaction(summary)
+                if reminder is not None:
+                    session.writer.append_message(reminder)
+                self.manager.save_metadata(session)
         tokens_after = estimate_tokens(session.history)
         self._emit(
             PushEvent(
@@ -729,6 +735,14 @@ class EmbeddedBackend(Backend):
             context_window=cfg.context_window,
             cache_ttl=cfg.cache_ttl,
         )
+
+    async def get_todos(self, session_key: str) -> list[dict[str, Any]]:
+        """Return the current TODO list for the addressed session."""
+        try:
+            session = self.manager.get_or_load(session_key or None)
+        except KeyError as exc:
+            raise NotFoundError(str(exc)) from exc
+        return session.todo_store.read()
 
     # ─── Approvals ───
 

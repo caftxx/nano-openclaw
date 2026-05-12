@@ -72,6 +72,7 @@ from nano_openclaw.skills import (
     parse_slash_command,
     SlashCommand,
 )
+from nano_openclaw.todo import TodoStore
 from nano_openclaw.tools import ToolRegistry
 from nano_openclaw.workspace import WorkspaceBootstrapFile, get_or_load_bootstrap_files
 
@@ -135,6 +136,24 @@ class Compaction:
 @dataclass
 class ActiveMemoryRecall:
     result: ActiveMemoryResult
+
+
+def append_active_todo_reminder(
+    history: list[Message],
+    todo_store: TodoStore | None,
+) -> Message | None:
+    """Append the compact-time active todo reminder, if there is one."""
+    if todo_store is None:
+        return None
+    snapshot = todo_store.format_for_injection()
+    if not snapshot:
+        return None
+    reminder = Message(
+        role="user",
+        content=[{"type": "text", "text": snapshot}],
+    )
+    history.append(reminder)
+    return reminder
 
 
 @dataclass
@@ -430,6 +449,10 @@ class AgentSession:
     # updates + cooldown bookkeeping). Same long-lived-instance pattern as
     # usage_stats so iterative summary updates work across turns (Stage 3 fix).
     compaction_state: CompactionState = field(default_factory=CompactionState)
+    # Per-session todo list. AgentBackendSession 注入 shared 实例做持久化；
+    # 直接构造 AgentSession 的 caller（CLI 旧路径 / cron）给个 throwaway store
+    # 也能让模型用，turn 结束就丢。
+    todo_store: TodoStore = field(default_factory=TodoStore)
 
     @property
     def last_prompt_tokens(self) -> int:
@@ -748,6 +771,9 @@ class AgentSession:
             compaction_count=self.transcript_writer.compaction_count if self.transcript_writer else 0,
             message_count=len(scratch_history),
         )
+        tool_context = self.registry.execution_context(
+            todo_store=self.todo_store,
+        )
 
         # Emit SkillInvoked events before dispatch; order matters for UX.
         for block in tool_use_blocks:
@@ -769,6 +795,28 @@ class AgentSession:
                 for b in tool_use_blocks
             )
 
+        async def dispatch_with_context(block: dict[str, Any]) -> dict[str, Any]:
+            try:
+                return await self.registry.dispatch(
+                    block["id"],
+                    block["name"],
+                    block.get("input") or {},
+                    cancellation_token=cancellation_token,
+                    context=tool_context,
+                )
+            except TypeError as exc:
+                # Some tests monkey-patch ToolRegistry.dispatch with the legacy
+                # signature. Keep that narrow compatibility while production
+                # code receives the explicit execution context above.
+                if "context" not in str(exc):
+                    raise
+                return await self.registry.dispatch(
+                    block["id"],
+                    block["name"],
+                    block.get("input") or {},
+                    cancellation_token=cancellation_token,
+                )
+
         if batch_requires_approval:
             tool_results = []
             denied_tool_name: str | None = None
@@ -780,24 +828,14 @@ class AgentSession:
                     ))
                     continue
 
-                result = await self.registry.dispatch(
-                    block["id"],
-                    block["name"],
-                    block.get("input") or {},
-                    cancellation_token=cancellation_token,
-                )
+                result = await dispatch_with_context(block)
                 if result.get("_denied"):
                     denied_tool_name = block["name"]
                 tool_results.append(result)
         else:
             tool_results = list(
                 await asyncio.gather(*[
-                    self.registry.dispatch(
-                        b["id"],
-                        b["name"],
-                        b.get("input") or {},
-                        cancellation_token=cancellation_token,
-                    )
+                    dispatch_with_context(b)
                     for b in tool_use_blocks
                 ])
             )
@@ -996,6 +1034,10 @@ async def _run_agent_session_turn(
             on_event(Compaction(summary=summary))
             pending_transcript_ops.append(("compaction", summary))
             session.usage_stats.compactions_fired += 1
+
+            reminder = append_active_todo_reminder(scratch_history, session.todo_store)
+            if reminder is not None:
+                pending_transcript_ops.append(("message", reminder))
         wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
 
         try:
@@ -1043,6 +1085,10 @@ async def _run_agent_session_turn(
                 on_event(Compaction(summary=summary))
                 pending_transcript_ops.append(("compaction", summary))
                 session.usage_stats.compactions_fired += 1
+
+                reminder = append_active_todo_reminder(scratch_history, session.todo_store)
+                if reminder is not None:
+                    pending_transcript_ops.append(("message", reminder))
             wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
             try:
                 assistant_blocks, stop_reason, usage = await _retry_assistant_turn(

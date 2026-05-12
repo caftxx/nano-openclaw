@@ -256,6 +256,8 @@ async def _execute_job(
         )
 
         history = [Message("user", [{"type": "text", "text": job.prompt}])]
+        # cron 跑完即弃，给个 throwaway TodoStore 让 todo 工具在该 turn 内可用。
+        from nano_openclaw.todo import TodoStore
         session = AgentSession(
             history=history,
             registry=registry,
@@ -263,6 +265,7 @@ async def _execute_job(
             client=client,
             cfg=cfg,
             cancellation_token=cancellation_token,
+            todo_store=TodoStore(),
         )
         # Hold the runtime-update reader for the cron turn — so a daemon-side
         # ``runtime.update`` finds this turn in flight and returns BUSY rather
