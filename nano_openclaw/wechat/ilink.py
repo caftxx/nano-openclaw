@@ -319,20 +319,50 @@ async def download_wechat_file(
     return data, mime or "application/octet-stream", filename
 
 
-def extract_text(item_list: list[dict[str, Any]]) -> str:
-    """Extract combined text from iLink item_list (text + voice transcription)."""
+def _item_text(it: dict[str, Any]) -> str:
+    """Extract text from one iLink item, excluding quoted-message metadata."""
+    tp = it.get("type", 0)
+    if tp == T:
+        return it.get("text_item", {}).get("text", "")
+    if tp == VO:
+        x = it.get("voice_item", {}).get("text", "")
+        if x:
+            return f'[用户发送了语音消息，内容："{x}"]'
+    return ""
+
+
+def _ref_msg_text(ref_msg: Any, depth: int) -> str:
+    if depth > 3 or not isinstance(ref_msg, dict):
+        return ""
+
+    message_item = ref_msg.get("message_item")
+    title = ref_msg.get("title", "")
+    parts: list[str] = []
+    if title:
+        parts.append(f"标题: {title}")
+    if isinstance(message_item, dict):
+        item_text = _extract_text([message_item], depth + 1)
+        if item_text:
+            parts.append(item_text)
+    return "\n".join(parts)
+
+
+def _extract_text(item_list: list[dict[str, Any]], depth: int = 0) -> str:
     parts: list[str] = []
     for it in item_list:
-        tp = it.get("type", 0)
-        if tp == T:
-            x = it.get("text_item", {}).get("text", "")
-            if x:
-                parts.append(x)
-        elif tp == VO:
-            x = it.get("voice_item", {}).get("text", "")
-            if x:
-                parts.append(f'[用户发送了语音消息，内容："{x}"]')
+        x = _item_text(it)
+        if x:
+            parts.append(x)
+
+        ref_text = _ref_msg_text(it.get("ref_msg"), depth)
+        if ref_text:
+            parts.append(f"[引用消息]\n{ref_text}\n[/引用消息]")
     return "\n".join(parts).strip()
+
+
+def extract_text(item_list: list[dict[str, Any]]) -> str:
+    """Extract combined text from iLink item_list, including quoted messages."""
+    return _extract_text(item_list)
 
 
 def _first_url(obj: Any, _depth: int = 0) -> str:
