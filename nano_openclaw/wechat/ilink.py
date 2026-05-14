@@ -13,7 +13,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -31,7 +31,8 @@ except ImportError:
 
 ILINK_VER = "2.1.7"
 ILINK_CV = "65547"
-T, IMG, VO, VIDEO, FILE = 1, 2, 3, 4, 5   # item type: text, image, voice, video, file
+DEFAULT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+T, IMG, VO, FILE, VIDEO = 1, 2, 3, 4, 5   # item type: text, image, voice, file, video
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024  # 文件上限更大
 
@@ -217,6 +218,66 @@ async def download_image(
     return b"".join(chunks), mime or "image/jpeg"
 
 
+def _cdn_download_url(encrypt_query_param: str) -> str:
+    return DEFAULT_CDN_BASE_URL + "/download?encrypted_query_param=" + quote(encrypt_query_param, safe="")
+
+
+def _media_download_url(media: dict[str, Any]) -> str:
+    url = media.get("full_url", "")
+    if url:
+        return url
+    encrypt_query_param = media.get("encrypt_query_param", "")
+    if encrypt_query_param:
+        return _cdn_download_url(encrypt_query_param)
+    return ""
+
+
+def _is_hex_key(s: str) -> bool:
+    try:
+        bytes.fromhex(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _parse_media_aes_key(aes_key: str) -> bytes:
+    """Parse iLink media AES keys in hex, base64(raw), or base64(hex) form."""
+    if len(aes_key) == 32 and _is_hex_key(aes_key):
+        return bytes.fromhex(aes_key)
+
+    raw = base64.b64decode(aes_key)
+    if len(raw) == 32:
+        text = raw.decode("ascii", errors="replace")
+        if _is_hex_key(text):
+            return bytes.fromhex(text)
+    if len(raw) == 16:
+        return raw
+    raise ValueError(f"unexpected AES key length: {len(raw)} bytes")
+
+
+def _decrypt_wechat_media_with_key(data: bytes, key: bytes) -> bytes:
+    """Decrypt WeChat AES-encrypted media using a 16-byte AES-128 key."""
+    if not HAS_CRYPTO:
+        raise RuntimeError("cryptography package required for WeChat media decryption")
+
+    if len(key) != 16:
+        raise ValueError(f"invalid WeChat media AES key length: {len(key)}")
+
+    if len(data) % 16 != 0:
+        raise ValueError(f"invalid encrypted media length: {len(data)}, not multiple of 16")
+
+    cipher = Cipher(
+        algorithms.AES(key),
+        modes.ECB(),
+        backend=default_backend(),
+    )
+    decryptor = cipher.decryptor()
+    decrypted_padded = decryptor.update(data) + decryptor.finalize()
+
+    unpadder = PKCS7(128).unpadder()
+    return unpadder.update(decrypted_padded) + unpadder.finalize()
+
+
 async def download_wechat_image(
     client: httpx.AsyncClient,
     image_item: dict[str, Any],
@@ -225,14 +286,14 @@ async def download_wechat_image(
     """Download and decrypt a WeChat image.
 
     image_item contains:
-      - aeskey: hex string (16 bytes key)
-      - media.full_url: download URL with encrypted_query_param
+      - aeskey: hex string, or media.aes_key in SDK CDNMedia format
+      - media.full_url or media.encrypt_query_param
 
     Returns (decrypted_bytes, mime_type).
     """
-    aeskey = image_item.get("aeskey", "")
-    media = image_item.get("media", {})
-    url = media.get("full_url", "")
+    media = image_item.get("media") or {}
+    aeskey = image_item.get("aeskey", "") or media.get("aes_key", "")
+    url = _media_download_url(media) or image_item.get("url", "")
 
     if not url:
         raise ValueError("no download URL in image_item")
@@ -245,7 +306,7 @@ async def download_wechat_image(
 
     # Decrypt
     try:
-        decrypted = _decrypt_wechat_media(encrypted_data, aeskey)
+        decrypted = _decrypt_wechat_media_with_key(encrypted_data, _parse_media_aes_key(aeskey))
         return decrypted, mime
     except Exception as e:
         # If decryption fails, return raw data (might already be unencrypted)
@@ -261,24 +322,15 @@ async def download_wechat_file(
     """Download and decrypt a WeChat file (PDF, doc, etc).
 
     file_item contains:
-      - aes_key: base64-encoded AES key (optional)
-      - file_url or media.full_url: download URL
+      - aes_key or media.aes_key: AES key in SDK CDNMedia format (optional)
+      - file_url, media.full_url, or media.encrypt_query_param: download URL
       - file_name: original filename
 
     Returns (decrypted_bytes, mime_type, filename).
     """
-    # aes_key is base64-encoded hex string (32 chars), can be at top level or in media
-    aes_key_b64 = file_item.get("aes_key") or file_item.get("media", {}).get("aes_key", "")
-    aeskey_hex = ""
-    if aes_key_b64:
-        try:
-            # Decode base64 -> hex string like "f25e0b8d..."
-            aeskey_hex = base64.b64decode(aes_key_b64).decode()
-        except Exception as e:
-            log.warning("ilink.file.aeskey.error", f"Failed to decode aes_key: {e}")
-            pass
-
-    url = file_item.get("file_url") or file_item.get("media", {}).get("full_url", "")
+    media = file_item.get("media") or {}
+    aes_key = file_item.get("aes_key") or media.get("aes_key", "")
+    url = file_item.get("file_url") or _media_download_url(media)
     filename = file_item.get("file_name", "wechat-file")
 
     if not url:
@@ -305,9 +357,9 @@ async def download_wechat_file(
     data = b"".join(chunks)
 
     # Decrypt if aes_key present
-    if aeskey_hex:
+    if aes_key:
         try:
-            data = _decrypt_wechat_media(data, aeskey_hex)
+            data = _decrypt_wechat_media_with_key(data, _parse_media_aes_key(aes_key))
         except Exception as e:
             log.warning("ilink.file.decrypt.error", f"File decryption failed: {e}")
             pass  # Keep raw data if decryption fails
@@ -328,6 +380,16 @@ def _item_text(it: dict[str, Any]) -> str:
         x = it.get("voice_item", {}).get("text", "")
         if x:
             return f'[用户发送了语音消息，内容："{x}"]'
+        return "[用户发送了语音消息]"
+    if tp == IMG or "image_item" in it:
+        return "[用户发送了图片]"
+    if tp == FILE or "file_item" in it:
+        filename = it.get("file_item", it).get("file_name", "")
+        if filename:
+            return f"[用户发送了文件：{filename}]"
+        return "[用户发送了文件]"
+    if tp == VIDEO or "video_item" in it:
+        return "[用户发送了视频]"
     return ""
 
 
@@ -407,11 +469,7 @@ def extract_image_items(item_list: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def extract_file_items(item_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract full file_item dicts (type=5 or type=4 with file_item key).
-
-    Note: Some iLink clients send document files with type=4 (video),
-    so we look for 'file_item' key regardless of type number.
-    """
+    """Extract full file_item dicts (type=4 or any item with file_item key)."""
     items: list[dict[str, Any]] = []
     for it in item_list:
         if "file_item" in it:
@@ -419,7 +477,6 @@ def extract_file_items(item_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if file_item:
                 items.append(file_item)
         elif it.get("type") == FILE:
-            # type=5 is explicitly FILE
             items.append(it)
     return items
 
@@ -608,26 +665,4 @@ def _decrypt_wechat_media(data: bytes, aeskey_hex: str) -> bytes:
     aeskey_hex is a 32-char hex string, i.e. 16 bytes AES-128 key.
     WeChat C2C CDN media uses AES-128-ECB with PKCS7 padding.
     """
-    if not HAS_CRYPTO:
-        raise RuntimeError("cryptography package required for WeChat image decryption")
-
-    key = bytes.fromhex(aeskey_hex)
-
-    if len(key) != 16:
-        raise ValueError(f"invalid WeChat image AES key length: {len(key)}")
-
-    if len(data) % 16 != 0:
-        raise ValueError(f"invalid encrypted image length: {len(data)}, not multiple of 16")
-
-    cipher = Cipher(
-        algorithms.AES(key),
-        modes.ECB(),
-        backend=default_backend(),
-    )
-    decryptor = cipher.decryptor()
-    decrypted_padded = decryptor.update(data) + decryptor.finalize()
-
-    unpadder = PKCS7(128).unpadder()
-    decrypted = unpadder.update(decrypted_padded) + unpadder.finalize()
-
-    return decrypted
+    return _decrypt_wechat_media_with_key(data, bytes.fromhex(aeskey_hex))

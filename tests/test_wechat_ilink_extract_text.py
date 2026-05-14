@@ -67,3 +67,25 @@ def test_extract_text_includes_ref_msg_title():
         "previous\n"
         "[/引用消息]"
     )
+
+
+def test_extract_text_describes_non_text_ref_msg_items():
+    items = [
+        {
+            "type": 1,
+            "ref_msg": {
+                "message_item": {
+                    "type": 4,
+                    "file_item": {"file_name": "report.pdf"},
+                },
+            },
+            "text_item": {"text": "这个看下"},
+        },
+    ]
+
+    assert extract_text(items) == (
+        "这个看下\n"
+        "[引用消息]\n"
+        "[用户发送了文件：report.pdf]\n"
+        "[/引用消息]"
+    )
