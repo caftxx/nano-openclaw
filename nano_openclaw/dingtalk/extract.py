@@ -37,6 +37,11 @@ class ExtractedMessage:
     session_webhook_expire_ms: int
     msgtype: str
     at_user_staff_ids: list[str] = field(default_factory=list)
+    # ``robot_code`` carries the legacy AppKey-vs-RobotCode split. AI Card
+    # APIs prefer the message-time value over the configured clientId when
+    # set — they can differ for apps onboarded through the older console.
+    robot_code: str = ""
+    chatbot_user_id: str = ""
 
 
 def _text_from_text_msg(data: dict[str, Any]) -> str:
@@ -132,4 +137,6 @@ def extract_message(data: dict[str, Any]) -> ExtractedMessage:
         session_webhook_expire_ms=int(data.get("sessionWebhookExpiredTime") or 0),
         msgtype=str(data.get("msgtype") or ""),
         at_user_staff_ids=at_staff_ids,
+        robot_code=str(data.get("robotCode") or ""),
+        chatbot_user_id=str(data.get("chatbotUserId") or ""),
     )

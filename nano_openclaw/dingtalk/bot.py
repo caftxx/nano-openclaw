@@ -37,8 +37,9 @@ import httpx
 from nano_openclaw.dingtalk.extract import extract_message
 from nano_openclaw.dingtalk.frames import CallbackFrame
 from nano_openclaw.dingtalk.policy import DingtalkPolicy, should_respond
-from nano_openclaw.dingtalk.sender import send_text_via_webhook
+from nano_openclaw.dingtalk.reply_dispatcher import ReplyDispatcher
 from nano_openclaw.dingtalk.stream_client import DingtalkStreamClient
+from nano_openclaw.dingtalk.token import DingtalkTokenManager
 from nano_openclaw.logger import get_logger
 from nano_openclaw.loop import AgentSession
 from nano_openclaw.runtime import AgentRuntime
@@ -138,6 +139,10 @@ class DingtalkBot:
     _conv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     _stream: DingtalkStreamClient | None = None
     _http_client: httpx.AsyncClient | None = None
+    # One DingtalkTokenManager per bot — token cache is keyed by clientId so
+    # technically a process-wide singleton would also work, but a per-bot one
+    # keeps the lifetime tied to the channel for clean teardown.
+    _token_mgr: DingtalkTokenManager = field(default_factory=DingtalkTokenManager)
 
     # ── Conversation → session bookkeeping ─────────────────────────────────
 
@@ -277,11 +282,40 @@ class DingtalkBot:
         if session_id_for_cfg is not None:
             turn_cfg = _dc_replace(self.runtime.cfg, session_key=session_id_for_cfg)
 
-        text_buf: list[str] = []
+        # Reply dispatcher owns the AI Card lifecycle plus the webhook
+        # fallback. We create it up-front so each TextDelta can stream into
+        # the live card in real time (subject to the per-dispatcher throttle
+        # and the global card-API token bucket).
+        client = self._ensure_http_client()
+        dispatcher = ReplyDispatcher(
+            http_client=client,
+            msg=msg,
+            token_mgr=self._token_mgr,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            robot_code=msg.robot_code or self.client_id,
+        )
+        await dispatcher.on_start()
+
+        # Stream model output into the dispatcher. Coalescing into chunks
+        # avoids one HTTP PUT per character; the throttle inside
+        # ``on_partial`` enforces the 800ms cap.
+        async def _emit(chunk: str) -> None:
+            try:
+                await dispatcher.on_partial(chunk)
+            except Exception as exc:  # noqa: BLE001 — never let reply errors abort the turn
+                log.warning(
+                    "dingtalk.reply.partial.error",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+        pending_emits: list[asyncio.Task] = []
 
         def on_event(event: Any) -> None:
-            if isinstance(event, TextDelta):
-                text_buf.append(event.text)
+            if isinstance(event, TextDelta) and event.text:
+                # Fire-and-forget; the reply dispatcher serializes its own
+                # internal HTTP calls so concurrent tasks here are safe.
+                pending_emits.append(asyncio.create_task(_emit(event.text)))
 
         shared_kwargs: dict[str, Any] = {}
         if backend_session is not None:
@@ -303,14 +337,15 @@ class DingtalkBot:
             **shared_kwargs,
         )
 
+        turn_error: str | None = None
         try:
             await agent_session.run_turn(msg.text)
         except Exception as exc:  # noqa: BLE001
+            turn_error = f"{type(exc).__name__}: {exc}"
             log.error(
                 "dingtalk.turn.failed",
-                f"conv={msg.conversation_id[:12]}… {type(exc).__name__}: {exc}",
+                f"conv={msg.conversation_id[:12]}… {turn_error}",
             )
-            return
         finally:
             if backend_session is not None and self.session_manager is not None:
                 try:
@@ -321,27 +356,27 @@ class DingtalkBot:
                         f"{type(exc).__name__}: {exc}",
                     )
 
-        reply = "".join(text_buf).strip()
-        if not reply:
-            return
-        if not msg.session_webhook:
-            log.warning(
-                "dingtalk.reply.no_webhook",
-                f"conv={msg.conversation_id[:12]}…: cannot reply, sessionWebhook missing",
-            )
-            return
-        if msg.session_webhook_expire_ms and msg.session_webhook_expire_ms < time.time() * 1000:
-            log.warning(
-                "dingtalk.reply.webhook_expired",
-                f"conv={msg.conversation_id[:12]}…: sessionWebhook already expired",
-            )
-            return
+        # Drain any in-flight emit tasks before finalizing so the card
+        # finishes with the complete buffer, not a mid-stream snapshot.
+        if pending_emits:
+            await asyncio.gather(*pending_emits, return_exceptions=True)
 
-        client = self._http_client
-        if client is None:
-            # Falling back to a fresh client keeps the bot useful in unit
-            # tests where ``run()`` hasn't initialized the shared pool.
-            async with httpx.AsyncClient(timeout=30.0) as fallback:
-                await send_text_via_webhook(fallback, msg.session_webhook, reply)
+        if turn_error is not None:
+            await dispatcher.on_error(f"⚠️ {turn_error}")
         else:
-            await send_text_via_webhook(client, msg.session_webhook, reply)
+            await dispatcher.on_final()
+
+    def _ensure_http_client(self) -> httpx.AsyncClient:
+        """Return the shared client held by ``run()``.
+
+        Tests can inject one by setting ``self._http_client`` before
+        invoking ``_handle_message`` directly; raising rather than
+        lazily-creating one avoids leaking unclosed clients in unexpected
+        code paths.
+        """
+        if self._http_client is None:
+            raise RuntimeError(
+                "DingtalkBot._http_client not initialized — _handle_message "
+                "must be called from inside run() or after the test sets it."
+            )
+        return self._http_client
