@@ -42,6 +42,7 @@ from nano_openclaw.runtime import build_agent_runtime
 # so the daemon can spawn it from config. Add similar lines as future
 # channels (telegram, slack, ...) come online.
 import nano_openclaw.channels.wechat  # noqa: F401
+import nano_openclaw.channels.dingtalk  # noqa: F401
 
 if TYPE_CHECKING:
     from nano_openclaw.channels.base import ChannelAccount
@@ -207,23 +208,26 @@ async def _start_configured_channels(
     alongside webui/tui sessions in the unified ``/sessions`` list.
     """
     from nano_openclaw.channels.base import ChannelAccount
+    from nano_openclaw.dingtalk.login_cli import discover_persisted_account_ids_dingtalk
     from nano_openclaw.wechat.login_cli import discover_persisted_account_ids
 
-    # Wechat accounts are discovered purely from persisted login tokens —
-    # there's no config-file accounts list any more. Run
-    # ``nano-openclaw wechat login --account=ID`` for each account you want
-    # the daemon to host; that writes ``state_dir/wechat-tokens.{id}.json``
-    # which we pick up here.
-    discovered = discover_persisted_account_ids(runtime.state_dir)
-    if not discovered:
+    # Channels are discovered purely from persisted credentials in state_dir
+    # — there's no config-file accounts list. For each kind:
+    #   wechat → run ``nano-openclaw wechat login [--account=ID]`` to write
+    #            ``state_dir/wechat-tokens.{id}.json``.
+    #   dingtalk → run ``nano-openclaw dingtalk register --client-id=… …`` to
+    #              write ``state_dir/dingtalk-creds.{clientId}.json``.
+    wechat_accounts = discover_persisted_account_ids(runtime.state_dir)
+    dingtalk_accounts = discover_persisted_account_ids_dingtalk(runtime.state_dir)
+    if not wechat_accounts and not dingtalk_accounts:
         log.info(
-            "gateway.channel.no_wechat_logins",
-            "no wechat-tokens.*.json files in state_dir — "
-            "run `nano-openclaw wechat login` to add a wechat account",
+            "gateway.channel.no_logins",
+            "no channel credentials in state_dir — "
+            "run `nano-openclaw wechat login` and/or `nano-openclaw dingtalk register`",
         )
         return
 
-    for account_id in discovered:
+    for account_id in wechat_accounts:
         # WechatChannel.start() reads the persisted token + base_url from
         # state_dir directly, so an empty config dict is fine here.
         account = ChannelAccount(id=account_id, config={})
@@ -237,4 +241,20 @@ async def _start_configured_channels(
             )
             console.print(
                 f"[red]channel start failed:[/red] wechat/{account_id}: {type(exc).__name__}: {exc}"
+            )
+
+    for client_id in dingtalk_accounts:
+        # DingtalkChannel.start() reads creds from state_dir keyed by
+        # account.id == clientId; the config dict stays empty by convention.
+        account = ChannelAccount(id=client_id, config={})
+        try:
+            await registry.start("dingtalk", account, runtime, gateway)
+            started_channels.append(("dingtalk", client_id))
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "gateway.channel.start.error",
+                f"dingtalk/{client_id}: {type(exc).__name__}: {exc}",
+            )
+            console.print(
+                f"[red]channel start failed:[/red] dingtalk/{client_id}: {type(exc).__name__}: {exc}"
             )

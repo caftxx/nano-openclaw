@@ -118,6 +118,55 @@ def main() -> None:
         help="Account id (free-form label; default: 'default'). Token will persist as state_dir/wechat-tokens.{id}.json",
     )
 
+    # DingTalk management subcommand. Unlike WeChat there is no QR flow —
+    # AppKey/AppSecret pairs come from the DingTalk Open Platform; ``register``
+    # just persists them. The daemon picks up each persisted creds file as one
+    # ``DingtalkChannel`` account.
+    dingtalk_parser = subparsers.add_parser(
+        "dingtalk",
+        help="DingTalk management commands (register, …)",
+    )
+    dingtalk_sub = dingtalk_parser.add_subparsers(dest="dingtalk_command")
+    dingtalk_register_p = dingtalk_sub.add_parser(
+        "register",
+        help="Persist DingTalk AppKey/AppSecret credentials for daemon use",
+    )
+    dingtalk_register_p.add_argument(
+        "--client-id",
+        required=True,
+        help="DingTalk AppKey (a.k.a. clientId). Written to state_dir/dingtalk-creds.{clientId}.json",
+    )
+    dingtalk_register_p.add_argument(
+        "--client-secret",
+        required=True,
+        help="DingTalk AppSecret. Stored 0600 alongside the AppKey.",
+    )
+    dingtalk_register_p.add_argument(
+        "--dm-policy",
+        choices=["open", "allowlist"],
+        default="open",
+        help="DM (1:1) policy: 'open' or 'allowlist' (default: open)",
+    )
+    dingtalk_register_p.add_argument(
+        "--group-policy",
+        choices=["open", "allowlist", "disabled"],
+        default="open",
+        help="Group chat policy (default: open)",
+    )
+    dingtalk_register_p.add_argument(
+        "--require-mention",
+        dest="require_mention",
+        action="store_true",
+        default=True,
+        help="Only respond to group messages that @ the bot (default: True)",
+    )
+    dingtalk_register_p.add_argument(
+        "--no-require-mention",
+        dest="require_mention",
+        action="store_false",
+        help="Respond to all group messages, not just @-mentions",
+    )
+
     args = parser.parse_args()
 
     state_dir = resolve_state_dir()
@@ -141,6 +190,18 @@ def main() -> None:
             from nano_openclaw.wechat.login_cli import run_wechat_login
             sys.exit(asyncio.run(run_wechat_login(account_id=args.account)))
         wechat_parser.error("missing wechat subcommand (try `wechat login`)")
+
+    if args.command == "dingtalk":
+        if args.dingtalk_command == "register":
+            from nano_openclaw.dingtalk.login_cli import run_dingtalk_register
+            sys.exit(run_dingtalk_register(
+                client_id=args.client_id,
+                client_secret=args.client_secret,
+                dm_policy=args.dm_policy,
+                group_policy=args.group_policy,
+                require_mention=args.require_mention,
+            ))
+        dingtalk_parser.error("missing dingtalk subcommand (try `dingtalk register`)")
 
     # ── tui (explicit or default) ───────────────────────────────────────────
     # Back-compat: top-level --resume / --sessions still work; they get
