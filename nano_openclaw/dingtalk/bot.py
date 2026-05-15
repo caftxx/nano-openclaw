@@ -34,10 +34,16 @@ from typing import Any
 
 import httpx
 
+from nano_openclaw.attachments import PromptAttachment
 from nano_openclaw.dingtalk.extract import extract_message
 from nano_openclaw.dingtalk.frames import CallbackFrame
+from nano_openclaw.dingtalk.media import download_media
 from nano_openclaw.dingtalk.policy import DingtalkPolicy, should_respond
 from nano_openclaw.dingtalk.reply_dispatcher import ReplyDispatcher
+from nano_openclaw.dingtalk.sender import (
+    send_proactive_to_group,
+    send_proactive_to_user,
+)
 from nano_openclaw.dingtalk.stream_client import DingtalkStreamClient
 from nano_openclaw.dingtalk.token import DingtalkTokenManager
 from nano_openclaw.logger import get_logger
@@ -143,6 +149,13 @@ class DingtalkBot:
     # technically a process-wide singleton would also work, but a per-bot one
     # keeps the lifetime tied to the channel for clean teardown.
     _token_mgr: DingtalkTokenManager = field(default_factory=DingtalkTokenManager)
+    # conversationId → metadata needed to send proactive notifications
+    # (``cron_create`` completion ping-back). We learn (is_group, sender_id)
+    # whenever a user message comes in; that's the only path that gives us
+    # the full identity. Persists alongside the conv_map so daemon restarts
+    # don't lose the routing context.
+    _conv_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _conv_metadata_loaded: bool = False
 
     # ── Conversation → session bookkeeping ─────────────────────────────────
 
@@ -206,6 +219,129 @@ class DingtalkBot:
             self._conv_locks[conversation_id] = lock
         return lock
 
+    # ── Conversation metadata (for proactive routing) ─────────────────────
+
+    def _conv_metadata_path(self) -> Path | None:
+        """Sibling file to the conv_map; same suffix scheme."""
+        if self.conv_map_path is None:
+            return None
+        return self.conv_map_path.with_name(
+            self.conv_map_path.name.replace("dingtalk-sessions", "dingtalk-conv-meta")
+        )
+
+    def _ensure_conv_metadata_loaded(self) -> None:
+        if self._conv_metadata_loaded:
+            return
+        self._conv_metadata_loaded = True
+        path = self._conv_metadata_path()
+        if path is None or not path.exists():
+            return
+        try:
+            self._conv_metadata = json.loads(path.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "dingtalk.conv_meta.load.error",
+                f"failed to load {path}: {type(exc).__name__}: {exc}",
+            )
+            self._conv_metadata = {}
+
+    def _save_conv_metadata(self) -> None:
+        path = self._conv_metadata_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._conv_metadata, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            log.warning(
+                "dingtalk.conv_meta.save.error",
+                f"failed to save {path}: {exc}",
+            )
+
+    def _record_conv_metadata(self, msg) -> None:  # type: ignore[no-untyped-def]
+        """Stash (is_group, sender_staff_id) for proactive routing later.
+
+        Only persist when ``conv_map_path`` is wired (daemon mode). Standalone
+        tests just hold this in memory — they don't go through cron anyway.
+        """
+        self._ensure_conv_metadata_loaded()
+        prev = self._conv_metadata.get(msg.conversation_id)
+        new = {
+            "is_group": bool(msg.is_group),
+            "sender_staff_id": msg.sender_staff_id,
+            "robot_code": msg.robot_code or self.client_id,
+        }
+        if prev == new:
+            return
+        self._conv_metadata[msg.conversation_id] = new
+        self._save_conv_metadata()
+
+    # ── Proactive send (cron notification entry point) ────────────────────
+
+    async def send_proactive(self, conversation_id: str, text: str) -> None:
+        """Push a message into ``conversation_id`` outside of a user turn.
+
+        Uses the proactive REST API instead of the (long-gone)
+        sessionWebhook. The bot routes DM vs group based on the metadata
+        captured from the originating user message; if we have no record
+        of this conversation, we fall back to assuming a 1:1 with the
+        ``conversation_id`` itself as the user id, which is correct for
+        DingTalk's "1:1 with a robot" case and harmless otherwise (the API
+        returns an error we log and move on).
+        """
+        if not conversation_id or not text:
+            return
+        self._ensure_conv_metadata_loaded()
+        meta = self._conv_metadata.get(conversation_id, {})
+        client = self._http_client
+        if client is None:
+            # Open a one-shot client for the off-turn case (cron-driven).
+            async with httpx.AsyncClient(timeout=30.0) as fallback:
+                await self._dispatch_proactive(fallback, conversation_id, text, meta)
+            return
+        await self._dispatch_proactive(client, conversation_id, text, meta)
+
+    async def _dispatch_proactive(
+        self,
+        client: httpx.AsyncClient,
+        conversation_id: str,
+        text: str,
+        meta: dict[str, Any],
+    ) -> None:
+        robot_code = str(meta.get("robot_code") or self.client_id)
+        if meta.get("is_group"):
+            await send_proactive_to_group(
+                client,
+                token_mgr=self._token_mgr,
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                open_conversation_id=conversation_id,
+                text=text,
+                markdown=True,
+                robot_code=robot_code,
+            )
+            return
+        user_id = str(meta.get("sender_staff_id") or "")
+        if not user_id:
+            log.warning(
+                "dingtalk.proactive.no_user_id",
+                f"conv={conversation_id[:12]}…: no sender metadata recorded; "
+                f"cron notification cannot be delivered",
+            )
+            return
+        await send_proactive_to_user(
+            client,
+            token_mgr=self._token_mgr,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            user_id=user_id,
+            text=text,
+            markdown=True,
+            robot_code=robot_code,
+        )
+
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -252,12 +388,16 @@ class DingtalkBot:
             )
             return
 
-        # Empty text + no attachments → nothing for the agent to do (PR4
-        # will surface media attachments here and let media-only messages
-        # through).
-        if not msg.text.strip():
-            log.debug("dingtalk.bot.empty_text.skip", f"conv={msg.conversation_id[:12]}…")
+        # Empty text + no media → nothing for the agent to do.
+        if not msg.text.strip() and not msg.media:
+            log.debug("dingtalk.bot.empty.skip", f"conv={msg.conversation_id[:12]}…")
             return
+
+        # Capture (is_group, sender) for future proactive notifications
+        # (cron completion routing). Cheap to do here; persists on first
+        # contact and updates if the message changes the routing target
+        # (e.g. user rejoins after deletion).
+        self._record_conv_metadata(msg)
 
         # Per-conversation serialization — two near-simultaneous messages in
         # the same group must not race on the shared session history.
@@ -275,6 +415,35 @@ class DingtalkBot:
             history = []
             transcript_writer = None
             session_id_for_cfg = None
+
+        # Materialize media attachments before we hit run_turn. The download
+        # API returns presigned URLs that expire fast, so we do this inline
+        # rather than lazily during inference.
+        attachments: list[PromptAttachment] = []
+        if msg.media:
+            client = self._ensure_http_client()
+            robot_code = msg.robot_code or self.client_id
+            for item in msg.media:
+                data = await download_media(
+                    client,
+                    download_code=item.download_code,
+                    robot_code=robot_code,
+                    token_mgr=self._token_mgr,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                )
+                if data is None:
+                    log.warning(
+                        "dingtalk.media.skip",
+                        f"conv={msg.conversation_id[:12]}… name={item.name}: download failed",
+                    )
+                    continue
+                attachments.append(PromptAttachment(
+                    name=item.name,
+                    mime=item.mime,
+                    size=len(data),
+                    data=data,
+                ))
 
         from dataclasses import replace as _dc_replace
 
@@ -339,7 +508,10 @@ class DingtalkBot:
 
         turn_error: str | None = None
         try:
-            await agent_session.run_turn(msg.text)
+            await agent_session.run_turn(
+                msg.text or "(no text, media-only)",
+                attachments=attachments or None,
+            )
         except Exception as exc:  # noqa: BLE001
             turn_error = f"{type(exc).__name__}: {exc}"
             log.error(

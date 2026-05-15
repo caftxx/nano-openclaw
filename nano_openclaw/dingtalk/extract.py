@@ -1,13 +1,13 @@
 """Decode a DingTalk callback payload into an :class:`ExtractedMessage`.
 
-Handles the inbound subset that PR2 actually responds to: ``text`` and the
-text parts of ``richText`` (with image/audio/video/file segments deferred
-to PR4 along with media downloads). Reply/quote chains are flattened to at
-most three levels — beyond that the context is noisy and we drop it.
+Handles the inbound subset the bot responds to: ``text``, the text parts
+of ``richText``, and media payloads (``picture`` / ``audio`` / ``video`` /
+``file``, plus inline media inside ``richText``). Reply/quote chains are
+flattened to at most three levels — beyond that the context is noisy.
 
 The returned dataclass is the only structure downstream code (policy, bot,
-sender) is allowed to touch — that keeps the wire format isolated to this
-file when DingTalk inevitably adds new ``msgtype`` values.
+sender, dispatcher) is allowed to touch — that keeps the wire format
+isolated to this file when DingTalk inevitably adds new ``msgtype`` values.
 """
 
 from __future__ import annotations
@@ -16,6 +16,31 @@ from dataclasses import dataclass, field
 from typing import Any
 
 MAX_QUOTE_DEPTH = 3
+
+
+# Bytes-to-MIME guesses by msgtype. DingTalk doesn't put MIME on the wire,
+# so we default to plausible values per msgtype; ``file`` falls back to
+# ``application/octet-stream`` and lets the agent figure out the rest from
+# the filename / contents.
+_MIME_BY_MSGTYPE = {
+    "picture": "image/jpeg",
+    "audio": "audio/amr",
+    "video": "video/mp4",
+}
+
+
+@dataclass
+class MediaItem:
+    """One downloadable attachment from an inbound DingTalk message.
+
+    Use :func:`nano_openclaw.dingtalk.media.download_media` to materialize
+    ``download_code`` into bytes; this dataclass is purely the description.
+    """
+
+    download_code: str
+    mime: str
+    name: str  # display name (derived if not provided)
+    msgtype: str  # 'picture' | 'audio' | 'video' | 'file' | 'richText:image'
 
 
 @dataclass
@@ -42,6 +67,7 @@ class ExtractedMessage:
     # set — they can differ for apps onboarded through the older console.
     robot_code: str = ""
     chatbot_user_id: str = ""
+    media: list[MediaItem] = field(default_factory=list)
 
 
 def _text_from_text_msg(data: dict[str, Any]) -> str:
@@ -74,6 +100,60 @@ def _primary_text(data: dict[str, Any]) -> str:
     if msgtype == "richText":
         return _text_from_rich_text(data)
     return ""
+
+
+def _extract_media(data: dict[str, Any]) -> list[MediaItem]:
+    """Pull every downloadable media reference out of a payload.
+
+    Coverage:
+    - ``msgtype == "picture"`` → ``content.downloadCode``
+    - ``msgtype == "audio"`` → ``content.downloadCode``
+    - ``msgtype == "video"`` → ``content.downloadCode``
+    - ``msgtype == "file"`` → ``content.downloadCode`` + ``content.fileName``
+    - ``msgtype == "richText"`` → each ``richText[].downloadCode`` (images)
+
+    Order preserved as a list (not a dict-keyed map) because richText messages
+    can carry multiple images and the agent might want them in order.
+    """
+    items: list[MediaItem] = []
+    msgtype = str(data.get("msgtype") or "")
+    content = data.get("content") or {}
+
+    if msgtype in ("picture", "audio", "video"):
+        code = str(content.get("downloadCode") or "")
+        if code:
+            mime = _MIME_BY_MSGTYPE.get(msgtype, "application/octet-stream")
+            ext = {"picture": "jpg", "audio": "amr", "video": "mp4"}.get(msgtype, "bin")
+            items.append(MediaItem(
+                download_code=code,
+                mime=mime,
+                name=f"dingtalk-{msgtype}-{code[:8]}.{ext}",
+                msgtype=msgtype,
+            ))
+    elif msgtype == "file":
+        code = str(content.get("downloadCode") or "")
+        name = str(content.get("fileName") or content.get("fileType") or "file") or "file"
+        if code:
+            items.append(MediaItem(
+                download_code=code,
+                mime="application/octet-stream",
+                name=name,
+                msgtype="file",
+            ))
+    elif msgtype == "richText":
+        for idx, part in enumerate(content.get("richText") or []):
+            if not isinstance(part, dict):
+                continue
+            code = str(part.get("downloadCode") or "")
+            if not code:
+                continue
+            items.append(MediaItem(
+                download_code=code,
+                mime="image/jpeg",
+                name=f"dingtalk-richtext-{idx}-{code[:8]}.jpg",
+                msgtype="richText:image",
+            ))
+    return items
 
 
 def _quote_chain_text(data: dict[str, Any], *, depth: int = 0) -> str:
@@ -139,4 +219,5 @@ def extract_message(data: dict[str, Any]) -> ExtractedMessage:
         at_user_staff_ids=at_staff_ids,
         robot_code=str(data.get("robotCode") or ""),
         chatbot_user_id=str(data.get("chatbotUserId") or ""),
+        media=_extract_media(data),
     )

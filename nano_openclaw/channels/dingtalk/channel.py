@@ -17,7 +17,7 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from nano_openclaw.channels.base import Channel, ChannelAccount
-from nano_openclaw.dingtalk.bot import DingtalkBot
+from nano_openclaw.dingtalk.bot import DingtalkBot, _clone_registry_for_dingtalk
 from nano_openclaw.dingtalk.login_cli import load_persisted_creds
 from nano_openclaw.dingtalk.policy import DingtalkPolicy
 from nano_openclaw.dingtalk.token import DingtalkTokenManager
@@ -25,6 +25,8 @@ from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
     from nano_openclaw.runtime import AgentRuntime
+    from nano_openclaw.schedule.types import CronJob, CronRunRecord
+    from nano_openclaw.tools import ToolRegistry
 
 
 log = get_logger(__name__)
@@ -118,3 +120,54 @@ class DingtalkChannel(Channel):
         self._state = "stopped"
         self._started_at = None
         log.info("dingtalk.channel.stop", f"account={self.account.id}")
+
+    def decorate_tools(self, base: "ToolRegistry", sender_key: str) -> "ToolRegistry":
+        """Tag cron jobs and wakeups created during ``sender_key``'s turn.
+
+        Same shape as :func:`_clone_registry_for_dingtalk`. ``sender_key``
+        is the ``conversationId`` (DingTalk's natural session granularity)
+        so cron completion routes back to the originating chat.
+        """
+        return _clone_registry_for_dingtalk(
+            base,
+            account_id=self.account.id,
+            conversation_id=sender_key,
+        )
+
+    async def notify_completion(
+        self,
+        *,
+        target_key: str,
+        status: str,
+        summary: str,
+        job: "CronJob",
+        record: "CronRunRecord",
+    ) -> None:
+        """Deliver a cron completion message back into ``target_key`` conv.
+
+        ``target_key`` is the conversationId of the turn that created the
+        job. We use the proactive message API rather than ``sessionWebhook``
+        because the original webhook URL has long since expired by the time
+        a scheduled job fires.
+
+        Format mirrors WeChat's notification body but in Markdown since
+        DingTalk's group/DM proactive endpoints render Markdown natively.
+        """
+        if self._bot is None:
+            log.warning(
+                "dingtalk.notify.no_bot",
+                f"account={self.account.id}: notify_completion before start",
+            )
+            return
+        body = (
+            f"**任务通知** · {status}\n\n"
+            f"`{job.name or job.id}`\n\n"
+            f"{summary}".strip()
+        )
+        try:
+            await self._bot.send_proactive(target_key, body)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "dingtalk.notify.send.error",
+                f"target={target_key[:12]}… {type(exc).__name__}: {exc}",
+            )
