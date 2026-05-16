@@ -1150,8 +1150,8 @@ class EmbeddedBackend(Backend):
         """Mutate review-fork config in place.
 
         Accepts a subset of: enabled / trigger_n / cooldown_s / timeout_s /
-        model_aux / debug. Unknown keys are ignored. Returns the updated
-        snapshot. ``NotFoundError`` if the plugin never registered.
+        model_aux. Unknown keys are ignored. Returns the updated snapshot.
+        ``NotFoundError`` if the plugin never registered.
         """
         from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
 
@@ -1170,8 +1170,6 @@ class EmbeddedBackend(Backend):
         if "model_aux" in fields:
             v = fields["model_aux"]
             cfg.model_aux = str(v) if v else None
-        if "debug" in fields:
-            cfg.debug = bool(fields["debug"])
         return await self.review_fork_get()
 
     async def review_fork_run(self, session_key: str | None = None) -> dict[str, Any]:

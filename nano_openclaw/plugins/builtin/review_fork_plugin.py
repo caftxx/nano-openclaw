@@ -39,7 +39,6 @@ class ReviewForkConfig:
     cooldown_s: int = 60
     timeout_s: int = 90
     model_aux: Optional[str] = None
-    debug: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ReviewForkConfig":
@@ -51,7 +50,6 @@ class ReviewForkConfig:
             cooldown_s=int(d.get("cooldown_s", d.get("cooldownS", 60))),
             timeout_s=int(d.get("timeout_s", d.get("timeoutS", 90))),
             model_aux=d.get("model_aux") or d.get("modelAux"),
-            debug=bool(d.get("debug", False)),
         )
 
 
@@ -251,11 +249,10 @@ class ReviewForkState:
             workspace_dir=workspace_dir,
             messages_count=len(messages),
         )
-        if self.cfg.debug:
-            logger.info(
-                "review_fork.spawned",
-                f"review fork spawned run_id={record.run_id} session={session_key}",
-            )
+        logger.info(
+            "review_fork.spawned",
+            f"review fork spawned run_id={record.run_id} session={session_key}",
+        )
         return record.run_id
 
     def _append_run_log(

@@ -466,7 +466,6 @@ class ReviewForkConfigInput(BaseModel):
     cooldown_s: int = Field(default=60, ge=0, alias="cooldown_s", description="Min seconds between review forks")
     timeout_s: int = Field(default=90, ge=10, alias="timeout_s", description="Subagent run timeout in seconds")
     model_aux: Optional[str] = Field(default=None, alias="model_aux", description="Aux model override (provider/id); None = follow parent")
-    debug: bool = Field(default=False, description="Verbose logging")
 
 
 
