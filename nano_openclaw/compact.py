@@ -441,6 +441,31 @@ _PRUNE_INPUT_LEAF_HEAD_CHARS = 200        # max chars per string leaf inside a s
 _DUPLICATE_TOOL_RESULT_TEXT = "[Duplicate tool output — same content as a more recent call]"
 _IMAGE_REMOVED_PLACEHOLDER = "[image removed to save context]"
 
+# Tools whose tool_result / tool_use bodies are safe to microcompact (summarize
+# or truncate). Limited to read-style I/O whose output is reproducible by
+# re-running the call and whose payload is not load-bearing state.
+#
+# Tools deliberately EXCLUDED (preserved verbatim by passes 2 and 3):
+#   - ``todo``: maintains the live task list; truncation drops the plan
+#   - ``apply_patch``: surfaces conflict / hunk feedback the model must read
+#   - ``skill`` / ``skill_install``: side-effectful, may carry install state
+#   - ``sessions_spawn`` / ``subagents``: sub-agent ids + status payloads
+#   - ``current_time`` / ``session_status``: short, already informative
+#   - Any unrecognized name (MCP / skill / plugin tools): unknown semantics
+#
+# Mirrors claude-code's ``COMPACTABLE_TOOLS`` in
+# ``src/services/compact/microCompact.ts``.
+_COMPACTABLE_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_file",
+    "write_file",
+    "list_dir",
+    "bash",
+    "web_fetch",
+    "web_search",
+    "memory_get",
+    "memory_search",
+})
+
 
 def _tool_result_text(block: dict[str, Any]) -> str:
     """Concatenated text from a tool_result block's content list (or "")."""
@@ -651,12 +676,26 @@ def _prune_old_tool_results(
     # Pass 2: replace large tool_result text bodies (older region only).
     # Also strip image blocks from old tool_results — they survive every
     # compaction otherwise (base64 PNGs are several KB each).
+    #
+    # Whitelist gate: only summarize / image-strip results whose originating
+    # tool_use is in ``_COMPACTABLE_TOOL_NAMES``. Non-whitelisted (e.g.
+    # ``todo``, ``apply_patch``) and orphan tool_results are preserved
+    # verbatim — their bodies carry state the model needs intact on recovery.
     for i in range(prune_until):
         msg = history[i]
         if msg.role != "user":
             continue
         for j, block in enumerate(msg.content):
             if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                continue
+            tid = block.get("tool_use_id", "")
+            lookup = call_id_to_tool.get(tid)
+            if lookup is None:
+                # Orphan tool_result — cannot identify originating tool, skip
+                # to stay safe (e.g. todo output would lose its task list).
+                continue
+            tool_name, tool_input = lookup
+            if tool_name not in _COMPACTABLE_TOOL_NAMES:
                 continue
             # Strip images regardless of text size (they're always heavy).
             new_content, had_image = _strip_image_blocks_from_tool_result(
@@ -673,8 +712,6 @@ def _prune_old_tool_results(
             if text.startswith(_DUPLICATE_TOOL_RESULT_TEXT) or text.startswith("["):
                 continue
             if len(text) > _PRUNE_RESULT_THRESHOLD_CHARS:
-                tid = block.get("tool_use_id", "")
-                tool_name, tool_input = call_id_to_tool.get(tid, ("unknown", {}))
                 summary = _summarize_tool_result(tool_name, tool_input, text)
                 msg.content[j] = {
                     **block,
@@ -685,12 +722,18 @@ def _prune_old_tool_results(
     # Pass 3: shrink large tool_use input dicts (older region only).
     # naive truncation breaks JSON; we recurse into the structure and only
     # cap long string leaves.
+    #
+    # Whitelist gate: skip tool_use blocks whose name is not in
+    # ``_COMPACTABLE_TOOL_NAMES``. Truncating e.g. a ``todo`` input would
+    # erase the task list the model wrote.
     for i in range(prune_until):
         msg = history[i]
         if msg.role != "assistant":
             continue
         for j, block in enumerate(msg.content):
             if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            if block.get("name") not in _COMPACTABLE_TOOL_NAMES:
                 continue
             inp = block.get("input")
             if not isinstance(inp, dict):
