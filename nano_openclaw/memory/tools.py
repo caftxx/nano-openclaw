@@ -91,6 +91,12 @@ def memory_get(args: dict[str, Any], workspace_dir: str | None = None) -> str:
         return f"[error reading {rel_path}: {e}]"
 
 
+_VALID_OUTPUT_MODES = ("snippet", "paths_only", "count")
+_CONTEXT_LINES_MIN = 0
+_CONTEXT_LINES_MAX = 20
+_CONTEXT_LINES_DEFAULT = 2
+
+
 def memory_search(
     args: dict[str, Any],
     workspace_dir: str | None = None,
@@ -108,6 +114,9 @@ def memory_search(
         query: Search query (keywords)
         maxResults: Max results (default 10)
         minScore: Minimum match score (default 0.1)
+        contextLines: Lines of context around each hit (default 2, clamped to 0..20)
+        caseSensitive: If true, match case-sensitively (default false)
+        outputMode: "snippet" (default) | "paths_only" | "count"
 
     Returns:
         Search results with file paths, snippets, and line numbers
@@ -116,30 +125,59 @@ def memory_search(
     max_results = int(args.get("maxResults", 10))
     min_score = float(args.get("minScore", 0.1))
 
+    # Knob: context_lines (clamped, never errors)
+    try:
+        context_lines = int(args.get("contextLines", _CONTEXT_LINES_DEFAULT))
+    except (TypeError, ValueError):
+        context_lines = _CONTEXT_LINES_DEFAULT
+    context_lines = max(_CONTEXT_LINES_MIN, min(_CONTEXT_LINES_MAX, context_lines))
+
+    # Knob: case_sensitive
+    case_sensitive = bool(args.get("caseSensitive", False))
+
+    # Knob: output_mode (invalid value silently degrades to "snippet")
+    output_mode = args.get("outputMode", "snippet")
+    if output_mode not in _VALID_OUTPUT_MODES:
+        output_mode = "snippet"
+
     if not workspace_dir:
         return '{"results": [], "error": "no workspace directory"}'
 
     results: list[MemorySearchResult] = []
     workspace = Path(workspace_dir)
 
-    # Keywords from query — filter stopwords and single-char noise
-    raw_keywords = re.findall(r"\w+", query.lower())
-    keywords = [kw for kw in raw_keywords if kw not in _STOPWORDS and len(kw) > 1]
+    # Keywords from query — filter stopwords and single-char noise.
+    # Stopword filtering keys off the lowercased form regardless of case_sensitive,
+    # so the stopword list stays effective across both modes (scoring unchanged).
+    raw_keywords_match = re.findall(r"\w+", query if case_sensitive else query.lower())
+    raw_keywords_for_stopword = re.findall(r"\w+", query.lower())
+
+    keywords: list[str] = []
+    for kw_match, kw_lower in zip(raw_keywords_match, raw_keywords_for_stopword):
+        if kw_lower in _STOPWORDS or len(kw_lower) <= 1:
+            continue
+        keywords.append(kw_match)
     if not keywords:
-        keywords = raw_keywords  # fallback: avoid empty results for all-stopword queries
+        keywords = raw_keywords_match  # fallback: avoid empty results for all-stopword queries
     if not keywords:
         return '{"results": []}'
 
     # Search MEMORY.md
     memory_md = workspace / "MEMORY.md"
     if memory_md.exists():
-        results.extend(_search_file(memory_md, keywords, min_score, workspace))
+        results.extend(_search_file(
+            memory_md, keywords, min_score, workspace,
+            context_lines=context_lines, case_sensitive=case_sensitive,
+        ))
 
     # Search memory/*.md
     memory_dir = workspace / "memory"
     if memory_dir.exists():
         for entry in sorted(memory_dir.glob("*.md")):
-            results.extend(_search_file(entry, keywords, min_score, workspace))
+            results.extend(_search_file(
+                entry, keywords, min_score, workspace,
+                context_lines=context_lines, case_sensitive=case_sensitive,
+            ))
 
     results = _apply_temporal_decay(results, config, now=now)
 
@@ -153,8 +191,22 @@ def memory_search(
 
     # Format output
     if not results:
+        if output_mode == "count":
+            return "Memory search: 0 files, 0 hits."
         return "Memory search: no matches found."
 
+    if output_mode == "count":
+        file_count = len({r.path for r in results})
+        hit_count = len(results)
+        return f"Memory search: {file_count} files, {hit_count} hits."
+
+    if output_mode == "paths_only":
+        output_lines = ["Memory search results:"]
+        for r in results:
+            output_lines.append(f"- {r.path} (score={r.score:.2f})")
+        return "\n".join(output_lines)
+
+    # Default: snippet
     output_lines = ["Memory search results:"]
     for r in results:
         output_lines.append(f"- {r.path}:{r.start_line}-{r.end_line} (score={r.score:.2f})")
@@ -182,6 +234,7 @@ def _search_file(
     min_score: float,
     workspace: Path,
     context_lines: int = 2,
+    case_sensitive: bool = False,
 ) -> list[MemorySearchResult]:
     """Search one file using context-window matching (like ripgrep -C)."""
     try:
@@ -195,18 +248,23 @@ def _search_file(
 
     rel_path = file_path.relative_to(workspace).as_posix()
 
-    # Precompile whole-word patterns; fall back to substring for CJK (no \b boundary)
-    kw_patterns = {kw: re.compile(r"\b" + re.escape(kw) + r"\b") for kw in keywords}
+    # Precompile whole-word patterns; fall back to substring for CJK (no \b boundary).
+    # case_sensitive=False (default) keeps prior behaviour via re.IGNORECASE + lowercase line.
+    pattern_flags = 0 if case_sensitive else re.IGNORECASE
+    kw_patterns = {
+        kw: re.compile(r"\b" + re.escape(kw) + r"\b", pattern_flags)
+        for kw in keywords
+    }
 
     # ── Phase 1: hit detection ──────────────────────────────────────────────
     hit_lines: dict[int, set[str]] = {}
     for i, line in enumerate(lines):
-        line_lower = line.lower()
+        match_line = line if case_sensitive else line.lower()
         hit_kws: set[str] = set()
         for kw, pattern in kw_patterns.items():
-            if pattern.search(line_lower):
+            if pattern.search(match_line):
                 hit_kws.add(kw)
-            elif kw in line_lower:
+            elif kw in match_line:
                 hit_kws.add(kw)
         if hit_kws:
             hit_lines[i] = hit_kws

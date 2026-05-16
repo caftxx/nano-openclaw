@@ -253,6 +253,134 @@ class TestMemorySearch:
         assert decayed[0].score == 0.9
 
 
+class TestMemorySearchKnobs:
+    """Tests for memory_search interface knobs: contextLines, caseSensitive, outputMode."""
+
+    @pytest.fixture
+    def workspace_with_case_content(self):
+        """Workspace where keyword exists only in mixed case (uppercase)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            (ws / "MEMORY.md").write_text(
+                "# Notes\n\n"
+                "Line one of context.\n"
+                "Line two of context.\n"
+                "Here is the SpecialKeyword on a line.\n"
+                "Line four of context.\n"
+                "Line five of context.\n"
+                "Line six of context.\n"
+                "Line seven of context.\n",
+                encoding="utf-8",
+            )
+            yield str(ws)
+
+    def test_context_lines_larger_value_yields_more_lines(self, workspace_with_case_content):
+        """contextLines=5 should produce a longer snippet window than default 2."""
+        default_result = memory_search(
+            {"query": "SpecialKeyword"},
+            workspace_with_case_content,
+        )
+        wide_result = memory_search(
+            {"query": "SpecialKeyword", "contextLines": 5},
+            workspace_with_case_content,
+        )
+
+        # Find the line-range marker, e.g. "MEMORY.md:3-7"
+        def _range_span(text: str) -> int:
+            for token in text.split():
+                if token.startswith("MEMORY.md:"):
+                    rng = token.split(":", 1)[1].split()[0]
+                    start_s, end_s = rng.split("-")
+                    return int(end_s) - int(start_s)
+            return -1
+
+        default_span = _range_span(default_result)
+        wide_span = _range_span(wide_result)
+        assert default_span >= 0
+        assert wide_span > default_span
+
+    def test_case_sensitive_true_misses_lowercase_query(self, workspace_with_case_content):
+        """caseSensitive=true with lowercase query should not match uppercase text."""
+        result = memory_search(
+            {"query": "specialkeyword", "caseSensitive": True},
+            workspace_with_case_content,
+        )
+        assert "no matches found" in result.lower()
+
+    def test_case_sensitive_false_matches_regardless_of_case(self, workspace_with_case_content):
+        """caseSensitive=false (default) should match across cases."""
+        result = memory_search(
+            {"query": "specialkeyword", "caseSensitive": False},
+            workspace_with_case_content,
+        )
+        assert "Memory search results:" in result
+        assert "MEMORY.md" in result
+
+    def test_output_mode_paths_only_excludes_snippet(self, workspace_with_case_content):
+        """outputMode=paths_only should not emit snippet bodies or line ranges."""
+        result = memory_search(
+            {"query": "SpecialKeyword", "outputMode": "paths_only"},
+            workspace_with_case_content,
+        )
+        assert "Memory search results:" in result
+        assert "MEMORY.md" in result
+        # No snippet text body in paths_only mode
+        assert "SpecialKeyword" not in result
+        # No line-range marker in paths_only mode
+        assert "MEMORY.md:" not in result
+
+    def test_output_mode_count_summary(self, workspace_with_case_content):
+        """outputMode=count should emit a single 'N files, M hits' line."""
+        result = memory_search(
+            {"query": "SpecialKeyword", "outputMode": "count"},
+            workspace_with_case_content,
+        )
+        assert "files" in result
+        assert "hits" in result
+        assert "1 files" in result
+        assert "1 hits" in result
+
+    def test_output_modes_share_ranking(self, workspace_with_memory_files):
+        """The same query under all three output modes hits the same files in the same order."""
+        query = {"query": "memory"}
+        snippet = memory_search({**query, "outputMode": "snippet"}, workspace_with_memory_files)
+        paths = memory_search({**query, "outputMode": "paths_only"}, workspace_with_memory_files)
+
+        def _paths_in_order(text: str) -> list[str]:
+            seen: list[str] = []
+            for line in text.splitlines():
+                if not line.startswith("- "):
+                    continue
+                token = line[2:].split(":", 1)[0].split(" (")[0]
+                if token not in seen:
+                    seen.append(token)
+            return seen
+
+        snippet_order = _paths_in_order(snippet)
+        paths_order = _paths_in_order(paths)
+        assert snippet_order == paths_order
+        assert len(snippet_order) > 0
+
+    def test_context_lines_overflow_is_clamped(self, workspace_with_case_content):
+        """contextLines=999 should not error and should be clamped to file bounds (<= 20)."""
+        result = memory_search(
+            {"query": "SpecialKeyword", "contextLines": 999},
+            workspace_with_case_content,
+        )
+        assert "Memory search results:" in result
+        assert "MEMORY.md" in result
+
+    def test_invalid_output_mode_falls_back_to_snippet(self, workspace_with_case_content):
+        """outputMode='bogus' should silently degrade to snippet behavior."""
+        result = memory_search(
+            {"query": "SpecialKeyword", "outputMode": "bogus"},
+            workspace_with_case_content,
+        )
+        # Snippet mode emits line range + snippet body
+        assert "MEMORY.md:" in result
+        assert "SpecialKeyword" in result
+
+
 class TestMemorySearchResult:
     """Tests for MemorySearchResult dataclass."""
 
