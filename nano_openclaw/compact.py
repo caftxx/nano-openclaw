@@ -56,8 +56,19 @@ SUMMARY_PREFIX = (
 LEGACY_SUMMARY_PREFIX = "[Previous conversation summary]"
 
 # How long to skip the summarizer LLM after a failure. Pre-prune still runs
-# in cooldown; only the LLM call is gated.
+# in cooldown; only the LLM call is gated. Used as the base for the
+# exponential backoff applied per-consecutive-failure (60 -> 120 -> 240 -> ...).
 _SUMMARY_FAILURE_COOLDOWN_S = 60.0
+
+# After this many consecutive summarize errors, skip the LLM call entirely
+# (the circuit breaker). Local prune + tail-trim still run so we keep making
+# progress even when the upstream model is wedged.
+MAX_CONSECUTIVE_COMPACT_FAILURES = 3
+
+# Cap on the exponent used by the exponential cooldown (60 * 2**N seconds).
+# At N=4 the cooldown reaches 60 * 16 = 960s (~16 minutes); further failures
+# don't keep doubling the wait.
+_SUMMARY_FAILURE_BACKOFF_EXP_CAP = 4
 
 # Reasonable cap for the structured summary's max_tokens. Hermes scales the
 # budget with content size and caps at 12K; nano keeps it simpler — the
@@ -70,7 +81,7 @@ _SUMMARY_MAX_TOKENS_DEFAULT = 4096
 class CompactionState:
     """Per-session compaction tracking carried alongside ``AgentSession``.
 
-    Three pieces of state survive across iterations of one conversation:
+    Four pieces of state survive across iterations of one conversation:
 
       * ``previous_summary`` — last summary text produced for this session.
         Passed back to ``summarize_history`` so the model UPDATES the prior
@@ -82,6 +93,11 @@ class CompactionState:
         placeholder note instead).
       * ``last_summary_error`` — short human-readable failure reason for
         introspection / logging.
+      * ``consecutive_failures`` — count of summarize calls that raised in
+        a row. Drives the exponential cooldown (60 -> 120 -> 240s ...) and
+        the circuit breaker (skip the LLM entirely once it crosses
+        ``MAX_CONSECUTIVE_COMPACT_FAILURES``). Reset to 0 on any
+        successful summarize. Local prune still runs even when tripped.
 
     All in-process state; reset when the session is reset.
     """
@@ -89,9 +105,20 @@ class CompactionState:
     previous_summary: str | None = None
     summary_cooldown_until: float = 0.0
     last_summary_error: str | None = None
+    consecutive_failures: int = 0
 
     def in_cooldown(self) -> bool:
         return time.monotonic() < self.summary_cooldown_until
+
+    def circuit_open(self) -> bool:
+        """Circuit breaker: True once consecutive failures crossed the cap.
+
+        When open, ``_safe_summarize_history`` short-circuits before the
+        LLM call. The caller still runs prune + tail-trim with the
+        placeholder summary text so context shrinks rather than growing
+        unbounded against a wedged upstream.
+        """
+        return self.consecutive_failures >= MAX_CONSECUTIVE_COMPACT_FAILURES
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +845,11 @@ async def _safe_summarize_history(
     """
     if state is not None and state.in_cooldown():
         return None, False
+    # Circuit breaker: once consecutive failures cross the cap, stop
+    # spending tokens / latency on the upstream. Local prune + tail-trim
+    # still proceed in the caller — only the LLM call is gated.
+    if state is not None and state.circuit_open():
+        return None, False
 
     try:
         previous = state.previous_summary if state is not None else None
@@ -832,20 +864,30 @@ async def _safe_summarize_history(
         err_text = str(exc).strip() or exc.__class__.__name__
         if len(err_text) > 220:
             err_text = err_text[:217].rstrip() + "..."
+        if state is not None:
+            state.consecutive_failures += 1
+            exp = min(state.consecutive_failures, _SUMMARY_FAILURE_BACKOFF_EXP_CAP)
+            cooldown_s = _SUMMARY_FAILURE_COOLDOWN_S * (2 ** (exp - 1))
+            state.summary_cooldown_until = time.monotonic() + cooldown_s
+            state.last_summary_error = err_text
+        else:
+            cooldown_s = _SUMMARY_FAILURE_COOLDOWN_S
         logger.warning(
             "compact.summarize.failed",
             f"summarize_history raised {type(exc).__name__}: {err_text}; "
-            f"entering {_SUMMARY_FAILURE_COOLDOWN_S:.0f}s cooldown",
+            f"entering {cooldown_s:.0f}s cooldown "
+            f"(consecutive_failures="
+            f"{state.consecutive_failures if state is not None else 1})",
         )
-        if state is not None:
-            state.summary_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_S
-            state.last_summary_error = err_text
         return None, True
 
     if state is not None:
         state.previous_summary = summary
         state.last_summary_error = None
         state.summary_cooldown_until = 0.0
+        # Success — reset the consecutive failure counter so a future
+        # blip starts back at the 60s base cooldown.
+        state.consecutive_failures = 0
     return summary, True
 
 
