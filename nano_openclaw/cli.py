@@ -10,7 +10,6 @@ Slash commands: ``/quit``, ``/clear`` (clear history, keep session), ``/new`` (n
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import threading
@@ -160,7 +159,7 @@ async def repl(
 
     while True:
         try:
-            user_input = (await _repl_input(console)).strip()
+            user_input = (await _get_pt_session().prompt_async()).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return
@@ -1026,9 +1025,11 @@ def _update_session_metadata(
 
 def _load_input_history(messages: list[Message]) -> None:
     """Populate prompt_toolkit history from session's user messages."""
-    global _pt_history
+    global _pt_history, _pt_session
     # get_strings() returns a reversed copy, not the internal list; create a
     # fresh instance instead so the old session's history is fully replaced.
+    # PromptSession binds history at construction — drop the cached session so
+    # the next _get_pt_session() call rebuilds against the new history.
     texts: list[str] = []
     for msg in messages:
         if msg.role != "user":
@@ -1041,12 +1042,7 @@ def _load_input_history(messages: list[Message]) -> None:
         if text:
             texts.append(text)
     _pt_history = _InMemoryHistory(history_strings=texts)
-
-
-async def _repl_input(_console: Console) -> str:
-    """Input prompt with full readline editing and history via prompt_toolkit."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _pt_prompt(">>> ", history=_pt_history))
+    _pt_session = None
 
 
 @contextmanager
@@ -1294,9 +1290,116 @@ def _get_session_snippet(session_dir: Path, session_id: str, max_chars: int = 60
 
 _SESSIONS_PAGE_SIZE = 20
 
-from prompt_toolkit import prompt as _pt_prompt
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.filters import has_completions as _has_completions
 from prompt_toolkit.history import InMemoryHistory as _InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings as _KeyBindings
+from prompt_toolkit.styles import Style as _PTStyle
 _pt_history: _InMemoryHistory = _InMemoryHistory()
+_pt_session: PromptSession | None = None
+
+
+# Completion menu palette — ansi-named colors so the look adapts to whatever
+# theme the user's terminal is set to (default bg, etc), instead of the
+# library's hard-coded white box. Selected row mirrors the cyan accent that
+# the banner / sessions table / help table already use.
+_PT_STYLE = _PTStyle.from_dict({
+    "completion-menu": "bg:default",
+    "completion-menu.completion": "bg:default fg:default",
+    "completion-menu.completion.current": "bg:ansicyan fg:ansiblack bold",
+    "completion-menu.meta.completion": "bg:default fg:ansibrightblack",
+    "completion-menu.meta.completion.current": "bg:ansicyan fg:ansiblack",
+    "scrollbar.background": "bg:default",
+    "scrollbar.button": "bg:ansibrightblack",
+})
+
+
+def _build_pt_keybindings() -> _KeyBindings:
+    """Custom keybindings layered on top of prompt_toolkit defaults.
+
+    Esc on a visible completion menu cancels it immediately. Without this the
+    default emacs-mode Esc-as-meta-prefix logic waits ~500ms for a follow-up
+    key before treating Esc as a standalone press — feels laggy. The
+    ``has_completions`` filter keeps the meta-prefix behavior intact when no
+    menu is showing.
+    """
+    kb = _KeyBindings()
+
+    @kb.add("escape", filter=_has_completions, eager=True)
+    def _(event):
+        event.current_buffer.cancel_completion()
+
+    return kb
+
+
+# Snapshot stdin termios at import time and restore it on process exit.
+# prompt_toolkit usually cleans up after itself, but some exit paths
+# (notably WordCompleter + async prompt followed by a slash-driven exit)
+# leak a missing ECHO flag, leaving the parent shell with no input echo.
+# atexit gives us a no-cost belt-and-braces restore on any exit path.
+_initial_termios: Any = None
+if sys.platform != "win32":
+    try:
+        import termios as _termios
+
+        if sys.stdin.isatty():
+            _initial_termios = _termios.tcgetattr(sys.stdin.fileno())
+    except Exception:
+        _initial_termios = None
+
+
+def _restore_terminal_state() -> None:
+    if _initial_termios is None:
+        return
+    try:
+        import termios as _termios
+
+        _termios.tcsetattr(sys.stdin.fileno(), _termios.TCSADRAIN, _initial_termios)
+    except Exception:
+        pass
+
+
+if _initial_termios is not None:
+    import atexit as _atexit
+
+    _atexit.register(_restore_terminal_state)
+
+
+def _slash_completer() -> WordCompleter:
+    """Build a slash completer from the real ``HELP_ENTRIES`` catalogue.
+
+    Imported lazily to avoid a top-of-file cycle through ``gateway.slash``.
+    """
+    from nano_openclaw.gateway.slash import HELP_ENTRIES
+    words: list[str] = []
+    for entry in HELP_ENTRIES:
+        words.append(entry.command)
+        words.extend(entry.aliases)
+    # WORD=True splits on whitespace (not alphanumeric boundary), so the
+    # leading "/" is part of the current token — otherwise typing "/ski<Tab>"
+    # would look up "ski" against words that all start with "/" and miss.
+    return WordCompleter(sorted(set(words)), ignore_case=True, WORD=True)
+
+
+def _get_pt_session() -> PromptSession:
+    """Lazily build (and rebuild after history reset) the shared PromptSession.
+
+    PromptSession binds the ``history=`` object at construction, so swapping
+    ``_pt_history`` to a new instance (see ``_load_input_history``) requires
+    discarding the old session — the next call recreates one bound to the
+    fresh history.
+    """
+    global _pt_session
+    if _pt_session is None:
+        _pt_session = PromptSession(
+            ">>> ",
+            history=_pt_history,
+            completer=_slash_completer(),
+            style=_PT_STYLE,
+            key_bindings=_build_pt_keybindings(),
+        )
+    return _pt_session
 
 
 def _list_sessions_cli(

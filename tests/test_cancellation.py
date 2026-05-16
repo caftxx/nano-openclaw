@@ -4,6 +4,7 @@ import asyncio
 import shutil
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -360,11 +361,13 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
 
     inputs = iter(["hello", "/quit"])
 
-    async def mock_repl_input(_console):
+    async def fake_prompt_async():
         return next(inputs)
 
+    fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
+
     monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
-    monkeypatch.setattr("nano_openclaw.cli._repl_input", mock_repl_input)
+    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
     monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "nano_openclaw.cli.AgentSession.run_turn",
@@ -389,8 +392,10 @@ def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
 
     inputs = iter(["/new", "hello", "/quit"])
 
-    async def mock_repl_input(_console):
+    async def fake_prompt_async():
         return next(inputs)
+
+    fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
 
     async def fake_stream_response(**_kwargs):
         yield TextDelta(text="partial")
@@ -398,7 +403,7 @@ def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
 
     try:
         monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
-        monkeypatch.setattr("nano_openclaw.cli._repl_input", mock_repl_input)
+        monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
         monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
         monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
 

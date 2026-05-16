@@ -446,9 +446,9 @@ async def ws_repl(
 
     try:
         while True:
-            from nano_openclaw.cli import _repl_input  # reuse prompt_toolkit input
+            from nano_openclaw.cli import _get_pt_session  # reuse prompt_toolkit input
             try:
-                user_input = (await _repl_input(console)).strip()
+                user_input = (await _get_pt_session().prompt_async()).strip()
             except (EOFError, KeyboardInterrupt):
                 console.print()
                 return
