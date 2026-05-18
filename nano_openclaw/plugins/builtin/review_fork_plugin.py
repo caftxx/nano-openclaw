@@ -35,7 +35,7 @@ REVIEW_FORK_LABEL = "review"
 
 @dataclass
 class ReviewForkConfig:
-    enabled: bool = False
+    enabled: bool = True
     trigger_n: int = 10
     cooldown_s: int = 60
     timeout_s: int = 90
@@ -46,7 +46,7 @@ class ReviewForkConfig:
         if not d:
             return cls()
         return cls(
-            enabled=bool(d.get("enabled", False)),
+            enabled=bool(d.get("enabled", True)),
             trigger_n=int(d.get("trigger_n", d.get("triggerN", 10))),
             cooldown_s=int(d.get("cooldown_s", d.get("cooldownS", 60))),
             timeout_s=int(d.get("timeout_s", d.get("timeoutS", 90))),

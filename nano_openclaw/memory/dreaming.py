@@ -32,7 +32,7 @@ log = get_logger(__name__)
 
 @dataclass
 class DreamingConfig:
-    enabled: bool = False
+    enabled: bool = True
     frequency: str = "0 3 * * *"
     min_score: float = 0.5
     min_recall_count: int = 2

@@ -433,7 +433,7 @@ class DreamingConfigInput(BaseModel):
     """Dreaming plugin configuration, aligns with openclaw memory-core dreaming schema."""
     model_config = ConfigDict(populate_by_name=True)
 
-    enabled: bool = False
+    enabled: bool = True
     frequency: str = Field(default="0 3 * * *", description="Cron schedule for dreaming sweep")
     minScore: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum score to promote")
     minRecallCount: int = Field(default=2, ge=1, description="Minimum recall count to qualify")
@@ -455,13 +455,13 @@ class ScheduleConfigInput(BaseModel):
 class ReviewForkConfigInput(BaseModel):
     """Background Review Fork plugin configuration.
 
-    Off by default; enable to spawn a restricted review subagent every N
-    end_turns (with cooldown) to distill durable lessons into MEMORY.md /
-    existing SKILL.md. See nano_openclaw/plugins/builtin/review_fork_plugin.py.
+    On by default; spawns a restricted review subagent every N end_turns
+    (with cooldown) to distill durable lessons into MEMORY.md / existing
+    SKILL.md. See nano_openclaw/plugins/builtin/review_fork_plugin.py.
     """
     model_config = ConfigDict(populate_by_name=True)
 
-    enabled: bool = Field(default=False, description="Enable Review Fork (off by default)")
+    enabled: bool = Field(default=True, description="Enable Review Fork (on by default)")
     trigger_n: int = Field(default=10, ge=1, alias="trigger_n", description="Trigger every N end_turns")
     cooldown_s: int = Field(default=60, ge=0, alias="cooldown_s", description="Min seconds between review forks")
     timeout_s: int = Field(default=90, ge=10, alias="timeout_s", description="Subagent run timeout in seconds")

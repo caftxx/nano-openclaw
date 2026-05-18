@@ -1814,7 +1814,7 @@ async def _handle_dreaming_command(
 
     # Lazily init dreaming config on LoopConfig
     if cfg.dreaming_config is None:
-        cfg.dreaming_config = DreamingConfig(enabled=False)
+        cfg.dreaming_config = DreamingConfig(enabled=True)
 
     dc = cfg.dreaming_config
     workspace_dir = str(cfg.workspace_dir) if cfg.workspace_dir else None

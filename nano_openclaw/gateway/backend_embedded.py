@@ -1070,7 +1070,7 @@ class EmbeddedBackend(Backend):
         from nano_openclaw.memory.dreaming import DreamingConfig
 
         if self.runtime.cfg.dreaming_config is None:
-            self.runtime.cfg.dreaming_config = DreamingConfig(enabled=False)
+            self.runtime.cfg.dreaming_config = DreamingConfig(enabled=True)
         cfg = self.runtime.cfg.dreaming_config
 
         if "enabled" in fields:
