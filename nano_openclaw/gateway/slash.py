@@ -934,6 +934,17 @@ async def _cmd_curator(backend, renderer: SlashRenderer, state, args, cmd):
     """Inspect / toggle / run Curator Lite."""
     sub = args[0].lower() if args else "status"
 
+    def _fmt_local(iso: str | None) -> str:
+        """Render a UTC ISO-8601 timestamp from telemetry as local time.
+        Falls back to the raw string if parsing fails — telemetry rows may
+        carry partial / legacy formats we don't want to swallow."""
+        if not iso:
+            return "never"
+        try:
+            return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return iso
+
     def _render_status(s: dict[str, Any]) -> None:
         if not s.get("configured", True):
             renderer.panel("Curator: not configured", title="Curator", style="info")
@@ -947,7 +958,7 @@ async def _cmd_curator(backend, renderer: SlashRenderer, state, args, cmd):
             f"{counts.get('archived', 0)} archived\n"
             f"Rules: stale after {s.get('stale_after_days')}d · "
             f"archive after {s.get('archive_after_days')}d\n"
-            f"Runs: {s.get('run_count', 0)} · Last: {s.get('last_run_at') or 'never'}\n"
+            f"Runs: {s.get('run_count', 0)} · Last: {_fmt_local(s.get('last_run_at'))}\n"
             f"Summary: {s.get('last_run_summary') or '(none)'}\n"
             f"Report: {s.get('last_report_path') or '(none)'}"
         )
@@ -960,7 +971,7 @@ async def _cmd_curator(backend, renderer: SlashRenderer, state, args, cmd):
                     row.get("name", ""),
                     row.get("state", ""),
                     str(row.get("activity_count", 0)),
-                    row.get("last_activity_at") or "never",
+                    _fmt_local(row.get("last_activity_at")),
                 ])
             renderer.table(["Skill", "State", "Activity", "Last Activity"], rows, title="Least Recent Skills")
 
