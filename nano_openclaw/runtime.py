@@ -237,6 +237,7 @@ async def build_agent_runtime(
         image_model=image_model_id,
         thinking_level=config.resolve_thinking_level(model_ref),
         workspace_dir=workspace_dir,
+        state_dir=state_dir,
         session_key=session_id or agent_id,
         bootstrap_max_chars=config.agents.defaults.bootstrapMaxChars,
         bootstrap_total_max_chars=config.agents.defaults.bootstrapTotalMaxChars,

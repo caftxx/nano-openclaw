@@ -1234,6 +1234,65 @@ class EmbeddedBackend(Backend):
             }
         return {"run_id": run_id, "skipped": False}
 
+    # ─── Curator Lite ───
+
+    async def curator_get(self) -> dict[str, Any]:
+        from nano_openclaw.skills.curator import status
+
+        state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
+        if not state_dir:
+            return {"configured": False}
+        return status(state_dir)
+
+    async def curator_set(self, **fields: Any) -> dict[str, Any]:
+        from nano_openclaw.skills.curator import set_enabled, set_paused
+
+        state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
+        if not state_dir:
+            raise BackendError("no state_dir on this runtime; curator unavailable")
+        if "enabled" in fields:
+            return set_enabled(state_dir, bool(fields["enabled"]))
+        if "paused" in fields:
+            return set_paused(state_dir, bool(fields["paused"]))
+        return await self.curator_get()
+
+    async def curator_run(self, dry_run: bool = False) -> dict[str, Any]:
+        from nano_openclaw.skills.curator import run
+
+        state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
+        if not state_dir:
+            raise BackendError("no state_dir on this runtime; curator unavailable")
+        return run(state_dir, dry_run=dry_run)
+
+    # ─── Checkpoints ───
+
+    async def checkpoint_list(self) -> dict[str, Any]:
+        from nano_openclaw.checkpoint import list_checkpoints
+
+        state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
+        checkpoints = [cp.__dict__ for cp in list_checkpoints(state_dir)]
+        return {"checkpoints": checkpoints}
+
+    async def checkpoint_create(self, reason: str = "manual") -> dict[str, Any]:
+        from nano_openclaw.checkpoint import create_checkpoint
+
+        state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
+        workspace_dir = str(self.runtime.workspace_dir) if self.runtime.workspace_dir else ""
+        cp = create_checkpoint(state_dir, workspace_dir, reason=reason or "manual")
+        if cp is None:
+            raise BackendError("checkpoint.create unavailable without state_dir and workspace_dir")
+        return {"checkpoint": cp.__dict__}
+
+    async def checkpoint_restore(self, checkpoint_id: str) -> dict[str, Any]:
+        from nano_openclaw.checkpoint import restore_checkpoint
+
+        state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
+        workspace_dir = str(self.runtime.workspace_dir) if self.runtime.workspace_dir else ""
+        cp = restore_checkpoint(state_dir, checkpoint_id, workspace_dir=workspace_dir)
+        if cp is None:
+            raise NotFoundError(f"checkpoint not found or ambiguous: {checkpoint_id}")
+        return {"restored": cp.__dict__}
+
     # ─── Introspection (tools / skills / plugins / hooks) ───
 
     async def tools_list(self) -> list[dict[str, Any]]:

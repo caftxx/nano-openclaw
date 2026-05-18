@@ -83,6 +83,8 @@ def test_methods_v1_includes_features():
         "active_memory.get", "active_memory.set",
         "dreaming.get", "dreaming.set", "dreaming.run",
         "review_fork.get", "review_fork.set", "review_fork.run",
+        "curator.get", "curator.set", "curator.run",
+        "checkpoint.list", "checkpoint.create", "checkpoint.restore",
     }
     assert expected.issubset(METHODS_V1)
 
@@ -107,6 +109,24 @@ def test_active_memory_get_unconfigured_returns_minimal(tmp_path):
             payload = await backend.active_memory_get()
             assert payload["configured"] is False
             assert payload["enabled"] is False
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_curator_and_checkpoint_backend_smoke(tmp_path):
+    async def run():
+        _, backend = _make_ctx(tmp_path)
+        try:
+            curator_status = await backend.curator_get()
+            assert curator_status["configured"] is True
+            assert curator_status["total"] == 0
+
+            created = await backend.checkpoint_create(reason="smoke")
+            assert created["checkpoint"]["reason"] == "smoke"
+            listed = await backend.checkpoint_list()
+            assert len(listed["checkpoints"]) == 1
         finally:
             await backend.aclose()
 

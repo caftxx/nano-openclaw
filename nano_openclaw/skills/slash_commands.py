@@ -29,6 +29,8 @@ BUILTIN_COMMANDS: frozenset[str] = frozenset(
         "new",
         "context",
         "compact",
+        "checkpoint",
+        "curator",
         "sessions",
         "save",
         "skills",

@@ -637,6 +637,24 @@ class WebSocketBackend(Backend):
             params["session_key"] = session_key
         return await self._call("review_fork.run", params) or {}
 
+    async def curator_get(self) -> dict[str, Any]:
+        return await self._call("curator.get") or {"configured": False}
+
+    async def curator_set(self, **fields: Any) -> dict[str, Any]:
+        return await self._call("curator.set", dict(fields)) or {"configured": False}
+
+    async def curator_run(self, dry_run: bool = False) -> dict[str, Any]:
+        return await self._call("curator.run", {"dry_run": bool(dry_run)}) or {}
+
+    async def checkpoint_list(self) -> dict[str, Any]:
+        return await self._call("checkpoint.list") or {"checkpoints": []}
+
+    async def checkpoint_create(self, reason: str = "manual") -> dict[str, Any]:
+        return await self._call("checkpoint.create", {"reason": reason}) or {}
+
+    async def checkpoint_restore(self, checkpoint_id: str) -> dict[str, Any]:
+        return await self._call("checkpoint.restore", {"checkpoint_id": checkpoint_id}) or {}
+
     # ─── Introspection (tools / skills / plugins / hooks) ───
 
     async def tools_list(self) -> list[dict[str, Any]]:

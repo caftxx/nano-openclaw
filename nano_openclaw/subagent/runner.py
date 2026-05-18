@@ -130,6 +130,7 @@ class SubagentRunner:
             image_model=base_cfg.image_model,
             thinking_level=thinking,
             workspace_dir=workspace_dir,
+            state_dir=base_cfg.state_dir,
             session_key=record.child_session_key,
             bootstrap_max_chars=base_cfg.bootstrap_max_chars,
             bootstrap_total_max_chars=base_cfg.bootstrap_total_max_chars,

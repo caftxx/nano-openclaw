@@ -8,6 +8,7 @@ durable user preferences / lessons into MEMORY.md or an existing SKILL.md.
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -217,6 +218,21 @@ class ReviewForkState:
             run_timeout_seconds=self.cfg.timeout_s,
             cleanup=SubagentCleanupMode.KEEP,
         )
+        def _on_review_event(ev: Any) -> None:
+            try:
+                from nano_openclaw.loop import SubagentAnnounced
+                if isinstance(ev, SubagentAnnounced):
+                    self._append_result_log(
+                        now=time.time(),
+                        run_id=ev.run_id,
+                        status=ev.status,
+                        elapsed_ms=ev.elapsed_ms,
+                        result_text=ev.result_text,
+                        error_message=ev.error_message,
+                    )
+            except Exception:
+                pass
+
         try:
             record = runner.spawn(
                 params,
@@ -226,7 +242,7 @@ class ReviewForkState:
                 session_dir=Path(session_dir) if session_dir else Path("."),
                 workspace_dir=Path(workspace_dir),
                 parent_registry=restricted,
-                on_event=None,
+                on_event=_on_review_event,
             )
         except Exception as exc:  # noqa: BLE001 - plugin must not break loop
             logger.warning(
@@ -278,10 +294,46 @@ class ReviewForkState:
                 "trigger_n": self.cfg.trigger_n,
                 "model_aux": self.cfg.model_aux,
             }
-            import json
             with log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception:  # noqa: BLE001 - observability best-effort
+            pass
+
+    def _append_result_log(
+        self,
+        *,
+        now: float,
+        run_id: str,
+        status: str,
+        elapsed_ms: Optional[int],
+        result_text: Optional[str],
+        error_message: Optional[str],
+    ) -> None:
+        if self.state_dir is None:
+            return
+        parsed: Any = None
+        raw = (result_text or "").strip()
+        if raw and raw != "NOOP":
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+        try:
+            log_path = self.state_dir / "review-fork-results.jsonl"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "ts": now,
+                "run_id": run_id,
+                "status": status,
+                "elapsed_ms": elapsed_ms,
+                "noop": raw == "NOOP",
+                "structured": parsed if isinstance(parsed, dict) else None,
+                "summary": (parsed or {}).get("summary") if isinstance(parsed, dict) else raw[:240],
+                "error_message": error_message,
+            }
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
             pass
 
     def status(self) -> dict[str, Any]:

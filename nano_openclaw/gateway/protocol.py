@@ -153,10 +153,12 @@ METHODS_V1 = frozenset({
     "channels.status", "channels.start", "channels.stop",
     # Subagents
     "subagents.list", "subagents.kill",
-    # Features (active-memory / dreaming / review-fork)
+    # Features (active-memory / dreaming / review-fork / curator / checkpoint)
     "active_memory.get", "active_memory.set",
     "dreaming.get", "dreaming.set", "dreaming.run",
     "review_fork.get", "review_fork.set", "review_fork.run",
+    "curator.get", "curator.set", "curator.run",
+    "checkpoint.list", "checkpoint.create", "checkpoint.restore",
     # Introspection (tools / skills / plugins / hooks)
     "tools.list", "skills.list", "plugins.list", "hooks.list",
     # Misc

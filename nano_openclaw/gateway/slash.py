@@ -70,6 +70,8 @@ HELP_ENTRIES: tuple[HelpEntry, ...] = (
     HelpEntry("/clear", "", "Clear current session history"),
     HelpEntry("/compact", "", "Summarize / compact history"),
     HelpEntry("/context", "", "Context-window budget snapshot"),
+    HelpEntry("/checkpoint", "list|create|restore <id>", "Workspace checkpoints"),
+    HelpEntry("/curator", "status|on|off|pause|resume|run|dry-run", "Skill lifecycle curator"),
     HelpEntry("/dreaming", "status|on|off|run", "Dreaming config"),
     HelpEntry("/health", "", "Daemon health snapshot"),
     HelpEntry("/help", "", "Show this list"),
@@ -928,6 +930,99 @@ async def _cmd_review_fork(backend, renderer: SlashRenderer, state, args, cmd):
     renderer.dim("usage: /review-fork [status|on|off|run]")
 
 
+async def _cmd_curator(backend, renderer: SlashRenderer, state, args, cmd):
+    """Inspect / toggle / run Curator Lite."""
+    sub = args[0].lower() if args else "status"
+
+    def _render_status(s: dict[str, Any]) -> None:
+        if not s.get("configured", True):
+            renderer.panel("Curator: not configured", title="Curator", style="info")
+            return
+        counts = s.get("counts") or {}
+        body = (
+            f"State: {'enabled' if s.get('enabled') else 'disabled'}"
+            f"{' (paused)' if s.get('paused') else ''}\n"
+            f"Skills: {s.get('total', 0)} total · "
+            f"{counts.get('active', 0)} active · {counts.get('stale', 0)} stale · "
+            f"{counts.get('archived', 0)} archived\n"
+            f"Rules: stale after {s.get('stale_after_days')}d · "
+            f"archive after {s.get('archive_after_days')}d\n"
+            f"Runs: {s.get('run_count', 0)} · Last: {s.get('last_run_at') or 'never'}\n"
+            f"Summary: {s.get('last_run_summary') or '(none)'}\n"
+            f"Report: {s.get('last_report_path') or '(none)'}"
+        )
+        renderer.panel(body, title="Curator", style="info")
+        least = s.get("least_recent") or []
+        if least:
+            rows = []
+            for row in least[:8]:
+                rows.append([
+                    row.get("name", ""),
+                    row.get("state", ""),
+                    str(row.get("activity_count", 0)),
+                    row.get("last_activity_at") or "never",
+                ])
+            renderer.table(["Skill", "State", "Activity", "Last Activity"], rows, title="Least Recent Skills")
+
+    if sub == "status":
+        _render_status(await backend.curator_get())
+        return
+    if sub in ("on", "off"):
+        _render_status(await backend.curator_set(enabled=(sub == "on")))
+        return
+    if sub in ("pause", "resume"):
+        _render_status(await backend.curator_set(paused=(sub == "pause")))
+        return
+    if sub in ("run", "dry-run"):
+        result = await backend.curator_run(dry_run=(sub == "dry-run"))
+        if result.get("skipped"):
+            renderer.dim(f"curator skipped: {result.get('reason')}")
+            return
+        counts = result.get("counts") or {}
+        renderer.panel(
+            f"checked={counts.get('checked', 0)}  "
+            f"stale={counts.get('marked_stale', 0)}  "
+            f"archived={counts.get('archived', 0)}  "
+            f"reactivated={counts.get('reactivated', 0)}\n"
+            f"report: {result.get('report_path')}",
+            title="Curator",
+            style="info",
+        )
+        return
+    renderer.dim("usage: /curator [status|on|off|pause|resume|run|dry-run]")
+
+
+async def _cmd_checkpoint(backend, renderer: SlashRenderer, state, args, cmd):
+    sub = args[0].lower() if args else "list"
+    if sub == "list":
+        result = await backend.checkpoint_list()
+        checkpoints = result.get("checkpoints") or []
+        if not checkpoints:
+            renderer.dim("(no checkpoints)")
+            return
+        rows = [
+            [cp.get("id", "")[:18], cp.get("created_at", ""), cp.get("reason", "")]
+            for cp in checkpoints[:20]
+        ]
+        renderer.table(["ID", "Created", "Reason"], rows, title="Checkpoints")
+        return
+    if sub == "create":
+        reason = " ".join(args[1:]).strip() or "manual"
+        result = await backend.checkpoint_create(reason=reason)
+        cp = result.get("checkpoint") or {}
+        renderer.dim(f"checkpoint created: {cp.get('id')}")
+        return
+    if sub == "restore":
+        if len(args) < 2:
+            renderer.dim("usage: /checkpoint restore <id_prefix>")
+            return
+        result = await backend.checkpoint_restore(args[1])
+        cp = result.get("restored") or {}
+        renderer.warning(f"restored checkpoint: {cp.get('id')}")
+        return
+    renderer.dim("usage: /checkpoint [list|create [reason]|restore <id_prefix>]")
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Renderers reused by the embedded REPL banner
 # ────────────────────────────────────────────────────────────────────────────
@@ -1026,6 +1121,8 @@ _HANDLERS = {
     "/sessions": _cmd_sessions,
     "/session": _cmd_session,
     "/context": _cmd_context,
+    "/checkpoint": _cmd_checkpoint,
+    "/curator": _cmd_curator,
     "/compact": _cmd_compact,
     "/usage": _cmd_usage,
     "/todos": _cmd_todos,

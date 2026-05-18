@@ -30,7 +30,10 @@ existing SKILL.md.
 
 # Output
 - If nothing worth recording: respond with the single token NOOP and stop.
-- Otherwise: use read_file -> write_file flow. End with a one-line summary.
+- Otherwise: use read_file -> write_file flow. End with one JSON object on a
+  single line using this schema:
+  {{"memory_additions": [], "user_preferences": [], "skill_patches": [], "ignored_items": [], "summary": "..."}}
+  Keep every array item short. Do not wrap the JSON in markdown fences.
 
 # Recent Conversation
 {transcript_blob}

@@ -307,6 +307,7 @@ class LoopConfig:
     thinking_level: ThinkingLevel = "off"
     # Workspace bootstrap (mirrors openclaw workspace bootstrap injection)
     workspace_dir: Path | None = None  # Path to workspace directory
+    state_dir: Path | None = None  # State directory for telemetry/checkpoints
     session_key: str = "default"  # Session identifier for caching
     bootstrap_max_chars: int = 12000  # Per-file character budget
     bootstrap_total_max_chars: int = 60000  # Total character budget
@@ -568,6 +569,18 @@ class AgentSession:
             eligible_entries,
             user_invocable_only=False,
         )
+        try:
+            from nano_openclaw.skills.usage import record_event
+            for skill_name, skill in model_registry.items():
+                record_event(
+                    self.cfg.state_dir,
+                    skill_name,
+                    "load",
+                    source=skill.source,
+                    path=skill.filePath,
+                )
+        except Exception:
+            pass
         self.registry.set_eligible_skills(model_registry)
         return command, remaining_text, skill_registry
 
@@ -586,6 +599,17 @@ class AgentSession:
         if command:
             skill_context = build_slash_command_context(command)
             content.append({"type": "text", "text": skill_context})
+            try:
+                from nano_openclaw.skills.usage import record_event
+                record_event(
+                    self.cfg.state_dir,
+                    command.name,
+                    "use",
+                    source=command.skill.source,
+                    path=command.skill.filePath,
+                )
+            except Exception:
+                pass
             on_event(SkillInvoked(skill_name=command.name, skill_path=command.skill.filePath))
 
         cleaned_text, image_refs = parse_image_refs(remaining_text, workspace_dir=self.cfg.workspace_dir)

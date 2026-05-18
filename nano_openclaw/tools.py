@@ -228,10 +228,34 @@ class ToolRegistry:
         # in a thread pool to avoid blocking the event loop.
         try:
             if name == "skill":
+                skill_name = str(args.get("skill") or "")
+                skill = ctx.eligible_skills.get(skill_name) if ctx.eligible_skills else None
+                if skill is not None:
+                    try:
+                        from nano_openclaw.skills.usage import record_event
+                        record_event(
+                            ctx.state_dir,
+                            skill_name,
+                            "use",
+                            source=skill.source,
+                            path=skill.filePath,
+                        )
+                    except Exception:
+                        pass
                 raw = tool.run(args, eligible_skills=ctx.eligible_skills)
             elif name == "session_status":
                 raw = tool.run(args, **ctx.session_status_context)
             elif name in ("read_file", "write_file", "list_dir", "apply_patch"):
+                if name in ("write_file", "apply_patch"):
+                    try:
+                        from nano_openclaw.checkpoint import create_checkpoint
+                        create_checkpoint(
+                            ctx.state_dir,
+                            ctx.workspace_dir,
+                            reason=f"auto-before-{name}",
+                        )
+                    except Exception:
+                        pass
                 raw = tool.run(args, workspace_dir=ctx.workspace_dir)
             elif name == "bash":
                 raw = tool.run(
@@ -459,7 +483,7 @@ async def _bash(
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {cmdline}")
+        log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {command}")
         proc.kill()
         await proc.communicate()
         return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
