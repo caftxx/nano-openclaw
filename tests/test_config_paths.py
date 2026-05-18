@@ -277,6 +277,63 @@ class TestResolveAgentWorkspaceDir:
                 ws = resolve_agent_workspace_dir(config, "default", env)
                 assert ws == Path.home() / STATE_DIRNAME / "workspace"
 
+    def test_default_agent_follows_explicit_state_dir_env(self, tmp_path):
+        """When NANO_OPENCLAW_STATE_DIR is set, default agent's workspace
+        lives under it (state_dir/workspace) — config and workspace must
+        not split across two locations."""
+        config = NanoOpenClawConfig()
+        state_dir = tmp_path / "explicit-state"
+        state_dir.mkdir()
+
+        env = {"NANO_OPENCLAW_STATE_DIR": str(state_dir)}
+        ws = resolve_agent_workspace_dir(config, "default", env)
+        assert ws == state_dir.resolve() / "workspace"
+
+    def test_default_agent_follows_project_state_dir(self, tmp_path):
+        """When state_dir is project-level (cwd contains
+        .nano-openclaw/nano-openclaw.json5), default agent's workspace
+        lives under it too."""
+        config = NanoOpenClawConfig()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        state_dir = project_dir / STATE_DIRNAME
+        state_dir.mkdir()
+        (state_dir / CONFIG_FILENAME).write_text("{}")
+
+        env = {}
+        with patch('pathlib.Path.cwd', return_value=project_dir):
+            ws = resolve_agent_workspace_dir(config, "default", env)
+            assert ws == state_dir.resolve() / "workspace"
+
+    def test_default_agent_explicit_state_dir_ignores_profile(self, tmp_path):
+        """NANO_OPENCLAW_PROFILE only affects the home-fallback path.
+        When state_dir is explicit the workspace is just state_dir/workspace
+        — explicit state_dir is already the isolation boundary, layering
+        profile on top would duplicate it confusingly."""
+        config = NanoOpenClawConfig()
+        state_dir = tmp_path / "explicit-state"
+        state_dir.mkdir()
+
+        env = {
+            "NANO_OPENCLAW_STATE_DIR": str(state_dir),
+            "NANO_OPENCLAW_PROFILE": "dev",
+        }
+        ws = resolve_agent_workspace_dir(config, "default", env)
+        assert ws == state_dir.resolve() / "workspace"
+        # NOT workspace-dev:
+        assert ws != state_dir.resolve() / "workspace-dev"
+
+    def test_default_agent_profile_applies_only_to_home_state_dir(self):
+        """When state_dir is the home fallback, PROFILE still picks
+        workspace-<profile> (back-compat)."""
+        config = NanoOpenClawConfig()
+        env = {"NANO_OPENCLAW_PROFILE": "dev"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
+                ws = resolve_agent_workspace_dir(config, "default", env)
+                assert ws == Path.home() / STATE_DIRNAME / "workspace-dev"
+
     def test_relative_workspace_path_anchors_to_state_dir(self, tmp_path):
         """Relative ``agents.defaults.workspace`` must resolve against
         state_dir, not cwd — otherwise daemon (cwd=/) and CLI (cwd=project)

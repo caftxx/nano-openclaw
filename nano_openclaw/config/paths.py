@@ -11,12 +11,21 @@ Path resolution priority:
 2. Project-level .nano-openclaw/ or workspace/ directory
 3. Global ~/.nano-openclaw/ directory
 
-Workspace resolution priority (aligns with openclaw agent-scope-config.ts:154-177):
+Workspace resolution priority:
 1. agents.list[<agentId>].workspace (per-agent explicit override)
 2. agents.defaults.workspace (default agent uses directly)
 3. agents.defaults.workspace/<agentId> (non-default agents get subdirectory)
-4. {stateDir}/workspace-<agentId> (fallback to state dir)
-5. ~/.nano-openclaw/workspace (ultimate default)
+4. When state_dir is explicit (NANO_OPENCLAW_STATE_DIR or project-level
+   {cwd}/.nano-openclaw): {stateDir}/workspace for default agent,
+   {stateDir}/workspace-<agentId> for non-default agents
+5. When state_dir is the global home fallback: ~/.nano-openclaw/workspace
+   (profile-aware via NANO_OPENCLAW_PROFILE) for default agent,
+   ~/.nano-openclaw/workspace-<agentId> for non-default agents
+
+Step 4 is the key alignment: if a project has a ``.nano-openclaw/`` of its
+own, its workspace should stay project-local too — otherwise config loads
+from the project dir but workspace silently leaks to ``~/.nano-openclaw/``,
+splitting state across two locations.
 """
 
 from __future__ import annotations
@@ -218,12 +227,22 @@ def resolve_agent_workspace_dir(
             # Non-default agents get subdirectory
             return base_dir / agent_id
 
-    # 3. Fallback: state dir for non-default agents, profile-aware default for default agent
+    # 3. Fallback. Two sub-cases for the default agent based on whether
+    # state_dir is explicit or the global home fallback — see the module
+    # docstring for the rationale. Non-default agents always follow
+    # state_dir (already the case before this change).
     state_dir = state_dir_for_relative
+    home_state_dir = resolve_home(env) / STATE_DIRNAME
 
     if agent_id == DEFAULT_AGENT_ID:
-        # Default agent uses profile-aware workspace (NANO_OPENCLAW_PROFILE support),
-        # mirroring openclaw's resolveDefaultAgentWorkspaceDir().
+        # state_dir explicit (env var or project-level) → keep workspace
+        # under it so project state stays cohesive. Compare resolved paths
+        # because env-supplied state_dir is ``.resolve()``-d but the home
+        # fallback in ``resolve_state_dir`` is not.
+        if state_dir.resolve() != home_state_dir.resolve():
+            return state_dir / "workspace"
+        # Global home state_dir → profile-aware workspace
+        # (NANO_OPENCLAW_PROFILE), matching openclaw semantics.
         return resolve_default_agent_workspace_dir(env)
 
     # Non-default agents get workspace-{agentId} under state dir
