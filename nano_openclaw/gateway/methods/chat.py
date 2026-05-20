@@ -17,6 +17,7 @@ from nano_openclaw.gateway.context import GatewayContext
 async def chat_send(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
     session_key = str(params.get("session_key") or "")
     text = str(params.get("text") or "")
+    turn_source = str(params.get("turn_source") or "tui")
     raw_attachments = params.get("attachments") or []
 
     attachments: list[PromptAttachment] = []
@@ -39,6 +40,7 @@ async def chat_send(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, An
         session_key=session_key,
         text=text,
         attachments=attachments or None,
+        turn_source=turn_source,
     )
     return {"turn_id": turn_id}
 

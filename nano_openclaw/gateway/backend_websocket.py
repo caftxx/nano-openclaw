@@ -306,8 +306,9 @@ class WebSocketBackend(Backend):
         # Embedded-only kwargs — accepted but ignored on the wire path.
         on_local_event: Any = None,
         cancellation_token: Any = None,
+        turn_source: str = "tui",
     ) -> str:
-        params: dict[str, Any] = {"session_key": session_key, "text": text}
+        params: dict[str, Any] = {"session_key": session_key, "text": text, "turn_source": turn_source}
         if attachments:
             import base64
             params["attachments"] = [

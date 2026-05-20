@@ -222,6 +222,7 @@ class EmbeddedBackend(Backend):
         attachments: list[PromptAttachment] | None = None,
         on_local_event: Any = None,
         cancellation_token: CancellationToken | None = None,
+        turn_source: str = "tui",
     ) -> str:
         """Start a turn. ``on_local_event`` and ``cancellation_token`` are
         EmbeddedBackend-only extensions (not part of the Backend Protocol):
@@ -257,6 +258,7 @@ class EmbeddedBackend(Backend):
                 text=text,
                 attachments=list(attachments or []),
                 on_local_event=on_local_event,
+                turn_source=turn_source,
             ),
             name=f"backend.chat_send:{turn_id}",
         )
@@ -364,6 +366,7 @@ class EmbeddedBackend(Backend):
         text: str,
         attachments: list[PromptAttachment],
         on_local_event: Any = None,
+        turn_source: str = "tui",
     ) -> None:
         history_len_before = len(session.history)
         activity_started_at = time.time()
@@ -397,7 +400,7 @@ class EmbeddedBackend(Backend):
 
         self._wire_spawn_context(turn_registry, session.session_id, on_event=on_event)
 
-        cfg = replace(self.runtime.cfg, session_key=session.session_id)
+        cfg = replace(self.runtime.cfg, session_key=session.session_id, turn_source=turn_source)
 
         # Notify subscribers turn started.
         self._emit(

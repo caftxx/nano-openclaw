@@ -618,9 +618,9 @@ class WechatBot:
                 # the resolved session_id so any code reading cfg.session_key
                 # (cron, subagent context, etc.) sees the real id.
                 from dataclasses import replace as _dc_replace
-                turn_cfg = self.runtime.cfg
+                turn_cfg = _dc_replace(self.runtime.cfg, turn_source="wechat")
                 if session_id_for_cfg is not None:
-                    turn_cfg = _dc_replace(self.runtime.cfg, session_key=session_id_for_cfg)
+                    turn_cfg = _dc_replace(turn_cfg, session_key=session_id_for_cfg)
 
                 # Hold the session lock so two concurrent messages from the
                 # same wechat user serialize on the same backend session

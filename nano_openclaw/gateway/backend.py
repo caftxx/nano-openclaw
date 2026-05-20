@@ -262,8 +262,14 @@ class Backend(Protocol):
         session_key: str,
         text: str,
         attachments: list[PromptAttachment] | None = None,
+        turn_source: str = "tui",
     ) -> str:
         """Start a turn. Returns ``turn_id``.
+
+        ``turn_source`` identifies the originating frontend (``tui`` /
+        ``webui`` / ``wechat`` / ``cron`` / ``channel_auto``) and is forwarded
+        to ``LoopConfig.turn_source`` so plugins (e.g. the stop-hook memory
+        extractor) can filter by source. Defaults to ``"tui"``.
 
         Raises ``BusyError`` if the session already has a turn in flight.
         Events for this turn arrive on ``subscribe`` streams.

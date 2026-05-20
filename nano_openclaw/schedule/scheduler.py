@@ -253,6 +253,7 @@ async def _execute_job(
             active_memory_config=None,
             dreaming_config=None,
             hook_registry=None,
+            turn_source="cron",
         )
 
         history = [Message("user", [{"type": "text", "text": job.prompt}])]

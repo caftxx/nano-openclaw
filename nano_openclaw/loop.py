@@ -30,7 +30,7 @@ from nano_openclaw.compact import (
     estimate_tokens,
     should_run_memory_flush,
 )
-from nano_openclaw.config.types import MemoryFlushConfig
+from nano_openclaw.config.types import ExtractMemoriesConfig, MemoryFlushConfig
 from nano_openclaw.logger import get_logger
 from nano_openclaw.attachments import (
     AttachmentAttached,
@@ -323,6 +323,13 @@ class LoopConfig:
     memory_flush_config: MemoryFlushConfig = field(default_factory=MemoryFlushConfig)
     # Dreaming configuration (mirrors openclaw memory-core dreaming)
     dreaming_config: DreamingConfig | None = None  # None = disabled
+    # Stop-hook memory extractor configuration (mirrors claude-code
+    # extractMemories.ts). None = disabled. Hook reads this on after_turn.
+    extract_memories_config: "ExtractMemoriesConfig | None" = None
+    # Turn provenance — used by the stop-hook extractor's triggerSources
+    # filter and any plugin that needs to know who initiated the turn.
+    # Enum: "tui" / "webui" / "wechat" / "cron" / "channel_auto".
+    turn_source: str = "tui"
     # If set, bypasses build_system_prompt() entirely (used by subagent runner)
     system_prompt_override: str | None = None
     # Lightweight plugin hooks, installed by the plugin loader.
@@ -1003,6 +1010,7 @@ async def _run_agent_session_turn(
                 "workspace_dir": str(cfg.workspace_dir) if cfg.workspace_dir else "",
                 "stop_reason": stop_reason_label,
                 "iteration_count": iteration,
+                "turn_source": cfg.turn_source,
                 "tools_used": sorted(tools_used_set),
                 "messages_snapshot": [
                     {"role": m.role, "content": m.content} for m in scratch_history

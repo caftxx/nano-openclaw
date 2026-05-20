@@ -141,6 +141,7 @@ class SubagentRunner:
             max_skills_prompt_chars=base_cfg.max_skills_prompt_chars,
             active_memory_config=None,
             dreaming_config=None,
+            turn_source=base_cfg.turn_source,
             system_prompt_override=self._build_subagent_system_prompt(params.task, subagent_registry),
         )
 

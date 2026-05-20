@@ -188,6 +188,7 @@ def create_app(
                             session_key=session.session_id,
                             text=req.text,
                             attachments=attachments,
+                            turn_source="webui",
                         )
                     except BusyError as exc:
                         await emit({"type": "turn.error", "session_id": session.session_id, "message": str(exc)})
@@ -319,7 +320,7 @@ def create_app(
                     # through semantics).
                     session = manager.get_or_load(session_id_cmd)
                     try:
-                        await backend.chat_send(session_key=session.session_id, text=cmd_text, attachments=[])
+                        await backend.chat_send(session_key=session.session_id, text=cmd_text, attachments=[], turn_source="webui")
                     except BackendError as exc:
                         await emit({"type": "turn.error", "session_id": session.session_id, "message": str(exc)})
                 elif msg_type == "session.refresh":

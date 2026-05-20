@@ -249,6 +249,7 @@ async def build_agent_runtime(
         active_memory_config=active_mem_cfg,
         memory_flush_config=config.memoryFlush,
         dreaming_config=dreaming_cfg,
+        extract_memories_config=config.extractMemories,
         hook_registry=hook_registry,
     )
 

@@ -443,6 +443,50 @@ class DreamingConfigInput(BaseModel):
     model: Optional[str] = Field(default=None, description="Model override for Dream Diary generation")
 
 
+# Placeholder default prompt; replaced by extractor_prompts.DEFAULT_EXTRACT_PROMPT_TEMPLATE
+# once that module lands in step 3.
+_DEFAULT_EXTRACT_PROMPT_PLACEHOLDER = "placeholder — replaced after extractor_prompts.py lands"
+
+
+class ExtractMemoriesConfig(BaseModel):
+    """Stop-hook extractor configuration (mirrors claude-code extractMemories.ts).
+
+    Triggers a forked subagent after every eligible turn to distill durable
+    memories into ``memory/topics/*.md`` and update ``memory/MEMORY.md``.
+    Subject to per-source enable list, cooldown, and mutual-exclusion with
+    main-agent topic writes — see ``nano_openclaw/memory/extractor.py``.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=True, description="Enable stop-hook memory extractor")
+    triggerSources: List[str] = Field(
+        default_factory=lambda: ["tui", "webui", "wechat"],
+        alias="triggerSources",
+        description="Turn sources that trigger the extractor; default excludes cron / channel_auto",
+    )
+    maxTurns: int = Field(
+        default=5,
+        alias="maxTurns",
+        ge=1,
+        le=20,
+        description="Hard turn cap for the extractor subagent",
+    )
+    cooldownTurns: int = Field(
+        default=1,
+        alias="cooldownTurns",
+        ge=1,
+        description="Run extractor once every N eligible turns",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Optional model override (provider/model-id); None inherits the parent agent",
+    )
+    prompt: str = Field(
+        default=_DEFAULT_EXTRACT_PROMPT_PLACEHOLDER,
+        description="Extractor prompt template (see memory/extractor_prompts.py)",
+    )
+
+
 class ScheduleConfigInput(BaseModel):
     """Cron schedule configuration."""
     model_config = ConfigDict(populate_by_name=True)
@@ -663,6 +707,11 @@ class NanoOpenClawConfig(BaseModel):
     dreaming: DreamingConfigInput = Field(
         default_factory=DreamingConfigInput,
         description="Dreaming plugin configuration (background memory consolidation)"
+    )
+    extractMemories: ExtractMemoriesConfig = Field(
+        default_factory=ExtractMemoriesConfig,
+        alias="extractMemories",
+        description="Stop-hook memory extractor configuration (subagent distills topics after each turn)"
     )
     subagents: SubagentConfigInput = Field(
         default_factory=SubagentConfigInput,
