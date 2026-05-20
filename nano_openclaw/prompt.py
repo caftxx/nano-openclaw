@@ -206,6 +206,28 @@ def _build_project_context_section(
     return "\n".join(lines)
 
 
+def _build_auto_memory_index_section(content: str) -> str:
+    """Render the ``memory/MEMORY.md`` auto-memory index as its own section.
+
+    Distinct from the workspace-root ``MEMORY.md`` which appears inside the
+    project context block (priority 70 in ``CONTEXT_FILE_ORDER``); the auto
+    index is the topics manifest the extractor maintains, and the model
+    should treat it as a hint of which topic files exist (priority 75 in
+    spirit — placed immediately after project context, before tools).
+
+    Truncation (200 lines / 25 KB) is applied upstream in
+    ``workspace.loader.load_workspace_memory_index`` so this helper only
+    wraps the content with a label.
+    """
+    return (
+        "[Auto memory index (memory/MEMORY.md)]\n"
+        "Topics index maintained by the auto-memory extractor. Each entry "
+        "points to a `memory/topics/*.md` file; use the tool catalog (e.g. "
+        "`read_file`) to fetch full content when relevant.\n\n"
+        f"{content}"
+    )
+
+
 def build_system_prompt(
     registry: ToolRegistry,
     workspace_dir: Path | None = None,
@@ -213,6 +235,7 @@ def build_system_prompt(
     skills: list["Skill"] | None = None,
     max_skills_in_prompt: int = 150,
     max_skills_prompt_chars: int = 18_000,
+    auto_memory_index: str | None = None,
 ) -> str:
     """Build the complete system prompt for the agent.
 
@@ -223,6 +246,11 @@ def build_system_prompt(
         skills: Pre-loaded and filtered skills for prompt injection
         max_skills_in_prompt: Max number of skills to include
         max_skills_prompt_chars: Max characters for the skills section
+        auto_memory_index: Pre-loaded + truncated content of
+            ``<workspace>/memory/MEMORY.md`` (the extractor's topics index).
+            ``None`` skips the section entirely. Caller controls loading so
+            this stays pure for tests and so subagent prompt builders can
+            simply pass ``None`` to keep the index out of child contexts.
 
     Returns:
         Complete system prompt string
@@ -267,6 +295,9 @@ def build_system_prompt(
 
     if project_context:
         prompt += project_context + "\n"
+
+    if auto_memory_index:
+        prompt += _build_auto_memory_index_section(auto_memory_index) + "\n\n"
 
     prompt += tools_block + "\n"
 

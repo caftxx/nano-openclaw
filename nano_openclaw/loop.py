@@ -74,7 +74,11 @@ from nano_openclaw.skills import (
 )
 from nano_openclaw.todo import TodoStore
 from nano_openclaw.tools import ToolRegistry
-from nano_openclaw.workspace import WorkspaceBootstrapFile, get_or_load_bootstrap_files
+from nano_openclaw.workspace import (
+    WorkspaceBootstrapFile,
+    get_or_load_bootstrap_files,
+    load_workspace_memory_index,
+)
 
 if TYPE_CHECKING:
     from nano_openclaw.plugins.registry import HookRegistry
@@ -760,6 +764,9 @@ class AgentSession:
         if self.cfg.system_prompt_override is not None:
             system = self.cfg.system_prompt_override
         else:
+            auto_memory_index: str | None = None
+            if self.cfg.workspace_dir:
+                auto_memory_index = load_workspace_memory_index(self.cfg.workspace_dir)
             system = build_system_prompt(
                 self.registry,
                 self.cfg.workspace_dir,
@@ -767,6 +774,7 @@ class AgentSession:
                 visible_skills,
                 max_skills_in_prompt=self.cfg.max_skills_in_prompt,
                 max_skills_prompt_chars=self.cfg.max_skills_prompt_chars,
+                auto_memory_index=auto_memory_index,
             )
 
         if self.cfg.hook_registry:
@@ -1372,6 +1380,9 @@ def _build_memory_flush_system(registry: ToolRegistry, cfg: LoopConfig) -> str:
 
     if cfg.system_prompt_override is not None:
         return cfg.system_prompt_override
+    auto_memory_index: str | None = None
+    if cfg.workspace_dir:
+        auto_memory_index = load_workspace_memory_index(cfg.workspace_dir)
     return build_system_prompt(
         registry,
         cfg.workspace_dir,
@@ -1379,6 +1390,7 @@ def _build_memory_flush_system(registry: ToolRegistry, cfg: LoopConfig) -> str:
         visible_skills,
         max_skills_in_prompt=cfg.max_skills_in_prompt,
         max_skills_prompt_chars=cfg.max_skills_prompt_chars,
+        auto_memory_index=auto_memory_index,
     )
 
 

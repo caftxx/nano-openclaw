@@ -30,6 +30,7 @@ from nano_openclaw.workspace.loader import (
     WorkspaceBootstrapFile,
     build_bootstrap_context,
     load_workspace_bootstrap_files,
+    load_workspace_memory_index,
     trim_bootstrap_content,
 )
 from nano_openclaw.workspace.cache import (
@@ -55,6 +56,7 @@ __all__ = [
     # loader
     "WorkspaceBootstrapFile",
     "load_workspace_bootstrap_files",
+    "load_workspace_memory_index",
     "build_bootstrap_context",
     "trim_bootstrap_content",
     # cache

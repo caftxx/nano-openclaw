@@ -22,6 +22,7 @@ from nano_openclaw.logger import get_logger
 from nano_openclaw.workspace.constants import (
     BOOTSTRAP_FILES,
     CONTEXT_FILE_ORDER,
+    DEFAULT_MEMORY_DIR,
 )
 
 logger = get_logger(__name__)
@@ -142,6 +143,34 @@ def load_workspace_bootstrap_files(
             )
 
     return result
+
+
+def load_workspace_memory_index(workspace_dir: Path) -> str | None:
+    """Load the auto-memory topics index at ``<workspace>/memory/MEMORY.md``.
+
+    Distinct from the workspace-root ``MEMORY.md`` (loaded by
+    ``load_workspace_bootstrap_files`` and rendered in the project context
+    section) — this file lives under the ``memory/`` subdirectory and is
+    written by the auto-memory extractor (Phase 1) as a topics index.
+
+    Applies the same safety guards as bootstrap files (path stays inside
+    workspace, 2 MB hard cap, swallow IO errors), then runs the content
+    through ``memory.topics.truncate_index`` so the 200-line / 25 KB caps
+    plus the in-content WARNING line match what the extractor expects.
+
+    Returns ``None`` when the file is missing, unreadable, or empty.
+    """
+    file_path = workspace_dir / DEFAULT_MEMORY_DIR / "MEMORY.md"
+    content = _read_file_safe(file_path, workspace_dir)
+    if content is None:
+        return None
+
+    from nano_openclaw.memory.topics import truncate_index
+
+    truncated, _was_lines, _was_bytes = truncate_index(content)
+    if not truncated:
+        return None
+    return truncated
 
 
 def trim_bootstrap_content(
