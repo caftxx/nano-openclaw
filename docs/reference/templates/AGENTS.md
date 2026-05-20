@@ -38,6 +38,64 @@ You wake up fresh each session. These files are your continuity:
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
 
+## Auto memory
+
+In addition to the two files above, the stop-hook extractor maintains a
+**topics layer** under `memory/` that mirrors claude-code's convention so the
+same workspace can be opened in either tool. There are now four memory
+artifacts in play — each has a distinct writer and purpose:
+
+| File | Location | Written by | Shape |
+|---|---|---|---|
+| `MEMORY.md` | workspace root | you / dreaming | long-form curated memory |
+| `memory/MEMORY.md` | `memory/` subdir | extractor sub-agent | topics index (each row ≤150 chars) |
+| `memory/topics/*.md` | `memory/topics/` | extractor or you | single-topic note with YAML frontmatter |
+| `memory/YYYY-MM-DD.md` | `memory/` subdir | pre-compaction flush | raw daily log |
+
+### Topic file frontmatter
+
+Every `memory/topics/*.md` file starts with YAML frontmatter so the
+extractor can render a typed manifest and the index stays scan-friendly. The
+canonical shape (see `nano_openclaw/memory/extractor_prompts.py`
+`MEMORY_FRONTMATTER_EXAMPLE`) is:
+
+```markdown
+---
+description: one-line summary, ≤150 chars
+type: {user|feedback|project|reference}
+---
+
+Body text. Keep one topic per file.
+```
+
+`type` must be one of the four `MEMORY_TYPES`: `user` (facts about the
+human), `feedback` (preferences they expressed), `project` (codebase /
+task context), `reference` (durable how-tos / pointers).
+
+### `memory/MEMORY.md` index format
+
+The index is one row per topic, in the shape:
+
+```
+- [Title](topics/file.md) — one-line hook
+```
+
+Keep each row at ≤150 characters and move detail into the topic file.
+The system prompt section that surfaces this index (under the
+`[Auto memory index (memory/MEMORY.md)]` label) is hard-capped at **200
+lines / 25 KB** — beyond that limit the loader appends a
+`> WARNING: …` sentence and the model only sees a truncated view, so
+long entries are wasted.
+
+### Reading vs editing
+
+- **You may edit** any of the four files freely in a main session.
+- The extractor only writes to `memory/MEMORY.md` and `memory/topics/*.md`
+  (the index plus topic files). It never touches daily files or the
+  workspace-root `MEMORY.md`.
+- If you write a topic file yourself in the same turn, the extractor
+  notices and skips that turn — your edit wins.
+
 ### 🧠 MEMORY.md - Your Long-Term Memory
 
 - **ONLY load in main session** (direct chats with your human)
