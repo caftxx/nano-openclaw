@@ -367,6 +367,29 @@ def _validate_operations(
 
             simulated = content or ""
             for hunk in op.hunks:
+                plus_count = sum(1 for l in hunk.lines if l.prefix == "+")
+                minus_count = sum(1 for l in hunk.lines if l.prefix == "-")
+                if plus_count == 0 and minus_count == 0 and hunk.lines:
+                    # Every line was treated as context — model likely forgot
+                    # the `-`/`+` prefixes. parse_v4a_patch silently treats
+                    # unprefixed lines as context, so this fails as "identical"
+                    # later, which is opaque. Catch it here with a clear hint.
+                    raw = [l.content for l in hunk.lines]
+                    extra = ""
+                    if any(l.strip().startswith("=======") for l in raw):
+                        extra = (
+                            " — detected `=======` separator, which is git "
+                            "merge-conflict format. V4A uses line-prefix `-`/`+`, "
+                            "not separator blocks."
+                        )
+                    errors.append(
+                        f"{op.file_path}: hunk has no `+` or `-` lines, so it "
+                        f"adds and removes nothing. In V4A format each modified "
+                        f"line must start with `-` (remove) or `+` (add); "
+                        f"unprefixed lines are context only.{extra}"
+                    )
+                    continue
+
                 search_lines = [
                     l.content for l in hunk.lines if l.prefix in (" ", "-")
                 ]

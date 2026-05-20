@@ -305,6 +305,49 @@ def test_validate_failure_no_writes(tmp_path):
     assert b.read_text(encoding="utf-8") == "y = 2\n"
 
 
+def test_hunk_without_plus_or_minus_prefixes_emits_clear_error(tmp_path):
+    target = tmp_path / "MEMORY.md"
+    _write(target, "**性格特点：** foo\n\n---\n\n## 关于家庭\n")
+    # Model forgot the `-`/`+` prefixes — every line was treated as context,
+    # so the hunk adds and removes nothing. Without the diagnostic, this
+    # surfaces as the opaque "identical" error.
+    patch = textwrap.dedent(
+        """\
+        *** Begin Patch
+        *** Update File: MEMORY.md
+         **性格特点：** foo
+         **编程偏好：** Python
+        *** End Patch
+        """
+    )
+    result = apply_v4a_patch(patch, tmp_path)
+    assert not result.success
+    assert "no `+` or `-` lines" in (result.error or "")
+    assert "V4A" in (result.error or "")
+
+
+def test_merge_conflict_separator_is_called_out(tmp_path):
+    target = tmp_path / "MEMORY.md"
+    _write(target, "foo\nbar\n")
+    # Model used git merge-conflict style with `=======`.
+    patch = textwrap.dedent(
+        """\
+        *** Begin Patch
+        *** Update File: MEMORY.md
+         foo
+         bar
+        =======
+         foo
+         baz
+        *** End Patch
+        """
+    )
+    result = apply_v4a_patch(patch, tmp_path)
+    assert not result.success
+    assert "=======" in (result.error or "")
+    assert "merge-conflict" in (result.error or "")
+
+
 def test_addition_only_hunk_with_context_hint(tmp_path):
     target = tmp_path / "additive.py"
     _write(
