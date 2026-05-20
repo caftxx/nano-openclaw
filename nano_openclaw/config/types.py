@@ -443,9 +443,12 @@ class DreamingConfigInput(BaseModel):
     model: Optional[str] = Field(default=None, description="Model override for Dream Diary generation")
 
 
-# Placeholder default prompt; replaced by extractor_prompts.DEFAULT_EXTRACT_PROMPT_TEMPLATE
-# once that module lands in step 3.
-_DEFAULT_EXTRACT_PROMPT_PLACEHOLDER = "placeholder — replaced after extractor_prompts.py lands"
+# Default extractor prompt template. Imported lazily inside the field default
+# factory to avoid pulling the memory subpackage into config import time
+# (which would create a cycle: memory → config → memory).
+def _default_extract_prompt() -> str:
+    from nano_openclaw.memory.extractor_prompts import DEFAULT_EXTRACT_PROMPT_TEMPLATE
+    return DEFAULT_EXTRACT_PROMPT_TEMPLATE
 
 
 class ExtractMemoriesConfig(BaseModel):
@@ -482,7 +485,7 @@ class ExtractMemoriesConfig(BaseModel):
         description="Optional model override (provider/model-id); None inherits the parent agent",
     )
     prompt: str = Field(
-        default=_DEFAULT_EXTRACT_PROMPT_PLACEHOLDER,
+        default_factory=_default_extract_prompt,
         description="Extractor prompt template (see memory/extractor_prompts.py)",
     )
 
