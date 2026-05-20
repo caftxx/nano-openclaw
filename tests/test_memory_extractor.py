@@ -99,7 +99,7 @@ def test_cron_source_does_not_trigger(tmp_path: Path) -> None:
     payload = _make_payload(workspace=tmp_path, turn_source="cron")
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await asyncio.sleep(0)
             mock.assert_not_called()
@@ -112,7 +112,7 @@ def test_tui_source_triggers(tmp_path: Path) -> None:
     payload = _make_payload(workspace=tmp_path, turn_source="tui")
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await _drain()
             mock.assert_called_once()
@@ -125,7 +125,7 @@ def test_disabled_cfg_does_not_trigger(tmp_path: Path) -> None:
     payload = _make_payload(workspace=tmp_path)
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await asyncio.sleep(0)
             mock.assert_not_called()
@@ -140,7 +140,7 @@ def test_no_workspace_does_not_trigger(tmp_path: Path) -> None:
     payload["workspace_dir"] = ""
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await asyncio.sleep(0)
             mock.assert_not_called()
@@ -156,7 +156,7 @@ def test_cooldown_skips_early_turns(tmp_path: Path) -> None:
     payload = _make_payload(workspace=tmp_path)
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             # Turn 1 + 2: counter advances, no run.
             await run_extractor(payload, cfg)
             await asyncio.sleep(0)
@@ -191,7 +191,7 @@ def test_empty_window_does_not_burn_cooldown(tmp_path: Path) -> None:
     )
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await asyncio.sleep(0)
             mock.assert_not_called()
@@ -225,7 +225,7 @@ def test_main_agent_topic_write_skips_extractor(tmp_path: Path) -> None:
     payload = _make_payload(workspace=tmp_path, messages=msgs)
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await asyncio.sleep(0)
             mock.assert_not_called()
@@ -256,7 +256,7 @@ def test_main_agent_daily_write_does_not_count_as_exclusion(tmp_path: Path) -> N
     payload = _make_payload(workspace=tmp_path, messages=msgs)
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()) as mock:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])) as mock:
             await run_extractor(payload, cfg)
             await _drain()
             mock.assert_called_once()
@@ -381,7 +381,7 @@ def test_cursor_advances_on_success(tmp_path: Path) -> None:
     payload = _make_payload(workspace=tmp_path, messages=msgs)
 
     async def run() -> None:
-        with patch.object(ex_module, "_execute_extraction", new=AsyncMock()):
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])):
             await run_extractor(payload, cfg)
             await _drain()
             state = _states["sess-1"]

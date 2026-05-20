@@ -291,20 +291,41 @@ async def _run_subagent(
     state: ExtractorState,
 ) -> None:
     """Run one extraction round, advance the cursor on success, drain pending."""
+    from nano_openclaw._stream_events import MemoryExtracted
+
     session_key = str(payload.get("session_key") or "default")
     started_at = time.time()
     try:
-        await _execute_extraction(payload, cfg)
+        written_paths = await _execute_extraction(payload, cfg)
         # Advance cursor only on success. On failure we keep the old cursor
         # so the next eligible turn re-tries the same window.
         messages = payload.get("messages_snapshot") or []
         if isinstance(messages, list):
             state.last_extract_message_id = _last_snapshot_id(messages)
         duration_ms = int((time.time() - started_at) * 1000)
-        logger.info(
-            "memory.extractor.done",
-            f"session={session_key} duration_ms={duration_ms}",
-        )
+        if written_paths:
+            topic_paths = [
+                p for p in written_paths
+                if "/" + TOPIC_DIR + "/" in p.replace("\\", "/")
+                or p.replace("\\", "/").startswith(TOPIC_DIR + "/")
+            ]
+            event = MemoryExtracted(
+                written_paths=list(written_paths),
+                topic_paths=topic_paths,
+                duration_ms=duration_ms,
+            )
+            # Phase 1: log only. Phase 2 will route into the transcript so
+            # the UI can render "Saved N memories" (matches claude-code's
+            # createMemorySavedMessage).
+            logger.info(
+                "memory.extractor.saved_event",
+                f"session={session_key} {event}",
+            )
+        else:
+            logger.info(
+                "memory.extractor.done",
+                f"session={session_key} duration_ms={duration_ms} (nothing saved)",
+            )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — log and continue
@@ -325,12 +346,13 @@ async def _run_subagent(
             )
 
 
-async def _execute_extraction(payload: dict[str, Any], cfg: ExtractMemoriesConfig) -> None:
+async def _execute_extraction(payload: dict[str, Any], cfg: ExtractMemoriesConfig) -> list[str]:
     """Build the extractor subagent and run one turn.
 
-    Kept as a separate function so tests can patch it to a no-op /
-    deterministic mock without monkey-patching ``_run_subagent`` (which owns
-    the cursor + coalesce bookkeeping).
+    Returns the list of paths the guarded ``write_file`` successfully wrote
+    (empty if the subagent saved nothing or errored mid-run). Kept as a
+    separate function so tests can patch it without monkey-patching
+    ``_run_subagent`` (which owns the cursor + coalesce bookkeeping).
     """
     from dataclasses import replace as dc_replace
     from nano_openclaw.loop import AgentSession, CancellationToken, LoopConfig, Message
@@ -349,7 +371,7 @@ async def _execute_extraction(payload: dict[str, Any], cfg: ExtractMemoriesConfi
 
     if base_cfg is None or client is None:
         logger.debug("memory.extractor.no_base_cfg", "missing loop_config or client; skipping")
-        return
+        return []
 
     session_key = str(payload.get("session_key") or "default")
     state = _get_state(session_key)
@@ -487,13 +509,6 @@ async def _execute_extraction(payload: dict[str, Any], cfg: ExtractMemoriesConfi
         await session.run_turn(full_user_prompt)
     except Exception as exc:  # noqa: BLE001 — surface as warning, don't raise
         logger.warning("memory.extractor.run_turn_failed", f"{type(exc).__name__}: {exc}")
-        return
+        return list(written_paths)
 
-    if written_paths:
-        # Phase 1: log only. Phase 2 will emit a MemoryExtracted event into
-        # the parent transcript via ``payload["on_event"]`` so the UI can
-        # render the claude-code-style "Saved N memories" banner.
-        logger.info(
-            "memory.extractor.saved",
-            f"session={session_key} wrote {len(written_paths)} file(s): {written_paths}",
-        )
+    return list(written_paths)
