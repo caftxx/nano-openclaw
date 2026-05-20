@@ -68,6 +68,36 @@ def test_webui_event_serializer_core_stream_events():
     }
 
 
+def test_webui_serializes_memory_extracted_for_activity():
+    """Phase 2 UI: MemoryExtracted converts to a ``memory.extracted`` payload
+    that the WebUI fallback router (``event.type?.includes('memory')`` in
+    app.js) picks up and ``summarizeMemoryExtractedEvent`` renders into the
+    activity list. Also confirm the payload survives the replay filter so
+    a page reload mid-turn can re-render the save banner.
+    """
+    from nano_openclaw._stream_events import MemoryExtracted
+
+    payload = _event_to_payload(
+        MemoryExtracted(
+            written_paths=["memory/topics/user-prefs.md", "memory/MEMORY.md"],
+            topic_paths=["memory/topics/user-prefs.md"],
+            duration_ms=842,
+        ),
+        "turn-1",
+        "session-1",
+    )
+
+    assert payload == {
+        "type": "memory.extracted",
+        "turn_id": "turn-1",
+        "session_id": "session-1",
+        "written_paths": ["memory/topics/user-prefs.md", "memory/MEMORY.md"],
+        "topic_paths": ["memory/topics/user-prefs.md"],
+        "duration_ms": 842,
+    }
+    assert _is_replayable_activity_payload(payload)
+
+
 def test_webui_serializes_subagent_completion_for_activity():
     payload = _event_to_payload(
         SubagentAnnounced(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from nano_openclaw._stream_events import MemoryExtracted
 from nano_openclaw.attachments import AttachmentAttached, AttachmentError
 from nano_openclaw.loop import (
     ActiveMemoryRecall,
@@ -86,6 +87,18 @@ def event_to_payload(event: Any, turn_id: str, session_id: str) -> dict[str, Any
         return {"type": "skill.invoked", **base, "skill_name": event.skill_name, "skill_path": event.skill_path}
     if isinstance(event, ActiveMemoryRecall):
         return {"type": "active_memory", **base, "result": jsonable(event.result)}
+    if isinstance(event, MemoryExtracted):
+        # Wire type uses ``memory.extracted`` (dot-namespaced like other
+        # status events). The fallback in webui ``handleEvent`` already
+        # routes anything matching ``/memory/`` into the activity panel, so
+        # no new dispatch case is needed there — just ``summarizeEvent``.
+        return {
+            "type": "memory.extracted",
+            **base,
+            "written_paths": list(event.written_paths),
+            "topic_paths": list(event.topic_paths),
+            "duration_ms": event.duration_ms,
+        }
     if isinstance(event, SubagentSpawned):
         return {"type": "subagent.status", **base, "status": "spawned", **jsonable(event)}
     if isinstance(event, SubagentAnnounced):

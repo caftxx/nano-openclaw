@@ -390,6 +390,76 @@ def test_cursor_advances_on_success(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+# ─── on_event emission (Phase 2 UI plumbing) ───
+
+
+def test_on_event_callback_receives_memory_extracted(tmp_path: Path) -> None:
+    """When the extractor writes paths, it pushes a MemoryExtracted event
+    through ``payload['on_event']`` so the TUI / WebUI can render it.
+    """
+    from nano_openclaw._stream_events import MemoryExtracted
+
+    cfg = _enabled_cfg()
+    payload = _make_payload(workspace=tmp_path)
+    received: list[Any] = []
+    payload["on_event"] = received.append
+
+    async def run() -> None:
+        with patch.object(
+            ex_module,
+            "_execute_extraction",
+            new=AsyncMock(return_value=["memory/topics/user.md", "memory/MEMORY.md"]),
+        ):
+            await run_extractor(payload, cfg)
+            await _drain()
+
+    asyncio.run(run())
+
+    assert len(received) == 1
+    event = received[0]
+    assert isinstance(event, MemoryExtracted)
+    assert event.written_paths == ["memory/topics/user.md", "memory/MEMORY.md"]
+    assert event.topic_paths == ["memory/topics/user.md"]
+
+
+def test_on_event_not_called_when_nothing_written(tmp_path: Path) -> None:
+    cfg = _enabled_cfg()
+    payload = _make_payload(workspace=tmp_path)
+    received: list[Any] = []
+    payload["on_event"] = received.append
+
+    async def run() -> None:
+        with patch.object(ex_module, "_execute_extraction", new=AsyncMock(return_value=[])):
+            await run_extractor(payload, cfg)
+            await _drain()
+
+    asyncio.run(run())
+    assert received == []
+
+
+def test_on_event_failure_does_not_break_extractor(tmp_path: Path) -> None:
+    """A broken UI callback must not bubble up to the fire-and-forget task."""
+    cfg = _enabled_cfg()
+    payload = _make_payload(workspace=tmp_path)
+
+    def explode(_event: Any) -> None:
+        raise RuntimeError("renderer crashed")
+
+    payload["on_event"] = explode
+
+    async def run() -> None:
+        with patch.object(
+            ex_module,
+            "_execute_extraction",
+            new=AsyncMock(return_value=["memory/topics/x.md"]),
+        ):
+            # Must not raise — extractor swallows callback errors.
+            await run_extractor(payload, cfg)
+            await _drain()
+
+    asyncio.run(run())
+
+
 # ─── helper sanity ───
 
 

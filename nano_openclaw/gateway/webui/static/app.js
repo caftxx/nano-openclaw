@@ -997,10 +997,30 @@ function replayActivityItems(payloads) {
 function summarizeEvent(event) {
   if (event.type === "subagent.status") return summarizeSubagentEvent(event);
   if (event.type === "subagent.event") return summarizeSubagentNestedEvent(event);
+  if (event.type === "memory.extracted") return summarizeMemoryExtractedEvent(event);
   if (event.skill_name) return event.skill_name;
   if (event.status) return event.status;
   if (event.message) return event.message;
   return JSON.stringify(event).slice(0, 120);
+}
+
+function summarizeMemoryExtractedEvent(event) {
+  const written = Array.isArray(event.written_paths) ? event.written_paths : [];
+  const topics = Array.isArray(event.topic_paths) ? event.topic_paths : [];
+  // Prefer the topic count (skips the MEMORY.md index update) so the
+  // number tracks "new memories" rather than total writes.
+  const count = topics.length > 0 ? topics.length : written.length;
+  if (count === 0) return "no memories saved";
+  const shown = (topics.length > 0 ? topics : written).slice(0, 3).map((p) => {
+    const norm = String(p).replace(/\\/g, "/");
+    const idx = norm.lastIndexOf("/");
+    return idx >= 0 ? norm.slice(idx + 1) : norm;
+  });
+  const total = (topics.length > 0 ? topics : written).length;
+  if (total > 3) shown.push(`+${total - 3} more`);
+  const elapsed = formatElapsed(event.duration_ms);
+  const suffix = elapsed ? ` (${elapsed})` : "";
+  return `Saved ${count}: ${shown.join(", ")}${suffix}`;
 }
 
 function summarizeSubagentEvent(event) {

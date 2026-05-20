@@ -1027,6 +1027,13 @@ async def _run_agent_session_turn(
                 "client": client,
                 "loop_config": cfg,
                 "tool_registry": registry,
+                # Extractor / other after_turn hooks can push status events
+                # back into the same per-turn event stream the UI is reading.
+                # ``original_on_event`` is the unhooked callback captured
+                # before ``hooked_on_event`` wrapped it — we deliberately
+                # bypass the loop_event hook fanout because hooks that drive
+                # this callback are themselves running as part of after_turn.
+                "on_event": original_on_event,
             }
             await cfg.hook_registry.run("after_turn", payload)
         except Exception as exc:

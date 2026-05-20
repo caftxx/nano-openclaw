@@ -53,6 +53,7 @@ from nano_openclaw.loop import (
     AgentSession,
     run_pre_compaction_memory_flush,
 )
+from nano_openclaw._stream_events import MemoryExtracted
 from nano_openclaw.provider import (
     MessageEnd,
     TextDelta,
@@ -754,6 +755,25 @@ def _make_event_handler(console: Console, registry: ToolRegistry | None = None) 
             if result.context:
                 cached_str = ", cached" if result.cached else ""
                 _render_status_tree(console, "Active Memory", [("recall", f"{result.elapsed_ms}ms{cached_str}")])
+
+        elif isinstance(event, MemoryExtracted):
+            # Only surface when the extractor actually wrote something —
+            # otherwise the "Saved 0 memories" line is just noise.
+            if event.written_paths:
+                count = len(event.topic_paths) if event.topic_paths else len(event.written_paths)
+                # Show topic filenames (without the memory/topics/ prefix) since
+                # those are the new content; the MEMORY.md index update is
+                # implied by any save. Cap at 3 names to keep the line tidy.
+                shown_paths = event.topic_paths or event.written_paths
+                names = []
+                for p in shown_paths[:3]:
+                    norm = p.replace("\\", "/")
+                    short = norm.rsplit("/", 1)[-1] if "/" in norm else norm
+                    names.append(short)
+                if len(shown_paths) > 3:
+                    names.append(f"+{len(shown_paths) - 3} more")
+                detail = f"{count} saved · {', '.join(names)}" if names else f"{count} saved"
+                _render_status_tree(console, "Memory", [("extracted", f"{markup.escape(detail)} ({event.duration_ms}ms)")])
 
         elif isinstance(event, SubagentSpawned):
             if state["tool_live"] is not None:

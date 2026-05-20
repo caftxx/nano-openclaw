@@ -314,9 +314,21 @@ async def _run_subagent(
                 topic_paths=topic_paths,
                 duration_ms=duration_ms,
             )
-            # Phase 1: log only. Phase 2 will route into the transcript so
-            # the UI can render "Saved N memories" (matches claude-code's
-            # createMemorySavedMessage).
+            # Phase 2: emit into the same per-turn event stream the UI is
+            # subscribed to (TUI prints a one-liner; WebUI adds an activity
+            # row). The callback is the unhooked ``original_on_event``
+            # captured at after_turn fire time. Guard against absence /
+            # exceptions so a broken UI never bubbles up to the
+            # fire-and-forget subagent task.
+            on_event_cb = payload.get("on_event")
+            if callable(on_event_cb):
+                try:
+                    on_event_cb(event)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "memory.extractor.emit_event_error",
+                        f"session={session_key}: {type(exc).__name__}: {exc}",
+                    )
             logger.info(
                 "memory.extractor.saved_event",
                 f"session={session_key} {event}",
