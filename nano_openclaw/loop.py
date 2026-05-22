@@ -726,10 +726,39 @@ class AgentSession:
             content.append({"type": "text", "text": "(see attached image)"})
         return content
 
+    async def _recall_active_memory_context(
+        self,
+        scratch_history: list[Message],
+        on_event: EventCallback,
+    ) -> str | None:
+        """Run Active Memory recall and return text to prepend to the user message.
+
+        Mirrors openclaw's active-memory plugin (extensions/active-memory/index.ts)
+        which returns `prependContext` — appended to the current user prompt, NOT
+        the system prompt, so the cacheable system prefix stays stable.
+        """
+        if not (
+            self.cfg.workspace_dir
+            and self.cfg.active_memory_config
+            and self.cfg.active_memory_config.enabled
+        ):
+            return None
+        manager = ActiveMemoryManager(
+            client=self.client,
+            model=self.cfg.model,
+            workspace_dir=str(self.cfg.workspace_dir),
+            config=self.cfg.active_memory_config,
+        )
+        wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
+        recall_result = await manager.run(wire_messages)
+        if not recall_result:
+            return None
+        on_event(ActiveMemoryRecall(result=recall_result))
+        return recall_result.context or None
+
     async def _build_system_for_turn(
         self,
         user_input: str,
-        scratch_history: list[Message],
         visible_skills: list[Skill] | None,
         on_event: EventCallback,
     ) -> str:
@@ -741,25 +770,6 @@ class AgentSession:
                 self.cfg.bootstrap_max_chars,
                 self.cfg.bootstrap_total_max_chars,
             )
-
-        active_memory_context: str | None = None
-        if (
-            self.cfg.workspace_dir
-            and self.cfg.active_memory_config
-            and self.cfg.active_memory_config.enabled
-        ):
-            manager = ActiveMemoryManager(
-                client=self.client,
-                model=self.cfg.model,
-                workspace_dir=str(self.cfg.workspace_dir),
-                config=self.cfg.active_memory_config,
-            )
-            wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
-            recall_result = await manager.run(wire_messages)
-            if recall_result:
-                on_event(ActiveMemoryRecall(result=recall_result))
-                if recall_result.context:
-                    active_memory_context = recall_result.context
 
         if self.cfg.system_prompt_override is not None:
             system = self.cfg.system_prompt_override
@@ -789,8 +799,6 @@ class AgentSession:
             if append := hook_result.get("append"):
                 system = f"{system}\n\n{append}"
 
-        if active_memory_context:
-            system = f"{active_memory_context}\n\n{system}"
         return system
 
     async def _dispatch_tool_batch(
@@ -970,6 +978,17 @@ async def _run_agent_session_turn(
         attachment_turn_id=attachment_turn_id,
     )
 
+    # 3b. Active Memory recall — prepend to user message (NOT system prompt) so
+    #     the cacheable system prefix stays stable across turns. Mirrors openclaw's
+    #     active-memory plugin which returns `prependContext` (per-turn user-msg
+    #     prefix), not `prependSystemContext` (cacheable system prefix).
+    active_memory_context = await session._recall_active_memory_context(
+        scratch_history + [Message("user", content)],
+        on_event,
+    )
+    if active_memory_context:
+        content = [{"type": "text", "text": active_memory_context}, *content]
+
     user_message = Message("user", content)
     history.append(user_message)
     if session.transcript_writer:
@@ -978,7 +997,6 @@ async def _run_agent_session_turn(
 
     system = await session._build_system_for_turn(
         user_input,
-        scratch_history,
         visible_skills,
         on_event,
     )
