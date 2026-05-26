@@ -14,6 +14,7 @@ fine — resolve_api_key only validates that *some* key exists.
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -57,20 +58,18 @@ def _run(
     cwd: Path,
     timeout: float = 30.0,
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
+    kwargs: dict = dict(
         capture_output=True,
         text=True,
         timeout=timeout,
         cwd=str(cwd),
         env=env,
     )
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.run(cmd, **kwargs)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" and os.environ.get("CI") == "true",
-    reason="daemon detach causes spurious KeyboardInterrupt on Windows CI runners",
-)
 def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
     # Minimal config — empty `{}` would also work since all fields have
     # defaults, but specifying the model explicitly makes the test resilient
@@ -81,6 +80,13 @@ def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
     )
     env = _hermetic_env(tmp_path)
     port = _free_port()
+
+    # On Windows the detached daemon shares the console; its event loop
+    # may generate a CTRL_C_EVENT that propagates to sibling processes.
+    # Shield this test process from that spurious interrupt.
+    old_sigint = None
+    if sys.platform == "win32":
+        old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # Status before start
     pre = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env, cwd=tmp_path)
@@ -118,6 +124,8 @@ def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
         if started:
             _run([sys.executable, "-m", "nano_openclaw", "gateway", "stop"], env=env, cwd=tmp_path)
             time.sleep(0.5)
+        if old_sigint is not None:
+            signal.signal(signal.SIGINT, old_sigint)
 
     # After stop, status should report not running
     post = _run([sys.executable, "-m", "nano_openclaw", "gateway", "status"], env=env, cwd=tmp_path)
