@@ -406,16 +406,17 @@ class TestResolveAgentWorkspaceDir:
         ws = resolve_agent_workspace_dir(config, "agent\x00id")
         assert "\x00" not in str(ws)
 
-    def test_workspace_path_whitespace_stripped(self):
+    def test_workspace_path_whitespace_stripped(self, tmp_path):
         """Whitespace is stripped from workspace paths."""
+        ws_path = str(tmp_path / "workspace")
         config = NanoOpenClawConfig(
             agents=AgentsConfig(
-                defaults=AgentDefaultsConfig(workspace="  /tmp/workspace  "),
+                defaults=AgentDefaultsConfig(workspace=f"  {ws_path}  "),
             )
         )
 
         ws = resolve_agent_workspace_dir(config, "default")
-        assert ws == Path("/tmp/workspace").resolve()
+        assert ws == (tmp_path / "workspace").resolve()
 
     def test_multiple_agents_different_workspaces(self, tmp_path):
         """Different agents can have different workspaces."""

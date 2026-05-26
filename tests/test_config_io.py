@@ -62,7 +62,7 @@ class TestFindConfigFile:
     def test_workspace_config_fallback(self):
         """Workspace config is found when state dir has no config."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
+            tmpdir = Path(tmpdir).resolve()
             workspace_dir = tmpdir / "workspace"
             workspace_dir.mkdir()
             config_file = workspace_dir / DEFAULT_CONFIG_FILENAME
