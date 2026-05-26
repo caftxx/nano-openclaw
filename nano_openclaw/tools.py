@@ -487,7 +487,8 @@ async def _bash(
             log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {command}")
             proc.kill()
             await proc.communicate()
-            return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
+            notice = _pip_isolation_notice(state_dir) if pip_protected else ""
+            return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n{notice}"
         returncode = proc.returncode
         stdout = stdout_b.decode(errors="replace")
         stderr = stderr_b.decode(errors="replace")
@@ -502,7 +503,8 @@ async def _bash(
             )
         except subprocess.TimeoutExpired:
             log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {command}")
-            return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
+            notice = _pip_isolation_notice(state_dir) if pip_protected else ""
+            return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n{notice}"
         returncode = result.returncode
         stdout = result.stdout.decode(errors="replace")
         stderr = result.stderr.decode(errors="replace")
