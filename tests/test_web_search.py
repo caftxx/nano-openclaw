@@ -1,6 +1,22 @@
 """Tests for web_search tool."""
 
+from unittest.mock import MagicMock, patch
+
 from nano_openclaw.web_search import web_search, _SEARCH_CACHE
+
+_FAKE_RESULTS = [
+    {"title": "Result 1", "href": "https://example.com/1", "body": "First result snippet"},
+    {"title": "Result 2", "href": "https://example.com/2", "body": "Second result snippet"},
+    {"title": "Result 3", "href": "https://example.com/3", "body": "Third result snippet"},
+]
+
+
+def _mock_ddgs():
+    mock = MagicMock()
+    mock.__enter__ = lambda s: s
+    mock.__exit__ = MagicMock(return_value=False)
+    mock.text.return_value = _FAKE_RESULTS
+    return mock
 
 
 def test_web_search_empty_query():
@@ -10,18 +26,24 @@ def test_web_search_empty_query():
     assert "Empty query" in result["error"]
 
 
-def test_web_search_cache():
+@patch("nano_openclaw.web_search.DDGS")
+def test_web_search_cache(MockDDGS):
     """Repeated query uses cache."""
+    MockDDGS.return_value = _mock_ddgs()
     _SEARCH_CACHE.clear()
-    
+
     r1 = web_search("test query", max_results=3)
     assert r1.get("cached") is None
-    
+
     r2 = web_search("test query", max_results=3)
     assert r2.get("cached") is True
 
 
-def test_web_search_returns_expected_fields():
+@patch("nano_openclaw.web_search.DDGS")
+def test_web_search_returns_expected_fields(MockDDGS):
+    MockDDGS.return_value = _mock_ddgs()
+    _SEARCH_CACHE.clear()
+
     result = web_search("Python programming", max_results=5)
     assert "query" in result
     assert "results" in result
