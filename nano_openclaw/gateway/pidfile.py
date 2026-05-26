@@ -83,28 +83,46 @@ def remove_pidfile(state_dir: Path) -> None:
 
 
 def is_alive(pid: int) -> bool:
-    """``os.kill(pid, 0)`` — true if the process exists (regardless of state)."""
+    """True if a process with *pid* exists and is still running."""
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _is_alive_win32(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Process exists but we can't signal it — still alive.
         return True
     except OSError as exc:
         if exc.errno == errno.ESRCH:
             return False
-        # Windows: ERROR_INVALID_PARAMETER (87) means the PID doesn't exist.
-        if sys.platform == "win32" and getattr(exc, "winerror", None) == 87:
-            return False
-        # Treat unknown errors as "alive" to be conservative.
         return True
-    except SystemError:
-        # CPython bug on Windows: os.kill may wrap OSError in SystemError.
-        return False
     return True
+
+
+def _is_alive_win32(pid: int) -> bool:
+    """Windows-specific liveness check via OpenProcess + GetExitCodeProcess.
+
+    os.kill(pid, 0) is unreliable on Windows: it may succeed for PIDs that
+    don't exist, raise SystemError (CPython bug), or raise OSError with
+    inconsistent winerror codes across machines.
+    """
+    import ctypes
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+
+    exit_code = ctypes.c_ulong()
+    got_code = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+    kernel32.CloseHandle(handle)
+    if not got_code:
+        return False
+    return exit_code.value == STILL_ACTIVE
 
 
 def port_responds(host: str, port: int, *, timeout: float = 0.2) -> bool:
