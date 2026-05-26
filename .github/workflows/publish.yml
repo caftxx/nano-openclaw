@@ -1,0 +1,44 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC for PyPI Trusted Publishing — no PyPI token in secrets
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Verify wheel contains _template
+        run: |
+          set -e
+          wheel=$(ls dist/*.whl | head -1)
+          echo "Checking $wheel for nano_openclaw/_template/*"
+          if ! unzip -l "$wheel" | grep -q 'nano_openclaw/_template/nano-openclaw.json5'; then
+            echo "::error::wheel is missing nano_openclaw/_template/ — force-include broken?"
+            unzip -l "$wheel"
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # Trusted Publishing — no `password:` field. Configure once at
+        # https://pypi.org/manage/project/nano-openclaw/settings/publishing/
+        # with: workflow=publish.yml, environment=pypi.

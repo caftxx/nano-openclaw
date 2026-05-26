@@ -37,8 +37,9 @@ import asyncio
 import sys
 from pathlib import Path
 
+from nano_openclaw.bootstrap import ensure_state_dir_initialized
 from nano_openclaw.cli import repl
-from nano_openclaw.config import resolve_state_dir
+from nano_openclaw.config import resolve_state_dir_with_source
 from nano_openclaw.gateway.cli import add_gateway_subparser, run_gateway_cli
 from nano_openclaw.logger import setup_logging
 from nano_openclaw.runtime import build_agent_runtime
@@ -120,7 +121,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    state_dir = resolve_state_dir()
+    state_dir, state_source = resolve_state_dir_with_source()
+    if ensure_state_dir_initialized(state_dir, source=state_source):
+        print(
+            f"[bootstrap] initialized {state_dir} from template — "
+            f"edit nano-openclaw.json5 to add your API key",
+            file=sys.stderr,
+        )
     setup_logging(state_dir)
 
     # Config path resolution: ``$NANO_OPENCLAW_CONFIG_PATH`` env var still

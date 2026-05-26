@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional, Tuple
+
+StateDirSource = Literal["env", "cwd", "home"]
 
 if TYPE_CHECKING:
     from .types import NanoOpenClawConfig
@@ -60,6 +62,33 @@ def resolve_home(env: Optional[dict[str, str]] = None) -> Path:
     return Path.home()
 
 
+def resolve_state_dir_with_source(
+    env: Optional[dict[str, str]] = None,
+) -> Tuple[Path, StateDirSource]:
+    """
+    Same priority chain as :func:`resolve_state_dir`, but also reports which
+    branch produced the answer. Bootstrap logic uses this to distinguish
+    "fell through to ~/.nano-openclaw" (auto-init from package template is OK)
+    from "user explicitly pointed us at a directory" (don't write files
+    unprompted — could pollute a user project).
+    """
+    if env is None:
+        env = os.environ
+
+    # 1. Environment variable override
+    state_dir = env.get("NANO_OPENCLAW_STATE_DIR")
+    if state_dir:
+        return Path(state_dir).expanduser().resolve(), "env"
+
+    # 2. Project-level state directory — must look like a real one
+    cwd_state = Path(Path.cwd()) / STATE_DIRNAME
+    if (cwd_state / CONFIG_FILENAME).exists():
+        return cwd_state.resolve(), "cwd"
+
+    # 3. Global state directory
+    return resolve_home(env) / STATE_DIRNAME, "home"
+
+
 def resolve_state_dir(env: Optional[dict[str, str]] = None) -> Path:
     """
     Resolve state directory.
@@ -73,21 +102,7 @@ def resolve_state_dir(env: Optional[dict[str, str]] = None) -> Path:
        to be on disk at lookup time)
     3. ~/.nano-openclaw (global)
     """
-    if env is None:
-        env = os.environ
-
-    # 1. Environment variable override
-    state_dir = env.get("NANO_OPENCLAW_STATE_DIR")
-    if state_dir:
-        return Path(state_dir).expanduser().resolve()
-
-    # 2. Project-level state directory — must look like a real one
-    cwd_state = Path(Path.cwd()) / STATE_DIRNAME
-    if (cwd_state / CONFIG_FILENAME).exists():
-        return cwd_state.resolve()
-
-    # 3. Global state directory
-    return resolve_home(env) / STATE_DIRNAME
+    return resolve_state_dir_with_source(env)[0]
 
 
 def resolve_config_path(

@@ -7,12 +7,36 @@
 
 读完这个仓库里的核心 `.py` 文件，你就理解了一个"会用工具的 LLM agent"的全部秘密。
 
-## 快速运行
+## 安装
 
-依赖管理用 [uv](https://github.com/astral-sh/uv)。
+推荐用 [uv](https://github.com/astral-sh/uv)：
 
 ```bash
-# 第一次：克隆仓库、装依赖、创虚拟环境
+# 一行装好全局命令
+uv tool install nano-openclaw
+
+# 或者不安装直接跑（每次自动拉取最新版）
+uvx nano-openclaw
+```
+
+第一次运行 `nano-openclaw` 会自动把模板配置拷到 `~/.nano-openclaw/`，编辑里面的 `nano-openclaw.json5` 填入 API key 即可。
+
+升级 / 卸载：
+
+```bash
+uv tool upgrade nano-openclaw
+uv tool uninstall nano-openclaw
+# 想顺手清掉配置：Linux/macOS 用 `rm -rf ~/.nano-openclaw`，
+# Windows 用 `Remove-Item -Recurse -Force $HOME\.nano-openclaw`
+```
+
+支持 Linux / macOS / Windows（纯 Python wheel，无平台特定二进制依赖）。
+
+### Development setup
+
+想改代码 / 跑测试的话走源码：
+
+```bash
 git clone git@github.com:caftxx/nano-openclaw.git
 cd nano-openclaw
 uv sync
@@ -26,6 +50,8 @@ cp -r .nano-openclaw-dev .nano-openclaw
 
 # 然后编辑 .nano-openclaw/nano-openclaw.json5，填入你的 API key 和 provider 信息
 ```
+
+下面命令在源码模式用 `uv run nano-openclaw …` 形式；全局安装（`uv tool install` 之后）去掉 `uv run` 前缀即可。
 
 ```bash
 # 默认：进入 TUI（自动探测本机 daemon；没探测到就走单进程 embedded REPL）
