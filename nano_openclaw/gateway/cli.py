@@ -398,7 +398,7 @@ def _verb_stop(state_dir: Path) -> int:
     # Send SIGTERM, then poll for shutdown
     try:
         os.kill(entry.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, SystemError):
         remove_pidfile(state_dir)
         return 0
 
@@ -410,12 +410,14 @@ def _verb_stop(state_dir: Path) -> int:
             return 0
         time.sleep(0.2)
 
-    # SIGTERM didn't take — escalate to SIGKILL
-    console.print(f"[yellow]gateway didn't respond to SIGTERM in 5s — sending SIGKILL[/yellow]")
-    try:
-        os.kill(entry.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    # SIGTERM didn't take — escalate to SIGKILL (on Windows, SIGTERM already
+    # calls TerminateProcess so this fallback is Unix-only).
+    if hasattr(signal, "SIGKILL"):
+        console.print(f"[yellow]gateway didn't respond to SIGTERM in 5s — sending SIGKILL[/yellow]")
+        try:
+            os.kill(entry.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     # Brief follow-up wait, then declare done
     time.sleep(0.5)

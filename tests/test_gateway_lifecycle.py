@@ -67,6 +67,10 @@ def _run(
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" and os.environ.get("CI") == "true",
+    reason="daemon detach causes spurious KeyboardInterrupt on Windows CI runners",
+)
 def test_gateway_lifecycle_start_status_stop(tmp_path: Path):
     # Minimal config — empty `{}` would also work since all fields have
     # defaults, but specifying the model explicitly makes the test resilient
