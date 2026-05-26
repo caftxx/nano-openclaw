@@ -388,8 +388,14 @@ def test_skill_install_tool_returns_install_result(registry, tmp_path, monkeypat
     text = out["content"][0]["text"]
     assert "ok=true" in text
     assert "message=Installed" in text
-    assert f"python={state / 'tools' / 'python' / 'skills' / 'demo' / 'venv' / 'bin' / 'python'}" in text
-    assert f"venv={state / 'tools' / 'python' / 'skills' / 'demo' / 'venv'}" in text
+    import sys as _sys
+    venv_base = state / 'tools' / 'python' / 'skills' / 'demo' / 'venv'
+    if _sys.platform.startswith("win"):
+        expected_python = venv_base / 'Scripts' / 'python.exe'
+    else:
+        expected_python = venv_base / 'bin' / 'python'
+    assert f"python={expected_python}" in text
+    assert f"venv={venv_base}" in text
     assert "--- stdout ---\nok" in text
 
 

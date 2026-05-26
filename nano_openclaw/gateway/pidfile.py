@@ -16,6 +16,7 @@ from __future__ import annotations
 import errno
 import os
 import socket
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -95,8 +96,14 @@ def is_alive(pid: int) -> bool:
     except OSError as exc:
         if exc.errno == errno.ESRCH:
             return False
+        # Windows: ERROR_INVALID_PARAMETER (87) means the PID doesn't exist.
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 87:
+            return False
         # Treat unknown errors as "alive" to be conservative.
         return True
+    except SystemError:
+        # CPython bug on Windows: os.kill may wrap OSError in SystemError.
+        return False
     return True
 
 

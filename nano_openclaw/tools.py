@@ -473,26 +473,43 @@ async def _bash(
     if pip_protected:
         env = dict(os.environ)
         env["PIP_REQUIRE_VIRTUALENV"] = "true"
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=env,
-    )
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {command}")
-        proc.kill()
-        await proc.communicate()
-        return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
-    stdout = stdout_b.decode(errors="replace")
-    stderr = stderr_b.decode(errors="replace")
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {command}")
+            proc.kill()
+            await proc.communicate()
+            return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
+        returncode = proc.returncode
+        stdout = stdout_b.decode(errors="replace")
+        stderr = stderr_b.decode(errors="replace")
+    except NotImplementedError:
+        # SelectorEventLoop on Windows doesn't support create_subprocess_shell.
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    command, shell=True, capture_output=True, cwd=cwd, env=env, timeout=timeout,
+                ),
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("tools.bash.timeout", f"Command timed out after {timeout}s: {command}")
+            return f"exit=1\n--- stderr ---\nCommand timed out after {timeout}s\n"
+        returncode = result.returncode
+        stdout = result.stdout.decode(errors="replace")
+        stderr = result.stderr.decode(errors="replace")
     if pip_protected:
         stderr += _pip_isolation_notice(state_dir)
     return (
-        f"exit={proc.returncode}\n"
+        f"exit={returncode}\n"
         f"--- stdout ---\n{stdout}"
         f"--- stderr ---\n{stderr}"
     )
