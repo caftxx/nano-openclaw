@@ -36,7 +36,7 @@ def test_returns_none_when_index_file_missing(tmp_path: Path) -> None:
 def test_returns_content_when_small(tmp_path: Path) -> None:
     (tmp_path / "memory").mkdir()
     body = "- [user prefs](topics/user.md) — uses pnpm\n- [project](topics/proj.md) — nano-openclaw"
-    (tmp_path / "memory" / "MEMORY.md").write_text(body)
+    (tmp_path / "memory" / "MEMORY.md").write_text(body, encoding="utf-8")
 
     loaded = load_workspace_memory_index(tmp_path)
     assert loaded is not None
@@ -48,7 +48,7 @@ def test_truncates_when_line_cap_exceeded(tmp_path: Path) -> None:
     """>200 lines → truncated + warning sentence appears."""
     (tmp_path / "memory").mkdir()
     lines = [f"- [t{i}](topics/t{i}.md) — hook {i}" for i in range(MAX_INDEX_LINES + 50)]
-    (tmp_path / "memory" / "MEMORY.md").write_text("\n".join(lines))
+    (tmp_path / "memory" / "MEMORY.md").write_text("\n".join(lines), encoding="utf-8")
 
     loaded = load_workspace_memory_index(tmp_path)
     assert loaded is not None
@@ -63,7 +63,7 @@ def test_truncates_when_byte_cap_exceeded(tmp_path: Path) -> None:
     """Few lines but >25 KB → byte cap fires, warning mentions size."""
     (tmp_path / "memory").mkdir()
     huge = "x" * (MAX_INDEX_BYTES + 5_000)
-    (tmp_path / "memory" / "MEMORY.md").write_text(huge)
+    (tmp_path / "memory" / "MEMORY.md").write_text(huge, encoding="utf-8")
 
     loaded = load_workspace_memory_index(tmp_path)
     assert loaded is not None
