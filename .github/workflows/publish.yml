@@ -39,6 +39,13 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Sigstore attestations are nice-to-have but have been flaky
+          # (Rekor transparency log POST returning "Response ended
+          # prematurely" — see runs 26455195493 attempts 1+2). Disabled
+          # so PyPI uploads aren't held hostage to sigstore.dev outages.
+          # Re-enable once it stops looking like a blocker.
+          attestations: false
         # Trusted Publishing — no `password:` field. Configure once at
         # https://pypi.org/manage/project/nano-openclaw/settings/publishing/
         # with: workflow=publish.yml, environment=pypi.
