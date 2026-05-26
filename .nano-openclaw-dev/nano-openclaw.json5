@@ -3,29 +3,26 @@
   agents: {
     // Global defaults for all agents
     defaults: {
-      model: "ali-coding/glm-5",
-      imageModel: "ali-coding/kimi-k2.5",
+      model: "custom/glm-5",
+      imageModel: "custom/kimi-k2.5",
       thinkingDefault: "minimal",    // Default thinking level: off|minimal|low|medium|high|xhigh|adaptive|max
     },
-    
+
     // Agent list (future multi-agent support)
     list: [
       {
         id: "default",
         default: true,
-        name: "Default Agent",
-        // Can override defaults here:
-        // model: "ali-coding/qwen3.6-plus",
-        // workspace: "./workspace-default",
+        name: "Default Agent"
       }
     ],
   },
-  
+
   // Model/Provider configuration (fully aligns with openclaw)
   models: {
     mode: "merge",  // merge: adds to builtins, replace: only custom providers
     providers: {
-      "ali-coding": {
+      "custom": {
         baseUrl: "${ANTHROPIC_BASE_URL}",
         apiKey: "${ANTHROPIC_API_KEY}",
         api: "anthropic-messages",
@@ -53,26 +50,15 @@
             name: "GLM 5",
             input: ["text"],
             reasoning: true,
-            // 修正: GLM-5 实际上下文长度为 202752 tokens (阿里云官方文档)
-            // https://help.aliyun.com/zh/model-studio/glm
             contextWindow: 202752,
-            maxTokens: 16384,  // 修正: GLM-5 最大回复长度为 16384
+            maxTokens: 16384,
             params: { thinking: "minimal" },
           },
         ],
       },
     },
   },
-  
-  // Session configuration (aligns with openclaw)
-  session: {
-    idleMinutes: 60,
-    reset: {
-      mode: "idle",
-      idleMinutes: 120,
-    },
-  },
-  
+
   // nano-openclaw custom fields
   noTools: false,
   maxIterations: 512,
@@ -129,15 +115,6 @@
     host: "0.0.0.0",   // 建议 loopback；改成 0.0.0.0 / 局域网 IP 时启动会打 warning（v1 无 auth）
     port: 5000,          // 默认 5000
     log_path: "",        // 可选；空 → state_dir/log/gateway.log
-  },
-
-  wechat: {
-    accounts: [
-      {
-        id: "default",
-        ilink_token: "",
-      },
-    ],
   },
 
   logging: {
