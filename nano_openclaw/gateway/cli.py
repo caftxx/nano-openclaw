@@ -32,6 +32,7 @@ from nano_openclaw.gateway.pidfile import (
     DaemonStatus,
     gateway_status,
     is_alive,
+    lan_ip,
     pidfile_path,
     port_responds,
     read_pidfile,
@@ -154,10 +155,19 @@ def _verb_status(state_dir: Path) -> int:
     log_path = _resolve_log_path(state_dir)
     console.print(f"  log:       {_short_home(log_path)}")
 
-    # URLs the user can hit
-    web_host = "localhost" if entry.host in ("0.0.0.0", "::") else entry.host
-    console.print(f"  webui:     http://{web_host}:{entry.port}/")
-    console.print(f"  rpc:       ws://{web_host}:{entry.port}/rpc")
+    # URLs the user can hit. Honour the bound scheme (http/https from TLS) and,
+    # when the daemon listens on a wildcard host, advertise the machine's
+    # default-route LAN IP so the printed URL is actually reachable from another
+    # device (a phone hitting the WebUI mic over the LAN) rather than a bare
+    # "localhost" that only works on the host itself.
+    scheme = entry.scheme or "http"
+    ws_scheme = "wss" if scheme == "https" else "ws"
+    if entry.host in ("0.0.0.0", "::"):
+        web_host = lan_ip() or "localhost"
+    else:
+        web_host = entry.host
+    console.print(f"  webui:     {scheme}://{web_host}:{entry.port}/")
+    console.print(f"  rpc:       {ws_scheme}://{web_host}:{entry.port}/rpc")
 
     # ── RPC probe — runtime + health + channels ──────────────────────────
     probe = _probe_gateway_rpc(entry.host, entry.port, timeout=2.0)

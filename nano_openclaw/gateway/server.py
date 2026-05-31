@@ -118,7 +118,7 @@ async def run_daemon(
 
     # ── PID file ─────────────────────────────────────────────────────────────
     if write_pid:
-        write_pidfile(runtime.state_dir, pid=os.getpid(), port=port, host=host)
+        write_pidfile(runtime.state_dir, pid=os.getpid(), port=port, host=host, scheme=scheme)
 
     # ── Backend + GatewayContext FIRST so channels can share its manager ───
     # Order matters: WeChat (and any future channel) needs ``backend.manager``
@@ -172,7 +172,13 @@ async def run_daemon(
                 # Windows / non-Unix
                 pass
 
-        web_host = "localhost" if host in ("0.0.0.0", "::") else host
+        # On a wildcard bind advertise the default-route LAN IP so the printed
+        # URL is reachable from another device (phone hitting the WebUI mic over
+        # the LAN); fall back to localhost when no route is resolvable.
+        if host in ("0.0.0.0", "::"):
+            web_host = lan_ip() or "localhost"
+        else:
+            web_host = host
         console.print(
             f"[green]gateway[/green] running on [bold]{scheme}://{host}:{port}[/bold] (pid {os.getpid()})"
         )

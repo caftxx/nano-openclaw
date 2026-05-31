@@ -30,19 +30,27 @@ class PidfileEntry:
     pid: int
     port: int
     host: str
+    scheme: str = "http"
 
     @property
     def line(self) -> str:
-        return f"{self.pid} {self.port} {self.host}\n"
+        return f"{self.pid} {self.port} {self.host} {self.scheme}\n"
 
 
 def pidfile_path(state_dir: Path) -> Path:
     return state_dir / PIDFILE_NAME
 
 
-def write_pidfile(state_dir: Path, *, pid: int, port: int, host: str = "127.0.0.1") -> None:
+def write_pidfile(
+    state_dir: Path,
+    *,
+    pid: int,
+    port: int,
+    host: str = "127.0.0.1",
+    scheme: str = "http",
+) -> None:
     """Atomically (re-)write the gateway PID file."""
-    entry = PidfileEntry(pid=pid, port=port, host=host)
+    entry = PidfileEntry(pid=pid, port=port, host=host, scheme=scheme)
     state_dir.mkdir(parents=True, exist_ok=True)
     target = pidfile_path(state_dir)
     tmp = target.with_suffix(".pid.tmp")
@@ -70,7 +78,8 @@ def read_pidfile(state_dir: Path) -> Optional[PidfileEntry]:
     except ValueError:
         return None
     host = parts[2] if len(parts) >= 3 else "127.0.0.1"
-    return PidfileEntry(pid=pid, port=port, host=host)
+    scheme = parts[3] if len(parts) >= 4 else "http"
+    return PidfileEntry(pid=pid, port=port, host=host, scheme=scheme)
 
 
 def remove_pidfile(state_dir: Path) -> None:
@@ -123,6 +132,27 @@ def _is_alive_win32(pid: int) -> bool:
     if not got_code:
         return False
     return exit_code.value == STILL_ACTIVE
+
+
+def lan_ip() -> Optional[str]:
+    """Best-effort local IP of the interface carrying the default route.
+
+    Opens a UDP socket "toward" a public address and reads back the local
+    endpoint the OS would route through — no packet is actually sent, so this
+    works offline and cross-platform. Returns ``None`` (callers fall back to
+    ``localhost``) if no route can be determined or the address is loopback.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    if not ip or ip.startswith("127."):
+        return None
+    return ip
 
 
 def port_responds(host: str, port: int, *, timeout: float = 0.2) -> bool:
