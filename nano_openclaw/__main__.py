@@ -58,10 +58,29 @@ from nano_openclaw.session import (
 from rich.console import Console
 
 
+def _resolve_version() -> str:
+    """Read the installed package version from metadata (single source of
+    truth in pyproject.toml). Falls back to ``unknown`` when running from an
+    uninstalled checkout without metadata."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("nano-openclaw")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="nano-openclaw",
         description="Minimal educational reimplementation of OpenClaw's agent loop.",
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {_resolve_version()}",
+        help="Print the version number and exit",
     )
     # Top-level convenience flags forwarded to ``tui`` (back-compat). Were the
     # default invocation in pre-Phase 3 builds; phased out gradually.
