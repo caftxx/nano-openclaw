@@ -156,10 +156,11 @@ def test_switch_model_in_dangerous_tools_and_requires_approval(tmp_path):
         asyncio.run(backend.aclose())
 
 
-def test_set_thinking_tool_changes_runtime_when_no_approval_gate(tmp_path):
-    """No approval_manager → tool runs straight; the active runtime's
-    ``thinking_level`` reflects the new value and the JSON envelope reports
-    from/to."""
+def test_set_thinking_tool_queues_change_effective_next_turn(tmp_path):
+    """``set_thinking`` runs inside a turn (RuntimeUpdateGuard reader held), so
+    it can't mutate the runtime immediately. It queues the change: runtime.cfg
+    stays put until the turn-end flush runs, then takes effect — mirroring the
+    ``/thinking`` slash command's next-turn semantics."""
     import json
 
     runtime = _fake_runtime(tmp_path)
@@ -169,16 +170,48 @@ def test_set_thinking_tool_changes_runtime_when_no_approval_gate(tmp_path):
         try:
             tool = runtime.registry._tools["set_thinking"]
             raw = tool.run({"level": "high"})
-            return await raw if asyncio.iscoroutine(raw) else raw
+            out = await raw if asyncio.iscoroutine(raw) else raw
+            payload = json.loads(out)
+            # Queued, not yet applied.
+            assert payload["ok"] is True
+            assert payload["from"] == "off"
+            assert payload["to"] == "high"
+            assert payload["effective"] == "next_turn"
+            assert backend._pending_thinking_level == "high"
+            assert runtime.cfg.thinking_level == "off"  # unchanged until flush
+            # End-of-turn flush applies it onto the global runtime.
+            await backend._flush_pending_thinking()
+            assert runtime.cfg.thinking_level == "high"
+            assert backend._pending_thinking_level is None
         finally:
             await backend.aclose()
 
-    out = asyncio.run(run())
-    payload = json.loads(out)
-    assert payload["ok"] is True
-    assert payload["from"] == "off"
-    assert payload["to"] == "high"
-    assert runtime.cfg.thinking_level == "high"
+    asyncio.run(run())
+
+
+def test_set_thinking_flush_requeues_while_turn_in_flight(tmp_path):
+    """If a concurrent turn still holds the reader when the flush fires, the
+    writer raises BusyError; the change is re-queued so the next flush applies
+    it rather than getting silently dropped."""
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+
+    async def run():
+        try:
+            backend.queue_thinking_level("high")
+            # Simulate another turn holding the reader → writer BusyError.
+            async with runtime.runtime_guard.reader():
+                await backend._flush_pending_thinking()
+                assert backend._pending_thinking_level == "high"  # re-queued
+                assert runtime.cfg.thinking_level == "off"  # untouched
+            # Reader released → flush now lands the change.
+            await backend._flush_pending_thinking()
+            assert runtime.cfg.thinking_level == "high"
+            assert backend._pending_thinking_level is None
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
 
 
 def test_set_thinking_tool_rejects_unknown_level(tmp_path):

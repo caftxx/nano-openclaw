@@ -170,6 +170,13 @@ class EmbeddedBackend(Backend):
         self._subscribers: list[_Subscriber] = []
         self._seq = 0
         self._closed = False
+        # Thinking-level change requested by the model via ``set_thinking``
+        # mid-turn. Can't apply immediately: the turn holds the
+        # ``RuntimeUpdateGuard`` reader, so ``runtime_update`` (writer) would
+        # raise BusyError. Stash it here and flush after the turn's reader
+        # releases — matching ``/thinking``'s semantics (global runtime.cfg
+        # change, effective from the next turn).
+        self._pending_thinking_level: str | None = None
         # Wire LLM-facing runtime introspection tools (list_models /
         # switch_model / get_runtime / …). These need a live ``Backend``
         # reference, which only exists once we've built ``self`` — that's why
@@ -509,6 +516,9 @@ class EmbeddedBackend(Backend):
             if session.active_turn_id == turn_id:
                 session.active_turn_id = None
             self._run_registry.unregister(turn_id)
+            # Reader released with the ``async with`` above — now safe to apply
+            # any thinking-level change the model queued via ``set_thinking``.
+            await self._flush_pending_thinking()
             self._emit(
                 PushEvent(
                     event="session.changed",
@@ -835,6 +845,34 @@ class EmbeddedBackend(Backend):
             context_recent_turns=cfg.context_recent_turns,
             context_window=cfg.context_window,
         )
+
+    def queue_thinking_level(self, level: str) -> None:
+        """Queue a thinking-level change to apply once the current turn ends.
+
+        Called by the ``set_thinking`` LLM tool, which always runs inside a
+        turn (reader held), so it cannot call ``runtime_update`` directly.
+        ``_run_turn``'s finally flushes this after the reader releases, so the
+        change lands on the global ``runtime.cfg`` and takes effect from the
+        next turn — identical to a user typing ``/thinking <level>``.
+        """
+        self._pending_thinking_level = level
+
+    async def _flush_pending_thinking(self) -> None:
+        """Apply a queued ``set_thinking`` change after the turn's reader is
+        released. Re-queues on BusyError (another turn still in flight) so the
+        next turn's flush retries; never raises into the turn's finally."""
+        level = self._pending_thinking_level
+        if level is None:
+            return
+        self._pending_thinking_level = None
+        try:
+            await self.runtime_update(thinking_level=level)
+        except BusyError:
+            # Concurrent turn still holds the reader — keep the request and
+            # let the next turn's flush apply it.
+            self._pending_thinking_level = level
+        except Exception as exc:  # noqa: BLE001 — never break the turn's finally
+            log.warning("backend.thinking.flush_failed", f"{type(exc).__name__}: {exc}")
 
     async def runtime_update(
         self,

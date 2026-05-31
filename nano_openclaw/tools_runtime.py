@@ -168,6 +168,24 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
                 "thinking_level": level,
                 "message": f"already on {level}",
             })
+        # This tool runs *inside* a turn, which holds the RuntimeUpdateGuard
+        # reader — calling runtime_update (writer) here would raise BusyError.
+        # Queue the change so the backend applies it after the turn ends;
+        # it takes effect from the next turn, exactly like ``/thinking``.
+        queue = getattr(backend, "queue_thinking_level", None)
+        if callable(queue):
+            queue(level)
+            return _ok({
+                "from": snap_before.thinking_level,
+                "to": level,
+                "effective": "next_turn",
+                "message": (
+                    f"thinking will switch from {snap_before.thinking_level} "
+                    f"to {level} starting next turn"
+                ),
+            })
+        # Fallback for backends without the queue (e.g. remote): best-effort
+        # immediate update — only succeeds when no turn is in flight.
         try:
             new_snap = await backend.runtime_update(thinking_level=level)
         except Exception as exc:  # noqa: BLE001
@@ -180,11 +198,13 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
     registry.register(Tool(
         name="set_thinking",
         description=(
-            "Adjust the thinking-budget level for the current conversation. "
+            "Adjust the thinking-budget level for this conversation. "
             "Argument: `level` ∈ {off, minimal, low, medium, high, xhigh, "
             "adaptive, max}. Higher levels give the model more tokens to "
-            "deliberate before responding (xhigh / max ~32k tokens). Use "
-            "when a task warrants more deliberation than the current level."
+            "deliberate before responding (xhigh / max ~32k tokens). The "
+            "change takes effect from your NEXT turn — the current turn keeps "
+            "its level — mirroring the /thinking slash command. Use when an "
+            "upcoming task warrants more (or less) deliberation."
         ),
         input_schema={
             "type": "object",
