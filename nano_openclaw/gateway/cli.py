@@ -170,7 +170,7 @@ def _verb_status(state_dir: Path) -> int:
     console.print(f"  rpc:       {ws_scheme}://{web_host}:{entry.port}/rpc")
 
     # ── RPC probe — runtime + health + channels ──────────────────────────
-    probe = _probe_gateway_rpc(entry.host, entry.port, timeout=2.0)
+    probe = _probe_gateway_rpc(entry.host, entry.port, scheme=scheme, timeout=2.0)
     if probe is None:
         console.print()
         console.print("[yellow]rpc probe:[/yellow] timed out (gateway listening but not responding)")
@@ -276,9 +276,16 @@ def _format_duration(seconds: float) -> str:
     return f"{d}d {h}h"
 
 
-def _probe_gateway_rpc(host: str, port: int, *, timeout: float = 2.0) -> dict | None:
+def _probe_gateway_rpc(
+    host: str, port: int, *, scheme: str = "http", timeout: float = 2.0
+) -> dict | None:
     """Synchronous wrapper that opens a one-shot WS connection to ``/rpc``
     and pulls health + runtime + channels.status.
+
+    ``scheme`` is the daemon's bound HTTP scheme (``http``/``https``); when it
+    is ``https`` the daemon only speaks ``wss``, so we connect over TLS — with
+    certificate verification disabled, since the cert is typically self-signed
+    and ``status`` only needs to reach a known-local socket.
 
     Returns ``None`` on any failure (timeout, refused, malformed) so the
     caller can degrade gracefully — status output should still be useful
@@ -292,8 +299,19 @@ def _probe_gateway_rpc(host: str, port: int, *, timeout: float = 2.0) -> dict | 
         # Connect with a short timeout — status should never hang.
         try:
             ws_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-            url = f"ws://{ws_host}:{port}/rpc"
-            async with websockets.connect(url, open_timeout=timeout, close_timeout=timeout) as ws:
+            if scheme == "https":
+                import ssl
+
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                url = f"wss://{ws_host}:{port}/rpc"
+            else:
+                ssl_ctx = None
+                url = f"ws://{ws_host}:{port}/rpc"
+            async with websockets.connect(
+                url, ssl=ssl_ctx, open_timeout=timeout, close_timeout=timeout
+            ) as ws:
                 async def _call(method: str) -> dict | None:
                     await ws.send(_json.dumps({"id": method, "method": method, "params": {}}))
                     raw = await asyncio.wait_for(ws.recv(), timeout=timeout)

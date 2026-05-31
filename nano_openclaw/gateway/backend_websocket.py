@@ -156,7 +156,18 @@ class WebSocketBackend(Backend):
         async with self._connect_lock:
             if self._ws is not None:
                 return
-            self._ws = await websockets.connect(self.url, max_size=2**24)
+            connect_kwargs: dict[str, Any] = {"max_size": 2**24}
+            if self.url.startswith("wss://"):
+                # Daemon TLS certs are typically self-signed (LAN / phone mic),
+                # and v1 has no auth anyway — skip verification so the local TUI
+                # can still dial the wss endpoint.
+                import ssl
+
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                connect_kwargs["ssl"] = ssl_ctx
+            self._ws = await websockets.connect(self.url, **connect_kwargs)
             self._receive_task = asyncio.create_task(self._receive_loop(), name="ws-backend-recv")
 
     async def aclose(self) -> None:

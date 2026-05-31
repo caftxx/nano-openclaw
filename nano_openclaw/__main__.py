@@ -191,7 +191,7 @@ def main() -> None:
             from nano_openclaw.gateway.pidfile import gateway_status as _gw_status
             status = _gw_status(state_dir)
             if status.running and status.entry is not None:
-                connect_url = f"ws://{status.entry.host}:{status.entry.port}/rpc"
+                connect_url = _daemon_connect_url(status.entry)
 
         if connect_url:
             connected = asyncio.run(_run_ws_tui(connect_url))
@@ -329,6 +329,21 @@ async def _async_main(
         if backend is not None:
             await backend.aclose()
         await runtime.close()
+
+
+def _daemon_connect_url(entry: "PidfileEntry") -> str:
+    """Build the ``/rpc`` dial URL for an auto-detected local daemon.
+
+    Two pidfile facts the naive ``ws://{host}:{port}`` form gets wrong:
+
+    - A wildcard bind host (``0.0.0.0`` / ``::``) isn't dialable, so loop it
+      back to ``127.0.0.1``.
+    - An https daemon only speaks ``wss``; honour the recorded scheme so the
+      TUI doesn't hit a plaintext handshake against a TLS socket.
+    """
+    ws_host = "127.0.0.1" if entry.host in ("0.0.0.0", "::") else entry.host
+    ws_scheme = "wss" if entry.scheme == "https" else "ws"
+    return f"{ws_scheme}://{ws_host}:{entry.port}/rpc"
 
 
 async def _run_ws_tui(connect_url: str) -> bool:
