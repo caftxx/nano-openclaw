@@ -183,9 +183,11 @@ WeChat 作为 daemon 内的 Channel 运行；每个 uid 自动绑定一个真实
 
 ### web_voice（语音页 /voice，需 HTTPS）
 
-`/voice` 是一个**开车免提**的语音交互页：点一下麦克风进入连续对话——浏览器原生语音识别把你说的话转成文字 → 走 `/ws` 发给 agent → 回复用 `speechSynthesis` 朗读出来；朗读时点屏幕任意处可打断。页面底部有思考等级下拉（跟随后端全局 thinking 设置，进页面时回填、选了才下发）。
+**开车免提**的语音交互，已并入聊天页（不再是独立页面）：聊天输入框点麦克风 🎙 进入全屏免提，或直接访问 `/voice` 深链。点一下进入连续对话——浏览器原生语音识别把你说的话转成文字 → 走 `/ws` 发给 agent → 回复用 `speechSynthesis` 朗读出来；朗读时点屏幕任意处可打断。与聊天**共享同一 session / runtime**，退出后历史原样还在。顶栏可选**播报声音**（系统提供的 TTS 声音），底部有**思考等级**下拉（跟随后端）。免提期间用 Wake Lock 保持屏幕常亮（挡自动锁屏；手动息屏 / 切 App 仍无解）。
 
-> 依赖浏览器原生 `webkitSpeechRecognition` + `speechSynthesis`，目前在 **Android Chrome** 上体验最佳；iOS Safari 的语音识别能力较弱。
+> **语音模式会让回答更适合朗读**：该模式下每一轮都给模型追加一段口语化指令——简短、先说结论、不用 Markdown / 列表 / emoji，避免 TTS 把符号念成杂音。只影响语音轮，文字聊天不受影响。
+
+> 依赖浏览器原生 `webkitSpeechRecognition` + `speechSynthesis`，目前在 **Android Chrome** 上体验最佳；iOS Safari 的语音识别能力较弱。可选的播报声音由系统/浏览器提供，Android Chrome 常只有一个，需去系统「文字转语音(TTS)」设置切换。
 
 **为什么必须 HTTPS**：手机浏览器只在 *secure context* 下才允许访问麦克风（`getUserMedia` / 语音识别）。`localhost` / `127.0.0.1` 是例外，但通过局域网 IP（如 `http://192.168.x.x:5000`）的明文 HTTP **会被直接拒绝**，页面会提示"需要 HTTPS"。所以手机用 `/voice` 必须走 HTTPS。
 
