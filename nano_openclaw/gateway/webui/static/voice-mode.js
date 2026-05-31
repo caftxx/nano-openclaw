@@ -171,12 +171,18 @@
     };
     r.onerror = (e) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        // 切到后台/锁屏时浏览器会临时拒麦——别据此关掉免提，回前台能恢复。
+        // 只有在前台被真正拒绝才报错并停。
+        if (document.visibilityState !== "visible") return;
         setPhase("error", secureOk ? "麦克风权限被拒绝，请在浏览器设置中允许" : "需要 HTTPS 才能使用麦克风（当前是 HTTP）");
         v.active = false;
       }
     };
     r.onend = () => {
-      if (v.active && v.phase === "listening") { try { r.start(); } catch (_) {} }
+      // 仅在前台自动续听；后台续听会触发 not-allowed，反而把免提弄死。
+      if (v.active && v.phase === "listening" && document.visibilityState === "visible") {
+        try { r.start(); } catch (_) {}
+      }
     };
     return r;
   }
@@ -415,12 +421,20 @@
       if (v.speaking || v.phase === "speaking") { stopAllSpeech(); resumeListeningIfActive(); }
     });
 
-    // 切走/锁屏再回到前台：wakeLock 会被系统释放、识别也已 abort，
-    // 这里重新申请常亮并把聆听循环接回来（息屏期间无解，能做的是回来即恢复）。
+    // 切走/锁屏再回到前台：wakeLock 被系统释放、识别已 abort 且常卡在坏状态
+    // （旧 recognizer 再 start() 会抛 InvalidStateError）。所以重申请常亮，并
+    // 丢掉旧 recognizer、建一个干净的重新起；留一点延迟等前台权限就绪。
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "visible" || !v.open || !v.active) return;
       requestWakeLock();
-      if (v.phase === "listening") startRecognition();   // 重新拉起麦克风
+      if (v.speaking || v.phase === "thinking") return;   // 正在读/等回复，别插队
+      stopRecognition();
+      v.recog = null;                                     // 强制重建，避开卡死状态
+      setTimeout(() => {
+        if (document.visibilityState === "visible" && v.open && v.active && !v.speaking && v.phase !== "thinking") {
+          startRecognition();
+        }
+      }, 250);
     });
 
     // 深链：/voice 直接进语音态（未自动聆听，需用户点圆——浏览器要求手势）
