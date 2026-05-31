@@ -1381,7 +1381,7 @@ textarea:focus {
     margin: 8px auto calc(14px + env(safe-area-inset-bottom));
     padding: 0;
     position: relative;
-    grid-template-columns: 48px minmax(0, 1fr) 44px;
+    grid-template-columns: 48px minmax(0, 1fr) auto 44px;
     border-radius: 0;
     align-items: center;
     column-gap: 10px;
@@ -1415,11 +1415,12 @@ textarea:focus {
 
   .attachment-list:not([hidden]) ~ .composer-tool,
   .attachment-list:not([hidden]) ~ textarea,
+  .attachment-list:not([hidden]) ~ .composer-mic,
   .attachment-list:not([hidden]) ~ #sendBtn {
     grid-row: 2;
   }
 
-  .composer-tool {
+  .composer-tool:not(.composer-mic) {
     grid-column: 1;
     width: 48px;
     min-width: 48px;
@@ -1427,6 +1428,18 @@ textarea:focus {
     min-height: 48px;
     background: var(--button-secondary-bg);
     box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--line) 70%, white);
+  }
+
+  /* 麦克风在 pill 内（col3），透明融入，不占独立圆底 */
+  .composer-mic {
+    grid-column: 3;
+    width: 40px;
+    min-width: 40px;
+    height: 44px;
+    min-height: 44px;
+    background: transparent;
+    box-shadow: none;
+    justify-self: end;
   }
 
   .attachment-chip {
@@ -1452,7 +1465,7 @@ textarea:focus {
   }
 
   #sendBtn {
-    grid-column: 3;
+    grid-column: 4;
     width: 44px;
     min-width: 44px;
     height: 44px;
@@ -1461,7 +1474,7 @@ textarea:focus {
     margin-right: 4px;
   }
 
-  .composer-tool,
+  .composer-tool:not(.composer-mic),
   #sendBtn {
     font-size: 0;
   }
@@ -1517,4 +1530,160 @@ textarea:focus {
     transition-duration: .01ms !important;
     animation-duration: .01ms !important;
   }
+}
+
+/* ── Voice mode：聊天页内嵌的全屏免提语音层 ───────────────────────────────── */
+
+/* composer：attach | textarea | mic | send 四列，两个断点都用显式列位，
+   避免 auto-flow 把按钮换行/挤出屏幕（手机端见下方 max-width:720 区块）。 */
+.composer-mic::before,
+.composer-mic::after { content: none; }        /* 去掉 .composer-tool 的 + 图标横竖条 */
+.composer-mic svg { width: 20px; height: 20px; display: block; }  /* ChatGPT 风格听写图标 */
+@media (min-width: 721px) {
+  .composer { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+  .composer > .composer-tool:not(.composer-mic) { grid-column: 1; }
+  .composer > #prompt { grid-column: 2; }
+  .composer > .composer-mic { grid-column: 3; }
+  .composer > #sendBtn { grid-column: 4; }
+}
+
+/* 全屏免提层：颜色全部走主题变量，跟随外层 深色/浅色/系统 */
+.voice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.voice-overlay[hidden] { display: none; }
+body.voice-open { overflow: hidden; }
+
+.voice-stage-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--subtle);
+  font-size: 14px;
+}
+.voice-exit {
+  background: transparent;
+  border: 0;
+  color: var(--subtle);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.voice-stage {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px 12px 8px;
+}
+.voice-circle {
+  width: clamp(140px, 36vmin, 190px);
+  height: clamp(140px, 36vmin, 190px);
+  flex: none;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+  transition: box-shadow .25s, background .25s;
+}
+.voice-circle .voice-emoji { font-size: clamp(38px, 10vmin, 52px); line-height: 1; }
+.voice-circle.off { background: var(--surface-raised); }
+.voice-circle.listening {
+  background: color-mix(in oklch, #2ecc71 16%, var(--surface-raised));
+  box-shadow: 0 0 0 8px rgba(46, 204, 113, .18), 0 0 60px rgba(46, 204, 113, .35);
+  animation: voicePulse 1.6s ease-in-out infinite;
+}
+.voice-circle.thinking { background: color-mix(in oklch, #f1c40f 16%, var(--surface-raised)); box-shadow: 0 0 0 8px rgba(241, 196, 15, .18); }
+.voice-circle.speaking { background: color-mix(in oklch, #4ea1ff 16%, var(--surface-raised)); box-shadow: 0 0 0 8px rgba(78, 161, 255, .20), 0 0 60px rgba(78, 161, 255, .35); }
+.voice-circle.error { background: color-mix(in oklch, #ef4444 16%, var(--surface-raised)); }
+.voice-circle:disabled { opacity: .6; cursor: default; }
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 0 0 8px rgba(46, 204, 113, .18), 0 0 50px rgba(46, 204, 113, .30); }
+  50%      { box-shadow: 0 0 0 16px rgba(46, 204, 113, .06), 0 0 70px rgba(46, 204, 113, .45); }
+}
+.voice-status { font-size: 15px; color: var(--subtle); text-align: center; min-height: 20px; }
+.voice-unsupported { color: var(--danger); font-size: 14px; text-align: center; padding: 4px 16px; line-height: 1.5; }
+.voice-unsupported[hidden] { display: none; }
+
+.voice-captions {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 8px 14px;
+}
+.vbubble {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 16px;
+  line-height: 1.5;
+  word-break: break-word;
+  max-width: 100%;
+  color: var(--ink);
+}
+.vbubble.you { align-self: flex-end; background: color-mix(in oklch, var(--accent) 18%, var(--surface-raised)); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.vbubble.ai { align-self: flex-start; background: var(--surface-raised); border-bottom-left-radius: 4px; }
+.vbubble.ai > :first-child { margin-top: 0; }
+.vbubble.ai > :last-child { margin-bottom: 0; }
+.vbubble.interim { opacity: .55; font-style: italic; }
+
+.voice-footer {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px 18px;
+  border-top: 1px solid var(--line);
+}
+.voice-footer > button,
+.voice-footer > select {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 46px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: center;
+  text-align-last: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-appearance: none;
+  appearance: none;
+  font-family: inherit;
+}
+.voice-footer > select.on {
+  background: color-mix(in oklch, var(--accent) 16%, var(--surface-raised));
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--line));
+  color: var(--ink);
 }

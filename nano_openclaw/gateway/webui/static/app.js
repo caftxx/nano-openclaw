@@ -344,6 +344,9 @@ function handleEvent(event) {
         addActivity(event.type, summarizeEvent(event), event);
       }
   }
+  // Feed every event to the voice overlay (TTS / captions / hands-free state
+  // machine) so it rides the same ws + session as the chat surface.
+  if (window.VoiceMode) window.VoiceMode.onEvent(event);
 }
 
 function renderRuntime(payload) {
