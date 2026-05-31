@@ -33,3 +33,6 @@ Thumbs.db
 
 # Git worktrees
 .worktrees/
+
+# TLS certs/keys (e.g. self-signed cert.pem/key.pem for the /voice HTTPS page)
+*.pem

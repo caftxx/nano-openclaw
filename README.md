@@ -95,7 +95,7 @@ NANO_OPENCLAW_CONFIG_PATH=./my-config.json5 uv run nano-openclaw
   └─ remote 模式：tui --connect 走 WebSocket
 ```
 
-**WebUI**：`gateway start` 后浏览器打开 `http://127.0.0.1:5000`（默认端口可配，见下文）。
+**接入方式**：daemon 起来后可被 tui / wechat / web_chat / web_voice 四种前端共享接入，详见下文 [接入方式](#接入方式) 章节。
 
 ---
 
@@ -139,6 +139,79 @@ GATEWAY_PORT=9000 docker compose --profile gateway up -d
 
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 
+## 接入方式
+
+daemon 起来后，同一个 `AgentRuntime` 和同一份 session 列表可被四种前端共享接入。四端共享 daemon 内**单一** `BackendSessionManager`，`/sessions` 在任何一端看到的都是同一份列表。
+
+| 方式 | 入口 | 说明 |
+| --- | --- | --- |
+| **tui** | `nano-openclaw tui [--connect ws://host:5000/rpc]` | 终端 REPL；本机自动探测 daemon，或 `--connect` 接远程 |
+| **wechat** | `nano-openclaw wechat login` + `gateway start` | 微信扫码，每个 uid 一个持久 session |
+| **web_chat** | 浏览器 `http://host:5000/` | WebUI 聊天页：斜杠命令、thinking、附件、活动回放、主题 |
+| **web_voice** | 浏览器 `https://host:5000/voice` | 开车免提语音页（**需 HTTPS**） |
+
+### tui（终端）
+
+`nano-openclaw tui` 进入终端 REPL：本机有 daemon 时自动接管，没有则走单进程 embedded 模式自建 runtime。`--connect ws://host:5000/rpc` 接远程 daemon。命令示例见上文 [Development setup](#development-setup)。
+
+### wechat（微信扫码）
+
+WeChat 通过 iLink 协议接入，**只支持扫码登录**，nano-openclaw.json5 不再有 `wechat` 配置块。
+
+```bash
+# 1. 扫码登录（默认账号）
+uv run nano-openclaw wechat login
+
+# 多账号：换个 --account 标签即可（默认是 'default'）
+uv run nano-openclaw wechat login --account=work
+uv run nano-openclaw wechat login --account=personal
+
+# 2. 启动 daemon — 自动发现 state_dir/wechat-tokens.*.json，每个文件 = 一个账号
+uv run nano-openclaw gateway start
+uv run nano-openclaw gateway status         # channels: 应列出所有登录账号
+```
+
+登录流程：终端打印 ASCII 二维码 → 微信扫码 → 手机端确认。登录成功后 token 写入 `state_dir/wechat-tokens.{account}.json`（`default` 账号无后缀），daemon 启动时自动加载。
+
+会话过期（iLink `errcode=-14`）时 daemon 不会疯狂重试，而是 long-poll 退避 5 分钟并在日志里高优先级提示重新运行 `wechat login`。再登录后 daemon 会自动捡起新 token，不需要重启。
+
+WeChat 作为 daemon 内的 Channel 运行；每个 uid 自动绑定一个真实的持久化 session（与 tui / web_chat 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。
+
+### web_chat（WebUI 聊天页）
+
+`gateway start` 后浏览器打开 `http://127.0.0.1:5000`（端口默认 5000，可在 [Gateway 配置](#gateway-配置) 改）。支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮/暗/跟随系统主题，移动端自适应。
+
+### web_voice（语音页 /voice，需 HTTPS）
+
+`/voice` 是一个**开车免提**的语音交互页：点一下麦克风进入连续对话——浏览器原生语音识别把你说的话转成文字 → 走 `/ws` 发给 agent → 回复用 `speechSynthesis` 朗读出来；朗读时点屏幕任意处可打断。页面底部有思考等级下拉（跟随后端全局 thinking 设置，进页面时回填、选了才下发）。
+
+> 依赖浏览器原生 `webkitSpeechRecognition` + `speechSynthesis`，目前在 **Android Chrome** 上体验最佳；iOS Safari 的语音识别能力较弱。
+
+**为什么必须 HTTPS**：手机浏览器只在 *secure context* 下才允许访问麦克风（`getUserMedia` / 语音识别）。`localhost` / `127.0.0.1` 是例外，但通过局域网 IP（如 `http://192.168.x.x:5000`）的明文 HTTP **会被直接拒绝**，页面会提示"需要 HTTPS"。所以手机用 `/voice` 必须走 HTTPS。
+
+**本地自签证书**（局域网场景最省事）：
+
+```bash
+# 生成自签证书（CN 随意，-days 自定有效期）
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem -out cert.pem -days 365 -subj "/CN=nano-openclaw"
+```
+
+**带 TLS 启动 gateway**（cert 和 key 必须成对，只给一个会启动失败）：
+
+```bash
+# 方式一：CLI flags（仅本次启动生效）
+nano-openclaw gateway start --host 0.0.0.0 \
+  --tls-cert ./cert.pem --tls-key ./key.pem
+
+# 方式二：写进配置长期生效（gateway 块加 tls_cert / tls_key，见 Gateway 配置）
+nano-openclaw gateway start --host 0.0.0.0
+```
+
+启动后手机访问 `https://<电脑局域网IP>:5000/voice`。自签证书第一次会弹"不安全"警告，**点继续 / 信任**后页面即为 secure context，麦克风就能用了。想免证书警告，改用 cloudflared / ngrok 隧道（受信 HTTPS）即可，页面同样放行。
+
+> ⚠️ 证书私钥（`key.pem`）不要提交进仓库。`--host 0.0.0.0` 还会触发"非回环无 auth"启动告警——v1 网关无鉴权，放到不可信网络前请加反代或限制网段。
+
 ## 配置文件
 
 配置文件采用 JSON5 格式（支持注释和尾逗号），路径按优先级查找：
@@ -175,33 +248,12 @@ gateway: {
   host: "127.0.0.1",   // 默认 loopback；改成 0.0.0.0 时启动会打 warning（v1 无 auth）
   port: 5000,
   log_path: "",        // 留空 → state_dir/log/gateway.log
+  tls_cert: "",        // PEM 证书路径；与 tls_key 成对设置则启用 HTTPS（手机用 /voice 必需）
+  tls_key: "",         // PEM 私钥路径
 }
 ```
 
-CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。
-
-### WeChat 扫码登录（唯一接入方式）
-
-WeChat 通过 iLink 协议接入，**只支持扫码登录**，nano-openclaw.json5 不再有 `wechat` 配置块。
-
-```bash
-# 1. 扫码登录（默认账号）
-uv run nano-openclaw wechat login
-
-# 多账号：换个 --account 标签即可（默认是 'default'）
-uv run nano-openclaw wechat login --account=work
-uv run nano-openclaw wechat login --account=personal
-
-# 2. 启动 daemon — 自动发现 state_dir/wechat-tokens.*.json，每个文件 = 一个账号
-uv run nano-openclaw gateway start
-uv run nano-openclaw gateway status         # channels: 应列出所有登录账号
-```
-
-登录流程：终端打印 ASCII 二维码 → 微信扫码 → 手机端确认。登录成功后 token 写入 `state_dir/wechat-tokens.{account}.json`（`default` 账号无后缀），daemon 启动时自动加载。
-
-会话过期（iLink `errcode=-14`）时 daemon 不会疯狂重试，而是 long-poll 退避 5 分钟并在日志里高优先级提示重新运行 `wechat login`。再登录后 daemon 会自动捡起新 token，不需要重启。
-
-WeChat 作为 daemon 内的 Channel 运行；每个 uid 自动绑定一个真实的持久化 session（与 TUI/WebUI 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。
+CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。`tls_cert` / `tls_key` 的用法（自签证书 + 带 TLS 启动）见 [接入方式](#接入方式) 章节的 web_voice 小节。
 
 ## 日志系统
 
@@ -225,37 +277,6 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
 `nano-openclaw.log` 支持 JSON Lines、自动轮转（>10MB 滚动）、Gzip 压缩、上下文注入（session_id、run_id、tool_call_id）。日志等级：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`（默认 `WARNING`）。
 
 ---
-
-## TUI 斜杠命令
-
-在 TUI（embedded 或 remote）输入。两种模式现在共享同一套 dispatcher，渲染和行为完全一致：
-
-| 命令 | 说明 |
-|---|---|
-| `/quit` | 退出 REPL |
-| `/help` | 显示命令列表 |
-| `/clear` | 清空当前 session 历史 |
-| `/new` | 创建新 session（保留当前会话已有数据） |
-| `/sessions [all]` | 渲染 Rich Table；`all` 显示全部 |
-| `/sessions delete <id_prefix>` | 删除指定 session（活跃 session 拒绝删除，返回 BUSY） |
-| `/session <prefix\|#>` | 切换到指定 session |
-| `/context` | Context window 用量 + 模型/thinking 摘要 |
-| `/compact` | 强制压缩当前 session 历史 |
-| `/tools` | Rich Table 列出全部工具 + 描述 |
-| `/skills` | Rich Table 列出 skills + status / in_prompt / reason |
-| `/plugins` | Rich Table 列出 plugins + tools/hooks |
-| `/hooks` | Rich Table 列出 hooks + plugins/priorities |
-| `/subagents [list\|kill <id>\|all]` | 后台子 agent 状态 |
-| `/active-memory [status\|on\|off\|mode\|style]` | Active Memory 配置 |
-| `/dreaming [status\|on\|off\|run]` | Dreaming 配置 + 立即跑一次 |
-| `/review-fork [status\|on\|off\|run]` | Background Review Fork 配置 + 立即触发一次 |
-| `/health` | daemon 健康状态（runtime_ready, channels, in-flight） |
-| `/channels` | 已运行的 channel 列表 |
-| `/runtime` | agent / model / workspace 摘要 |
-
-### 操作提示
-
-在 REPL 输入过程中按 **Esc** 键可取消当前进行中的 agent turn（embedded 模式），不会修改历史或 transcript。`tui --connect` 远程模式按 Ctrl-C 通过 `chat.abort` RPC 取消。
 
 ## 60 秒架构图
 
@@ -296,41 +317,6 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
   │ _provider_anthropic  │   │  _provider_openai    │
   │  Anthropic Messages  │   │  OpenAI Completions  │
   └──────────────────────┘   └──────────────────────┘
-
-  gateway/         = daemon 主入口 + Backend Protocol + RPC + slash dispatch
-                     ├─ server.py: run_daemon (uvicorn + channels + WS)
-                     ├─ backend.py: Backend Protocol（28 个方法）
-                     ├─ backend_embedded.py / backend_websocket.py
-                     ├─ ws_route.py: FastAPI /rpc dispatch
-                     ├─ methods/: chat / sessions / approvals / models / runtime / channels / subagents / features / introspection / health
-                     ├─ slash.py: 共享 slash dispatch + Rich 渲染（embedded + remote 共用）
-                     ├─ run_registry.py: turn_id ↔ asyncio.Task（chat.abort 统一接口）
-                     ├─ runtime_lock.py: RuntimeUpdateGuard（runtime hot-reload reader/writer）
-                     ├─ webui/: FastAPI 路由（mount 到 daemon FastAPI app；不再独立子命令）
-                     └─ pidfile.py + cli.py: gateway start/stop/status/run
-  channels/        = Channel 抽象（id × accountId 多账号）
-                     └─ wechat/: WechatChannel (per-uid 持久 session)
-  cli.py           = 单进程 REPL（embedded 模式）
-  __main__.py      = 顶层 argparse: tui / gateway
-  runtime.py        = AgentRuntime + RunRegistry + RuntimeUpdateGuard 一并构建
-  logger.py         = JSON Lines 日志（state_dir/log/）+ 轮转/Gzip + contextvars
-  config/           = JSON5 加载 + Pydantic 验证 + 环境变量替换 + 模型解析
-  _stream_events.py = 5 个共享 dataclass（两个 transport 的协议契约）
-  prompt.py         = build_system_prompt(registry)
-  compact.py        = estimate_tokens → compact_if_needed → summarize_history
-  approvals/        = requiresExecApproval() 门禁 + per-agent allowlist 持久化 +
-                       NonInteractiveApprovalHandler（cron / channel 自动决策）
-  plugins/          = 轻量 Plugin Protocol + HookRegistry + builtin wrappers
-  subagent/         = 后台子 agent runner + registry + completion auto-announce
-  schedule/         = cron scheduler + recovery（restart 不重触发已跑过的任务）
-  images.py         = parse_image_refs → load_image → describe_image
-  mcp/              = MCP 服务器连接管理（stdio/SSE/streamable-http）
-  session/          = transcript 持久化（.jsonl）+ sessions.json 索引
-  web_fetch.py      = URL 内容抓取 → readability → markdown + 缓存 + SSRF 防护
-  web_search.py     = DuckDuckGo 搜索 + 缓存
-  ssrf_guard.py     = 两阶段 SSRF 防护
-  external_content.py = 外部内容安全包装 + LLM token 清洗
-  memory/           = daily memory + memory_get/search + Active Memory + Dreaming
 ```
 
 ## 三条不变量
@@ -385,60 +371,6 @@ Background Review Fork（自进化）：可选，每 N 个 `end_turn` 后台启�
 Cron 任务：通过 `cron_create` 工具或配置文件定义；daemon 内部跑 cron scheduler；任务完成可定向通知发起方（wechat 用户收到 daemon 推送的消息）。daemon 重启不会重复触发同一时间窗已经跑过的任务（`last_run_at_ms` 去重）。
 
 Session Status 工具：内置 `session_status` 工具用于查询当前日期时间和会话上下文信息（模型 ID、session ID、token 使用量等）。
-
-## 端到端验证
-
-启动 daemon 然后用 TUI 试这一句：
-
-```bash
-uv run nano-openclaw gateway start
-uv run nano-openclaw tui
-```
-
-```
->>> 列出当前目录的文件，再读一下 pyproject.toml 的内容并简要总结
-```
-
-期望看到：先一个绿色的 `list_dir({"path":"."})` 面板，再一个 `read_file({"path":"pyproject.toml"})` 面板，最后模型给你一段总结后正常结束。
-
-错误路径试试：
-
-```
->>> 用 bash 跑一下 cat /this/path/does/not/exist
-```
-
-bash 工具面板会带**红色边框**，显示非零 exit 与 stderr；模型据此回复合理总结，整个程序不应崩溃。
-
-图片处理试试：
-
-```
->>> 看看 @screenshot.png 里有什么内容
-```
-
-模型会解析 `@` 引用，加载图片（自动压缩超大图片），然后：
-- **Native Vision**（默认）：图片以 base64 块发送给主模型，直接分析
-- **Media Understanding**（配置 `imageModel`）：先用图片模型描述成文字，再注入 prompt
-- **跳过**（主模型无视觉能力且未配置 `imageModel`）：显示黄色警告，图片被跳过
-
-网络搜索试试：
-
-```
->>> 搜索一下 Python 3.13 的新特性
-```
-
-`web_search` 会使用 DuckDuckGo 搜索返回标题、URL 和摘要，结果包裹在 `<EXTERNAL_UNTRUSTED_CONTENT>` 中。模型可以据此回复，也可以继续用 `web_fetch` 抓取具体页面。
-
-跨前端验证 session 一致性：
-
-```bash
-# 终端 1：启动 daemon + 在 TUI 里聊几句
-uv run nano-openclaw gateway start
-uv run nano-openclaw tui
->>> hello
-
-# 浏览器：打开 http://127.0.0.1:5000，应该看到刚才在 TUI 里发的会话
-# WeChat：给配置的账号发消息，TUI 的 /sessions 也能看到那个会话
-```
 
 ## License
 
