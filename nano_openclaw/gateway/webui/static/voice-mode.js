@@ -38,9 +38,10 @@
     speaking: false,
     captionAiNode: null,      // 当前 turn 的 AI 字幕节点
     optsBuilt: false,
+    voiceURI: "",             // 选中的 TTS 声音（空 = 系统默认）
   };
 
-  let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported;
+  let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice;
   function grab() {
     elOverlay = $("voiceOverlay");
     elCircle = $("voiceCircle");
@@ -50,6 +51,7 @@
     elCaptions = $("voiceCaptions");
     elThink = $("voiceThinkLevel");
     elUnsupported = $("voiceUnsupported");
+    elVoice = $("voiceVoice");
   }
 
   // ── 状态展示 ──────────────────────────────────────────────────────────────
@@ -111,6 +113,41 @@
     if (typeof level !== "string" || !elThink) return;
     elThink.value = level;
     elThink.classList.toggle("on", level !== "off");
+  }
+
+  // ── 播报声音（TTS voice）──────────────────────────────────────────────────
+  // 声音由系统/浏览器提供（getVoices）；优先列中文声音，没有则全列。
+  const VOICE_KEY = "nanoVoiceURI";
+  function allVoices() { try { return synth.getVoices() || []; } catch (_) { return []; } }
+  function buildVoiceOptions() {
+    if (!elVoice) return;
+    const voices = allVoices();
+    if (!voices.length) return;        // 还没加载好，等 voiceschanged 再来
+    const zh = voices.filter((vo) => /^zh/i.test(vo.lang));
+    const list = zh.length ? zh : voices;
+    elVoice.innerHTML = "";
+    const def = document.createElement("option");
+    def.value = "";
+    def.textContent = "🔊 系统默认";
+    elVoice.appendChild(def);
+    for (const vo of list) {
+      const o = document.createElement("option");
+      o.value = vo.voiceURI;
+      o.textContent = `🔊 ${vo.name}`;
+      elVoice.appendChild(o);
+    }
+    // 恢复已选（不在列表则回退默认）
+    elVoice.value = list.some((x) => x.voiceURI === v.voiceURI) ? v.voiceURI : "";
+    v.voiceURI = elVoice.value;
+  }
+  function getSelectedVoice() {
+    if (!v.voiceURI) return null;
+    return allVoices().find((x) => x.voiceURI === v.voiceURI) || null;
+  }
+  function applyVoice(u) {
+    const vo = getSelectedVoice();
+    if (vo) { u.voice = vo; u.lang = vo.lang; }
+    else u.lang = "zh-CN";
   }
 
   // ── 语音识别 ──────────────────────────────────────────────────────────────
@@ -224,7 +261,7 @@
     setPhase("speaking");
     stopRecognition();   // 朗读时停麦，防回环
     const u = new SpeechSynthesisUtterance(next);
-    u.lang = "zh-CN";
+    applyVoice(u);
     u.rate = 1.05;
     u.onend = () => { v.speaking = false; drainSpeak(); };
     u.onerror = () => { v.speaking = false; drainSpeak(); };
@@ -235,7 +272,7 @@
     v.speaking = true;
     setPhase("speaking");
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "zh-CN";
+    applyVoice(u);
     u.onend = () => { v.speaking = false; if (done) done(); };
     u.onerror = () => { v.speaking = false; if (done) done(); };
     try { synth.speak(u); } catch (_) { v.speaking = false; if (done) done(); }
@@ -295,6 +332,7 @@
     document.body.classList.add("voice-open");
     buildThinkOptions(state.runtime && state.runtime.thinkingOptions);
     reflectThinking(state.thinkingLevel);
+    buildVoiceOptions();
     seedCaptionsFromHistory();
 
     if (!secureOk) {
@@ -333,6 +371,21 @@
     grab();
     const micBtn = $("voiceMicBtn");
     if (micBtn) micBtn.onclick = () => openOverlay(true);   // 单击进全屏免提，无其它手势
+
+    // 播报声音：读持久化偏好、建选项；声音是异步加载的，加载完再重建一次
+    try { v.voiceURI = localStorage.getItem(VOICE_KEY) || ""; } catch (_) {}
+    buildVoiceOptions();
+    if (synth && "onvoiceschanged" in synth) synth.onvoiceschanged = buildVoiceOptions;
+    if (elVoice) elVoice.onchange = () => {
+      v.voiceURI = elVoice.value;
+      try { localStorage.setItem(VOICE_KEY, v.voiceURI); } catch (_) {}
+      // 选完试听一句（仅在空闲、没在听/读真实对话时，避免被麦克风回采或打断回复）
+      if (!v.speaking && v.phase === "idle") {
+        const u = new SpeechSynthesisUtterance("你好，我是你的语音助手");
+        applyVoice(u); u.rate = 1.05;
+        try { synth.cancel(); synth.speak(u); } catch (_) {}
+      }
+    };
 
     if (elCircle) elCircle.onclick = () => {
       if (elCircle.disabled) return;

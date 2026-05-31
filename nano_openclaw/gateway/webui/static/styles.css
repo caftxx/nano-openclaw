@@ -1580,6 +1580,24 @@ body.voice-open { overflow: hidden; }
   cursor: pointer;
   padding: 4px 8px;
 }
+.voice-voice-select {
+  margin-left: auto;            /* 推到顶栏右侧 */
+  max-width: 52%;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-appearance: none;
+  appearance: none;
+}
 
 .voice-stage {
   flex: 0 0 auto;
