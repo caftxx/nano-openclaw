@@ -49,7 +49,7 @@ from nano_openclaw.images import (
 )
 from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
 from nano_openclaw.memory.dreaming import DreamingConfig
-from nano_openclaw.prompt import build_system_prompt
+from nano_openclaw.prompt import VOICE_STYLE_PROMPT, build_system_prompt
 from nano_openclaw.provider import (
     MessageEnd,
     StreamEvent,
@@ -334,6 +334,10 @@ class LoopConfig:
     # filter and any plugin that needs to know who initiated the turn.
     # Enum: "tui" / "webui" / "wechat" / "cron" / "channel_auto".
     turn_source: str = "tui"
+    # Per-turn response style hint, orthogonal to turn_source. "voice" appends
+    # a spoken-conversation directive (concise, no markdown/emoji) for the web
+    # voice hands-free mode. Empty = normal. Does not affect memory/triggerSources.
+    response_style: str = ""
     # If set, bypasses build_system_prompt() entirely (used by subagent runner)
     system_prompt_override: str | None = None
     # Lightweight plugin hooks, installed by the plugin loader.
@@ -798,6 +802,12 @@ class AgentSession:
                 system = f"{prepend}\n\n{system}"
             if append := hook_result.get("append"):
                 system = f"{system}\n\n{append}"
+
+        # Voice hands-free mode: append the spoken-style directive last so it
+        # carries the most recency. Stable across pure-voice turns, so the
+        # prompt prefix still caches; only a voice<->text switch misses.
+        if self.cfg.response_style == "voice":
+            system = f"{system}\n\n{VOICE_STYLE_PROMPT}"
 
         return system
 

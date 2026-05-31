@@ -228,6 +228,21 @@ def _build_auto_memory_index_section(content: str) -> str:
     )
 
 
+# Appended to the system prompt for turns flagged ``response_style="voice"``
+# (web voice hands-free mode). The reply is read aloud by TTS, so Markdown
+# symbols and emoji come out as noise — hence the hard bans.
+VOICE_STYLE_PROMPT = """\
+<voice_mode>
+你正处于语音对话模式：你的回复会被语音合成（TTS）朗读给用户听，而不是显示成文字。请据此调整风格：
+- 口语化、简短，通常 1–3 句话；先给结论或直接回答，必要时再补一两句。
+- 绝对不要使用 Markdown：不要标题、列表、序号、加粗、代码块、表格、链接语法。
+- 不要使用 emoji 或颜文字（会被读成杂音或乱读）。
+- 不要罗列"第一、第二、第三"，用自然口语把要点连起来说。
+- 避免长链接、长串代码 / ID / 文件路径这类没法听的内容；非给不可时只说关键部分。
+- 思考过程与工具调用不受影响，但最终面向用户的那段回答务必遵守以上口语化要求。
+</voice_mode>"""
+
+
 def build_system_prompt(
     registry: ToolRegistry,
     workspace_dir: Path | None = None,

@@ -307,8 +307,9 @@ class WebSocketBackend(Backend):
         on_local_event: Any = None,
         cancellation_token: Any = None,
         turn_source: str = "tui",
+        response_style: str = "",
     ) -> str:
-        params: dict[str, Any] = {"session_key": session_key, "text": text, "turn_source": turn_source}
+        params: dict[str, Any] = {"session_key": session_key, "text": text, "turn_source": turn_source, "response_style": response_style}
         if attachments:
             import base64
             params["attachments"] = [

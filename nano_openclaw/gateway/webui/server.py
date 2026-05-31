@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     text: str
     attachments: list[dict[str, Any]] = []
+    response_style: str = ""   # "voice" → spoken-style system directive (web voice mode)
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -198,6 +199,7 @@ def create_app(
                             text=req.text,
                             attachments=attachments,
                             turn_source="webui",
+                            response_style=req.response_style,
                         )
                     except BusyError as exc:
                         await emit({"type": "turn.error", "session_id": session.session_id, "message": str(exc)})

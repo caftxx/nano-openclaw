@@ -222,7 +222,8 @@
     const sid = state.currentSession && state.currentSession.session_id;
     if (!sid) { setPhase("error", "没有可用会话"); return; }
     // 用户气泡由 chat.accepted 事件统一加（与服务器接收文本一致）
-    if (!send("chat.send", { session_id: sid, text, attachments: [] })) {
+    // response_style:"voice" → 后端给本轮 system prompt 追加口语化指令
+    if (!send("chat.send", { session_id: sid, text, attachments: [], response_style: "voice" })) {
       setPhase("error", "未连接到服务器");
       return;
     }

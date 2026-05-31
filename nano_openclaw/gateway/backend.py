@@ -263,6 +263,7 @@ class Backend(Protocol):
         text: str,
         attachments: list[PromptAttachment] | None = None,
         turn_source: str = "tui",
+        response_style: str = "",
     ) -> str:
         """Start a turn. Returns ``turn_id``.
 
@@ -270,6 +271,12 @@ class Backend(Protocol):
         ``webui`` / ``wechat`` / ``cron`` / ``channel_auto``) and is forwarded
         to ``LoopConfig.turn_source`` so plugins (e.g. the stop-hook memory
         extractor) can filter by source. Defaults to ``"tui"``.
+
+        ``response_style`` is an orthogonal per-turn style hint forwarded to
+        ``LoopConfig.response_style``. ``"voice"`` appends a spoken-conversation
+        directive (concise, no markdown/emoji) for the web voice mode. Empty =
+        normal. Kept separate from ``turn_source`` so memory/analytics are
+        unaffected.
 
         Raises ``BusyError`` if the session already has a turn in flight.
         Events for this turn arrive on ``subscribe`` streams.
