@@ -36,8 +36,14 @@
     spokenLen: 0,             // 已送朗读的字符数
     pendingSpeak: [],
     speaking: false,
+    recognizing: false,       // recognizer 是否真的在跑（onstart→true / onend→false）
+    recogStarting: false,     // 已调 start() 但 onstart 还没回的中间态——堵 onstart 前的二次 start 竞态
+    pendingReset: false,      // visibilitychange 触发的"等旧 recognizer onend 后再重建"挂起标志
+    wantListen: false,        // 是否处于"应当聆听"意图：驱动 onend 续听、并防止抢跑重复 start
+    turnOpen: false,          // 当前回复是否还在流式进行
+    speakThisTurn: false,     // 本轮是否允许继续播报
     captionAiNode: null,      // 当前 turn 的 AI 字幕节点
-    optsBuilt: false,
+    thinkOptionsKey: "",
     voiceURI: "",             // 选中的 TTS 声音（空 = 系统默认）
   };
 
@@ -99,7 +105,9 @@
 
   // ── 思考等级下拉（跟随后端，仅用户操作时下发）──────────────────────────────
   function buildThinkOptions(levels) {
-    if (!elThink || v.optsBuilt || !Array.isArray(levels) || !levels.length) return;
+    if (!elThink || !Array.isArray(levels) || !levels.length) return;
+    const key = levels.join("\n");
+    if (key === v.thinkOptionsKey) return;
     elThink.innerHTML = "";
     for (const lv of levels) {
       const o = document.createElement("option");
@@ -107,7 +115,7 @@
       o.textContent = `🧠 ${LEVEL_LABELS[lv] || lv}`;
       elThink.appendChild(o);
     }
-    v.optsBuilt = true;
+    v.thinkOptionsKey = key;
   }
   function reflectThinking(level) {
     if (typeof level !== "string" || !elThink) return;
@@ -156,6 +164,7 @@
     r.lang = "zh-CN";
     r.continuous = true;
     r.interimResults = true;
+    r.onstart = () => { if (r === v.recog) { v.recogStarting = false; v.recognizing = true; } };
     r.onresult = (e) => {
       let interim = "", finalText = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -176,27 +185,93 @@
         if (document.visibilityState !== "visible") return;
         setPhase("error", secureOk ? "麦克风权限被拒绝，请在浏览器设置中允许" : "需要 HTTPS 才能使用麦克风（当前是 HTTP）");
         v.active = false;
+        v.speakThisTurn = false;
+        // 立即清聆听意图/运行态，别等 onend——权限被拒正是浏览器最易丢 onend 的脆弱边角。
+        v.wantListen = false;
+        v.recognizing = false;
+        v.recogStarting = false;
+        releaseWakeLock();
       }
     };
     r.onend = () => {
-      // 仅在前台自动续听；后台续听会触发 not-allowed，反而把免提弄死。
-      if (v.active && v.phase === "listening" && document.visibilityState === "visible") {
-        try { r.start(); } catch (_) {}
-      }
+      if (r !== v.recog) return;   // 已被 visibilitychange 重建替换的旧对象，其回调一律忽略
+      v.recognizing = false;
+      v.recogStarting = false;
+      if (v.pendingReset) { finishRecognizerReset(); return; }   // 旧对象已干净结束 → 在此重建并开麦
+      // 仅在前台、且仍处于聆听意图时续听：
+      //   - 静音超时自然结束 → wantListen 仍为 true → 接力重开（续命）
+      //   - 主动 stop/abort（朗读/发送/暂停）→ wantListen 已置 false → 不重启
+      // 后台续听会触发 not-allowed，反而把免提弄死，故要求 visible。
+      if (v.active && v.wantListen && document.visibilityState === "visible") _doStart();
     };
     return r;
   }
-  function startRecognition() {
+  function _doStart() {
     if (!SR) return;
     if (!v.recog) v.recog = buildRecognizer();
-    setPhase("listening");
-    try { v.recog.start(); } catch (_) {}
+    v.recogStarting = true;     // 进入"已 start、待 onstart"中间态
+    try { v.recog.start(); setPhase("listening"); }
+    catch (err) {
+      v.recogStarting = false;
+      // InvalidStateError / 权限临界 / recognizer 未完全停 等都会落到这里。
+      // 旧实现空吞导致 UI 仍显示"聆听"但实际没在识别——这里至少暴露出来。
+      console.warn("[voice] recog.start failed:", err && err.name, err && err.message);
+    }
+  }
+  function startRecognition() {
+    if (!SR) return;
+    clearResumeTimer();
+    v.wantListen = true;
+    // 上一段识别还在跑或正在启动（start 已发但 onstart 未回 / abort 的 onend 未回）时别抢跑：
+    // 对同一对象重复 start 会抛 InvalidStateError → UI 假"聆听"。交给 onstart/onend 接力。
+    if (v.recognizing || v.recogStarting) return;
+    _doStart();
   }
   function stopRecognition() {
-    if (v.recog) { try { v.recog.stop(); } catch (_) {} }
+    clearResumeTimer();
+    v.wantListen = false;
+    // abort() 立即终止并丢弃挂起结果，比 stop()（要等末尾 final、异步收尾更久）更干净，
+    // 能压缩"上一段还没真正结束就要重开"的竞态窗口。
+    if (v.recog) { try { v.recog.abort(); } catch (_) {} }
+  }
+  let resumeTimer = null;
+  function clearResumeTimer() {
+    if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+  }
+  // TTS 读完后延迟一小段再开麦：speechSynthesis 的 onend 只代表"播报结束"，
+  // 不代表声学环境已安静——手机外放的尾音/支架反射仍会被麦克风回采、污染识别。
+  function scheduleResumeListening(delay) {
+    clearResumeTimer();
+    resumeTimer = setTimeout(() => { resumeTimer = null; resumeListeningIfActive(); }, delay);
+  }
+  // 切前后台回来：旧 recognizer 可能已卡死。优先等它 onend 后再"干净重建"（零跨对象
+  // 竞态——避免新对象在浏览器语音服务还没拆完时就 start）；onend 迟迟不来（卡死正是
+  // 本场景主因）则超时强制丢弃重建作兜底。
+  let resetTimer = null;
+  function scheduleRecognizerReset() {
+    const old = v.recog;
+    stopRecognition();             // abort 旧对象，wantListen=false
+    if (!old) { finishRecognizerReset(); return; }   // 没有旧对象可等，直接重建
+    v.pendingReset = true;
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => { if (v.pendingReset) finishRecognizerReset(); }, 800);
+  }
+  function finishRecognizerReset() {
+    if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+    v.pendingReset = false;
+    v.recog = null;                // 丢弃旧对象，下次 _doStart 会建新的
+    v.recognizing = false;
+    v.recogStarting = false;
+    if (document.visibilityState === "visible" && v.open && v.active && !v.speaking && v.phase !== "thinking") {
+      startRecognition();
+    }
+  }
+  function hasOpenTurn() {
+    return v.turnOpen || Boolean(state.activeTurnId || (state.currentSession && state.currentSession.active_turn_id));
   }
   function resumeListeningIfActive() {
-    if (v.active && !v.speaking) startRecognition();
+    if (v.active && !v.speaking && hasOpenTurn()) setPhase("thinking", "等待当前回复结束…");
+    else if (v.active && !v.speaking) startRecognition();
     else if (!v.active) setPhase("idle");
   }
 
@@ -220,16 +295,27 @@
     v.active = true;
     try { synth.cancel(); } catch (_) {}   // 用户手势内先解锁 TTS
     requestWakeLock();                     // 进免提即保持屏幕常亮
+    if (hasOpenTurn()) {
+      setPhase("thinking", "等待当前回复结束…");
+      return;
+    }
     startRecognition();
   }
 
   function sendVoiceText(text) {
     if (!text) { resumeListeningIfActive(); return; }
     const sid = state.currentSession && state.currentSession.session_id;
-    if (!sid) { setPhase("error", "没有可用会话"); return; }
+    if (!sid) {
+      v.active = false;
+      releaseWakeLock();
+      setPhase("error", "没有可用会话");
+      return;
+    }
     // 用户气泡由 chat.accepted 事件统一加（与服务器接收文本一致）
     // response_style:"voice" → 后端给本轮 system prompt 追加口语化指令
     if (!send("chat.send", { session_id: sid, text, attachments: [], response_style: "voice" })) {
+      v.active = false;
+      releaseWakeLock();
       setPhase("error", "未连接到服务器");
       return;
     }
@@ -261,7 +347,12 @@
     if (v.speaking) return;
     const next = v.pendingSpeak.shift();
     if (next == null) {
-      if (v.phase !== "thinking") resumeListeningIfActive();
+      if (v.turnOpen) {
+        if (v.active && v.speakThisTurn) setPhase("thinking", "正在接收回复…");
+      } else {
+        // 本轮已读完（turn.done 后队列排空）→ 冷却 ~500ms 再开麦，避开外放尾音被回采
+        scheduleResumeListening(500);
+      }
       return;
     }
     v.speaking = true;
@@ -289,6 +380,16 @@
     v.speaking = false;
     try { synth.cancel(); } catch (_) {}
   }
+  function interruptSpeechForTurn() {
+    v.speakThisTurn = false;
+    stopAllSpeech();
+    if (v.turnOpen) {
+      if (v.active) setPhase("thinking", "已停止朗读，等待回复结束…");
+      else setPhase("idle", "已暂停，点击麦克风继续");
+      return;
+    }
+    resumeListeningIfActive();
+  }
 
   // ── 来自 app.js handleEvent 的事件 ────────────────────────────────────────
   function onEvent(event) {
@@ -303,27 +404,45 @@
 
     switch (event.type) {
       case "chat.accepted":
+        stopAllSpeech();
         v.assistantText = ""; v.spokenLen = 0;
+        v.turnOpen = true;
+        v.speakThisTurn = v.active;
         addBubble("you", typeof formatAcceptedUserText === "function" ? formatAcceptedUserText(event) : (event.text || ""));
         v.captionAiNode = addBubble("ai", "");
         break;
       case "text.delta":
         v.assistantText += event.text || "";
         setAiBubble(v.captionAiNode, v.assistantText);
-        speakReadyChunks(false);
+        if (v.active && v.speakThisTurn) speakReadyChunks(false);
         break;
       case "turn.done":
         setAiBubble(v.captionAiNode, v.assistantText);
         v.captionAiNode = null;
-        speakReadyChunks(true);
-        if (!v.assistantText.trim() && v.pendingSpeak.length === 0 && !v.speaking) resumeListeningIfActive();
+        v.turnOpen = false;
+        if (v.active && v.speakThisTurn) speakReadyChunks(true);
+        v.speakThisTurn = false;
+        // 队列空且没在读：若本轮确实出过声（spokenLen>0），尾音可能仍在 → 走冷却再开麦；
+        // 本轮一个字没读则立即开麦。（flush 若还有尾巴入队，drainSpeak 会接管、读完在那边冷却。）
+        if (v.pendingSpeak.length === 0 && !v.speaking) {
+          if (v.spokenLen > 0) scheduleResumeListening(500);
+          else resumeListeningIfActive();
+        }
         break;
       case "turn.error":
         v.captionAiNode = null;
+        v.turnOpen = false;
+        v.speakThisTurn = false;
+        stopAllSpeech();
         addBubble("ai", `⚠️ 出错：${event.message || "未知错误"}`);
-        speakOnce("出错了", () => resumeListeningIfActive());
+        if (v.active) speakOnce("出错了", () => resumeListeningIfActive());
+        else resumeListeningIfActive();
         break;
       case "turn.cancelled":
+        v.captionAiNode = null;
+        v.turnOpen = false;
+        v.speakThisTurn = false;
+        stopAllSpeech();
         resumeListeningIfActive();
         break;
     }
@@ -333,7 +452,10 @@
   function openOverlay(startListening) {
     if (!elOverlay) grab();
     if (!elOverlay) return;
-    if (v.open) return;
+    if (v.open) {
+      if (startListening && !v.active && !(elCircle && elCircle.disabled)) startLoop();
+      return;
+    }
     v.open = true;
     elOverlay.hidden = false;
     document.body.classList.add("voice-open");
@@ -365,6 +487,11 @@
     if (!v.open) return;
     v.open = false;
     v.active = false;
+    v.turnOpen = false;
+    v.speakThisTurn = false;
+    v.captionAiNode = null;
+    v.assistantText = "";
+    v.spokenLen = 0;
     stopAllSpeech();
     stopRecognition();
     releaseWakeLock();
@@ -397,14 +524,21 @@
     if (elCircle) elCircle.onclick = () => {
       if (elCircle.disabled) return;
       if (!v.active) startLoop();
-      else { v.active = false; stopAllSpeech(); stopRecognition(); releaseWakeLock(); setPhase("idle", "已暂停，点击麦克风继续"); }
+      else {
+        v.active = false;
+        v.speakThisTurn = false;
+        stopAllSpeech();
+        stopRecognition();
+        releaseWakeLock();
+        setPhase("idle", "已暂停，点击麦克风继续");
+      }
     };
 
     const exitTop = $("voiceExitBtn");   // 左上角 ✕ 退出（底部不再放退出按钮）
     if (exitTop) exitTop.onclick = closeOverlay;
 
     const stopBtn = $("voiceStopSpeak");
-    if (stopBtn) stopBtn.onclick = () => { stopAllSpeech(); resumeListeningIfActive(); };
+    if (stopBtn) stopBtn.onclick = interruptSpeechForTurn;
 
     if (elThink) elThink.onchange = () => {
       const lvl = elThink.value;
@@ -418,7 +552,7 @@
     // 朗读时点字幕区以外（圆下方空白）打断
     if (elOverlay) elOverlay.addEventListener("click", (e) => {
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
-      if (v.speaking || v.phase === "speaking") { stopAllSpeech(); resumeListeningIfActive(); }
+      if (v.speaking || v.phase === "speaking") interruptSpeechForTurn();
     });
 
     // 切走/锁屏再回到前台：wakeLock 被系统释放、识别已 abort 且常卡在坏状态
@@ -428,13 +562,7 @@
       if (document.visibilityState !== "visible" || !v.open || !v.active) return;
       requestWakeLock();
       if (v.speaking || v.phase === "thinking") return;   // 正在读/等回复，别插队
-      stopRecognition();
-      v.recog = null;                                     // 强制重建，避开卡死状态
-      setTimeout(() => {
-        if (document.visibilityState === "visible" && v.open && v.active && !v.speaking && v.phase !== "thinking") {
-          startRecognition();
-        }
-      }, 250);
+      scheduleRecognizerReset();                          // 等旧 recognizer onend 后干净重建（带 800ms 兜底）
     });
 
     // 深链：/voice 直接进语音态（未自动聆听，需用户点圆——浏览器要求手势）
