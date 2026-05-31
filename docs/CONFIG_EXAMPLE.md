@@ -53,6 +53,8 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `workspace` | string \| null | `null` | Agent 工作目录路径（相对或绝对） |
 | `contextTokens` | number \| null | `null` | 上下文 token 上限 |
 | `thinkingDefault` | string \| null | `null` | 默认思考等级：`off\|minimal\|low\|medium\|high\|xhigh\|adaptive\|max` |
+| `bootstrapMaxChars` | number | `12000` | 单个 workspace 引导文件的最大字符数 |
+| `bootstrapTotalMaxChars` | number | `60000` | 所有 workspace 引导文件合计的最大字符数 |
 
 #### agents.list[] — Agent 列表
 
@@ -123,14 +125,22 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `host` | string | `"127.0.0.1"` | 绑定地址。改成 `"0.0.0.0"` 等非 loopback 时启动会打 warning（v1 无 auth） |
 | `port` | number | `5000` | TCP 端口（范围 1-65535） |
 | `log_path` | string | `""` | daemon 后台模式的 stdout/stderr 写入位置；留空 → `state_dir/log/gateway.log` |
+| `tls_cert` | string | `""` | PEM 证书路径；与 `tls_key` 成对设置则启用 HTTPS（手机用 `/voice` 必需） |
+| `tls_key` | string | `""` | PEM 私钥路径；与 `tls_cert` 成对，只给一个会启动失败 |
+| `restart_strategy` | string | `"exec"` | daemon 重启策略：`exec`（原地 re-exec）\| `exit`（退出交给 systemd/docker 等 supervisor 拉起） |
 
-**优先级**（高 → 低）：CLI 参数（`--host` / `--port`）> `config.gateway.*` > 默认值。
+**优先级**（高 → 低）：CLI 参数（`--host` / `--port` / `--tls-cert` / `--tls-key`）> `config.gateway.*` > 默认值。
+
+`gateway status` / `gateway run` 的 URL 输出会反映实际 scheme（启用 TLS 时为 `https`/`wss`），绑定 `0.0.0.0`/`::` 时自动探测并显示局域网 IP；scheme 作为第 4 个字段写入 `gateway.pid`。
 
 ```json5
 gateway: {
   host: "127.0.0.1",
   port: 5000,
   log_path: "",
+  tls_cert: "",
+  tls_key: "",
+  restart_strategy: "exec",
 }
 ```
 
@@ -216,16 +226,21 @@ daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个
 |------|------|--------|------|
 | `noTools` | boolean | `false` | 禁用工具，纯对话模式 |
 | `maxIterations` | number | `12` | 每轮用户输入最大工具调用次数 |
-| `context.budget` | number | `100000` | 上下文 token 预算 |
+| `context.budget` | number \| null | `null` | 上下文 token 预算；`null` = 自动取模型 contextWindow |
 | `context.threshold` | number | `0.8` | 触发压缩的阈值比例 |
 | `context.recent_turns` | number | `3` | 压缩时保留的最近对话轮数 |
 | `memorySearch` | object | 见下方 | memory_search 排序配置 |
-| `plugins` | object | `{ enabled: true, load: ["memory", "web", "subagent", "mcp"] }` | 轻量插件加载配置 |
+| `plugins` | object | `{ enabled: true, load: ["memory","web","subagent","mcp","schedule","review-fork"] }` | 轻量插件加载配置 |
 | `subagents` | object | 见下方 | 后台子 agent 编排配置 |
+| `reviewFork` | object | 见下方 | Background Review Fork 自进化配置（默认开） |
+| `extractMemories` | object | 见下方 | stop-hook 记忆 extractor 配置（默认开） |
+| `schedule` | object | 见下方 | cron scheduler 配置 |
+| `promptCaching` | object | `{ enabled: true, cache_ttl: "5m" }` | prompt caching（Anthropic provider）开关 |
+| `memoryFlush` | object | `{ enabled: true, softThresholdTokens: 4000, reserveTokensFloor: 20000 }` | 接近预算时把记忆刷写到磁盘 |
 
 ### plugins — Plugin / Hook 系统
 
-内置插件 `memory`、`web`、`subagent`、`mcp` **始终加载**，无法通过配置禁用。`plugins.load` 仅用于加载额外的外部插件。
+内置插件 `memory`、`web`、`subagent`、`mcp`、`schedule`、`review-fork` **始终加载**，无法通过配置禁用。`plugins.load` 仅用于加载额外的外部插件。
 
 内置插件（始终加载）：
 
@@ -235,6 +250,8 @@ daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个
 | `"web"` | `web_search` / `web_fetch` 工具 |
 | `"subagent"` | `sessions_spawn` / `subagents` 工具 |
 | `"mcp"` | 在 `session_start` hook 初始化 MCP server 并注册 MCP 工具 |
+| `"schedule"` | `cron_create` / `cron_list` / `cron_delete` / `schedule_wakeup` 工具 + cron scheduler |
+| `"review-fork"` | Background Review Fork 自进化 sub-agent（`reviewFork` 配置，见下方） |
 
 加载外部插件示例：
 
@@ -317,9 +334,11 @@ plugins: {
 
 Active Memory 是可选插件，启用后在每次用户消息前自动搜索 `MEMORY.md` 和 `memory/*.md`，将相关记忆注入系统提示，让 agent 自动记住偏好和历史。
 
+> **启用方式**：顶层 `activeMemory` 字段默认 `null`——**不写这个块 = 关闭**。一旦提供 `activeMemory: { ... }` 块，块内 `enabled` 默认 `true` 即生效。
+
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `enabled` | boolean | `true` | 是否启用 Active Memory |
+| `enabled` | boolean | `true` | 块内是否启用 Active Memory（块本身缺省 = 关） |
 | `model` | string \| null | `null` | 子 agent 使用的模型（null = 复用主模型） |
 | `thinking` | string | `"off"` | 子 agent 思考等级：`off|minimal|low|medium|high|xhigh|adaptive|max` |
 | `queryMode` | string | `"recent"` | 查询模式：`message` \| `recent` \| `full` |
@@ -373,15 +392,64 @@ Subagent 能力会注册两个模型工具：`sessions_spawn` 用于派生 isola
 - 完成、失败或超时后，结果自动作为一条 user message 注入父 session；模型不需要循环调用 `subagents` 轮询。
 - 后台子 agent 不能弹出前台审批 UI；需要交互审批的工具调用会被默认拒绝。
 
+### reviewFork — Background Review Fork 配置
+
+每 N 个 `end_turn` 后台启动一个受限 sub-agent，读最近对话决定是否把"用户偏好/教训/可复用方法"沉淀进 `MEMORY.md` 或现有 `SKILL.md`。**默认开启**（每次触发 ~1 次 LLM 调用）。运行时控制：`/review-fork status|on|off|run`。
+
+每次 spawn 写一行到 `state_dir/review-fork.jsonl`，结果写 `state_dir/review-fork-results.jsonl`。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | `true` | 是否启用（默认开；设 false 关闭） |
+| `trigger_n` | int | `10` | 每 N 个 `end_turn` 触发（范围 ≥1） |
+| `cooldown_s` | int | `60` | 两次触发之间的最短间隔（秒，范围 ≥0） |
+| `timeout_s` | int | `90` | sub-agent 单次 run 的硬超时（秒，范围 ≥10） |
+| `model_aux` | string \| null | `null` | 辅助模型覆盖（`provider/id`）；`null` = 跟父 agent 模型 |
+
+```json5
+{
+  reviewFork: {
+    enabled: true,
+    trigger_n: 10,
+    cooldown_s: 60,
+    timeout_s: 90,
+    model_aux: "anthropic/claude-haiku-4-5-20251001",  // 用小模型省钱
+  },
+}
+```
+
+### extractMemories — Stop-hook 记忆 extractor 配置
+
+对齐 claude-code 的 `extractMemories.ts`：在每个符合条件的 turn 结束后 fork 一个 subagent，把对话蒸馏进 `memory/topics/*.md` 并更新 `memory/MEMORY.md`。**默认开启**，与主 agent 的 topic 写入互斥。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | `true` | 是否启用 stop-hook extractor |
+| `triggerSources` | string[] | `["tui","webui","wechat"]` | 触发的 turn 来源；默认排除 cron / channel 自动触发 |
+| `maxTurns` | int | `5` | extractor subagent 的硬 turn 上限（范围 1-20） |
+| `cooldownTurns` | int | `1` | 每 N 个符合条件的 turn 跑一次（范围 ≥1） |
+| `model` | string \| null | `null` | 模型覆盖（`provider/model-id`）；`null` 继承父 agent |
+| `prompt` | string | 内置模板 | extractor 提示模板 |
+
+### schedule — Cron scheduler 配置
+
+daemon 内置 cron scheduler，配合 `cron_create` / `cron_list` / `cron_delete` / `schedule_wakeup` 工具与 `cron/` 目录下的任务定义。重启不重触发已跑过的任务（`last_run_at_ms` + grace 去重）。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | `true` | 是否启用 cron scheduler |
+| `maxConcurrentRuns` | int | `3` | 同时运行的 cron 任务上限 |
+| `missedJobsLimit` | int | `5` | 重启后最多补跑的错过任务数 |
+
 ### dreaming — Dreaming 插件配置
 
-Dreaming 是可选插件，启用后追踪 memory_search 的召回记录，定期将高频、高质量的记忆片段自动提升到 MEMORY.md（长期记忆），并生成叙事性的 Dream Diary 写入 DREAMS.md。
+Dreaming 追踪 memory_search 的召回记录，定期将高频、高质量的记忆片段自动提升到 MEMORY.md（长期记忆），并生成叙事性的 Dream Diary 写入 DREAMS.md。顶层 `dreaming` 字段 default-construct，**默认开启**。
 
 状态存储在 `workspace/memory/.dreams/short-term-recall.json`。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `enabled` | boolean | `false` | 是否启用 Dreaming |
+| `enabled` | boolean | `true` | 是否启用 Dreaming（默认开） |
 | `frequency` | string | `"0 3 * * *"` | 调度频率（cron 格式，见下方说明） |
 | `minScore` | number | `0.5` | 提升门槛：综合评分（范围 0.0-1.0） |
 | `minRecallCount` | int | `2` | 提升门槛：最少召回次数（范围 ≥1） |

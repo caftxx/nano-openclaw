@@ -112,9 +112,13 @@
   },
 
   gateway: {
-    host: "0.0.0.0",   // 建议 loopback；改成 0.0.0.0 / 局域网 IP 时启动会打 warning（v1 无 auth）
+    host: "0.0.0.0",     // 建议 loopback；改成 0.0.0.0 / 局域网 IP 时启动会打 warning（v1 无 auth）
     port: 5000,          // 默认 5000
     log_path: "",        // 可选；空 → state_dir/log/gateway.log
+    // tls_cert / tls_key 成对设置启用 HTTPS（手机用 /voice 必需；只给一个会启动失败）
+    tls_cert: "",
+    tls_key: "",
+    restart_strategy: "exec",  // exec（原地 re-exec）| exit（退出交给 systemd/docker 拉起）
   },
 
   logging: {

@@ -52,7 +52,7 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 
 **Backend / RPC 不变量：**
 
-4. `EmbeddedBackend` 和 `WebSocketBackend` 满足同一个 `Backend` Protocol（28 个方法）；TUI 切换 backend 不感知差异
+4. `EmbeddedBackend` 和 `WebSocketBackend` 满足同一个 `Backend` Protocol（41 个方法）；TUI 切换 backend 不感知差异
 5. `chat.abort(turn_id)` 是 chat / cron / channel 的统一取消接口（依靠 `RunRegistry`）
 6. daemon 内**单一** `BackendSessionManager` 实例同时被 WebUI、`/rpc`、Channels 共享 —— `/sessions` 在三个前端永远看到同一份 list
 
@@ -73,12 +73,12 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 
 #### Gateway / Backend
 - **`gateway/server.py`** — `run_daemon`：daemon 入口，启动 channels + uvicorn FastAPI（WebUI + /rpc）
-- **`gateway/backend.py`** — `Backend` Protocol（chat / sessions / approvals / models / runtime / channels / subagents / features / introspection / health）
+- **`gateway/backend.py`** — `Backend` Protocol（chat / sessions / approvals / models / runtime / channels / subagents / features<sub>active_memory·dreaming·review_fork·curator·checkpoint</sub> / introspection / health / gateway 生命周期）
 - **`gateway/backend_embedded.py`** — `EmbeddedBackend`：直接持 AgentRuntime
 - **`gateway/backend_websocket.py`** — `WebSocketBackend`：JSON-RPC 远程客户端
 - **`gateway/protocol.py`** — Pydantic Request/Response/PushFrame + ErrorCode + METHODS_V1 catalog
 - **`gateway/ws_route.py`** — FastAPI `/rpc` WebSocket dispatch + push fanout
-- **`gateway/methods/`** — 一族 RPC 一个文件（chat / sessions / approvals / models / runtime / channels / subagents / features / introspection / health）
+- **`gateway/methods/`** — 一族 RPC 一个文件（chat / sessions / approvals / models / runtime / channels / subagents / features / introspection / health / gateway / todos）
 - **`gateway/slash.py`** — 共享 slash dispatcher + Rich Table/Panel 渲染（embedded + remote 共用）
 - **`gateway/run_registry.py`** — turn_id ↔ asyncio.Task 注册表（统一 abort 入口）
 - **`gateway/runtime_lock.py`** — `RuntimeUpdateGuard`：reader/writer fail-fast 协调（chat 持 reader，runtime.update 持 writer，冲突立即 BUSY）
@@ -97,7 +97,7 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 - **`config/`** — JSON5 加载 + Pydantic 验证 + 环境变量替换 + 模型解析
 - **`session/`** — transcript 持久化（.jsonl）+ sessions.json 索引
 - **`approvals/`** — 危险命令门禁 + per-agent allowlist 持久化（带 `_allowlist_lock`）
-- **`plugins/`** — 轻量 Plugin Protocol + HookRegistry + builtin wrappers
+- **`plugins/`** — 轻量 Plugin Protocol + HookRegistry + 6 个始终加载的 builtin（`memory` / `web` / `subagent` / `mcp` / `schedule` / `review-fork`）
 - **`subagent/`** — 后台子 agent runner + registry + completion auto-announce
 - **`memory/`** — daily memory 加载 + memory_get/search 工具 + Active Memory 自动召回 + Dreaming 后台整合
 - **`mcp/`** — MCP 服务器连接管理（stdio/SSE/streamable-http）→ 工具注册
@@ -130,8 +130,17 @@ nano-openclaw 是 OpenClaw agent loop + gateway daemon 的最小化 Python 复�
 ### Gateway Config
 
 ```jsonc
-gateway: { host: "127.0.0.1", port: 5000, log_path: "" }
+gateway: {
+  host: "127.0.0.1",       // 默认 loopback；非 loopback 启动打 warning（v1 无 auth）
+  port: 5000,
+  log_path: "",            // 空 → state_dir/log/gateway.log
+  tls_cert: "",            // 与 tls_key 成对设置启用 HTTPS（手机用 /voice 必需）
+  tls_key: "",
+  restart_strategy: "exec" // exec（原地 re-exec）| exit（退出交给 supervisor 拉起）
+}
 ```
+
+`gateway status` / `gateway run` 的 URL 输出会反映实际 scheme（TLS 时 `https`/`wss`）和绑定 `0.0.0.0` 时探测到的 LAN IP。scheme 作为第 4 个字段写入 `gateway.pid`。
 
 WeChat 不在配置里 —— 通过 `nano-openclaw wechat login [--account=ID]` 扫码登录,token 持久化在 `state_dir/wechat-tokens.{id}.json`,daemon 启动时自动发现并为每个文件起一个 `WechatChannel`。
 
@@ -143,7 +152,7 @@ CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。
 state_dir/
 ├── nano-openclaw.json5                     # 主配置文件
 ├── exec-approvals.json                     # 审批 allowlist
-├── gateway.pid                             # daemon 运行时 PID + bind 信息
+├── gateway.pid                             # daemon 运行时 PID + bind 信息（pid port host scheme）
 ├── log/
 │   ├── nano-openclaw.log                   # JSON Lines（structured logger）
 │   └── gateway.log                         # daemon stdout/stderr（仅后台模式）
@@ -153,9 +162,14 @@ state_dir/
 ├── wechat-tokens.{account}.json            # 扫码登录写入的 token（per account；daemon 启动时枚举）
 ├── wechat-sessions.{account}.json          # uid → session_id 映射（per account）
 ├── notify-queue.{account}.jsonl            # cron 完成通知队列（per account）
+├── review-fork.jsonl                       # Review Fork spawn 观测日志
+├── review-fork-results.jsonl               # Review Fork 结果观测日志
+├── checkpoints/snapshots/{id}/             # workspace 快照（/checkpoint）
+├── tools/python/skills/{skill}/venv/       # skill_install 隔离 venv
 └── cron/
     ├── jobs.json                           # cron 任务定义
-    └── jobs-state.json                     # nextRunAtMs / lastRunAtMs 状态
+    ├── jobs-state.json                     # nextRunAtMs / lastRunAtMs 状态
+    └── runs/{jobId}.jsonl                  # per-job 执行日志
 ```
 
 ### Plugin Hooks
@@ -168,21 +182,25 @@ Plugin hooks 在 `loop.py` 关键点触发：
 
 ### Memory System
 
-四层机制：
-- **Daily Memory** — 启动加载 `memory/*.md` 最近 N 天文件
+机制：
+- **Daily Memory** — 启动加载 `workspace/memory/*.md` 最近 N 天文件（默认 2 天）
 - **Memory Tools** — `memory_get` / `memory_search`（词法匹配 + 上下文窗口匹配）
-- **Active Memory** — 每次 user message 前自动子 agent 搜索（可选）
-- **Dreaming** — 追踪召回记录 + 定期提升到 MEMORY.md（可选）
+- **Active Memory** — 每次 user message 前自动子 agent 搜索（需配置 `activeMemory` 块才启用）
+- **Dreaming** — 追踪召回记录 + 定期提升到 MEMORY.md（默认开）
+- **Extract Memories** — stop-hook 后台 extractor，把对话蒸馏进 `memory/topics/*.md` + `memory/MEMORY.md`（默认开；`extractMemories` 配置）
 
 ### Slash Command Dispatch
 
 `gateway/slash.py::handle_slash` 是 **embedded + remote 模式共享**的入口：
 
-- `/quit /help /clear /new /context /compact`
+- `/quit /help /clear /new /context /compact /usage /todos`
 - `/sessions [all|delete <id>]` `/session [prefix|#]`
+- `/model [provider/model-id]` `/models` `/thinking [off|…|max]`
 - `/tools /skills /plugins /hooks` — Rich Table 渲染
 - `/subagents [list|kill <id>|all]`
 - `/active-memory [status|on|off|mode|style]` `/dreaming [status|on|off|run]`
+- `/review-fork [status|on|off|run]` `/curator [status|on|off|pause|resume|run|dry-run]`
+- `/checkpoint [list|create|restore <id>]` `/restart`
 - `/health /channels /runtime` — daemon 内省
 
 所有命令通过 Backend RPC 调用，不直接读 `runtime.registry` / `cfg`，所以两种模式渲染 100% 一致。

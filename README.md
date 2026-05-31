@@ -252,8 +252,11 @@ gateway: {
   log_path: "",        // 留空 → state_dir/log/gateway.log
   tls_cert: "",        // PEM 证书路径；与 tls_key 成对设置则启用 HTTPS（手机用 /voice 必需）
   tls_key: "",         // PEM 私钥路径
+  restart_strategy: "exec",  // exec（原地 re-exec）| exit（退出交给 supervisor 拉起）
 }
 ```
+
+`gateway status` / `gateway run` 的 URL 输出会反映实际 scheme（启用 TLS 时为 `https`/`wss`），绑定 `0.0.0.0` 时自动探测并显示局域网 IP。
 
 CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。`tls_cert` / `tls_key` 的用法（自签证书 + 带 TLS 启动）见 [接入方式](#接入方式) 章节的 web_voice 小节。
 
@@ -347,28 +350,28 @@ Thinking 支持：通过 `agents.defaults.thinkingDefault` 配置思考等级（
 
 Workspace 引导文件：从 `workspaceDir` 加载 8 个标准引导文件（AGENTS.md、SOUL.md、IDENTITY.md、USER.md、MEMORY.md、TOOLS.md、BOOTSTRAP.md、HEARTBEAT.md），应用安全防护和预算截断，注入到系统提示的项目上下文部分。支持 session-scoped 缓存。
 
-Memory 系统：包含四层机制：
+Memory 系统：包含多层机制：
 - **Daily Memory**：启动时自动加载 `workspace/memory/*.md` 中最近 N 天的记忆文件（默认 2 天）。
 - **Memory Tools**：`memory_get` / `memory_search` 工具。nano 用词法匹配而非 embedding 搜索。
-- **Active Memory**：可选，启用后在每次用户消息前自动子 agent 搜索记忆。通过 `activeMemory` 配置。
-- **Dreaming**：可选，定期将高频记忆提升到 MEMORY.md。通过 `dreaming` 配置。
+- **Active Memory**：每次用户消息前自动子 agent 搜索记忆。需提供 `activeMemory` 块才启用（缺省不配置 = 关；块内 `enabled` 默认 true）。
+- **Dreaming**：定期将高频记忆提升到 MEMORY.md（默认开）。通过 `dreaming` 配置。
+- **Extract Memories**：stop-hook 后台 extractor，把对话蒸馏进 `memory/topics/*.md` 并更新 `memory/MEMORY.md`（默认开）。通过 `extractMemories` 配置。
 
-Background Review Fork（自进化）：可选，每 N 个 `end_turn` 后台启动一个受限 sub-agent，让它读最近对话决定是否把"用户偏好/教训/可复用方法"沉淀进 `MEMORY.md` 或现有 `SKILL.md`。**默认关闭**（成本：每次触发 ~1 次 LLM 调用），通过 `reviewFork` 顶层字段配置：
+Background Review Fork（自进化）：每 N 个 `end_turn` 后台启动一个受限 sub-agent，让它读最近对话决定是否把"用户偏好/教训/可复用方法"沉淀进 `MEMORY.md` 或现有 `SKILL.md`。**默认开启**（成本：每次触发 ~1 次 LLM 调用），通过 `reviewFork` 顶层字段配置：
 
 ```jsonc
 {
   "reviewFork": {
-    "enabled": true,        // 默认 false；设为 true 后每 N 个 end_turn 触发一次
+    "enabled": true,        // 默认 true；设为 false 关闭
     "trigger_n": 10,        // 每 N 个 end_turn 触发（默认 10）
     "cooldown_s": 60,       // 两次触发之间的最短间隔（秒）
     "timeout_s": 90,        // sub-agent 单次 run 的硬超时
-    "model_aux": null,      // null = 跟父 agent 模型；可指定如 "anthropic/claude-haiku-4-5" 省钱
-    "debug": false
+    "model_aux": null       // null = 跟父 agent 模型；可指定如 "anthropic/claude-haiku-4-5" 省钱
   }
 }
 ```
 
-运行时控制：`/review-fork on/off` 即时切换；`/review-fork run` 绕过 N + cooldown 立即触发一次（debug 用）。每次 spawn 写一行到 `state_dir/review-fork.jsonl`（含 ts/run_id/session_key/messages_count）方便观测。Active-Update Bias：sub-agent 系统提示要求"9/10 turn 默认 NOOP，写则优先 update 现有条目，禁止凭空新建 SKILL.md"。
+运行时控制：`/review-fork on/off` 即时切换；`/review-fork run` 绕过 N + cooldown 立即触发一次（debug 用）。每次 spawn 写一行到 `state_dir/review-fork.jsonl`（含 ts/run_id/session_key/messages_count），结果写 `state_dir/review-fork-results.jsonl` 方便观测。Active-Update Bias：sub-agent 系统提示要求"9/10 turn 默认 NOOP，写则优先 update 现有条目，禁止凭空新建 SKILL.md"。
 
 Cron 任务：通过 `cron_create` 工具或配置文件定义；daemon 内部跑 cron scheduler；任务完成可定向通知发起方（wechat 用户收到 daemon 推送的消息）。daemon 重启不会重复触发同一时间窗已经跑过的任务（`last_run_at_ms` 去重）。
 
