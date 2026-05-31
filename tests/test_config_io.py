@@ -53,7 +53,9 @@ class TestFindConfigFile:
 
     def test_default_path_not_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
+            # NANO_OPENCLAW_HOME points at the empty tmpdir so the real
+            # ~/.nano-openclaw/ config can't leak in via the global fallback.
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir, "NANO_OPENCLAW_HOME": tmpdir}
             # Patch cwd to temp dir so workspace/ config isn't found
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
                 path = find_config_file(env=env)
@@ -78,7 +80,9 @@ class TestFindConfigFile:
 class TestLoadConfig:
     def test_no_config_file_returns_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
+            # NANO_OPENCLAW_HOME points at the empty tmpdir so the real
+            # ~/.nano-openclaw/ config can't leak in via the global fallback.
+            env = {"NANO_OPENCLAW_STATE_DIR": tmpdir, "NANO_OPENCLAW_HOME": tmpdir}
             # Patch cwd to temp dir so workspace/ config isn't found
             with patch('pathlib.Path.cwd', return_value=Path(tmpdir)):
                 cfg, warnings = load_config(env=env)

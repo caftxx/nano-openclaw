@@ -148,8 +148,12 @@ class TestResolveConfigPath:
         config_file = workspace_dir / CONFIG_FILENAME
         config_file.write_text("{}")
 
+        # Isolate NANO_OPENCLAW_HOME so the real ~/.nano-openclaw/ config (which
+        # exists on dev machines) can't shadow the workspace fallback via the
+        # state-dir (priority 3) or global (priority 5) branches.
+        env = {"NANO_OPENCLAW_HOME": str(tmp_path)}
         with patch('pathlib.Path.cwd', return_value=tmp_path):
-            resolved = resolve_config_path(env={})
+            resolved = resolve_config_path(env=env)
             assert resolved == config_file.resolve()
 
     def test_global_config_fallback(self):
