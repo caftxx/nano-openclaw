@@ -62,6 +62,8 @@ def add_gateway_subparser(subparsers) -> argparse.ArgumentParser:
     )
     gateway_parser.add_argument("--host", default=None, help="Override config.gateway.host")
     gateway_parser.add_argument("--port", type=int, default=None, help="Override config.gateway.port")
+    gateway_parser.add_argument("--tls-cert", default=None, help="Serve HTTPS with this cert (PEM); pair with --tls-key. Needed for phone mic over LAN.")
+    gateway_parser.add_argument("--tls-key", default=None, help="TLS private key (PEM); pair with --tls-cert.")
     return gateway_parser
 
 
@@ -88,7 +90,7 @@ def run_gateway_cli(args: argparse.Namespace) -> int:
     if verb == "stop":
         return _verb_stop(state_dir)
     if verb == "run":
-        return _verb_run(args=args, host_override=args.host, port_override=args.port)
+        return _verb_run(args=args)
     raise ValueError(f"unknown gateway verb: {verb!r}")
 
 
@@ -337,6 +339,10 @@ def _verb_start(
         cmd += ["--host", args.host]
     if args.port:
         cmd += ["--port", str(args.port)]
+    if getattr(args, "tls_cert", None):
+        cmd += ["--tls-cert", args.tls_cert]
+    if getattr(args, "tls_key", None):
+        cmd += ["--tls-key", args.tls_key]
 
     log_path = _resolve_log_path(state_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,12 +432,7 @@ def _verb_stop(state_dir: Path) -> int:
     return 0
 
 
-def _verb_run(
-    *,
-    args: argparse.Namespace,
-    host_override: str | None,
-    port_override: int | None,
-) -> int:
+def _verb_run(*, args: argparse.Namespace) -> int:
     """Foreground run. ``run_daemon`` returns the exit code."""
     from nano_openclaw.gateway.server import run_daemon
 
@@ -439,8 +440,10 @@ def _verb_run(
         run_daemon(
             config_path=None,
             agent_id="default",
-            host_override=host_override,
-            port_override=port_override,
+            host_override=args.host,
+            port_override=args.port,
+            tls_cert_override=getattr(args, "tls_cert", None),
+            tls_key_override=getattr(args, "tls_key", None),
         )
     )
 

@@ -57,12 +57,18 @@ async def run_daemon(
     agent_id: str = "default",
     host_override: str | None = None,
     port_override: int | None = None,
+    tls_cert_override: str | None = None,
+    tls_key_override: str | None = None,
     write_pid: bool = True,
 ) -> int:
     """Foreground daemon. Returns process exit code.
 
     ``host_override`` / ``port_override`` shadow ``config.gateway.host/port``;
     used by the CLI when the user passes ``--host`` / ``--port``.
+
+    ``tls_cert_override`` / ``tls_key_override`` shadow ``config.gateway.tls_cert/
+    tls_key``; when both resolve to a path, uvicorn serves HTTPS/WSS instead of
+    plain HTTP — needed so phones on a LAN IP get a secure context for the mic.
 
     ``write_pid`` lets the legacy / test paths skip pidfile management when
     they want to embed run_daemon for some other purpose.
@@ -82,6 +88,26 @@ async def run_daemon(
     gw_cfg = runtime.config.gateway
     host = host_override or gw_cfg.host
     port = port_override or gw_cfg.port
+
+    # ── TLS resolution ───────────────────────────────────────────────────────
+    # Both cert and key must be present to enable HTTPS; a half-configured pair
+    # is a user mistake we surface loudly rather than silently fall back to HTTP.
+    tls_cert = (tls_cert_override or gw_cfg.tls_cert or "").strip()
+    tls_key = (tls_key_override or gw_cfg.tls_key or "").strip()
+    ssl_kwargs: dict[str, str] = {}
+    if tls_cert or tls_key:
+        if not (tls_cert and tls_key):
+            console.print(
+                "[red]gateway error:[/red] TLS needs both a cert and a key; "
+                f"got cert={tls_cert or '(unset)'} key={tls_key or '(unset)'}"
+            )
+            return 1
+        for label, path in (("tls_cert", tls_cert), ("tls_key", tls_key)):
+            if not Path(path).is_file():
+                console.print(f"[red]gateway error:[/red] {label} file not found: {path}")
+                return 1
+        ssl_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
+    scheme = "https" if ssl_kwargs else "http"
 
     if host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
@@ -133,6 +159,7 @@ async def run_daemon(
             access_log=False,
             lifespan="on",
             ws="websockets-sansio",
+            **ssl_kwargs,
         )
         server = uvicorn.Server(config)
 
@@ -145,7 +172,11 @@ async def run_daemon(
                 # Windows / non-Unix
                 pass
 
-        console.print(f"[green]gateway[/green] running on [bold]{host}:{port}[/bold] (pid {os.getpid()})")
+        web_host = "localhost" if host in ("0.0.0.0", "::") else host
+        console.print(
+            f"[green]gateway[/green] running on [bold]{scheme}://{host}:{port}[/bold] (pid {os.getpid()})"
+        )
+        console.print(f"  webui:  {scheme}://{web_host}:{port}/   voice: {scheme}://{web_host}:{port}/voice")
         if started_channels:
             for cid, aid in started_channels:
                 console.print(f"  ├─ channel [cyan]{cid}[/cyan]/[cyan]{aid}[/cyan]")

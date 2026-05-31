@@ -530,6 +530,8 @@ class GatewayConfig(BaseModel):
     host: str = Field(default="127.0.0.1", description="Bind address; default loopback. Non-loopback warns at startup (no auth in v1).")
     port: int = Field(default=5000, ge=1, le=65535, description="TCP port for the daemon HTTP/WebSocket server")
     log_path: str = Field(default="", description="Where the detached daemon writes stdout/stderr; empty → state_dir/gateway.log")
+    tls_cert: str = Field(default="", description="Path to a TLS certificate (PEM). Set together with tls_key to serve HTTPS — required for mic/getUserMedia on phones accessing over a LAN IP.")
+    tls_key: str = Field(default="", description="Path to the TLS private key (PEM). Must be set together with tls_cert.")
     restart_strategy: Literal["exec", "exit"] = Field(
         default="exec",
         alias="restart_strategy",
