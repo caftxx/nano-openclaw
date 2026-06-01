@@ -181,6 +181,9 @@ def _verb_status(state_dir: Path) -> int:
     channels = probe.get("channels") or []
 
     console.print()
+    daemon_version = health_info.get("version")
+    if daemon_version:
+        console.print(f"  version:   {daemon_version}")
     if runtime_info:
         console.print(f"  agent:     {runtime_info.get('agent_id', '?')}")
         console.print(f"  model:     {runtime_info.get('model_ref') or runtime_info.get('model_id', '?')}")

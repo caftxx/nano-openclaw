@@ -62,12 +62,9 @@ def _resolve_version() -> str:
     """Read the installed package version from metadata (single source of
     truth in pyproject.toml). Falls back to ``unknown`` when running from an
     uninstalled checkout without metadata."""
-    from importlib.metadata import PackageNotFoundError, version
+    from nano_openclaw import resolve_version
 
-    try:
-        return version("nano-openclaw")
-    except PackageNotFoundError:
-        return "unknown"
+    return resolve_version()
 
 
 def main() -> None:

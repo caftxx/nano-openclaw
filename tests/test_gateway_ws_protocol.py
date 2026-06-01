@@ -279,6 +279,12 @@ def test_dispatch_health_succeeds(tmp_path: Path):
     assert resp.payload["runtime_ready"] is True
     assert resp.payload["channels_running"] == 0
     assert resp.payload["in_flight_turns"] == 0
+    # The daemon advertises its own package version so `gateway status` can
+    # report the version of the running process (which may differ from the
+    # CLI's after an in-place upgrade).
+    from nano_openclaw import resolve_version
+
+    assert resp.payload["version"] == resolve_version()
 
 
 def test_dispatch_runtime_get_succeeds(tmp_path: Path):

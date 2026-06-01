@@ -8,8 +8,11 @@ from nano_openclaw.gateway.context import GatewayContext
 
 
 async def health(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    from nano_openclaw import resolve_version
+
     summary = await ctx.backend.health()
     payload = {
+        "version": resolve_version(),
         "runtime_ready": summary.runtime_ready,
         "channels_running": len(ctx.channel_registry.list_status()),
         "sessions_loaded": summary.sessions_loaded,
