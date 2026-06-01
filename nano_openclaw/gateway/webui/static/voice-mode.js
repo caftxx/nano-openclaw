@@ -41,6 +41,8 @@
     pendingReset: false,      // visibilitychange 触发的"等旧 recognizer onend 后再重建"挂起标志
     wantListen: false,        // 是否处于"应当聆听"意图：驱动 onend 续听、并防止抢跑重复 start
     turnOpen: false,          // 当前回复是否还在流式进行
+    currentTurnId: "",        // 当前语音轮的 turn_id；底部停止按钮用它取消后端回复
+    cancelRequested: false,   // 已向后端发出取消，防止重复点停止刷请求
     speakThisTurn: false,     // 本轮是否允许继续播报
     captionAiNode: null,      // 当前 turn 的 AI 字幕节点
     thinkOptionsKey: "",
@@ -64,7 +66,7 @@
   // ── 状态展示 ──────────────────────────────────────────────────────────────
   const PHASE_UI = {
     idle:      { cls: "off",       emoji: "🎙️", label: "点击开始", status: "点击麦克风，开始连续语音对话" },
-    listening: { cls: "listening", emoji: "👂", label: "正在聆听…", status: "请说话，停顿后自动发送" },
+    listening: { cls: "listening", emoji: "👂", label: "正在聆听…", status: "请说话，停顿后自动发送 · 说完点屏幕立即发送" },
     thinking:  { cls: "thinking",  emoji: "🤔", label: "思考中…",   status: "已发送，等待回复…" },
     speaking:  { cls: "speaking",  emoji: "🔊", label: "朗读中…",   status: "点屏幕任意处可打断" },
     error:     { cls: "error",     emoji: "⚠️", label: "出错",      status: "" },
@@ -165,7 +167,7 @@
     r.lang = "zh-CN";
     r.continuous = true;
     r.interimResults = true;
-    r.onstart = () => { if (r === v.recog) { v.recogStarting = false; v.recognizing = true; } };
+    r.onstart = () => { if (r === v.recog) { v.recogStarting = false; v.recognizing = true; if (watchdog) watchdog.confirmed(); } };
     r.onresult = (e) => {
       let interim = "", finalText = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -217,11 +219,13 @@
     if (!SR) return;
     if (!v.recog) v.recog = buildRecognizer();
     v.recogStarting = true;     // 进入"已 start、待 onstart"中间态
+    if (watchdog) watchdog.arm();   // 兜底：onstart 没在限期内确认（卡死/start 抛错）→ 强制重建重开
     try { v.recog.start(); setPhase("listening"); }
     catch (err) {
       v.recogStarting = false;
       // InvalidStateError / 权限临界 / recognizer 未完全停 等都会落到这里。
       // 旧实现空吞导致 UI 仍显示"聆听"但实际没在识别——这里至少暴露出来。
+      // watchdog 已挂起：到点会强制重建重开，不让 start() 抛错把免提卡死。
       console.warn("[voice] recog.start failed:", err && err.name, err && err.message);
     }
   }
@@ -231,11 +235,14 @@
     v.wantListen = true;
     // 上一段识别还在跑或正在启动（start 已发但 onstart 未回 / abort 的 onend 未回）时别抢跑：
     // 对同一对象重复 start 会抛 InvalidStateError → UI 假"聆听"。交给 onstart/onend 接力。
-    if (v.recognizing || v.recogStarting) return;
+    // 但接力可能永不到来（abort 的 onend 卡死 → recognizing 永远 true）：arm 看门狗兜底，
+    // 到点仍没真正在听就强制重建重开，别死等那个不可靠的 onend。
+    if (v.recognizing || v.recogStarting) { if (watchdog) watchdog.arm(); return; }
     _doStart();
   }
   function stopRecognition() {
     clearResumeTimer();
+    if (watchdog) watchdog.clear();   // 主动停麦：撤销聆听兜底，避免误重建
     v.wantListen = false;
     // 主动停麦（朗读/暂停/切后台/发送等）时清掉未完成的半句，避免误发。
     // onFlush 内部会调本函数，但那时 buffer 已被 flush 清空，reset 无副作用。
@@ -276,8 +283,40 @@
       startRecognition();
     }
   }
+  // ── 聆听看门狗：纯前台卡死的自愈兜底 ──────────────────────────────────────
+  // 基于"意图 + 真实运行态"判断是否应当聆听——刻意不看 v.phase（卡死时 phase 文案不可信，
+  // 比如停在"已停止朗读，等待回复结束…"但 turn 其实早已结束）。
+  let watchdog = null;
+  function shouldListen() {
+    return v.open && v.active && v.wantListen && !v.speaking
+      && !v.pendingReset && !hasOpenTurn()
+      && document.visibilityState === "visible";
+  }
+  // 丢弃卡死的 recognizer，建一个干净的重新起——看门狗到点时调用，绕过那个可能永不来的 onend。
+  function forceRecognizerRebuild() {
+    if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+    v.pendingReset = false;
+    if (v.recog) { try { v.recog.abort(); } catch (_) {} }
+    v.recog = null;                // 下次 _doStart 会建新的
+    v.recognizing = false;
+    v.recogStarting = false;
+    if (shouldListen()) _doStart();
+  }
+
   function hasOpenTurn() {
     return v.turnOpen || Boolean(state.activeTurnId || (state.currentSession && state.currentSession.active_turn_id));
+  }
+  function currentTurnId() {
+    return state.activeTurnId
+      || (state.currentSession && state.currentSession.active_turn_id)
+      || v.currentTurnId
+      || "";
+  }
+  function clearTurnState(turnId, keepSpeech) {
+    if (!turnId || !v.currentTurnId || turnId === v.currentTurnId) v.currentTurnId = "";
+    v.cancelRequested = false;
+    v.turnOpen = false;
+    if (!keepSpeech) v.speakThisTurn = false;
   }
   function resumeListeningIfActive() {
     if (v.active && !v.speaking && hasOpenTurn()) setPhase("thinking", "等待当前回复结束…");
@@ -310,6 +349,13 @@
       return;
     }
     startRecognition();
+  }
+
+  // 手动"立即发送"：用户说完点屏，不等静音去抖。把已确认 buffer + 当前未定 interim 一起发出。
+  // 无累积文本则什么都不做（避免点空屏发空消息）。acc.flushNow 内部走 onFlush → stopRecognition + sendVoiceText。
+  function flushPendingNow() {
+    if (!v.acc || !v.active || v.speaking) return;
+    if (!v.acc.flushNow()) return;   // 没有任何待发文本：忽略这次点击
   }
 
   function sendVoiceText(text) {
@@ -400,6 +446,25 @@
     }
     resumeListeningIfActive();
   }
+  function stopCurrentTurnOrSpeech() {
+    const turnId = currentTurnId();
+    stopAllSpeech();
+    v.speakThisTurn = false;
+    if (v.cancelRequested) {
+      setPhase("thinking", "正在停止当前回复…");
+      return;
+    }
+    if (!turnId) {
+      interruptSpeechForTurn();
+      return;
+    }
+    if (!send("turn.cancel", { turn_id: turnId })) {
+      setPhase("error", "未连接到服务器，无法停止当前回复");
+      return;
+    }
+    v.cancelRequested = true;
+    setPhase("thinking", "正在停止当前回复…");
+  }
 
   // ── 来自 app.js handleEvent 的事件 ────────────────────────────────────────
   function onEvent(event) {
@@ -417,6 +482,8 @@
         stopAllSpeech();
         v.assistantText = ""; v.spokenLen = 0;
         v.turnOpen = true;
+        v.currentTurnId = event.turn_id || "";
+        v.cancelRequested = false;
         v.speakThisTurn = v.active;
         addBubble("you", typeof formatAcceptedUserText === "function" ? formatAcceptedUserText(event) : (event.text || ""));
         v.captionAiNode = addBubble("ai", "");
@@ -429,7 +496,7 @@
       case "turn.done":
         setAiBubble(v.captionAiNode, v.assistantText);
         v.captionAiNode = null;
-        v.turnOpen = false;
+        clearTurnState(event.turn_id, true);
         if (v.active && v.speakThisTurn) speakReadyChunks(true);
         v.speakThisTurn = false;
         // 队列空且没在读：若本轮确实出过声（spokenLen>0），尾音可能仍在 → 走冷却再开麦；
@@ -441,8 +508,7 @@
         break;
       case "turn.error":
         v.captionAiNode = null;
-        v.turnOpen = false;
-        v.speakThisTurn = false;
+        clearTurnState(event.turn_id);
         stopAllSpeech();
         addBubble("ai", `⚠️ 出错：${event.message || "未知错误"}`);
         if (v.active) speakOnce("出错了", () => resumeListeningIfActive());
@@ -450,8 +516,7 @@
         break;
       case "turn.cancelled":
         v.captionAiNode = null;
-        v.turnOpen = false;
-        v.speakThisTurn = false;
+        clearTurnState(event.turn_id);
         stopAllSpeech();
         resumeListeningIfActive();
         break;
@@ -498,6 +563,8 @@
     v.open = false;
     v.active = false;
     v.turnOpen = false;
+    v.currentTurnId = "";
+    v.cancelRequested = false;
     v.speakThisTurn = false;
     v.captionAiNode = null;
     v.assistantText = "";
@@ -513,10 +580,18 @@
   // ── 绑定 ──────────────────────────────────────────────────────────────────
   function init() {
     grab();
+    // 聆听看门狗：recognizer 卡死（onend 不回 / start 抛错）时，纯前台也能自愈重建，
+    // 不再只能靠刷新页面或切前后台恢复。
+    const makeWatchdog = window.createListenWatchdog || (typeof createListenWatchdog !== "undefined" ? createListenWatchdog : null);
+    if (makeWatchdog) watchdog = makeWatchdog({ shouldListen, onTimeout: forceRecognizerRebuild });
     // 整句累积器：分片 final 按静音去抖合并，等待时间按累积文本长度 + interim 活动自动调整。
     const makeAcc = window.createUtteranceAccumulator || (typeof createUtteranceAccumulator !== "undefined" ? createUtteranceAccumulator : null);
     if (makeAcc) {
       v.acc = makeAcc({
+        // 手机免提/开车时不应依赖点屏立即发送：宁可多等一点，也别把自然停顿误判成说完。
+        // 短句 1.6s；长句、末尾仍有 interim 时按累积器分档延长，最高 3.2s。
+        baseSilenceMs: 1600,
+        maxSilenceMs: 3200,
         onFlush: (text) => { stopRecognition(); sendVoiceText(text); },
       });
     }
@@ -555,7 +630,7 @@
     if (exitTop) exitTop.onclick = closeOverlay;
 
     const stopBtn = $("voiceStopSpeak");
-    if (stopBtn) stopBtn.onclick = interruptSpeechForTurn;
+    if (stopBtn) stopBtn.onclick = stopCurrentTurnOrSpeech;
 
     if (elThink) elThink.onchange = () => {
       const lvl = elThink.value;
@@ -566,10 +641,12 @@
       if (typeof renderThinkingToggle === "function") renderThinkingToggle();  // 同步聊天页的开关
     };
 
-    // 朗读时点字幕区以外（圆下方空白）打断
+    // 点圆/字幕/底栏以外的空白区（圆周围）：
+    //   朗读中 → 打断；聆听中 → 立即发送当前累积文本（说完点一下就发，不等去抖）。
     if (elOverlay) elOverlay.addEventListener("click", (e) => {
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
       if (v.speaking || v.phase === "speaking") interruptSpeechForTurn();
+      else if (v.phase === "listening") flushPendingNow();
     });
 
     // 切走/锁屏再回到前台：wakeLock 被系统释放、识别已 abort 且常卡在坏状态

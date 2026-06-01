@@ -23,6 +23,7 @@
     var setTimer = opts.setTimer || setTimeout;
     var clearTimer = opts.clearTimer || clearTimeout;
     var buffer = "";
+    var lastInterim = "";   // 末次 onresult 的未定 interim：手动"立即发送"时要带上（最后几个字常还没 final）
     var timer = null;
     function disarm() { if (timer != null) { clearTimer(timer); timer = null; } }
     // base 起步（短句即此值，不再被无标点惩罚拖慢）；按累积长度分档加码（长句大概率还没说完，
@@ -40,18 +41,29 @@
     function flush() {
       timer = null;
       var text = buffer.trim();
-      buffer = "";   // 先清空再回调：onFlush 里会 stopRecognition→reset()，避免重复/递归发送
+      buffer = ""; lastInterim = "";   // 先清空再回调：onFlush 里会 stopRecognition→reset()，避免重复/递归发送
+      // 自动(静音)flush 只发已确认 buffer：到点 interim 多半已 final 进 buffer 或已作废，带上反而会重读。
       if (text && onFlush) onFlush(text);
     }
     return {
       // 喂入一次 onresult 的结果；返回当前应展示的实时文本(buffer + interim)
       feed: function (finalText, interim) {
         if (finalText) buffer += finalText;
+        lastInterim = interim || "";
         if (buffer || interim) arm(interim);   // 任何语音活动都重置静音计时器
         return (buffer + (interim || "")).trim();
       },
-      reset: function () { disarm(); buffer = ""; },   // 主动停麦时清空，避免发出半句
+      reset: function () { disarm(); buffer = ""; lastInterim = ""; },   // 主动停麦时清空，避免发出半句
       pending: function () { return buffer.trim(); },
+      // 手动"立即发送"（用户说完点屏）：不等去抖，把已确认 buffer + 当前未定 interim 一起发出。
+      // 返回实际发出的文本（空则没发，调用方据此判断要不要继续聆听）。
+      flushNow: function () {
+        disarm();
+        var text = (buffer + lastInterim).trim();
+        buffer = ""; lastInterim = "";
+        if (text && onFlush) onFlush(text);
+        return text;
+      },
     };
   }
   return createUtteranceAccumulator;

@@ -123,3 +123,77 @@ test("末次仍是未定 interim → 识别没收尾，再多等一档；但受�
   assert.strictEqual(delayFor("字".repeat(45), "继续说"), 2300, "1200 + 300 + 400 + interim 400（合计 48 字）");
   assert.strictEqual(delayFor("字".repeat(85), "继续说"), 2600, "1200+300+400+300+400=2600 命中上限");
 });
+
+test("手机免提配置更耐心：不依赖点屏立即发送", () => {
+  function mobileDelayFor(finalText, interim) {
+    const clock = fakeClock();
+    const acc = createUtteranceAccumulator({
+      baseSilenceMs: 1600,
+      maxSilenceMs: 3200,
+      onFlush: () => {},
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    });
+    acc.feed(finalText, interim || "");
+    return clock.delay();
+  }
+  assert.strictEqual(mobileDelayFor("打开空调"), 1600, "手机短句也多等一点，避免自然停顿误发");
+  assert.strictEqual(mobileDelayFor("字".repeat(45), "继续说"), 2700, "中长句 + interim 留足无触控余量");
+  assert.strictEqual(mobileDelayFor("字".repeat(120), "继续说"), 3000, "当前分档未命中上限，但已明显比桌面默认耐心");
+});
+
+// 回归：长句靠"点屏立即发送"兜底——用户说完点屏，不等去抖；最后几个字常还是未定 interim，要带上。
+test("flushNow() 立即发送：带上当前未定 interim，撤销去抖计时器", () => {
+  const clock = fakeClock();
+  const flushed = [];
+  const acc = createUtteranceAccumulator({
+    onFlush: (t) => flushed.push(t),
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  acc.feed("我想问下这个功能", "在最新版本里");   // buffer 已确认 + 未定尾巴
+  assert.ok(clock.armed(), "说话中应有去抖计时器");
+  const sent = acc.flushNow();
+  assert.strictEqual(sent, "我想问下这个功能在最新版本里", "buffer + interim 一并发出");
+  assert.deepStrictEqual(flushed, ["我想问下这个功能在最新版本里"]);
+  assert.ok(!clock.armed(), "flushNow 应撤销去抖计时器，避免随后又自动发一遍");
+});
+
+test("flushNow() 无任何文本：返回空、不回调（点空屏不发空消息）", () => {
+  const clock = fakeClock();
+  const flushed = [];
+  const acc = createUtteranceAccumulator({
+    onFlush: (t) => flushed.push(t),
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  assert.strictEqual(acc.flushNow(), "");
+  assert.strictEqual(flushed.length, 0);
+});
+
+test("flushNow() 后状态清空：不会和后续自动 flush 重复发送", () => {
+  const clock = fakeClock();
+  const flushed = [];
+  const acc = createUtteranceAccumulator({
+    onFlush: (t) => flushed.push(t),
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  acc.feed("已经说完了", "尾巴");
+  acc.flushNow();
+  clock.fire();   // 即便残留计时器误触发，buffer/interim 已清，不应再发
+  assert.deepStrictEqual(flushed, ["已经说完了尾巴"], "只发一次");
+});
+
+test("自动(静音)flush 仍只发已确认 buffer，不带 interim（到点 interim 多已作废/重复）", () => {
+  const clock = fakeClock();
+  const flushed = [];
+  const acc = createUtteranceAccumulator({
+    onFlush: (t) => flushed.push(t),
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  acc.feed("确认部分", "未定尾巴");
+  clock.fire();   // 静音到点自动 flush
+  assert.deepStrictEqual(flushed, ["确认部分"], "自动 flush 不带 interim");
+});
