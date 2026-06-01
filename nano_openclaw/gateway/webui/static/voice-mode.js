@@ -45,6 +45,7 @@
     captionAiNode: null,      // 当前 turn 的 AI 字幕节点
     thinkOptionsKey: "",
     voiceURI: "",             // 选中的 TTS 声音（空 = 系统默认）
+    acc: null,                // 整句累积器（静音去抖合并分片 final），init() 里创建
   };
 
   let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice;
@@ -172,10 +173,16 @@
         if (res.isFinal) finalText += res[0].transcript;
         else interim += res[0].transcript;
       }
-      if (interim) setPhase("listening", `识别中：${interim}`);
-      if (finalText.trim()) {
-        stopRecognition();          // 发送前先停麦，进入 thinking
-        sendVoiceText(finalText.trim());
+      // 不再"拿到首个 final 即停麦发送"（会把长句在停顿处截断）：累积分片 final，
+      // 任何语音活动重置静音计时器，持续静音后由 acc.onFlush 统一停麦+发送。
+      if (v.acc) {
+        const shown = v.acc.feed(finalText, interim);
+        if (shown) setPhase("listening", `识别中：${shown}`);
+      } else {
+        // 累积器不可用（voice-utterance.js 没加载成功）：退回旧的"final 即停麦发送"行为，
+        // 否则识别得到文本却永远发不出去。长句可能被截断，但能用 > 不能用。
+        if (interim) setPhase("listening", `识别中：${interim}`);
+        if (finalText.trim()) { stopRecognition(); sendVoiceText(finalText.trim()); }
       }
     };
     r.onerror = (e) => {
@@ -230,6 +237,9 @@
   function stopRecognition() {
     clearResumeTimer();
     v.wantListen = false;
+    // 主动停麦（朗读/暂停/切后台/发送等）时清掉未完成的半句，避免误发。
+    // onFlush 内部会调本函数，但那时 buffer 已被 flush 清空，reset 无副作用。
+    if (v.acc) v.acc.reset();
     // abort() 立即终止并丢弃挂起结果，比 stop()（要等末尾 final、异步收尾更久）更干净，
     // 能压缩"上一段还没真正结束就要重开"的竞态窗口。
     if (v.recog) { try { v.recog.abort(); } catch (_) {} }
@@ -503,6 +513,13 @@
   // ── 绑定 ──────────────────────────────────────────────────────────────────
   function init() {
     grab();
+    // 整句累积器：分片 final 按静音去抖合并，等待时间按累积文本长度 + interim 活动自动调整。
+    const makeAcc = window.createUtteranceAccumulator || (typeof createUtteranceAccumulator !== "undefined" ? createUtteranceAccumulator : null);
+    if (makeAcc) {
+      v.acc = makeAcc({
+        onFlush: (text) => { stopRecognition(); sendVoiceText(text); },
+      });
+    }
     const micBtn = $("voiceMicBtn");
     if (micBtn) micBtn.onclick = () => openOverlay(true);   // 单击进全屏免提，无其它手势
 
