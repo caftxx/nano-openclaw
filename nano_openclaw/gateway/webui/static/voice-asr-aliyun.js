@@ -96,7 +96,9 @@
     };
   }
 
-  // 浏览器侧工厂：opts = { getConfig, getToken, onStart, onInterim, onFinal, onError, onEnd }
+  // 浏览器侧工厂：opts = { getConfig, getToken, onStart, onInterim, onFinal, onError, onEnd,
+  //                       WebSocketImpl?, setupAudio? }
+  // WebSocketImpl/setupAudio 仅为测试注入点（默认走全局 WebSocket / 真实音频建立），不改线上行为。
   function createAliyunRecognizer(opts) {
     opts = opts || {};
     var getConfig = opts.getConfig;   // () -> {appkey, endpoint}
@@ -106,8 +108,10 @@
     var onFinal = opts.onFinal || function () {};
     var onError = opts.onError || function () {};
     var onEnd = opts.onEnd || function () {};
+    var WebSocketImpl = opts.WebSocketImpl || (typeof WebSocket !== "undefined" ? WebSocket : null);
 
     var ws = null;
+    var starting = false;     // 进入 start() 到 new WebSocket 成功这段中间态（抗重入）
     var audioCtx = null;
     var workletNode = null;
     var micStream = null;
@@ -128,6 +132,7 @@
     }
 
     function finish() {
+      starting = false;
       cleanupAudio();
       try { if (ws && ws.readyState <= 1) ws.close(); } catch (_) {}
       ws = null;
@@ -136,6 +141,7 @@
     }
 
     function fail(name, msg) {
+      starting = false;   // 建立阶段抛错也要复位重入守卫，否则之后再也起不来
       if (stopping) return;
       stopping = true;
       onError(name, msg);
@@ -156,7 +162,9 @@
       pendingFrames = [];
     }
 
-    function onWsMessage(ev) {
+    // sock：本条消息所属的连接。已被新连接取代的旧 socket 回调一律忽略，避免污染当前会话。
+    function onWsMessage(sock, ev) {
+      if (sock !== ws) return;
       if (typeof ev.data !== "string") return;   // 识别只下发 Text frame
       var obj;
       try { obj = JSON.parse(ev.data); } catch (_) { return; }
@@ -182,7 +190,7 @@
       }
     }
 
-    async function setupAudio() {
+    async function setupAudioReal() {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       var Ctx = window.AudioContext || window.webkitAudioContext;
       audioCtx = new Ctx();
@@ -196,8 +204,14 @@
       source.connect(workletNode);
       // 不接 destination：避免把麦克风回放到扬声器形成回环。
     }
+    var setupAudio = opts.setupAudio || setupAudioReal;
 
     async function start() {
+      // 实例级抗重入：已有活动连接（ws）或正在建立（starting）时，绝不开第二条 ws。
+      // start() 是 async（中间 await getToken + setupAudio 的 getUserMedia 授权框可能数秒），
+      // 这段窗口里被重复进入会让旧/新 socket 互相覆盖、污染 → 这里直接忽略本次调用。
+      if (ws || starting) return;
+      starting = true;
       stopping = false;
       started = false;
       pendingFrames = [];
@@ -223,20 +237,27 @@
       taskId = makeId();
       var sep = cfg.endpoint.indexOf("?") >= 0 ? "&" : "?";
       var url = cfg.endpoint + sep + "token=" + encodeURIComponent(tok.token);
+      var sock;
       try {
-        ws = new WebSocket(url);
+        sock = new WebSocketImpl(url);
       } catch (err) {
         fail("ws", (err && err.message) || "WebSocket 创建失败");
         return;
       }
-      ws.binaryType = "arraybuffer";
-      ws.onopen = function () {
-        try { ws.send(JSON.stringify(buildStartCommand(cfg.appkey, taskId))); }
+      ws = sock;
+      starting = false;   // ws 已就位，之后以 sock===ws 作为「这条连接仍是当前连接」的判据
+      sock.binaryType = "arraybuffer";
+      // 回调全部闭包捕获本条 sock，首行 sock!==ws 守卫：被取代的旧连接回调一律不动作。
+      sock.onopen = function () {
+        if (sock !== ws) return;
+        if (sock.readyState !== 1) return;
+        try { sock.send(JSON.stringify(buildStartCommand(cfg.appkey, taskId))); }
         catch (err) { fail("ws", "发送 StartTranscription 失败"); }
       };
-      ws.onmessage = onWsMessage;
-      ws.onerror = function () { fail("ws", "WebSocket 错误"); };
-      ws.onclose = function () {
+      sock.onmessage = function (ev) { onWsMessage(sock, ev); };
+      sock.onerror = function () { if (sock !== ws) return; fail("ws", "WebSocket 错误"); };
+      sock.onclose = function () {
+        if (sock !== ws) return;
         // 非主动停止时的意外断开：上报并收尾（onEnd 让状态机回到聆听/空闲）。
         if (stopping) return;
         stopping = true;

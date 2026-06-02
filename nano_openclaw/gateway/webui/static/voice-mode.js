@@ -26,6 +26,9 @@
     high: "高", xhigh: "超高", adaptive: "自适应", max: "最大",
   };
   const SENTENCE_END = /[。！？!?；;\n]/;
+  // 阿里云慢启动看门狗窗口：要覆盖 getUserMedia 授权框（首次可能数秒）+ 拉 token + ws 握手 +
+  // 等 TranscriptionStarted。默认 1500ms 会在授权框还没点完时就误判卡死、强杀 CONNECTING 的 ws。
+  const ALIYUN_START_TIMEOUT_MS = 12000;
 
   const v = {
     open: false,
@@ -295,10 +298,14 @@
   }
 
   function _doStartAliyun() {
+    // 抗重入：续听重连 / 看门狗重建可能在上一次启动还没确认时再次进来 → 别叠两条 ws。
+    // forceRecognizerRebuild 调本函数前已把 recogStarting/aliyunRunning 置 false，不会被此守卫挡住。
+    if (v.recogStarting || v.aliyunRunning) return;
     if (!v.aliyun) v.aliyun = buildAliyunRecognizer();
     if (!v.aliyun) return;
     v.recogStarting = true;
-    if (watchdog) watchdog.arm();
+    // 阿里云慢启动专用更长兜底窗口（含授权框+网络+握手）；SR 路径仍用默认。
+    if (watchdog) watchdog.arm(ALIYUN_START_TIMEOUT_MS);
     setPhase("listening");
     // start 是 async（取 token + 开麦 + 连 ws）；onStart/onError/onEnd 回调里翻转运行态。
     Promise.resolve(v.aliyun.start()).catch((err) => {
@@ -410,8 +417,11 @@
     if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
     v.pendingReset = false;
     if (v.engine === "aliyun") {
-      if (v.aliyun) { try { v.aliyun.abort(); } catch (_) {} }
+      // 先摘除再 abort：abort 内部会同步触发 onEnd，若此时 v.aliyun 还指向旧实例，
+      // onEnd 的续听分支会递归复用它再 start() → 与下方 _doStart 叠成双启动。
+      const old = v.aliyun;
       v.aliyun = null;             // 下次 _doStart 建新的
+      if (old) { try { old.abort(); } catch (_) {} }
     } else if (v.recog) {
       try { v.recog.abort(); } catch (_) {}
     }

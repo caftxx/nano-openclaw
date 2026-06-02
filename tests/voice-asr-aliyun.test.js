@@ -84,3 +84,72 @@ test("buildStopCommand: name=StopTranscription，沿用同一 task_id", () => {
   assert.strictEqual(cmd.header.task_id, "task-id-32");
   assert.strictEqual(cmd.header.message_id, "msg-2");
 });
+
+// ── 重入 / socket 隔离回归（前端竞态导致阿里云"完全用不了"的根因）─────────────
+// 假 WebSocket：记录每个实例与其 send 调用，可手动触发 onopen（不连真实网络/音频）。
+class FakeWS {
+  constructor(url) {
+    FakeWS.instances.push(this);
+    this.url = url;
+    this.readyState = 0;            // CONNECTING
+    this.sent = [];
+    this.closed = false;
+    this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+  }
+  send(data) {
+    if (this.readyState !== 1) throw new Error("InvalidStateError");
+    this.sent.push(data);
+  }
+  close() { this.closed = true; this.readyState = 3; }
+  open() { this.readyState = 1; if (this.onopen) this.onopen(); }   // 测试手动触发握手完成
+}
+
+function makeRecognizer(extra) {
+  FakeWS.instances = [];
+  const opts = Object.assign({
+    getConfig: () => ({ appkey: "APPKEY", endpoint: "wss://nls.example/ws" }),
+    getToken: async () => ({ token: "TOK" }),
+    setupAudio: async () => {},     // 跳过真实音频建立
+    WebSocketImpl: FakeWS,
+  }, extra || {});
+  return createAliyunRecognizer(opts);
+}
+
+// start() 是 async（await getToken + setupAudio），用 setImmediate 把所有挂起的 microtask 推进完。
+const flush = () => new Promise((r) => setImmediate(r));
+
+test("重入守卫：同一实例连续两次 start() 只建一条 WebSocket", async () => {
+  const rec = makeRecognizer();
+  const p1 = rec.start();
+  const p2 = rec.start();          // 第二次在第一次 await 窗口内进来：应被守卫忽略
+  await Promise.all([p1, p2]);
+  await flush();
+  assert.strictEqual(FakeWS.instances.length, 1, "并发 start 只应创建一条 ws");
+});
+
+test("socket 隔离：被取代的旧 socket 触发 onopen 也不 send、不抛、不污染当前连接", async () => {
+  // 用一个慢 getToken 卡住第一次 start：拿到旧 ws 引用后再放行，制造"旧 socket 还在 CONNECTING"。
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let firstCall = true;
+  const rec = makeRecognizer({
+    getToken: async () => { if (firstCall) { firstCall = false; await gate; } return { token: "TOK" }; },
+  });
+
+  const p1 = rec.start();          // 卡在 getToken
+  await flush();
+  assert.strictEqual(FakeWS.instances.length, 0, "getToken 未返回前不应建 ws");
+
+  release();                       // 放行第一次 start → 建第一条 ws
+  await p1; await flush();
+  assert.strictEqual(FakeWS.instances.length, 1);
+  const sock1 = FakeWS.instances[0];
+
+  // 手动把 sock1 从「当前连接」位置挤掉：模拟它被新连接取代（abort/重建后又来旧 onopen）。
+  // 直接对它 close 让 finish 把内部 ws 置空 —— 之后 sock1 已非当前 ws。
+  rec.abort();
+  // sock1 仍可能收到迟到的 onopen（CONNECTING→OPEN 的握手在 abort 之后才完成）。
+  sock1.readyState = 1;
+  assert.doesNotThrow(() => { if (sock1.onopen) sock1.onopen(); }, "旧 socket onopen 不应抛");
+  assert.strictEqual(sock1.sent.length, 0, "已被取代的旧 socket 不应 send StartTranscription");
+});

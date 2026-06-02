@@ -111,3 +111,17 @@ test("默认超时 1500ms（纯前台卡死的自愈窗口）", () => {
   wd.arm();
   assert.strictEqual(clock.delay(), 1500);
 });
+
+test("arm(ms)：传入超时覆盖默认（阿里云慢启动需更长兜底窗口）", () => {
+  const clock = fakeClock();
+  const wd = createListenWatchdog({
+    shouldListen: () => true,
+    onTimeout: () => {},
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  wd.arm(12000);
+  assert.strictEqual(clock.delay(), 12000, "传入 ms 应覆盖默认 timeoutMs");
+  wd.arm();   // 不传参回落默认
+  assert.strictEqual(clock.delay(), 1500, "不传参仍用默认 1500ms");
+});

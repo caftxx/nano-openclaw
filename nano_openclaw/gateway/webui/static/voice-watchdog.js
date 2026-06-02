@@ -30,7 +30,8 @@
     }
     return {
       // 进入"已发起 start、待 onstart 确认"或"想听但被守卫挡住没真正起来"的中间态时调用。
-      arm: function () { clear(); timer = setTimer(fire, timeoutMs); },
+      // 可选 ms 覆盖默认窗口：阿里云慢启动（授权框+网络+握手）需要更长兜底时间。
+      arm: function (ms) { clear(); timer = setTimer(fire, ms != null ? ms : timeoutMs); },
       // onstart 确认真的在听了：撤销兜底。
       confirmed: clear,
       // 主动停麦 / 暂停 / 退出：撤销兜底。
