@@ -379,6 +379,11 @@
     const valid = v.ttsChoice && Array.from(elTtsVoice.options).some((o) => o.value === v.ttsChoice);
     if (v.ttsChoice && !valid) v.ttsChoice = "local";
     elTtsVoice.value = v.ttsChoice || "local";
+    updateBrowserVoiceVisibility();   // 同步右上角浏览器音色下拉的可见性
+  }
+  // 右上角浏览器音色下拉只在「本地合成」时有意义：选了生效的阿里云音色就隐藏，避免与底部「音色」下拉重复。
+  function updateBrowserVoiceVisibility() {
+    if (elVoice) elVoice.hidden = useAliyunTts();
   }
   // 合成音频播完（播放器 drain）后的续听时序——复刻 webspeech 读完续听逻辑：
   // turn 仍在流式 → 显示 thinking 等回复；否则冷却 ~500ms 再开麦（避外放尾音回采）。
@@ -429,6 +434,7 @@
         // 本会话内回退本地 synth：阿里云合成致命失败大概率会复发，别每轮都卡一次。
         // 用户手动换音色（elTtsVoice.onchange）会重置 ttsFallback 再试阿里云。
         v.ttsFallback = true;
+        updateBrowserVoiceVisibility();   // 回退本地后应重新显示右上角浏览器音色下拉
         // 本轮别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
         if (v.pcmPlayer) v.pcmPlayer.markEnded();
         else { v.speaking = false; onTtsDrained(); }
@@ -927,6 +933,7 @@
       v.ttsChoice = elTtsVoice.value;
       try { localStorage.setItem(TTS_VOICE_KEY, v.ttsChoice); } catch (_) {}
       v.ttsFallback = false;             // 用户手动换音色：清除回退标志，重新尝试阿里云合成
+      updateBrowserVoiceVisibility();    // 换回阿里云音色 → 隐藏；切回本地 → 显示
       if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，新音色下轮生效
     };
 
