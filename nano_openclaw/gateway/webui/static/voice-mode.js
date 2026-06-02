@@ -52,6 +52,7 @@
     voiceCfg: null,           // /api/voice/config 结果（available/provider/appkey/endpoint）
     aliyun: null,             // 阿里云 recognizer 实例（engine==="aliyun" 时按需创建）
     aliyunRunning: false,     // 阿里云引擎当前是否在采集（替代 SR 的 recognizing/recogStarting）
+    aliyunInterim: "",        // 阿里云当前未定 interim 文本：SentenceEnd 直接发，点屏立即发送时也发它
   };
 
   // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
@@ -227,8 +228,9 @@
     return r;
   }
   // ── 阿里云实时识别引擎 ──────────────────────────────────────────────────────
-  // 复用现有去抖累积器/状态机：interim → acc.feed("", text)；SentenceEnd → acc.feed(text, "")。
-  // 由 acc.onFlush 静音去抖把多句合并后统一 stopRecognition + sendVoiceText，体验与 SR 路径一致。
+  // 不走前端去抖累积器：阿里云自带 max_sentence_silence 断句，SentenceEnd（→ onFinal）就是一句
+  // 完整的话，再叠一层静音去抖只会让发送变慢。所以 onFinal 直接停麦 + 发送；onInterim 仅更新
+  // 字幕并记到 v.aliyunInterim，供"点屏立即发送"取用。（Web Speech 路径仍用累积器，见 buildRecognizer。）
   function buildAliyunRecognizer() {
     const make = window.createAliyunRecognizer
       || (typeof createAliyunRecognizer !== "undefined" ? createAliyunRecognizer : null);
@@ -238,14 +240,15 @@
       getToken: fetchVoiceToken,
       onStart: () => { v.aliyunRunning = true; if (watchdog) watchdog.confirmed(); setPhase("listening"); },
       onInterim: (text) => {
-        if (!v.acc) return;
-        const shown = v.acc.feed("", text);
-        if (shown) setPhase("listening", `识别中：${shown}`);
+        // 未定结果：只更新字幕并暂存，等 SentenceEnd 或点屏才发送。
+        v.aliyunInterim = text || "";
+        if (text) setPhase("listening", `识别中：${text}`);
       },
       onFinal: (text) => {
-        if (!v.acc) { if (text.trim()) { stopRecognition(); sendVoiceText(text.trim()); } return; }
-        const shown = v.acc.feed(text, "");
-        if (shown) setPhase("listening", `识别中：${shown}`);
+        // SentenceEnd：阿里云已断好句，直接停麦发送，不等去抖。
+        v.aliyunInterim = "";
+        const t = (text || "").trim();
+        if (t) { stopRecognition(); sendVoiceText(t); }
       },
       onError: (name, msg) => {
         v.aliyunRunning = false;
@@ -341,6 +344,7 @@
     // onFlush 内部会调本函数，但那时 buffer 已被 flush 清空，reset 无副作用。
     if (v.acc) v.acc.reset();
     if (v.engine === "aliyun") {
+      v.aliyunInterim = "";   // 清未定半句，避免残留 interim 被点屏误发（与上面 acc.reset 同理）
       // abort 关 ws + 停麦 + 关 worklet；onEnd 里若 wantListen 仍为 true 会续听，但这里已置 false。
       if (v.aliyun) { try { v.aliyun.abort(); } catch (_) {} }
       v.aliyunRunning = false;
@@ -466,11 +470,20 @@
     startRecognition();
   }
 
-  // 手动"立即发送"：用户说完点屏，不等静音去抖。把已确认 buffer + 当前未定 interim 一起发出。
-  // 无累积文本则什么都不做（避免点空屏发空消息）。acc.flushNow 内部走 onFlush → stopRecognition + sendVoiceText。
+  // 手动"立即发送"：用户说完点屏，不等静音去抖。无累积文本则什么都不做（避免点空屏发空消息）。
   function flushPendingNow() {
-    if (!v.acc || !v.active || v.speaking) return;
-    if (!v.acc.flushNow()) return;   // 没有任何待发文本：忽略这次点击
+    if (!v.active || v.speaking) return;   // 阿里云路径不依赖 acc，故不再因 !v.acc 直接 return
+    if (v.engine === "aliyun") {
+      // 阿里云无累积器：发当前未定 interim（SentenceEnd 已会自己发，这里只兜未断句的尾巴）。
+      const t = (v.aliyunInterim || "").trim();
+      if (!t) return;
+      v.aliyunInterim = "";
+      stopRecognition();
+      sendVoiceText(t);
+      return;
+    }
+    // Web Speech：仍走累积器，flushNow 内部 onFlush → stopRecognition + sendVoiceText。
+    if (!v.acc || !v.acc.flushNow()) return;   // 没有任何待发文本：忽略这次点击
   }
 
   function sendVoiceText(text) {
