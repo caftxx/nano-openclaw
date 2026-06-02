@@ -146,6 +146,25 @@ test("socket 隔离：被 abort 取代的旧 socket 迟到 onopen 不 send、不
   assert.strictEqual(sentNames(sock).length, 0);
 });
 
+test("abort 取消 await 中的 in-flight begin：不建 ws", async () => {
+  // 用 gated getToken 把 begin() 卡在 await；放行前 abort()，放行后断言全程没 new ws。
+  const created = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const synth = makeSynth(created, {
+    getToken: async () => { await gate; return { token: "TOK" }; },
+  });
+
+  synth.begin();   // 卡在 getToken
+  await new Promise((r) => setTimeout(r, 0));
+  assert.strictEqual(created.length, 0, "getToken 未返回前不应建 ws");
+
+  synth.abort();   // 中止：in-flight begin 应被 generation 令牌作废
+  release();       // 放行 getToken，让 begin() 续跑到 return
+  await new Promise((r) => setTimeout(r, 0));
+  assert.strictEqual(created.length, 0, "abort 后 in-flight begin 不应再建 ws");
+});
+
 test("push 早于 SynthesisStarted：先入队，收到 SynthesisStarted 后才 flush RunSynthesis", async () => {
   const created = [];
   const synth = makeSynth(created);

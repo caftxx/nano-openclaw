@@ -61,6 +61,8 @@
     ttsBegun: false,          // 本轮是否已对合成引擎调过 begin()（每个 turn 重置）
     ttsChoice: "",            // 选中的合成音色 value（"local"=浏览器；其余=阿里云音色），独立于识别引擎
     ttsFallback: false,       // 阿里云合成本会话内致命失败 → 回退本地 synth，直到用户手动换音色重试
+    ttsTurnAudio: false,      // 本轮阿里云是否真正出过声（首帧音频到达才置位）；零发声失败时据它回退浏览器补读
+    ttsConfigLoaded: false,   // /api/voice/config 是否已确定（成功/失败/断网都算）；未确定前不把存储音色误判为无效降级
   };
 
   // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
@@ -327,6 +329,8 @@
         if (res.ok) v.voiceCfg = await res.json();
       } catch (_) { /* 静默忽略：保持 v.voiceCfg=null，阿里云视为不可用 */ }
     }
+    // 无论成功/失败/断网，到这里配置状态都已确定 → 之后 buildTtsVoiceOptions 才允许据此降级音色。
+    v.ttsConfigLoaded = true;
     applyEngineChoice();
     resolveDefaultTtsChoice();   // 尚无音色偏好时按可用性定默认（阿里云默认音色 / 本地）
     buildTtsVoiceOptions();      // 配置到位后渲染音色下拉（含阿里云音色项 + 禁用态）
@@ -377,8 +381,10 @@
     // 选中态：当前 ttsChoice 在新选项里就保留；非空但不在列表（音色被禁用/下线）回退 local。
     // 空串（尚无偏好、配置未到位）不强写，留给 resolveDefaultTtsChoice 定默认，UI 先显「本地」。
     const valid = v.ttsChoice && Array.from(elTtsVoice.options).some((o) => o.value === v.ttsChoice);
-    if (v.ttsChoice && !valid) v.ttsChoice = "local";
-    elTtsVoice.value = v.ttsChoice || "local";
+    // config 未确定前，存储音色（如 xiaoyun）尚不在选项里 ≠ 无效——别误判降级成 local（一旦改了就回不来）。
+    // 仅 config 到位后仍不在列表（真被禁用/下线）才回退；展示层 config 未到时视觉显 local，但不改 v.ttsChoice。
+    if (v.ttsConfigLoaded && v.ttsChoice && !valid) v.ttsChoice = "local";
+    elTtsVoice.value = valid ? v.ttsChoice : "local";
     updateBrowserVoiceVisibility();   // 同步右上角浏览器音色下拉的可见性
   }
   // 右上角浏览器音色下拉只在「本地合成」时有意义：选了生效的阿里云音色就隐藏，避免与底部「音色」下拉重复。
@@ -434,7 +440,7 @@
         sampleRate: (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.sample_rate) || 16000,
       }),
       getToken: fetchVoiceToken,
-      onAudio: (buf) => { ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
+      onAudio: (buf) => { v.ttsTurnAudio = true; ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
       onStart: () => { v.speaking = true; setPhase("speaking"); stopRecognition(); clearTtsFallbackNotice(); },
       onComplete: () => {
         // SynthesisCompleted：音频全部下发完，告知播放器可在播完后 drain → 续听。
@@ -448,6 +454,19 @@
         v.ttsFallback = true;
         updateBrowserVoiceVisibility();   // 回退本地后应重新显示右上角浏览器音色下拉
         showTtsFallbackNotice(name + ": " + (msg || ""));   // 把真实原因上屏（手机看不到 console）
+        // 本轮零发声（多为 StartSynthesis 即 TaskFailed）：把"已算作已读"但没发声的文本退回，
+        // 改用浏览器补读，避免这段音被丢。turn.done 可能先于 TaskFailed 到达，此时 turnOpen
+        // 已被清掉、speakThisTurn 已置 false，但 spokenLen 仍记录着投给阿里云却未出声的文本。
+        const shouldReplayZeroAudio = !v.ttsTurnAudio && v.active
+          && (v.speakThisTurn || !v.turnOpen)
+          && v.spokenLen > 0 && (v.assistantText || "").trim();
+        if (shouldReplayZeroAudio) {
+          if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} }
+          v.speaking = false;          // 让 drainSpeak 能启动（onError 时 v.speaking 仍为 true）
+          v.spokenLen = 0;             // 退回到本轮开头，让浏览器从头补读已累积文本
+          speakReadyChunks(!v.turnOpen); // turn 已结束则 flush 全文；否则只读已成句片段
+          return;
+        }
         // 本轮别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
         if (v.pcmPlayer) v.pcmPlayer.markEnded();
         else { v.speaking = false; onTtsDrained(); }
@@ -806,6 +825,7 @@
         stopAllSpeech();
         v.assistantText = ""; v.spokenLen = 0;
         v.ttsBegun = false;   // 新 turn：合成引擎尚未 begin，首段 enqueueSpeak 时再开一条流
+        v.ttsTurnAudio = false;   // 新 turn：本轮阿里云尚未出声（首帧音频到达才置位）
         v.turnOpen = true;
         v.currentTurnId = event.turn_id || "";
         v.cancelRequested = false;

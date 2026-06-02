@@ -127,6 +127,7 @@
 
     var ws = null;
     var starting = false;       // 已发起 begin() 但 ws 还没建好的中间态——堵二次 begin 竞态
+    var generation = 0;         // 中止令牌：abort() 自增，使任何 await 中的 in-flight begin() 失效
     var started = false;        // 是否已收到 SynthesisStarted（可发 RunSynthesis）
     var stopping = false;       // 主动 abort 中，忽略后续事件
     var taskId = "";
@@ -165,15 +166,20 @@
       stopping = false;
       endRequested = false;
       pendingTexts = [];
+      var myGen = generation;   // 捕获本次 begin 的代号；await 后若 generation 变了说明已被 abort
       var cfg, tok;
       try {
         cfg = getConfig ? getConfig() : null;
         tok = getToken ? await getToken() : null;
       } catch (err) {
+        // 已被 abort（用户主动中止，非错误）：直接退出，不复位 starting/不 onError。
+        if (myGen !== generation) return;
         starting = false;
         onError("token", (err && err.message) || "获取 Token 失败");
         return;
       }
+      // getToken await 后被 abort：放弃本次建连，不再 new ws。
+      if (myGen !== generation) return;
       if (!cfg || !cfg.appkey || !cfg.endpoint || !tok || !tok.token) {
         starting = false;
         onError("config", "阿里云配置或 Token 缺失");
@@ -188,6 +194,8 @@
       taskId = makeId();
       var sep = cfg.endpoint.indexOf("?") >= 0 ? "&" : "?";
       var url = cfg.endpoint + sep + "token=" + encodeURIComponent(tok.token);
+      // 紧贴 abort 的同步窗口兜底：new ws 前再校验一次（无 await，极廉价）。
+      if (myGen !== generation) return;
       var sock;
       try {
         sock = new WS(url);
@@ -268,6 +276,7 @@
     // 主动中止：关 ws + 清队列，幂等可重复调不抛。被取代的旧 socket 迟到回调靠
     // 各处 sock!==ws 守卫拦截，故这里无需逐一摘 handler。
     function abort() {
+      generation++;   // 使任何 await 中的 in-flight begin() 失效，避免 abort 后仍 new ws
       stopping = true;
       var sock = ws;
       ws = null;   // 先摘引用，使任何迟到回调 sock!==ws 直接 return

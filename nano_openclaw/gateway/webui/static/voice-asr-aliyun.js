@@ -112,6 +112,7 @@
 
     var ws = null;
     var starting = false;     // 进入 start() 到 new WebSocket 成功这段中间态（抗重入）
+    var generation = 0;       // 中止令牌：abort() 自增，使任何 await 中的 in-flight start() 失效
     var audioCtx = null;
     var workletNode = null;
     var micStream = null;
@@ -215,14 +216,19 @@
       stopping = false;
       started = false;
       pendingFrames = [];
+      var myGen = generation;   // 捕获本次 start 的代号；await 后若 generation 变了说明已被 abort
       var cfg, tok;
       try {
         cfg = getConfig ? getConfig() : null;
         tok = getToken ? await getToken() : null;
       } catch (err) {
+        // 已被 abort（用户主动中止，非错误）：直接退出，此时还没开麦无需清理。
+        if (myGen !== generation) return;
         fail("token", (err && err.message) || "获取 Token 失败");
         return;
       }
+      // getToken await 后被 abort：此时还没开麦，无需 cleanup。
+      if (myGen !== generation) return;
       if (!cfg || !cfg.appkey || !cfg.endpoint || !tok || !tok.token) {
         fail("config", "阿里云配置或 Token 缺失");
         return;
@@ -230,13 +236,19 @@
       try {
         await setupAudio();
       } catch (err) {
+        // 已被 abort：关掉 setupAudio 期间可能已占用的部分资源后退出，不 fail。
+        if (myGen !== generation) { cleanupAudio(); return; }
         // getUserMedia 被拒 / AudioWorklet 不支持等
         fail("mic", (err && err.name) || (err && err.message) || "麦克风初始化失败");
         return;
       }
+      // setupAudio await 后被 abort（中止发生在开麦期间）：关掉刚开的麦克风后退出。
+      if (myGen !== generation) { cleanupAudio(); return; }
       taskId = makeId();
       var sep = cfg.endpoint.indexOf("?") >= 0 ? "&" : "?";
       var url = cfg.endpoint + sep + "token=" + encodeURIComponent(tok.token);
+      // 紧贴 abort 的同步窗口兜底：new ws 前再校验一次（无 await，极廉价）。
+      if (myGen !== generation) { cleanupAudio(); return; }
       var sock;
       try {
         sock = new WebSocketImpl(url);
@@ -269,6 +281,7 @@
 
     // 主动结束：尽量优雅发 StopTranscription，再关闭 ws + 停麦 + 关 worklet。
     function abort() {
+      generation++;   // 使任何 await 中的 in-flight start() 失效，避免 abort 后仍 new ws / 开麦
       if (stopping) return;
       stopping = true;
       var cfg = null;

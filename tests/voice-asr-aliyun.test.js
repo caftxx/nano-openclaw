@@ -153,3 +153,24 @@ test("socket 隔离：被取代的旧 socket 触发 onopen 也不 send、不抛�
   assert.doesNotThrow(() => { if (sock1.onopen) sock1.onopen(); }, "旧 socket onopen 不应抛");
   assert.strictEqual(sock1.sent.length, 0, "已被取代的旧 socket 不应 send StartTranscription");
 });
+
+test("abort 取消 await 中的 in-flight start：不建 ws、不开麦", async () => {
+  // 用 gated getToken 把 start() 卡在 await；在放行前 abort()，放行后断言全程没 new ws、没开麦。
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let setupCalled = false;
+  const rec = makeRecognizer({
+    getToken: async () => { await gate; return { token: "TOK" }; },
+    setupAudio: async () => { setupCalled = true; },
+  });
+
+  const p = rec.start();           // 卡在 getToken
+  await flush();
+  assert.strictEqual(FakeWS.instances.length, 0, "getToken 未返回前不应建 ws");
+
+  rec.abort();                     // 中止：in-flight start 应被 generation 令牌作废
+  release();                       // 放行 getToken，让 start() 续跑到 return
+  await p; await flush();
+  assert.strictEqual(FakeWS.instances.length, 0, "abort 后 in-flight start 不应再建 ws");
+  assert.strictEqual(setupCalled, false, "abort 后 in-flight start 不应开麦");
+});
