@@ -48,7 +48,15 @@ test("parseTtsEvent: SynthesisCompleted → completed", () => {
   assert.deepStrictEqual(parseTtsEvent(evt("SynthesisCompleted")), { kind: "completed", text: "" });
 });
 
-test("parseTtsEvent: TaskFailed → failed(带 status_text)", () => {
+test("parseTtsEvent: TaskFailed → failed(读 status_message)", () => {
+  // 阿里云合成事件失败原因在 header.status_message，优先取它。
+  assert.deepStrictEqual(
+    parseTtsEvent(evt("TaskFailed", { status_message: "Meta: UNAUTHENTICATED ..." })),
+    { kind: "failed", text: "Meta: UNAUTHENTICATED ..." }
+  );
+});
+
+test("parseTtsEvent: TaskFailed 无 status_message 时回退 status_text(向后兼容)", () => {
   assert.deepStrictEqual(
     parseTtsEvent(evt("TaskFailed", { status_text: "auth failed" })),
     { kind: "failed", text: "auth failed" }
@@ -205,7 +213,7 @@ test("TaskFailed → onError(aliyun-task-failed) 并关 ws", async () => {
   await new Promise((r) => setTimeout(r, 0));
   const sock = created[0];
   sock.emitOpen();
-  sock.emitMessage(JSON.stringify(evt("TaskFailed", { status_text: "boom" })));
+  sock.emitMessage(JSON.stringify(evt("TaskFailed", { status_message: "boom" })));
   assert.strictEqual(errors.length, 1);
   assert.strictEqual(errors[0][0], "aliyun-task-failed");
   assert.strictEqual(errors[0][1], "boom");

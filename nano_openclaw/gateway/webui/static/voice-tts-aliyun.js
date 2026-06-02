@@ -55,7 +55,9 @@
       case "SynthesisCompleted":
         return { kind: "completed", text: "" };
       case "TaskFailed":
-        return { kind: "failed", text: header.status_text || "task failed" };
+        // 阿里云合成事件里失败原因在 header.status_message（不是 ASR 的 status_text），
+        // 优先读它；老/异常报文无 status_message 时回退 status_text，最后兜底文案。
+        return { kind: "failed", text: header.status_message || header.status_text || "task failed" };
       default:
         return { kind: "other", text: "" };
     }

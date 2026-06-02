@@ -385,6 +385,18 @@
   function updateBrowserVoiceVisibility() {
     if (elVoice) elVoice.hidden = useAliyunTts();
   }
+  // 阿里云合成失败回退本地时，把真实原因显示到提示横幅（手机上看不到 console）。
+  // 多为 appkey 未开通「流式文本语音合成（商用版）」之类的服务端 TaskFailed。
+  function showTtsFallbackNotice(msg) {
+    if (!elUnsupported) return;
+    elUnsupported.textContent = `阿里云语音合成失败，已回退本地音色。原因：${msg || "未知"}（换音色可重试）`;
+    elUnsupported.hidden = false;
+  }
+  function clearTtsFallbackNotice() {
+    // 只清「TTS 回退提示」；不要影响 openOverlay 设置的 HTTPS/不支持硬提示——
+    // 那些场景圆按钮已禁用、不会进合成流程，故此处仅在横幅当前是 TTS 提示态时隐藏。
+    if (elUnsupported && !elUnsupported.dataset.hardBlock) elUnsupported.hidden = true;
+  }
   // 合成音频播完（播放器 drain）后的续听时序——复刻 webspeech 读完续听逻辑：
   // turn 仍在流式 → 显示 thinking 等回复；否则冷却 ~500ms 再开麦（避外放尾音回采）。
   function onTtsDrained() {
@@ -423,7 +435,7 @@
       }),
       getToken: fetchVoiceToken,
       onAudio: (buf) => { ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
-      onStart: () => { v.speaking = true; setPhase("speaking"); stopRecognition(); },
+      onStart: () => { v.speaking = true; setPhase("speaking"); stopRecognition(); clearTtsFallbackNotice(); },
       onComplete: () => {
         // SynthesisCompleted：音频全部下发完，告知播放器可在播完后 drain → 续听。
         if (v.pcmPlayer) v.pcmPlayer.markEnded();
@@ -435,6 +447,7 @@
         // 用户手动换音色（elTtsVoice.onchange）会重置 ttsFallback 再试阿里云。
         v.ttsFallback = true;
         updateBrowserVoiceVisibility();   // 回退本地后应重新显示右上角浏览器音色下拉
+        showTtsFallbackNotice(name + ": " + (msg || ""));   // 把真实原因上屏（手机看不到 console）
         // 本轮别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
         if (v.pcmPlayer) v.pcmPlayer.markEnded();
         else { v.speaking = false; onTtsDrained(); }
@@ -858,6 +871,7 @@
     if (!secureOk) {
       elUnsupported.innerHTML = "当前通过 <b>HTTP</b> 访问，手机浏览器会禁用麦克风（即使在设置里允许也无效）。请改用 <b>HTTPS</b> 地址访问。";
       elUnsupported.hidden = false;
+      elUnsupported.dataset.hardBlock = "1";   // 硬阻断提示：圆按钮禁用，不让 clearTtsFallbackNotice 误清
       setPhase("error", "需要 HTTPS 才能使用麦克风");
       if (elCircle) elCircle.disabled = true;
       return;
@@ -867,11 +881,13 @@
     if (v.engine !== "aliyun" && !SR) {
       elUnsupported.textContent = "当前浏览器不支持语音识别，请用 Android Chrome 打开。";
       elUnsupported.hidden = false;
+      elUnsupported.dataset.hardBlock = "1";   // 硬阻断提示：圆按钮禁用，不让 clearTtsFallbackNotice 误清
       setPhase("error", "浏览器不支持语音识别");
       if (elCircle) elCircle.disabled = true;
       return;
     }
     elUnsupported.hidden = true;
+    delete elUnsupported.dataset.hardBlock;   // 进入正常分支：清掉硬阻断标记，使 TTS 回退提示可被 clear
     if (elCircle) elCircle.disabled = false;
     if (startListening) startLoop();
     else setPhase("idle");
@@ -934,6 +950,7 @@
       try { localStorage.setItem(TTS_VOICE_KEY, v.ttsChoice); } catch (_) {}
       v.ttsFallback = false;             // 用户手动换音色：清除回退标志，重新尝试阿里云合成
       updateBrowserVoiceVisibility();    // 换回阿里云音色 → 隐藏；切回本地 → 显示
+      clearTtsFallbackNotice();          // 换音色重试，先清掉上次的失败提示
       if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，新音色下轮生效
     };
 
