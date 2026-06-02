@@ -65,7 +65,7 @@
     && window.AudioContext && window.AudioWorklet
   );
 
-  let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice;
+  let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice, elEngine;
   function grab() {
     elOverlay = $("voiceOverlay");
     elCircle = $("voiceCircle");
@@ -76,6 +76,7 @@
     elThink = $("voiceThinkLevel");
     elUnsupported = $("voiceUnsupported");
     elVoice = $("voiceVoice");
+    elEngine = $("voiceEngine");
   }
 
   // ── 状态展示 ──────────────────────────────────────────────────────────────
@@ -144,6 +145,7 @@
   // ── 播报声音（TTS voice）──────────────────────────────────────────────────
   // 声音由系统/浏览器提供（getVoices）；优先列中文声音，没有则全列。
   const VOICE_KEY = "nanoVoiceURI";
+  const ENGINE_KEY = "nanoVoiceEngine";
   function allVoices() { try { return synth.getVoices() || []; } catch (_) { return []; } }
   function buildVoiceOptions() {
     if (!elVoice) return;
@@ -275,19 +277,51 @@
       },
     });
   }
-  // 拉 /api/voice/config 决定用哪个引擎。仅在阿里云可用且环境支持时切到 "aliyun"，
-  // 否则维持默认 "webspeech"。失败（断网/旧后端无此端点）静默回退，不影响内置语音。
-  async function selectRecognitionEngine() {
-    if (!aliyunEnvOk) return;   // 环境不支持阿里云硬依赖：直接用 webspeech
-    try {
-      const res = await fetch("/api/voice/config", { headers: authHeaders() });
-      if (!res.ok) return;
-      const cfg = await res.json();
-      v.voiceCfg = cfg;
-      if (cfg && cfg.available && cfg.provider === "aliyun" && cfg.appkey && cfg.endpoint) {
-        v.engine = "aliyun";
+  // 用户引擎偏好持久化：""(无偏好) | "webspeech" | "aliyun"。
+  function storedEnginePref() {
+    try { return localStorage.getItem(ENGINE_KEY) || ""; } catch (_) { return ""; }
+  }
+  // 阿里云当前是否真的可用：浏览器环境支持其硬依赖 + 后端已配置好 appkey/endpoint。
+  function aliyunUsable() {
+    return Boolean(
+      aliyunEnvOk && v.voiceCfg && v.voiceCfg.available
+      && v.voiceCfg.provider === "aliyun" && v.voiceCfg.appkey && v.voiceCfg.endpoint
+    );
+  }
+  // 综合用户偏好 + 可用性算出 v.engine（用户显式选优先，否则走自动默认），并刷新下拉 UI。
+  function applyEngineChoice() {
+    const resolve = window.resolveVoiceEngine || resolveVoiceEngine;
+    v.engine = resolve(storedEnginePref(), aliyunUsable());
+    syncEngineSelect();
+  }
+  // 把下拉控件的选中值与禁用态同步到当前能力：阿里云未配置 / 本地不支持时禁用对应项。
+  function syncEngineSelect() {
+    if (!elEngine) return;
+    elEngine.value = v.engine;
+    const opts = elEngine.options;
+    for (let i = 0; i < opts.length; i++) {
+      const o = opts[i];
+      if (o.value === "aliyun") {
+        const ok = aliyunUsable();
+        o.disabled = !ok;
+        o.textContent = ok ? "☁️ 阿里云" : "☁️ 阿里云（未配置）";
+      } else if (o.value === "webspeech") {
+        o.disabled = !SR;
+        o.textContent = SR ? "🎤 本地" : "🎤 本地（不支持）";
       }
-    } catch (_) { /* 静默回退 webspeech */ }
+    }
+  }
+
+  // 拉 /api/voice/config 探测阿里云配置，存到 v.voiceCfg，最后无论如何都重算引擎选择
+  // （含刷新下拉禁用态）。仅 aliyunEnvOk 时才发请求；失败（断网/旧后端无此端点）静默忽略。
+  async function selectRecognitionEngine() {
+    if (aliyunEnvOk) {
+      try {
+        const res = await fetch("/api/voice/config", { headers: authHeaders() });
+        if (res.ok) v.voiceCfg = await res.json();
+      } catch (_) { /* 静默忽略：保持 v.voiceCfg=null，阿里云视为不可用 */ }
+    }
+    applyEngineChoice();
   }
 
   // 带 Bearer 取临时 token（命中后端缓存）。失败抛错由引擎 onError("token") 接住。
@@ -743,6 +777,17 @@
     // 不阻塞 init：配置异步拉取，拿到再切引擎；用户在配置返回前点开浮层时仍按默认 webspeech，
     // 配置到位后下次进入即生效（getUserMedia 需用户手势，反正要等点圆才真正开麦）。
     selectRecognitionEngine();
+
+    // 引擎手动切换：持久化用户选择，停掉旧引擎当前识别、丢弃两种实例，重算 v.engine；
+    // 正在免提聆听时用新引擎立即重开，否则下次点麦生效。
+    if (elEngine) elEngine.onchange = () => {
+      try { localStorage.setItem(ENGINE_KEY, elEngine.value); } catch (_) {}
+      const wasListening = v.active && v.wantListen;   // 切换前捕获，stop 会清掉 wantListen
+      if (recogBusy()) stopRecognition();              // 用旧 engine 停掉当前识别
+      v.aliyun = null; v.recog = null;                 // 两种实例都丢弃，避免切换后残留
+      applyEngineChoice();                             // 重算 v.engine + 刷新下拉
+      if (wasListening && document.visibilityState === "visible") startRecognition();
+    };
 
     // 播报声音：读持久化偏好、建选项；声音是异步加载的，加载完再重建一次
     try { v.voiceURI = localStorage.getItem(VOICE_KEY) || ""; } catch (_) {}
