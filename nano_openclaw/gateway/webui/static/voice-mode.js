@@ -418,8 +418,17 @@
       getToken: fetchVoiceToken,
       onAudio: (buf) => { ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
       onStart: () => { v.speaking = true; setPhase("speaking"); stopRecognition(); },
-      onComplete: () => { /* 音频全部下发完；等播放器 drain 触发续听 */ },
-      onError: (name, msg) => console.warn("[voice] tts", name, msg),
+      onComplete: () => {
+        // SynthesisCompleted：音频全部下发完，告知播放器可在播完后 drain → 续听。
+        if (v.pcmPlayer) v.pcmPlayer.markEnded();
+        else { v.speaking = false; onTtsDrained(); }   // 没产生任何音频：无 drain 可等，直接续听
+      },
+      onError: (name, msg) => {
+        console.warn("[voice] tts", name, msg);
+        // 本轮合成致命失败：别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
+        if (v.pcmPlayer) v.pcmPlayer.markEnded();
+        else { v.speaking = false; onTtsDrained(); }
+      },
     });
     return v.aliyunTts;
   }

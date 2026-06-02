@@ -6,7 +6,10 @@
  *
  * 排队策略：维护 nextStartTime 游标，每帧建一段 AudioBuffer，在
  * max(ctx.currentTime, nextStartTime) 起播并把游标前移 buffer.duration，做到帧间无缝。
- * 记录在播 source 数；当待播队列空且 outstanding 归 0 → onDrained()（朗读读完）。
+ * 记录在播 source 数；drain 判定 gate 在「流已结束」之后——只有上层显式
+ * markEnded()（对应 SynthesisCompleted）后、outstanding 归 0 才触发 onDrained()。
+ * 这样可避免流式合成中途的帧间空隙（首帧前延迟、句间停顿、网络抖动让在播 source
+ * 瞬间归零）被误判为「读完」而提前续听，造成外放被麦克风回采。
  *
  * UMD 导出：node --test 取 createPcmPlayer.pcm16ToFloat32 做纯函数单测，
  * 浏览器挂 window.createPcmPlayer。
@@ -41,6 +44,7 @@
     var nextStartTime = 0;     // 下一帧应起播的 ctx 时间线位置（游标）
     var outstanding = 0;       // 已排程仍未结束的 source 数
     var stopped = false;       // stop() 后置位，挡住迟到 source 的 onended 回调
+    var ended = false;         // markEnded()（SynthesisCompleted）后置位，开启 drain 判定
 
     function getAudioCtxImpl() {
       if (opts.AudioCtxImpl) return opts.AudioCtxImpl;
@@ -66,8 +70,17 @@
     }
 
     function maybeDrained() {
-      // 队列里没有显式 pending 缓存（每帧即建即排程），所以只需 outstanding 归 0。
-      if (outstanding === 0 && !stopped) onDrained();
+      // 队列里没有显式 pending 缓存（每帧即建即排程）。但 drain 需等 markEnded
+      // （SynthesisCompleted）后才触发：流式合成中途的帧间空隙会让 outstanding
+      // 瞬间归零，若不 gate 在 ended 之后会被误判为「读完」而提前续听。
+      if (ended && outstanding === 0 && !stopped) onDrained();
+    }
+
+    // 上层收到 SynthesisCompleted（音频全部下发完）时调用，开启 drain 判定。
+    // 若此刻 outstanding 已为 0（音频已播完），立即触发 onDrained。
+    function markEnded() {
+      ended = true;
+      maybeDrained();
     }
 
     function enqueue(arrayBuffer) {
@@ -124,6 +137,7 @@
       ctx = null;
       nextStartTime = 0;
       outstanding = 0;
+      ended = false;
       try { if (c) c.close(); } catch (_) {}
     }
 
@@ -131,7 +145,7 @@
       return outstanding > 0;
     }
 
-    return { enqueue: enqueue, stop: stop, isActive: isActive };
+    return { enqueue: enqueue, stop: stop, isActive: isActive, markEnded: markEnded };
   }
 
   // 暴露纯函数以便单测。

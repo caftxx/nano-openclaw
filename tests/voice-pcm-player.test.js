@@ -57,7 +57,7 @@ function makeFakeCtx(sources) {
   };
 }
 
-test("enqueue: 无缝排程 + 全部 onended 后触发 onDrained", () => {
+test("enqueue: 无缝排程 + markEnded 且全部 onended 后触发 onDrained", () => {
   const sources = [];
   let drained = 0;
   const player = createPcmPlayer({
@@ -73,12 +73,53 @@ test("enqueue: 无缝排程 + 全部 onended 后触发 onDrained", () => {
   // 第二帧应接在第一帧之后（0.1s 处）
   assert.ok(Math.abs(sources[1].startedAt - 0.1) < 1e-6, `期望 0.1，实际 ${sources[1].startedAt}`);
   assert.strictEqual(player.isActive(), true);
-  // 逐个结束 → 全部归零才 drain
+  // 未 markEnded 前，即便逐个结束、outstanding 归零也不 drain（流中途空隙不误判）
   sources[0].onended();
   assert.strictEqual(drained, 0);
   sources[1].onended();
+  assert.strictEqual(drained, 0);
+  assert.strictEqual(player.isActive(), false);
+  // markEnded（SynthesisCompleted）后、outstanding 已 0 → 立即 drain 一次
+  player.markEnded();
+  assert.strictEqual(drained, 1);
+});
+
+test("gating: markEnded 在 outstanding>0 时不 drain，待 onended 后 drain 一次", () => {
+  const sources = [];
+  let drained = 0;
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources),
+    onDrained: () => { drained++; },
+  });
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(sources.length, 1);
+  // 音频还在播（outstanding=1）就收到 SynthesisCompleted → 不 drain，等播完
+  player.markEnded();
+  assert.strictEqual(drained, 0);
+  assert.strictEqual(player.isActive(), true);
+  // source 播完 → drain 触发恰好一次
+  sources[0].onended();
   assert.strictEqual(drained, 1);
   assert.strictEqual(player.isActive(), false);
+});
+
+test("gating: stop 复位 ended，旧 ended 残留不致误触发", () => {
+  const sources = [];
+  let drained = 0;
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources),
+    onDrained: () => { drained++; },
+  });
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  player.markEnded();              // 置 ended
+  player.stop();                   // 复位 ended（同时 stopped 守卫生效）
+  assert.strictEqual(drained, 0);
+  // stop 后 stopped=true：enqueue 被忽略，markEnded 不应因旧 ended 残留误触发
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  player.markEnded();
+  assert.strictEqual(drained, 0);
 });
 
 test("stop: 幂等、复位、关 ctx，迟到 onended 不再触发 onDrained", () => {
