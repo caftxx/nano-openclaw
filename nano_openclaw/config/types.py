@@ -663,6 +663,40 @@ class PluginsConfig(BaseModel):
         return [*BUILTIN_PLUGIN_IDS, *custom_entries]
 
 
+class VoiceConfig(BaseModel):
+    """WebUI 语音识别配置（阿里云实时语音识别）。
+
+    设计为「配置开关二选一」：配齐 appkey + accessKeyId + accessKeySecret 三要素
+    后，WebUI 语音模式优先走阿里云实时识别（后端动态签发临时 Token，浏览器经
+    WebSocket 直连阿里云 NLS 网关）；任一缺失则前端回退浏览器内置 Web Speech API。
+
+    accessKeyId / accessKeySecret 支持 ${VAR} 语法——和 ModelProvider.apiKey 一样，
+    由 config 加载阶段的 resolve_config_env_vars 统一替换，所以这里拿到的已是明文。
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: Literal["aliyun"] = Field(default="aliyun", description="语音识别服务商，目前仅支持阿里云")
+    appkey: str = Field(default="", description="阿里云智能语音交互项目 Appkey")
+    accessKeyId: str = Field(default="", description="阿里云 AccessKeyId（支持 ${VAR} 语法）")
+    accessKeySecret: str = Field(default="", description="阿里云 AccessKeySecret（支持 ${VAR} 语法）")
+    region: str = Field(default="cn-shanghai", description="阿里云区域，决定默认网关 endpoint")
+    endpoint: str = Field(
+        default="",
+        description="阿里云实时识别 WebSocket 端点；留空则按 region 推导 wss://nls-gateway-{region}.aliyuncs.com/ws/v1",
+    )
+
+    @property
+    def available(self) -> bool:
+        """三要素（appkey/accessKeyId/accessKeySecret）齐全才视为可用。"""
+        return bool(self.appkey and self.accessKeyId and self.accessKeySecret)
+
+    def resolved_endpoint(self) -> str:
+        """显式 endpoint 优先，否则按 region 推导默认网关地址。"""
+        if self.endpoint:
+            return self.endpoint
+        return f"wss://nls-gateway-{self.region}.aliyuncs.com/ws/v1"
+
+
 # ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
@@ -734,6 +768,10 @@ class NanoOpenClawConfig(BaseModel):
     gateway: GatewayConfig = Field(
         default_factory=GatewayConfig,
         description="Gateway daemon (host/port/log_path)"
+    )
+    voice: VoiceConfig = Field(
+        default_factory=VoiceConfig,
+        description="WebUI 语音识别（阿里云实时语音识别）配置；配齐三要素后 WebUI 语音模式优先用阿里云，否则回退浏览器 Web Speech API",
     )
     logging: LoggingConfig = Field(
         default_factory=lambda: LoggingConfig(),

@@ -20,6 +20,7 @@ from nano_openclaw.gateway._event_payload import (
     jsonable as _jsonable,
 )
 from nano_openclaw.gateway.backend import BackendError, BusyError, NotFoundError, PushEvent
+from nano_openclaw.gateway.webui.aliyun_token import AliyunTokenProvider, TokenError
 from nano_openclaw.runtime import AgentRuntime
 from nano_openclaw.gateway.agent_backend_session import BackendSessionManager, display_history, message_text
 
@@ -73,6 +74,8 @@ def create_app(
     app = FastAPI(title="nano-openclaw WebUI")
     app.state.backend = backend
     app.state.token = token
+    # 阿里云临时 Token 的缓存 provider；按当前 config 的 AK/SK/region 惰性构造/重建（见 /api/voice/token）。
+    app.state.voice_token_provider = None
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     async def require_http_token(authorization: str | None = Header(default=None)) -> None:
@@ -101,6 +104,49 @@ def create_app(
     @app.get("/api/state", dependencies=[Depends(require_http_token)])
     async def state() -> dict[str, Any]:
         return _state_payload(app.state.backend.runtime)
+
+    @app.get("/api/voice/config", dependencies=[Depends(require_http_token)])
+    async def voice_config() -> dict[str, Any]:
+        # 仅暴露前端选路 + 直连阿里云所需的非敏感字段；绝不返回 AK/SK。
+        # available 决定前端走阿里云还是回退 Web Speech。
+        cfg = app.state.backend.runtime.config.voice
+        return {
+            "available": cfg.available,
+            "provider": cfg.provider,
+            "appkey": cfg.appkey,
+            "endpoint": cfg.resolved_endpoint(),
+        }
+
+    @app.get("/api/voice/token", dependencies=[Depends(require_http_token)])
+    async def voice_token() -> dict[str, Any]:
+        cfg = app.state.backend.runtime.config.voice
+        if not cfg.available:
+            raise HTTPException(status_code=503, detail="阿里云语音识别未配置")
+        # 按当前 config 的 AK/SK/region 复用或重建缓存 provider——支持 config 热重载后
+        # 凭据变化能及时反映（旧 provider 凭据不匹配则丢弃重建）。
+        provider: AliyunTokenProvider | None = app.state.voice_token_provider
+        if provider is None or not provider.matches(
+            access_key_id=cfg.accessKeyId,
+            access_key_secret=cfg.accessKeySecret,
+            region_id=cfg.region,
+        ):
+            provider = AliyunTokenProvider(
+                access_key_id=cfg.accessKeyId,
+                access_key_secret=cfg.accessKeySecret,
+                region_id=cfg.region,
+            )
+            app.state.voice_token_provider = provider
+        try:
+            # 签发是同步 httpx 调用（外部固定域名）；放到线程池避免阻塞事件循环。
+            token_id, expire_time = await asyncio.to_thread(provider.get_token)
+        except TokenError as exc:
+            raise HTTPException(status_code=503, detail=f"签发阿里云 Token 失败: {exc}") from exc
+        return {
+            "token": token_id,
+            "expire_time": expire_time,
+            "appkey": cfg.appkey,
+            "endpoint": cfg.resolved_endpoint(),
+        }
 
     @app.get("/api/sessions", dependencies=[Depends(require_http_token)])
     async def sessions() -> dict[str, Any]:

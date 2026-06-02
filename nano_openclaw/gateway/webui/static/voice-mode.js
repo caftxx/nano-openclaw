@@ -48,7 +48,18 @@
     thinkOptionsKey: "",
     voiceURI: "",             // 选中的 TTS 声音（空 = 系统默认）
     acc: null,                // 整句累积器（静音去抖合并分片 final），init() 里创建
+    engine: "webspeech",      // 识别引擎："webspeech"(浏览器内置) | "aliyun"(阿里云实时识别)
+    voiceCfg: null,           // /api/voice/config 结果（available/provider/appkey/endpoint）
+    aliyun: null,             // 阿里云 recognizer 实例（engine==="aliyun" 时按需创建）
+    aliyunRunning: false,     // 阿里云引擎当前是否在采集（替代 SR 的 recognizing/recogStarting）
   };
+
+  // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
+  // 任一不支持就退回 Web Speech——别让选了阿里云的环境反而比内置还差。
+  const aliyunEnvOk = Boolean(
+    navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+    && window.AudioContext && window.AudioWorklet
+  );
 
   let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice;
   function grab() {
@@ -215,7 +226,86 @@
     };
     return r;
   }
+  // ── 阿里云实时识别引擎 ──────────────────────────────────────────────────────
+  // 复用现有去抖累积器/状态机：interim → acc.feed("", text)；SentenceEnd → acc.feed(text, "")。
+  // 由 acc.onFlush 静音去抖把多句合并后统一 stopRecognition + sendVoiceText，体验与 SR 路径一致。
+  function buildAliyunRecognizer() {
+    const make = window.createAliyunRecognizer
+      || (typeof createAliyunRecognizer !== "undefined" ? createAliyunRecognizer : null);
+    if (!make) return null;
+    return make({
+      getConfig: () => ({ appkey: v.voiceCfg && v.voiceCfg.appkey, endpoint: v.voiceCfg && v.voiceCfg.endpoint }),
+      getToken: fetchVoiceToken,
+      onStart: () => { v.aliyunRunning = true; if (watchdog) watchdog.confirmed(); setPhase("listening"); },
+      onInterim: (text) => {
+        if (!v.acc) return;
+        const shown = v.acc.feed("", text);
+        if (shown) setPhase("listening", `识别中：${shown}`);
+      },
+      onFinal: (text) => {
+        if (!v.acc) { if (text.trim()) { stopRecognition(); sendVoiceText(text.trim()); } return; }
+        const shown = v.acc.feed(text, "");
+        if (shown) setPhase("listening", `识别中：${shown}`);
+      },
+      onError: (name, msg) => {
+        v.aliyunRunning = false;
+        v.recogStarting = false;
+        // 麦克风被拒：与 SR 路径一致——后台不报错（回前台可恢复），前台才停。
+        if (name === "mic") {
+          if (document.visibilityState !== "visible") return;
+          setPhase("error", "麦克风权限被拒绝，请在浏览器设置中允许");
+          v.active = false; v.speakThisTurn = false; v.wantListen = false;
+          releaseWakeLock();
+          return;
+        }
+        // token/config/ws 等：提示但不强制退出免提，交由续听/看门狗自愈重试。
+        console.warn("[voice] aliyun error:", name, msg);
+      },
+      onEnd: () => {
+        v.aliyunRunning = false;
+        v.recogStarting = false;
+        // 与 SR onend 同义：仍在聆听意图且前台 → 续听重开。
+        if (v.active && v.wantListen && document.visibilityState === "visible") _doStart();
+      },
+    });
+  }
+  // 拉 /api/voice/config 决定用哪个引擎。仅在阿里云可用且环境支持时切到 "aliyun"，
+  // 否则维持默认 "webspeech"。失败（断网/旧后端无此端点）静默回退，不影响内置语音。
+  async function selectRecognitionEngine() {
+    if (!aliyunEnvOk) return;   // 环境不支持阿里云硬依赖：直接用 webspeech
+    try {
+      const res = await fetch("/api/voice/config", { headers: authHeaders() });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      v.voiceCfg = cfg;
+      if (cfg && cfg.available && cfg.provider === "aliyun" && cfg.appkey && cfg.endpoint) {
+        v.engine = "aliyun";
+      }
+    } catch (_) { /* 静默回退 webspeech */ }
+  }
+
+  // 带 Bearer 取临时 token（命中后端缓存）。失败抛错由引擎 onError("token") 接住。
+  async function fetchVoiceToken() {
+    const res = await fetch("/api/voice/token", { headers: authHeaders() });
+    if (!res.ok) throw new Error(`token ${res.status}`);
+    return res.json();
+  }
+
+  function _doStartAliyun() {
+    if (!v.aliyun) v.aliyun = buildAliyunRecognizer();
+    if (!v.aliyun) return;
+    v.recogStarting = true;
+    if (watchdog) watchdog.arm();
+    setPhase("listening");
+    // start 是 async（取 token + 开麦 + 连 ws）；onStart/onError/onEnd 回调里翻转运行态。
+    Promise.resolve(v.aliyun.start()).catch((err) => {
+      v.recogStarting = false;
+      console.warn("[voice] aliyun start failed:", err && err.message);
+    });
+  }
+
   function _doStart() {
+    if (v.engine === "aliyun") { _doStartAliyun(); return; }
     if (!SR) return;
     if (!v.recog) v.recog = buildRecognizer();
     v.recogStarting = true;     // 进入"已 start、待 onstart"中间态
@@ -229,15 +319,18 @@
       console.warn("[voice] recog.start failed:", err && err.name, err && err.message);
     }
   }
+  // 当前引擎是否处于"在跑/正在启动"——两种引擎的运行态字段不同，统一在此判断。
+  function recogBusy() {
+    if (v.engine === "aliyun") return v.aliyunRunning || v.recogStarting;
+    return v.recognizing || v.recogStarting;
+  }
   function startRecognition() {
-    if (!SR) return;
+    if (v.engine === "webspeech" && !SR) return;
     clearResumeTimer();
     v.wantListen = true;
-    // 上一段识别还在跑或正在启动（start 已发但 onstart 未回 / abort 的 onend 未回）时别抢跑：
-    // 对同一对象重复 start 会抛 InvalidStateError → UI 假"聆听"。交给 onstart/onend 接力。
-    // 但接力可能永不到来（abort 的 onend 卡死 → recognizing 永远 true）：arm 看门狗兜底，
-    // 到点仍没真正在听就强制重建重开，别死等那个不可靠的 onend。
-    if (v.recognizing || v.recogStarting) { if (watchdog) watchdog.arm(); return; }
+    // 上一段识别还在跑或正在启动时别抢跑（SR 重复 start 抛 InvalidStateError；阿里云会建第二条 ws）。
+    // 交给 onstart/onend(SR) 或 onStart/onEnd(阿里云) 接力；arm 看门狗兜底卡死场景。
+    if (recogBusy()) { if (watchdog) watchdog.arm(); return; }
     _doStart();
   }
   function stopRecognition() {
@@ -247,6 +340,13 @@
     // 主动停麦（朗读/暂停/切后台/发送等）时清掉未完成的半句，避免误发。
     // onFlush 内部会调本函数，但那时 buffer 已被 flush 清空，reset 无副作用。
     if (v.acc) v.acc.reset();
+    if (v.engine === "aliyun") {
+      // abort 关 ws + 停麦 + 关 worklet；onEnd 里若 wantListen 仍为 true 会续听，但这里已置 false。
+      if (v.aliyun) { try { v.aliyun.abort(); } catch (_) {} }
+      v.aliyunRunning = false;
+      v.recogStarting = false;
+      return;
+    }
     // abort() 立即终止并丢弃挂起结果，比 stop()（要等末尾 final、异步收尾更久）更干净，
     // 能压缩"上一段还没真正结束就要重开"的竞态窗口。
     if (v.recog) { try { v.recog.abort(); } catch (_) {} }
@@ -266,6 +366,14 @@
   // 本场景主因）则超时强制丢弃重建作兜底。
   let resetTimer = null;
   function scheduleRecognizerReset() {
+    // 阿里云引擎：abort() 已彻底拆掉 ws/麦克风/worklet，没有"等旧对象 onend"的跨对象竞态，
+    // 直接 stop + 重建即可（每次 start 都新建 ws/AudioContext）。
+    if (v.engine === "aliyun") {
+      stopRecognition();
+      v.aliyun = null;             // 丢弃旧实例，下次 _doStart 建新的
+      finishRecognizerReset();
+      return;
+    }
     const old = v.recog;
     stopRecognition();             // abort 旧对象，wantListen=false
     if (!old) { finishRecognizerReset(); return; }   // 没有旧对象可等，直接重建
@@ -279,6 +387,7 @@
     v.recog = null;                // 丢弃旧对象，下次 _doStart 会建新的
     v.recognizing = false;
     v.recogStarting = false;
+    v.aliyunRunning = false;
     if (document.visibilityState === "visible" && v.open && v.active && !v.speaking && v.phase !== "thinking") {
       startRecognition();
     }
@@ -296,10 +405,16 @@
   function forceRecognizerRebuild() {
     if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
     v.pendingReset = false;
-    if (v.recog) { try { v.recog.abort(); } catch (_) {} }
+    if (v.engine === "aliyun") {
+      if (v.aliyun) { try { v.aliyun.abort(); } catch (_) {} }
+      v.aliyun = null;             // 下次 _doStart 建新的
+    } else if (v.recog) {
+      try { v.recog.abort(); } catch (_) {}
+    }
     v.recog = null;                // 下次 _doStart 会建新的
     v.recognizing = false;
     v.recogStarting = false;
+    v.aliyunRunning = false;
     if (shouldListen()) _doStart();
   }
 
@@ -546,7 +661,9 @@
       if (elCircle) elCircle.disabled = true;
       return;
     }
-    if (!SR) {
+    // 阿里云引擎不依赖浏览器 SpeechRecognition，只需 getUserMedia+AudioWorklet（aliyunEnvOk
+    // 已在选引擎时校验）；只有 webspeech 引擎才要求 SR 存在。
+    if (v.engine !== "aliyun" && !SR) {
       elUnsupported.textContent = "当前浏览器不支持语音识别，请用 Android Chrome 打开。";
       elUnsupported.hidden = false;
       setPhase("error", "浏览器不支持语音识别");
@@ -597,6 +714,12 @@
     }
     const micBtn = $("voiceMicBtn");
     if (micBtn) micBtn.onclick = () => openOverlay(true);   // 单击进全屏免提，无其它手势
+
+    // 识别引擎选路：后端 /api/voice/config 报告阿里云可用 + 浏览器支持 getUserMedia/AudioWorklet
+    // → 用阿里云实时识别；否则回退浏览器内置 Web Speech（保留全部现有降级路径）。
+    // 不阻塞 init：配置异步拉取，拿到再切引擎；用户在配置返回前点开浮层时仍按默认 webspeech，
+    // 配置到位后下次进入即生效（getUserMedia 需用户手势，反正要等点圆才真正开麦）。
+    selectRecognitionEngine();
 
     // 播报声音：读持久化偏好、建选项；声音是异步加载的，加载完再重建一次
     try { v.voiceURI = localStorage.getItem(VOICE_KEY) || ""; } catch (_) {}

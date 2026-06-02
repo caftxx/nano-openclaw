@@ -804,3 +804,75 @@ def test_webui_reads_user_name_from_following_line():
         assert _read_user_name(tmp_dir) == "主人"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ── /api/voice/config 端点：阿里云语音识别配置可用性（不泄露 AK/SK）────────────
+def _make_voice_app(voice_cfg):
+    """构造仅承载 /api/voice/config 所需 app.state 的最小 FastAPI 应用。
+
+    端点只读 app.state.backend.runtime.config.voice，故用 SimpleNamespace 搭一条
+    backend.runtime.config.voice 链路即可，无需真实 Backend/Runtime。
+    """
+    from types import SimpleNamespace
+    from nano_openclaw.gateway.webui.server import create_app
+
+    config = SimpleNamespace(voice=voice_cfg)
+    runtime = SimpleNamespace(config=config)
+    backend = SimpleNamespace(runtime=runtime)
+    return create_app(backend=backend, token=None)
+
+
+def test_voice_config_unconfigured_reports_unavailable():
+    from fastapi.testclient import TestClient
+    from nano_openclaw.config.types import VoiceConfig
+
+    app = _make_voice_app(VoiceConfig())
+    with TestClient(app) as client:
+        res = client.get("/api/voice/config")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["available"] is False
+    assert body["provider"] == "aliyun"
+    # 未配置时 endpoint 仍按默认 region 推导
+    assert body["endpoint"] == "wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1"
+
+
+def test_voice_config_configured_reports_available_without_secrets():
+    from fastapi.testclient import TestClient
+    from nano_openclaw.config.types import VoiceConfig
+
+    cfg = VoiceConfig(
+        appkey="my-appkey",
+        accessKeyId="AKID-SECRET",
+        accessKeySecret="AKSECRET-SECRET",
+        region="cn-shanghai",
+    )
+    app = _make_voice_app(cfg)
+    with TestClient(app) as client:
+        res = client.get("/api/voice/config")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["available"] is True
+    assert body["appkey"] == "my-appkey"
+    assert body["endpoint"] == "wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1"
+    # 绝不返回 AK/SK
+    serialized = res.text
+    assert "AKID-SECRET" not in serialized
+    assert "AKSECRET-SECRET" not in serialized
+    assert "accessKeyId" not in body
+    assert "accessKeySecret" not in body
+
+
+def test_voice_config_custom_endpoint_overrides_region():
+    from fastapi.testclient import TestClient
+    from nano_openclaw.config.types import VoiceConfig
+
+    cfg = VoiceConfig(
+        appkey="k", accessKeyId="i", accessKeySecret="s",
+        region="cn-beijing",
+        endpoint="wss://custom.example.com/ws/v1",
+    )
+    app = _make_voice_app(cfg)
+    with TestClient(app) as client:
+        res = client.get("/api/voice/config")
+    assert res.json()["endpoint"] == "wss://custom.example.com/ws/v1"
