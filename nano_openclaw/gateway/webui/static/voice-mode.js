@@ -45,7 +45,7 @@
     wantListen: false,        // 是否处于"应当聆听"意图：驱动 onend 续听、并防止抢跑重复 start
     turnOpen: false,          // 当前回复是否还在流式进行
     currentTurnId: "",        // 当前语音轮的 turn_id；clearTurnState 据它判定本轮是否已结束
-    cancelRequested: false,   // 已向后端发出取消的标记（随轮次重置；底部停止按钮移除后仅作状态跟踪）
+    cancelRequested: false,   // 已向后端发出取消的标记（随轮次重置；思考中点屏触发 turn.cancel 后置位，避免重复刷请求）
     speakThisTurn: false,     // 本轮是否允许继续播报
     captionAiNode: null,      // 当前 turn 的 AI 字幕节点
     thinkOptionsKey: "",
@@ -88,7 +88,7 @@
   const PHASE_UI = {
     idle:      { cls: "off",       emoji: "🎙️", label: "点击开始", status: "点击麦克风，开始连续语音对话" },
     listening: { cls: "listening", emoji: "👂", label: "正在聆听…", status: "请说话，停顿后自动发送 · 说完点屏幕立即发送" },
-    thinking:  { cls: "thinking",  emoji: "🤔", label: "思考中…",   status: "已发送，等待回复…" },
+    thinking:  { cls: "thinking",  emoji: "🤔", label: "思考中…",   status: "已发送，等待回复… · 点屏幕停止" },
     speaking:  { cls: "speaking",  emoji: "🔊", label: "朗读中…",   status: "点屏幕任意处可打断" },
     error:     { cls: "error",     emoji: "⚠️", label: "出错",      status: "" },
   };
@@ -745,6 +745,24 @@
     resumeListeningIfActive();
   }
 
+  // 思考中（已发送、等后端回复）点屏：向后端发 turn.cancel 取消当前回复。
+  // 取代被移除的底部「停止」按钮；已发过取消则只更新提示，避免重复刷请求。
+  function cancelCurrentTurn() {
+    const turnId = state.activeTurnId
+      || (state.currentSession && state.currentSession.active_turn_id)
+      || v.currentTurnId || "";
+    stopAllSpeech();              // 顺带停掉本轮可能已在播的朗读（含阿里云流式）
+    v.speakThisTurn = false;
+    if (v.cancelRequested) { setPhase("thinking", "正在停止当前回复…"); return; }
+    if (!turnId) { interruptSpeechForTurn(); return; }   // 没有可取消的 turn：退回打断本地播报
+    if (!send("turn.cancel", { turn_id: turnId })) {
+      setPhase("error", "未连接到服务器，无法停止当前回复");
+      return;
+    }
+    v.cancelRequested = true;
+    setPhase("thinking", "正在停止当前回复…");
+  }
+
   // ── 来自 app.js handleEvent 的事件 ────────────────────────────────────────
   function onEvent(event) {
     // thinking 下拉始终跟随后端（即使浮层没开，下次开时也是对的）
@@ -952,12 +970,16 @@
       if (typeof renderThinkingToggle === "function") renderThinkingToggle();  // 同步聊天页的开关
     };
 
-    // 点圆/字幕/底栏以外的空白区（圆周围）：
-    //   朗读中 → 打断；聆听中 → 立即发送当前累积文本（说完点一下就发，不等去抖）。
+    // 点圆/字幕/底栏以外的空白区（圆周围）：手势意图由纯函数 resolveTapAction 解析。
+    //   朗读中 → 打断本地播报；思考中 → 取消后端回复；聆听中 → 立即发送（不等去抖）。
     if (elOverlay) elOverlay.addEventListener("click", (e) => {
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
-      if (v.speaking || v.phase === "speaking") interruptSpeechForTurn();
-      else if (v.phase === "listening") flushPendingNow();
+      const resolve = window.resolveTapAction || resolveTapAction;
+      switch (resolve(v.phase, v.speaking)) {
+        case "interrupt": interruptSpeechForTurn(); break;
+        case "cancel": cancelCurrentTurn(); break;
+        case "flush": flushPendingNow(); break;
+      }
     });
 
     // 切走/锁屏再回到前台：wakeLock 被系统释放、识别已 abort 且常卡在坏状态
