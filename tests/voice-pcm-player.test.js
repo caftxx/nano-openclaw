@@ -1,5 +1,6 @@
 /* 流式 PCM 播放器单测：纯函数 pcm16ToFloat32 的转换正确性，以及注入 FakeAudioContext
- * 验证 enqueue 排程 + onDrained 触发（Web Audio 本身无法在 node 跑，故注入桩）。 */
+ * 验证 enqueue 排程 + onDrained 触发、unlock 解锁、stop 后复用、generation 作废迟到回调
+ * （Web Audio 本身无法在 node 跑，故注入桩）。 */
 const test = require("node:test");
 const assert = require("node:assert");
 const createPcmPlayer = require("../nano_openclaw/gateway/webui/static/voice-pcm-player.js");
@@ -28,13 +29,20 @@ test("pcm16ToFloat32: 空 buffer → 空数组", () => {
 });
 
 // ── FakeAudioContext：记录建 buffer/source、start 时间、可手动触发 onended ──
-function makeFakeCtx(sources) {
+// 支持 state（默认 "running"，可由测试设为 "suspended"）+ resume()（计数）。
+// source 增加 stop()/disconnect()（stop() 用到）。
+function makeFakeCtx(sources, opts) {
+  opts = opts || {};
   return class FakeAudioContext {
     constructor() {
       this.currentTime = 0;
       this.destination = {};
       this.closed = false;
+      this.state = opts.initialState || "running";
+      this.resumeCalls = 0;
+      if (opts.onCreate) opts.onCreate(this);
     }
+    resume() { this.resumeCalls++; this.state = "running"; return Promise.resolve(); }
     createBuffer(channels, length, sampleRate) {
       const data = new Float32Array(length);
       return {
@@ -47,8 +55,12 @@ function makeFakeCtx(sources) {
         buffer: null,
         onended: null,
         startedAt: null,
+        stopped: false,
+        disconnected: false,
         connect() {},
         start(at) { this.startedAt = at; },
+        stop() { this.stopped = true; },
+        disconnect() { this.disconnected = true; },
       };
       sources.push(src);
       return src;
@@ -104,7 +116,7 @@ test("gating: markEnded 在 outstanding>0 时不 drain，待 onended 后 drain �
   assert.strictEqual(player.isActive(), false);
 });
 
-test("gating: stop 复位 ended，旧 ended 残留不致误触发", () => {
+test("gating: stop 复位 ended，迟到 onended 不致误触发 drain", () => {
   const sources = [];
   let drained = 0;
   const player = createPcmPlayer({
@@ -113,29 +125,129 @@ test("gating: stop 复位 ended，旧 ended 残留不致误触发", () => {
     onDrained: () => { drained++; },
   });
   player.enqueue(int16Buffer(new Array(1600).fill(0)));
-  player.markEnded();              // 置 ended
-  player.stop();                   // 复位 ended（同时 stopped 守卫生效）
+  player.markEnded();              // 置 ended（outstanding=1，不 drain）
   assert.strictEqual(drained, 0);
-  // stop 后 stopped=true：enqueue 被忽略，markEnded 不应因旧 ended 残留误触发
-  player.enqueue(int16Buffer(new Array(1600).fill(0)));
-  player.markEnded();
+  player.stop();                   // 复位 ended、outstanding；generation 自增作废迟到回调
+  assert.strictEqual(drained, 0);
+  // stop 后那条旧 source 的迟到 onended：generation 不匹配 → 不触发 drain
+  sources[0].onended();
   assert.strictEqual(drained, 0);
 });
 
-test("stop: 幂等、复位、关 ctx，迟到 onended 不再触发 onDrained", () => {
+test("stop: 幂等、复位、停断在播 source 且保留 ctx，迟到 onended 不触发 onDrained", () => {
   const sources = [];
   let drained = 0;
+  let createdCtx = null;
   const player = createPcmPlayer({
     sampleRate: 16000,
-    AudioCtxImpl: makeFakeCtx(sources),
+    AudioCtxImpl: makeFakeCtx(sources, { onCreate: (c) => { createdCtx = c; } }),
     onDrained: () => { drained++; },
   });
   player.enqueue(int16Buffer(new Array(1600).fill(0)));
   assert.doesNotThrow(() => { player.stop(); player.stop(); });
-  // stop 后迟到的 onended 被 stopped 守卫拦截
+  // stop 停断了在播 source
+  assert.strictEqual(sources[0].stopped, true);
+  assert.strictEqual(sources[0].disconnected, true);
+  // stop 不关 ctx（保留复用）
+  assert.strictEqual(createdCtx.closed, false);
+  // 迟到 onended（generation 已变）→ 早退、不减 outstanding、不 drain
   sources[0].onended();
   assert.strictEqual(drained, 0);
   assert.strictEqual(player.isActive(), false);
+});
+
+test("unlock: suspended 时 resume，running 时不报错", () => {
+  // suspended：unlock 应触发 resume
+  {
+    const sources = [];
+    let createdCtx = null;
+    const player = createPcmPlayer({
+      sampleRate: 16000,
+      AudioCtxImpl: makeFakeCtx(sources, { initialState: "suspended", onCreate: (c) => { createdCtx = c; } }),
+    });
+    player.unlock();
+    assert.strictEqual(createdCtx.resumeCalls, 1);
+    assert.strictEqual(createdCtx.state, "running");
+  }
+  // running：unlock 不报错、不调 resume
+  {
+    const sources = [];
+    let createdCtx = null;
+    const player = createPcmPlayer({
+      sampleRate: 16000,
+      AudioCtxImpl: makeFakeCtx(sources, { initialState: "running", onCreate: (c) => { createdCtx = c; } }),
+    });
+    assert.doesNotThrow(() => player.unlock());
+    assert.strictEqual(createdCtx.resumeCalls, 0);
+  }
+});
+
+test("enqueue: ctx 处于 suspended 时防御性 resume", () => {
+  const sources = [];
+  let createdCtx = null;
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources, { initialState: "suspended", onCreate: (c) => { createdCtx = c; } }),
+  });
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(createdCtx.resumeCalls, 1);
+  assert.strictEqual(sources.length, 1);
+});
+
+test("可复用：stop 后再次 enqueue→onended→markEnded 能再次 drain，ctx 未关", () => {
+  const sources = [];
+  let drained = 0;
+  let createdCtx = null;
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources, { onCreate: (c) => { createdCtx = c; } }),
+    onDrained: () => { drained++; },
+  });
+  // 第一轮
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  sources[0].onended();
+  player.markEnded();
+  assert.strictEqual(drained, 1);
+  // stop（保留 ctx）
+  player.stop();
+  assert.strictEqual(createdCtx.closed, false);
+  // 第二轮：复用同一 ctx（FakeCtx 只建一次，sources 累积进同一数组）
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(sources.length, 2);
+  sources[1].onended();
+  player.markEnded();
+  assert.strictEqual(drained, 2);
+});
+
+test("generation: stop 后旧 source 的迟到 onended 不触发 drain、不让 outstanding 转负", () => {
+  const sources = [];
+  let drained = 0;
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources),
+    onDrained: () => { drained++; },
+  });
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(player.isActive(), true);
+  player.stop();                   // generation++，outstanding 复位 0
+  assert.strictEqual(player.isActive(), false);
+  // 旧 source 迟到 onended：generation 不匹配 → 早退，不动 outstanding、不 drain
+  sources[0].onended();
+  assert.strictEqual(player.isActive(), false);   // 没被减成负
+  assert.strictEqual(drained, 0);                 // 迟到回调没触发 drain
+});
+
+test("dispose: stop 在播 source 并关闭 ctx", () => {
+  const sources = [];
+  let createdCtx = null;
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources, { onCreate: (c) => { createdCtx = c; } }),
+  });
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  player.dispose();
+  assert.strictEqual(sources[0].stopped, true);
+  assert.strictEqual(createdCtx.closed, true);
 });
 
 test("enqueue: 空 buffer 忽略，不建 source", () => {

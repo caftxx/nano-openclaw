@@ -60,6 +60,7 @@
     pcmPlayer: null,          // 流式 PCM 播放器（持有 Web Audio，合成音频投这里播放）
     ttsBegun: false,          // 本轮是否已对合成引擎调过 begin()（每个 turn 重置）
     ttsChoice: "",            // 选中的合成音色 value（"local"=浏览器；其余=阿里云音色），独立于识别引擎
+    ttsFallback: false,       // 阿里云合成本会话内致命失败 → 回退本地 synth，直到用户手动换音色重试
   };
 
   // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
@@ -346,7 +347,7 @@
   }
   // 当前是否应当用阿里云合成朗读：可用 + 选了非「本地」音色。
   function useAliyunTts() {
-    return aliyunTtsUsable() && Boolean(v.ttsChoice) && v.ttsChoice !== "local";
+    return aliyunTtsUsable() && !v.ttsFallback && Boolean(v.ttsChoice) && v.ttsChoice !== "local";
   }
   // 尚无音色偏好（v.ttsChoice 为空串）时定默认：阿里云 TTS 可用 → 后端默认音色，否则「本地」。
   // 已有偏好（用户选过 / localStorage 有值）则不动。
@@ -425,7 +426,10 @@
       },
       onError: (name, msg) => {
         console.warn("[voice] tts", name, msg);
-        // 本轮合成致命失败：别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
+        // 本会话内回退本地 synth：阿里云合成致命失败大概率会复发，别每轮都卡一次。
+        // 用户手动换音色（elTtsVoice.onchange）会重置 ttsFallback 再试阿里云。
+        v.ttsFallback = true;
+        // 本轮别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
         if (v.pcmPlayer) v.pcmPlayer.markEnded();
         else { v.speaking = false; onTtsDrained(); }
       },
@@ -609,6 +613,9 @@
   function startLoop() {
     v.active = true;
     try { synth.cancel(); } catch (_) {}   // 用户手势内先解锁 TTS
+    // 用户手势内建好并 resume 阿里云 TTS 的 AudioContext：移动端 Chrome 只认手势内的
+    // resume，否则首帧音频到达时才懒建会停在 suspended（不出声 + source 不 onended 卡死）。
+    if (aliyunTtsUsable()) { ensurePlayer(); if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} } }
     requestWakeLock();                     // 进免提即保持屏幕常亮
     if (hasOpenTurn()) {
       setPhase("thinking", "等待当前回复结束…");
@@ -726,9 +733,10 @@
   }
   function stopAllSpeech() {
     // 先拆阿里云合成链路（中止 ws + 停播放器 + 重置 begin 标志），再走浏览器 synth。
-    // 播放器 stop() 后内部 stopped 永久置位（不可复用），故丢弃实例让下轮 ensurePlayer 重建。
+    // 播放器 stop() 只停当前在播音源、保留并复用 ctx：ctx 在用户手势里已 unlock，置空重建
+    // 会丢失解锁状态（移动端重建出的 ctx 是 suspended）→ 不出声 + source 不 onended → 卡死。
     if (v.aliyunTts) { try { v.aliyunTts.abort(); } catch (_) {} }
-    if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} v.pcmPlayer = null; }
+    if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} }
     v.ttsBegun = false;
     v.pendingSpeak = [];
     v.speaking = false;
@@ -874,6 +882,8 @@
     v.assistantText = "";
     v.spokenLen = 0;
     stopAllSpeech();
+    // 离开语音模式：释放播放器 AudioContext（stopAllSpeech 只 stop 不关 ctx，复用而已）。
+    if (v.pcmPlayer) { try { v.pcmPlayer.dispose(); } catch (_) {} v.pcmPlayer = null; }
     stopRecognition();
     releaseWakeLock();
     if (elOverlay) elOverlay.hidden = true;
@@ -916,6 +926,7 @@
     if (elTtsVoice) elTtsVoice.onchange = () => {
       v.ttsChoice = elTtsVoice.value;
       try { localStorage.setItem(TTS_VOICE_KEY, v.ttsChoice); } catch (_) {}
+      v.ttsFallback = false;             // 用户手动换音色：清除回退标志，重新尝试阿里云合成
       if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，新音色下轮生效
     };
 
@@ -974,6 +985,8 @@
     //   朗读中 → 打断本地播报；思考中 → 取消后端回复；聆听中 → 立即发送（不等去抖）。
     if (elOverlay) elOverlay.addEventListener("click", (e) => {
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
+      // 点屏是用户手势：顺手解锁播放器 ctx，兜底首次未在点麦手势里解锁的情况。
+      if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} }
       const resolve = window.resolveTapAction || resolveTapAction;
       switch (resolve(v.phase, v.speaking)) {
         case "interrupt": interruptSpeechForTurn(); break;
