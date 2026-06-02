@@ -21,6 +21,7 @@ from nano_openclaw.gateway._event_payload import (
 )
 from nano_openclaw.gateway.backend import BackendError, BusyError, NotFoundError, PushEvent
 from nano_openclaw.gateway.webui.aliyun_token import AliyunTokenProvider, TokenError
+from nano_openclaw.gateway.webui.voice_catalog import ALIYUN_TTS_VOICES
 from nano_openclaw.runtime import AgentRuntime
 from nano_openclaw.gateway.agent_backend_session import BackendSessionManager, display_history, message_text
 
@@ -115,6 +116,14 @@ def create_app(
             "provider": cfg.provider,
             "appkey": cfg.appkey,
             "endpoint": cfg.resolved_endpoint(),
+            # TTS 子对象：复用同一 AK/SK / 网关 / 临时 Token，仅 namespace 不同。
+            # enabled 需在凭据可用的前提下再叠 ttsEnabled 开关；voices 始终回中文音色目录。
+            "tts": {
+                "enabled": cfg.available and cfg.ttsEnabled,
+                "voice": cfg.ttsVoice,
+                "sample_rate": cfg.ttsSampleRate,
+                "voices": ALIYUN_TTS_VOICES,
+            },
         }
 
     @app.get("/api/voice/token", dependencies=[Depends(require_http_token)])

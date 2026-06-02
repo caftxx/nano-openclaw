@@ -44,8 +44,8 @@
     pendingReset: false,      // visibilitychange 触发的"等旧 recognizer onend 后再重建"挂起标志
     wantListen: false,        // 是否处于"应当聆听"意图：驱动 onend 续听、并防止抢跑重复 start
     turnOpen: false,          // 当前回复是否还在流式进行
-    currentTurnId: "",        // 当前语音轮的 turn_id；底部停止按钮用它取消后端回复
-    cancelRequested: false,   // 已向后端发出取消，防止重复点停止刷请求
+    currentTurnId: "",        // 当前语音轮的 turn_id；clearTurnState 据它判定本轮是否已结束
+    cancelRequested: false,   // 已向后端发出取消的标记（随轮次重置；底部停止按钮移除后仅作状态跟踪）
     speakThisTurn: false,     // 本轮是否允许继续播报
     captionAiNode: null,      // 当前 turn 的 AI 字幕节点
     thinkOptionsKey: "",
@@ -56,6 +56,10 @@
     aliyun: null,             // 阿里云 recognizer 实例（engine==="aliyun" 时按需创建）
     aliyunRunning: false,     // 阿里云引擎当前是否在采集（替代 SR 的 recognizing/recogStarting）
     aliyunInterim: "",        // 阿里云当前未定 interim 文本：SentenceEnd 直接发，点屏立即发送时也发它
+    aliyunTts: null,          // 阿里云流式合成引擎实例（useAliyunTts() 时按需创建）
+    pcmPlayer: null,          // 流式 PCM 播放器（持有 Web Audio，合成音频投这里播放）
+    ttsBegun: false,          // 本轮是否已对合成引擎调过 begin()（每个 turn 重置）
+    ttsChoice: "",            // 选中的合成音色 value（"local"=浏览器；其余=阿里云音色），独立于识别引擎
   };
 
   // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
@@ -65,7 +69,7 @@
     && window.AudioContext && window.AudioWorklet
   );
 
-  let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice, elEngine;
+  let elOverlay, elCircle, elEmoji, elLabel, elStatus, elCaptions, elThink, elUnsupported, elVoice, elEngine, elTtsVoice;
   function grab() {
     elOverlay = $("voiceOverlay");
     elCircle = $("voiceCircle");
@@ -77,6 +81,7 @@
     elUnsupported = $("voiceUnsupported");
     elVoice = $("voiceVoice");
     elEngine = $("voiceEngine");
+    elTtsVoice = $("voiceTtsVoice");
   }
 
   // ── 状态展示 ──────────────────────────────────────────────────────────────
@@ -322,6 +327,101 @@
       } catch (_) { /* 静默忽略：保持 v.voiceCfg=null，阿里云视为不可用 */ }
     }
     applyEngineChoice();
+    resolveDefaultTtsChoice();   // 尚无音色偏好时按可用性定默认（阿里云默认音色 / 本地）
+    buildTtsVoiceOptions();      // 配置到位后渲染音色下拉（含阿里云音色项 + 禁用态）
+  }
+
+  // ── 阿里云流式语音合成（TTS）──────────────────────────────────────────────
+  // 朗读输出独立于识别引擎：用户在底部「音色」下拉选「本地」走浏览器 speechSynthesis，
+  // 选某个阿里云音色则经 voice-tts-aliyun.js 流式合成、voice-pcm-player.js 无缝播放。
+  const TTS_VOICE_KEY = "nanoTtsVoice";
+  // 阿里云 TTS 在浏览器侧是否具备运行条件：依赖 Web Audio（aliyunEnvOk 已含 AudioContext）
+  // + 后端报告 tts.enabled + appkey/endpoint 齐全。与识别引擎选择无关。
+  function aliyunTtsUsable() {
+    return Boolean(
+      aliyunEnvOk && v.voiceCfg && v.voiceCfg.available
+      && v.voiceCfg.tts && v.voiceCfg.tts.enabled
+      && v.voiceCfg.appkey && v.voiceCfg.endpoint
+    );
+  }
+  // 当前是否应当用阿里云合成朗读：可用 + 选了非「本地」音色。
+  function useAliyunTts() {
+    return aliyunTtsUsable() && Boolean(v.ttsChoice) && v.ttsChoice !== "local";
+  }
+  // 尚无音色偏好（v.ttsChoice 为空串）时定默认：阿里云 TTS 可用 → 后端默认音色，否则「本地」。
+  // 已有偏好（用户选过 / localStorage 有值）则不动。
+  function resolveDefaultTtsChoice() {
+    if (v.ttsChoice) return;
+    v.ttsChoice = aliyunTtsUsable() ? ((v.voiceCfg.tts && v.voiceCfg.tts.voice) || "local") : "local";
+  }
+  // 渲染底部「音色」下拉：首项「🔊 本地」(value=local) + 阿里云中文音色目录。
+  // 阿里云不可用时只列「本地」；当前选中 v.ttsChoice 不在列表则回退 local。
+  function buildTtsVoiceOptions() {
+    if (!elTtsVoice) return;
+    elTtsVoice.innerHTML = "";
+    const local = document.createElement("option");
+    local.value = "local";
+    local.textContent = "🔊 本地";
+    elTtsVoice.appendChild(local);
+    const voices = (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.voices) || [];
+    const usable = aliyunTtsUsable();
+    if (usable) {
+      for (const vo of voices) {
+        const o = document.createElement("option");
+        o.value = vo.value;
+        o.textContent = `🗣 ${vo.label}`;
+        elTtsVoice.appendChild(o);
+      }
+    }
+    // 选中态：当前 ttsChoice 在新选项里就保留；非空但不在列表（音色被禁用/下线）回退 local。
+    // 空串（尚无偏好、配置未到位）不强写，留给 resolveDefaultTtsChoice 定默认，UI 先显「本地」。
+    const valid = v.ttsChoice && Array.from(elTtsVoice.options).some((o) => o.value === v.ttsChoice);
+    if (v.ttsChoice && !valid) v.ttsChoice = "local";
+    elTtsVoice.value = v.ttsChoice || "local";
+  }
+  // 合成音频播完（播放器 drain）后的续听时序——复刻 webspeech 读完续听逻辑：
+  // turn 仍在流式 → 显示 thinking 等回复；否则冷却 ~500ms 再开麦（避外放尾音回采）。
+  function onTtsDrained() {
+    if (v.turnOpen) {
+      if (v.active && v.speakThisTurn) setPhase("thinking", "正在接收回复…");
+    } else {
+      scheduleResumeListening(500);
+    }
+  }
+  // 懒建流式 PCM 播放器：合成音频帧 enqueue 进来无缝播放，drain 时回到续听。
+  function ensurePlayer() {
+    if (v.pcmPlayer) return v.pcmPlayer;
+    const make = window.createPcmPlayer
+      || (typeof createPcmPlayer !== "undefined" ? createPcmPlayer : null);
+    if (!make) return null;
+    const sr = (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.sample_rate) || 16000;
+    v.pcmPlayer = make({
+      sampleRate: sr,
+      onDrained: () => { v.speaking = false; onTtsDrained(); },
+      onError: (m) => console.warn("[voice] pcm", m),
+    });
+    return v.pcmPlayer;
+  }
+  // 懒建阿里云合成引擎：投递文本 → 收 PCM 帧入播放器 + 生命周期事件接状态机。
+  function ensureTts() {
+    if (v.aliyunTts) return v.aliyunTts;
+    const make = window.createAliyunSynthesizer
+      || (typeof createAliyunSynthesizer !== "undefined" ? createAliyunSynthesizer : null);
+    if (!make) return null;
+    v.aliyunTts = make({
+      getConfig: () => ({
+        appkey: v.voiceCfg && v.voiceCfg.appkey,
+        endpoint: v.voiceCfg && v.voiceCfg.endpoint,
+        voice: v.ttsChoice,
+        sampleRate: (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.sample_rate) || 16000,
+      }),
+      getToken: fetchVoiceToken,
+      onAudio: (buf) => { ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
+      onStart: () => { v.speaking = true; setPhase("speaking"); stopRecognition(); },
+      onComplete: () => { /* 音频全部下发完；等播放器 drain 触发续听 */ },
+      onError: (name, msg) => console.warn("[voice] tts", name, msg),
+    });
+    return v.aliyunTts;
   }
 
   // 带 Bearer 取临时 token（命中后端缓存）。失败抛错由引擎 onError("token") 接住。
@@ -469,12 +569,6 @@
   function hasOpenTurn() {
     return v.turnOpen || Boolean(state.activeTurnId || (state.currentSession && state.currentSession.active_turn_id));
   }
-  function currentTurnId() {
-    return state.activeTurnId
-      || (state.currentSession && state.currentSession.active_turn_id)
-      || v.currentTurnId
-      || "";
-  }
   function clearTurnState(turnId, keepSpeech) {
     if (!turnId || !v.currentTurnId || turnId === v.currentTurnId) v.currentTurnId = "";
     v.cancelRequested = false;
@@ -570,7 +664,23 @@
       v.spokenLen += lastEnd + 1;
     }
   }
-  function enqueueSpeak(text) { v.pendingSpeak.push(text); drainSpeak(); }
+  function enqueueSpeak(text) {
+    // 选了阿里云音色：走流式合成（首段开一条流，后续 push 续投）。ensureTts 拿不到引擎
+    // （脚本没加载好）时回退 webspeech，别把朗读丢了。
+    if (useAliyunTts()) {
+      const tts = ensureTts();
+      if (tts) {
+        if (!v.ttsBegun) { v.ttsBegun = true; tts.begin(); }
+        tts.push(text);
+        v.speaking = true;
+        setPhase("speaking");
+        stopRecognition();   // 朗读时停麦，防回环
+        return;
+      }
+    }
+    v.pendingSpeak.push(text);
+    drainSpeak();
+  }
   function drainSpeak() {
     if (v.speaking) return;
     const next = v.pendingSpeak.shift();
@@ -593,6 +703,8 @@
     u.onerror = () => { v.speaking = false; drainSpeak(); };
     try { synth.speak(u); } catch (_) { v.speaking = false; drainSpeak(); }
   }
+  // 短播报（如出错时读「出错了」）一律走浏览器 synth：单句、无需流式，避免为一句话
+  // 也起一条阿里云 ws；与选中的合成音色无关。
   function speakOnce(text, done) {
     stopRecognition();
     v.speaking = true;
@@ -604,6 +716,11 @@
     try { synth.speak(u); } catch (_) { v.speaking = false; if (done) done(); }
   }
   function stopAllSpeech() {
+    // 先拆阿里云合成链路（中止 ws + 停播放器 + 重置 begin 标志），再走浏览器 synth。
+    // 播放器 stop() 后内部 stopped 永久置位（不可复用），故丢弃实例让下轮 ensurePlayer 重建。
+    if (v.aliyunTts) { try { v.aliyunTts.abort(); } catch (_) {} }
+    if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} v.pcmPlayer = null; }
+    v.ttsBegun = false;
     v.pendingSpeak = [];
     v.speaking = false;
     try { synth.cancel(); } catch (_) {}
@@ -617,25 +734,6 @@
       return;
     }
     resumeListeningIfActive();
-  }
-  function stopCurrentTurnOrSpeech() {
-    const turnId = currentTurnId();
-    stopAllSpeech();
-    v.speakThisTurn = false;
-    if (v.cancelRequested) {
-      setPhase("thinking", "正在停止当前回复…");
-      return;
-    }
-    if (!turnId) {
-      interruptSpeechForTurn();
-      return;
-    }
-    if (!send("turn.cancel", { turn_id: turnId })) {
-      setPhase("error", "未连接到服务器，无法停止当前回复");
-      return;
-    }
-    v.cancelRequested = true;
-    setPhase("thinking", "正在停止当前回复…");
   }
 
   // ── 来自 app.js handleEvent 的事件 ────────────────────────────────────────
@@ -653,6 +751,7 @@
       case "chat.accepted":
         stopAllSpeech();
         v.assistantText = ""; v.spokenLen = 0;
+        v.ttsBegun = false;   // 新 turn：合成引擎尚未 begin，首段 enqueueSpeak 时再开一条流
         v.turnOpen = true;
         v.currentTurnId = event.turn_id || "";
         v.cancelRequested = false;
@@ -671,9 +770,12 @@
         clearTurnState(event.turn_id, true);
         if (v.active && v.speakThisTurn) speakReadyChunks(true);
         v.speakThisTurn = false;
-        // 队列空且没在读：若本轮确实出过声（spokenLen>0），尾音可能仍在 → 走冷却再开麦；
-        // 本轮一个字没读则立即开麦。（flush 若还有尾巴入队，drainSpeak 会接管、读完在那边冷却。）
-        if (v.pendingSpeak.length === 0 && !v.speaking) {
+        if (useAliyunTts()) {
+          // 阿里云：文本已全部投完 → 发 StopSynthesis 收尾；续听交给播放器 drain → onTtsDrained。
+          if (v.ttsBegun && v.aliyunTts) { try { v.aliyunTts.end(); } catch (_) {} }
+          else resumeListeningIfActive();   // 本轮一字未合成：无 drain 可等，直接续听兜底
+        } else if (v.pendingSpeak.length === 0 && !v.speaking) {
+          // webspeech：队列空且没在读 → 出过声走冷却避尾音，否则立即开麦。
           if (v.spokenLen > 0) scheduleResumeListening(500);
           else resumeListeningIfActive();
         }
@@ -709,6 +811,7 @@
     buildThinkOptions(state.runtime && state.runtime.thinkingOptions);
     reflectThinking(state.thinkingLevel);
     buildVoiceOptions();
+    buildTtsVoiceOptions();   // 合成音色下拉（配置已到位则含阿里云音色，否则仅「本地」）
     seedCaptionsFromHistory();
 
     if (!secureOk) {
@@ -772,11 +875,22 @@
     const micBtn = $("voiceMicBtn");
     if (micBtn) micBtn.onclick = () => openOverlay(true);   // 单击进全屏免提，无其它手势
 
+    // 合成音色偏好：读持久化（""=尚无偏好，留给 selectRecognitionEngine 拿到配置后定默认）。
+    try { v.ttsChoice = localStorage.getItem(TTS_VOICE_KEY) || ""; } catch (_) {}
+
     // 识别引擎选路：后端 /api/voice/config 报告阿里云可用 + 浏览器支持 getUserMedia/AudioWorklet
     // → 用阿里云实时识别；否则回退浏览器内置 Web Speech（保留全部现有降级路径）。
     // 不阻塞 init：配置异步拉取，拿到再切引擎；用户在配置返回前点开浮层时仍按默认 webspeech，
     // 配置到位后下次进入即生效（getUserMedia 需用户手势，反正要等点圆才真正开麦）。
+    // 拿到配置后还会定合成音色默认值并渲染「音色」下拉（见 selectRecognitionEngine 末尾）。
     selectRecognitionEngine();
+
+    // 合成音色切换：持久化选择；切换前若正在播报先停掉（避免旧引擎/旧音色继续读）。
+    if (elTtsVoice) elTtsVoice.onchange = () => {
+      v.ttsChoice = elTtsVoice.value;
+      try { localStorage.setItem(TTS_VOICE_KEY, v.ttsChoice); } catch (_) {}
+      if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，新音色下轮生效
+    };
 
     // 引擎手动切换：持久化用户选择，停掉旧引擎当前识别、丢弃两种实例，重算 v.engine；
     // 正在免提聆听时用新引擎立即重开，否则下次点麦生效。
@@ -819,9 +933,6 @@
 
     const exitTop = $("voiceExitBtn");   // 左上角 ✕ 退出（底部不再放退出按钮）
     if (exitTop) exitTop.onclick = closeOverlay;
-
-    const stopBtn = $("voiceStopSpeak");
-    if (stopBtn) stopBtn.onclick = stopCurrentTurnOrSpeech;
 
     if (elThink) elThink.onchange = () => {
       const lvl = elThink.value;

@@ -835,6 +835,9 @@ def test_voice_config_unconfigured_reports_unavailable():
     assert body["provider"] == "aliyun"
     # 未配置时 endpoint 仍按默认 region 推导
     assert body["endpoint"] == "wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1"
+    # 未配置时 TTS 不可用（凭据缺失），但音色目录仍返回列表（前端下拉始终能渲染「本地」+目录）
+    assert body["tts"]["enabled"] is False
+    assert isinstance(body["tts"]["voices"], list) and len(body["tts"]["voices"]) > 50
 
 
 def test_voice_config_configured_reports_available_without_secrets():
@@ -861,6 +864,18 @@ def test_voice_config_configured_reports_available_without_secrets():
     assert "AKSECRET-SECRET" not in serialized
     assert "accessKeyId" not in body
     assert "accessKeySecret" not in body
+    # TTS 子对象：凭据齐全 + 默认 ttsEnabled → enabled True；默认音色/采样率；中文音色目录
+    tts = body["tts"]
+    assert tts["enabled"] is True
+    assert tts["voice"] == "xiaoyun"
+    assert tts["sample_rate"] == 16000
+    voices = tts["voices"]
+    assert isinstance(voices, list) and len(voices) > 50
+    values = [x["value"] for x in voices]
+    assert "xiaoyun" in values
+    # 音色目录只含中文音色，不混入外语音色
+    for foreign in ("harry", "tomoka", "masha"):
+        assert foreign not in values
 
 
 def test_voice_config_custom_endpoint_overrides_region():

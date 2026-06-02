@@ -672,6 +672,9 @@ class VoiceConfig(BaseModel):
 
     accessKeyId / accessKeySecret 支持 ${VAR} 语法——和 ModelProvider.apiKey 一样，
     由 config 加载阶段的 resolve_config_env_vars 统一替换，所以这里拿到的已是明文。
+
+    语音合成（TTS）复用同一套 AK/SK / 网关 endpoint / 临时 Token，仅请求 namespace
+    不同（识别用 SpeechTranscriber，合成用 FlowingSpeechSynthesizer 流式语音合成）。
     """
     model_config = ConfigDict(populate_by_name=True)
 
@@ -683,6 +686,18 @@ class VoiceConfig(BaseModel):
     endpoint: str = Field(
         default="",
         description="阿里云实时识别 WebSocket 端点；留空则按 region 推导 wss://nls-gateway-{region}.aliyuncs.com/ws/v1",
+    )
+    ttsEnabled: bool = Field(
+        default=True,
+        description="是否启用阿里云流式语音合成 TTS（关闭则前端朗读回退浏览器 speechSynthesis）",
+    )
+    ttsVoice: str = Field(
+        default="xiaoyun",
+        description="阿里云流式语音合成默认音色（StartSynthesis 的 voice 取值，用户可在浮层下拉切换）",
+    )
+    ttsSampleRate: int = Field(
+        default=16000,
+        description="阿里云流式语音合成采样率（Hz），与前端 PCM 播放器一致",
     )
 
     @property
