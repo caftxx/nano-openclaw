@@ -189,6 +189,13 @@ WeChat 作为 daemon 内的 Channel 运行；每个 uid 自动绑定一个真实
 
 > 依赖浏览器原生 `webkitSpeechRecognition` + `speechSynthesis`，目前在 **Android Chrome** 上体验最佳；iOS Safari 的语音识别能力较弱。可选的播报声音由系统/浏览器提供，Android Chrome 常只有一个，需去系统「文字转语音(TTS)」设置切换。
 
+**可选：阿里云实时语音识别 + 流式语音合成**（比浏览器原生更准、中文音色更自然）。配齐阿里云凭据后，语音浮层底部多出两个下拉：
+
+- **识别引擎**：「本地」(浏览器 Web Speech) / 「阿里云」(NLS 实时识别——浏览器经 WebSocket 直连网关，后端只动态签发临时 Token，AK/SK 绝不下发浏览器)。
+- **音色**：「本地」(浏览器 `speechSynthesis`) / 103 个含中文的阿里云音色（`FlowingSpeechSynthesizer` 流式合成，Web Audio 无缝播放）。
+
+两者相互独立、可任意搭配；凭据缺失或服务不可用时自动回退浏览器原生，互不影响。识别与合成是阿里云智能语音交互下**两个独立产品**——其中流式语音合成需开通**商用版**（不支持试用），合成失败会在界面提示真实原因并回退本地音色。配置见 [语音（阿里云语音）配置](#语音阿里云语音配置)。
+
 **为什么必须 HTTPS**：手机浏览器只在 *secure context* 下才允许访问麦克风（`getUserMedia` / 语音识别）。`localhost` / `127.0.0.1` 是例外，但通过局域网 IP（如 `http://192.168.x.x:5000`）的明文 HTTP **会被直接拒绝**，页面会提示"需要 HTTPS"。所以手机用 `/voice` 必须走 HTTPS。
 
 **本地自签证书**（局域网场景最省事）：
@@ -259,6 +266,29 @@ gateway: {
 `gateway status` / `gateway run` 的 URL 输出会反映实际 scheme（启用 TLS 时为 `https`/`wss`），绑定 `0.0.0.0` 时自动探测并显示局域网 IP。
 
 CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。`tls_cert` / `tls_key` 的用法（自签证书 + 带 TLS 启动）见 [接入方式](#接入方式) 章节的 web_voice 小节。
+
+### 语音（阿里云语音）配置
+
+语音浮层默认用浏览器原生引擎，**无需配置**。想用**阿里云实时语音识别 + 流式语音合成**（更准、中文音色更自然），在配置文件加 `voice` 块：
+
+```json5
+voice: {
+  provider: "aliyun",                    // 目前仅支持阿里云
+  appkey: "你的项目Appkey",               // 智能语音交互控制台创建的项目 Appkey
+  accessKeyId: "${ALIYUN_AK_ID}",        // 支持 ${VAR} 取环境变量；AK/SK 绝不下发浏览器
+  accessKeySecret: "${ALIYUN_AK_SECRET}",
+  region: "cn-shanghai",                 // 区域，决定默认网关 endpoint
+  // endpoint: "",                       // 留空则按 region 推导 wss://nls-gateway-{region}.aliyuncs.com/ws/v1
+  ttsEnabled: true,                      // 是否启用流式语音合成（关闭则朗读回退浏览器 speechSynthesis）
+  ttsVoice: "xiaoyun",                   // 默认合成音色（用户可在浮层「音色」下拉切换）
+  ttsSampleRate: 16000,                  // 合成采样率（Hz）
+}
+```
+
+- **三要素**（`appkey` + `accessKeyId` + `accessKeySecret`）齐全才视为可用；任一缺失则前端整体回退浏览器原生引擎。
+- AK/SK 支持 `${VAR}` 语法，加载阶段从环境变量替换；**后端动态签发临时 Token（约 24h，自动缓存续期），浏览器只拿临时 Token、永不接触 AK/SK**。识别与合成复用同一套凭据 / 网关 / Token，仅请求 `namespace` 不同。
+- **实时语音识别**与**流式文本语音合成**是智能语音交互下两个独立计费产品，需分别开通；其中**流式语音合成仅商用版可用、不支持试用**。合成失败（如试用到期 `FREE_TRIAL_EXPIRED`）会在界面显示真实原因并自动回退浏览器音色。
+- 浏览器侧硬依赖 `getUserMedia` + `AudioWorklet`（识别）/ `AudioContext`（合成），**Android Chrome** 体验最佳，且需 secure context（手机用 `/voice` 必须走 HTTPS，见 [接入方式](#接入方式) 章节的 web_voice 小节）。
 
 ## 日志系统
 
