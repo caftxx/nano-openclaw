@@ -711,6 +711,19 @@ class VoiceConfig(BaseModel):
             return self.endpoint
         return f"wss://nls-gateway-{self.region}.aliyuncs.com/ws/v1"
 
+    def resolved_rest_tts_url(self) -> str:
+        """从识别网关 endpoint 派生 RESTful 语音合成 URL（POST /stream/v1/tts）。
+
+        复用同一网关 host：把 scheme wss→https / ws→http，path 设为 /stream/v1/tts，
+        netloc 保留。这样显式 endpoint 覆盖（含内网 -internal 域名）也能正确派生。
+        例：region=cn-shanghai → https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/tts。
+        """
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(self.resolved_endpoint())
+        scheme = {"wss": "https", "ws": "http"}.get(parts.scheme, parts.scheme)
+        return urlunsplit((scheme, parts.netloc, "/stream/v1/tts", "", ""))
+
 
 # ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)

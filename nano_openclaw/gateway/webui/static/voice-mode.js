@@ -56,7 +56,9 @@
     aliyun: null,             // 阿里云 recognizer 实例（engine==="aliyun" 时按需创建）
     aliyunRunning: false,     // 阿里云引擎当前是否在采集（替代 SR 的 recognizing/recogStarting）
     aliyunInterim: "",        // 阿里云当前未定 interim 文本：SentenceEnd 直接发，点屏立即发送时也发它
-    aliyunTts: null,          // 阿里云流式合成引擎实例（useAliyunTts() 时按需创建）
+    aliyunTts: null,          // 阿里云流式合成引擎实例（云端合成 + 未回退时按需创建）
+    restfulTts: null,         // 阿里云 RESTful 代理合成引擎实例（ttsRestfulFallback 后按需创建）
+    ttsRestfulFallback: false, // 本会话内流式已证实不可用 → 改走 RESTful 代理合成（不每轮重试流式）
     pcmPlayer: null,          // 流式 PCM 播放器（持有 Web Audio，合成音频投这里播放）
     ttsBegun: false,          // 本轮是否已对合成引擎调过 begin()（每个 turn 重置）
     ttsChoice: "",            // 选中的合成音色 value（"local"=浏览器；其余=阿里云音色），独立于识别引擎
@@ -199,7 +201,7 @@
     v.spokenLen = 0;
   }
   function recoverLocalSpeechAfterForeground() {
-    if (useAliyunTts()) return;
+    if (useCloudTts()) return;
     let synthBusy = false;
     try { synthBusy = Boolean(synth && (synth.speaking || synth.pending || synth.paused)); } catch (_) {}
     if (v.speaking || v.pendingSpeak.length || v.phase === "speaking" || synthBusy) {
@@ -376,9 +378,14 @@
       && v.voiceCfg.appkey && v.voiceCfg.endpoint
     );
   }
-  // 当前是否应当用阿里云合成朗读：可用 + 选了非「本地」音色。
-  function useAliyunTts() {
+  // 当前是否应当用阿里云云端合成朗读（而非浏览器本地）：可用 + 未致命回退本地 + 选了非「本地」音色。
+  // 不区分流式/RESTful——两条云端路径共用此判定（停麦、隐藏浏览器音色下拉、turn.done 收尾等语义）。
+  function useCloudTts() {
     return aliyunTtsUsable() && !v.ttsFallback && Boolean(v.ttsChoice) && v.ttsChoice !== "local";
+  }
+  // 取当前应使用的云端合成引擎实例：回退后用 RESTful，否则流式。begin/push/end 统一经此。
+  function currentCloudTts() {
+    return v.ttsRestfulFallback ? ensureRestfulTts() : ensureTts();
   }
   // 尚无音色偏好（v.ttsChoice 为空串）时定默认：阿里云 TTS 可用 → 后端默认音色，否则「本地」。
   // 已有偏好（用户选过 / localStorage 有值）则不动。
@@ -416,7 +423,7 @@
   }
   // 右上角浏览器音色下拉只在「本地合成」时有意义：选了生效的阿里云音色就隐藏，避免与底部「音色」下拉重复。
   function updateBrowserVoiceVisibility() {
-    if (elVoice) elVoice.hidden = useAliyunTts();
+    if (elVoice) elVoice.hidden = useCloudTts();
   }
   // 阿里云合成失败回退本地时，把真实原因显示到提示横幅（手机上看不到 console）。
   // 多为 appkey 未开通「流式文本语音合成（商用版）」之类的服务端 TaskFailed。
@@ -475,23 +482,24 @@
         else { v.speaking = false; onTtsDrained(); }   // 没产生任何音频：无 drain 可等，直接续听
       },
       onError: (name, msg) => {
-        console.warn("[voice] tts", name, msg);
-        // 本会话内回退本地 synth：阿里云合成致命失败大概率会复发，别每轮都卡一次。
-        // 用户手动换音色（elTtsVoice.onchange）会重置 ttsFallback 再试阿里云。
-        v.ttsFallback = true;
-        updateBrowserVoiceVisibility();   // 回退本地后应重新显示右上角浏览器音色下拉
-        showTtsFallbackNotice(name + ": " + (msg || ""));   // 把真实原因上屏（手机看不到 console）
+        console.warn("[voice] tts(flowing)", name, msg);
+        // 流式致命失败 → 本会话改走 RESTful 代理合成（不再每轮先试流式失败一次）。
+        // 注意：这里只置 ttsRestfulFallback（转 RESTful），不置 ttsFallback（还没退到本地）。
+        // 用户手动换音色（elTtsVoice.onchange）会重置二者再试流式。
+        v.ttsRestfulFallback = true;
+        clearTtsFallbackNotice();   // 转 RESTful 不弹「已回退本地」横幅（尚未退到本地）
         // 本轮零发声（多为 StartSynthesis 即 TaskFailed）：把"已算作已读"但没发声的文本退回，
-        // 改用浏览器补读，避免这段音被丢。turn.done 可能先于 TaskFailed 到达，此时 turnOpen
-        // 已被清掉、speakThisTurn 已置 false，但 spokenLen 仍记录着投给阿里云却未出声的文本。
+        // 改用 RESTful 引擎重投本轮已累积文本。turn.done 可能先于 TaskFailed 到达，此时
+        // turnOpen 已被清掉、speakThisTurn 已置 false，但 spokenLen 仍记录着投给流式却未出声的文本。
         const shouldReplayZeroAudio = !v.ttsTurnAudio && v.active
           && (v.speakThisTurn || !v.turnOpen)
           && v.spokenLen > 0 && (v.assistantText || "").trim();
         if (shouldReplayZeroAudio) {
           if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} }
-          v.speaking = false;          // 让 drainSpeak 能启动（onError 时 v.speaking 仍为 true）
-          v.spokenLen = 0;             // 退回到本轮开头，让浏览器从头补读已累积文本
-          speakReadyChunks(!v.turnOpen); // turn 已结束则 flush 全文；否则只读已成句片段
+          v.speaking = false;          // 让后续投递能启动（onError 时 v.speaking 仍为 true）
+          v.spokenLen = 0;             // 退回到本轮开头
+          v.ttsBegun = false;          // 让下次 enqueueSpeak 重新 begin 到 RESTful 引擎
+          speakReadyChunks(!v.turnOpen); // 经 currentCloudTts() 自动选到 RESTful 重投
           return;
         }
         // 本轮别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。
@@ -500,6 +508,49 @@
       },
     });
     return v.aliyunTts;
+  }
+
+  // 懒建阿里云 RESTful 代理合成引擎：onAudio/onStart/onComplete 接线与 ensureTts() 相同；
+  // onError 是回退链末端 → 退到浏览器本地 synth（置 ttsFallback + 弹横幅 + 零发声补读）。
+  function ensureRestfulTts() {
+    if (v.restfulTts) return v.restfulTts;
+    const make = window.createRestfulSynthesizer
+      || (typeof createRestfulSynthesizer !== "undefined" ? createRestfulSynthesizer : null);
+    if (!make) return null;
+    v.restfulTts = make({
+      url: "/api/voice/tts",
+      headers: authHeaders(),   // 鉴权 header 本会话稳定，建引擎时取快照即可
+      getConfig: () => ({
+        voice: v.ttsChoice,
+        sampleRate: (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.sample_rate) || 16000,
+      }),
+      onAudio: (buf) => { v.ttsTurnAudio = true; ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
+      onStart: () => { v.speaking = true; setPhase("speaking"); stopRecognition(); clearTtsFallbackNotice(); },
+      onComplete: () => {
+        if (v.pcmPlayer) v.pcmPlayer.markEnded();
+        else { v.speaking = false; onTtsDrained(); }
+      },
+      onError: (name, msg) => {
+        console.warn("[voice] tts(restful)", name, msg);
+        // RESTful 也失败 → 回退链末端：退到浏览器本地 synth，直到用户换音色重试。
+        v.ttsFallback = true;
+        updateBrowserVoiceVisibility();
+        showTtsFallbackNotice(name + ": " + (msg || ""));
+        const shouldReplayZeroAudio = !v.ttsTurnAudio && v.active
+          && (v.speakThisTurn || !v.turnOpen)
+          && v.spokenLen > 0 && (v.assistantText || "").trim();
+        if (shouldReplayZeroAudio) {
+          if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} }
+          v.speaking = false;
+          v.spokenLen = 0;
+          speakReadyChunks(!v.turnOpen);   // ttsFallback 已置位 → useCloudTts() 假 → 走浏览器补读
+          return;
+        }
+        if (v.pcmPlayer) v.pcmPlayer.markEnded();
+        else { v.speaking = false; onTtsDrained(); }
+      },
+    });
+    return v.restfulTts;
   }
 
   // 带 Bearer 取临时 token（命中后端缓存）。失败抛错由引擎 onError("token") 接住。
@@ -749,10 +800,10 @@
     }
   }
   function enqueueSpeak(text) {
-    // 选了阿里云音色：走流式合成（首段开一条流，后续 push 续投）。ensureTts 拿不到引擎
-    // （脚本没加载好）时回退 webspeech，别把朗读丢了。
-    if (useAliyunTts()) {
-      const tts = ensureTts();
+    // 选了阿里云音色：走云端合成（流式或 RESTful 回退，由 currentCloudTts 决定）。首段开一条
+    // 流，后续 push 续投。currentCloudTts 拿不到引擎（脚本没加载好）时回退 webspeech，别把朗读丢了。
+    if (useCloudTts()) {
+      const tts = currentCloudTts();
       if (tts) {
         if (!v.ttsBegun) { v.ttsBegun = true; tts.begin(); }
         tts.push(text);
@@ -806,6 +857,7 @@
     // 播放器 stop() 只停当前在播音源、保留并复用 ctx：ctx 在用户手势里已 unlock，置空重建
     // 会丢失解锁状态（移动端重建出的 ctx 是 suspended）→ 不出声 + source 不 onended → 卡死。
     if (v.aliyunTts) { try { v.aliyunTts.abort(); } catch (_) {} }
+    if (v.restfulTts) { try { v.restfulTts.abort(); } catch (_) {} }
     if (v.pcmPlayer) { try { v.pcmPlayer.stop(); } catch (_) {} }
     v.ttsBegun = false;
     v.pendingSpeak = [];
@@ -885,9 +937,10 @@
         if (document.visibilityState === "visible") v.replaySpeechOnVisible = false;
         v.speakThisTurn = false;
         if (document.visibilityState !== "visible") break;
-        if (useAliyunTts()) {
-          // 阿里云：文本已全部投完 → 发 StopSynthesis 收尾；续听交给播放器 drain → onTtsDrained。
-          if (v.ttsBegun && v.aliyunTts) { try { v.aliyunTts.end(); } catch (_) {} }
+        if (useCloudTts()) {
+          // 云端合成：文本已全部投完 → end() 收尾（流式发 StopSynthesis / RESTful 标记结束）；
+          // 续听交给播放器 drain → onTtsDrained。
+          if (v.ttsBegun) { const tts = currentCloudTts(); if (tts) { try { tts.end(); } catch (_) {} } }
           else resumeListeningIfActive();   // 本轮一字未合成：无 drain 可等，直接续听兜底
         } else if (v.pendingSpeak.length === 0 && !v.speaking) {
           // webspeech：队列空且没在读 → 出过声走冷却避尾音，否则立即开麦。
@@ -966,7 +1019,9 @@
     v.spokenLen = 0;
     v.replaySpeechOnVisible = false;
     v.foregroundRecovery = false;
+    v.ttsRestfulFallback = false;   // 关浮层视为会话结束：清回退标志，下次重新从流式起试
     stopAllSpeech();
+    v.restfulTts = null;            // 丢弃 RESTful 引擎实例（其 AbortController 无须显式释放）
     // 离开语音模式：释放播放器 AudioContext（stopAllSpeech 只 stop 不关 ctx，复用而已）。
     if (v.pcmPlayer) { try { v.pcmPlayer.dispose(); } catch (_) {} v.pcmPlayer = null; }
     stopRecognition();
@@ -1012,6 +1067,7 @@
       v.ttsChoice = elTtsVoice.value;
       try { localStorage.setItem(TTS_VOICE_KEY, v.ttsChoice); } catch (_) {}
       v.ttsFallback = false;             // 用户手动换音色：清除回退标志，重新尝试阿里云合成
+      v.ttsRestfulFallback = false;      // 同样重置 RESTful 回退：用户主动要求重试流式合成
       updateBrowserVoiceVisibility();    // 换回阿里云音色 → 隐藏；切回本地 → 显示
       clearTtsFallbackNotice();          // 换音色重试，先清掉上次的失败提示
       if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，新音色下轮生效
@@ -1117,8 +1173,8 @@
         v.spokenLen = 0;
         speakReadyChunks(true);
         v.speakThisTurn = false;
-        if (useAliyunTts()) {
-          if (v.ttsBegun && v.aliyunTts) { try { v.aliyunTts.end(); } catch (_) {} }
+        if (useCloudTts()) {
+          if (v.ttsBegun) { const tts = currentCloudTts(); if (tts) { try { tts.end(); } catch (_) {} } }
           else resumeListeningIfActive();
         }
         return;
