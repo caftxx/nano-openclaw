@@ -63,6 +63,18 @@
     // 懒建 AudioContext；建失败走 onError 并返回 null（不抛）。ctx 一旦建好就长期复用，
     // stop() 不再销毁它（销毁会丢失手势内 unlock 的解锁状态 → 移动端 suspended 卡死）。
     function ensureCtx() {
+      // Android Chrome 在锁屏/系统回收后可能把 AudioContext 变成 closed；closed ctx 无法
+      // 再 resume 或排程，必须丢弃并在下一次用户手势/播放时重建。旧 ctx 上的 source 已随
+      // ctx 失效、其 onended 不会再触发，故连同调度游标/在播计数一起复位（同 stop()）：
+      // 否则新 ctx 会继承陈旧的 nextStartTime（音频排到很久以后 → 长静音），且 outstanding
+      // 永不归零（孤儿 source 不 onended → markEnded 后 onDrained 永不触发 → 卡死）。
+      if (ctx && ctx.state === "closed") {
+        ctx = null;
+        generation++;
+        nextStartTime = 0;
+        outstanding = 0;
+        liveSources = [];
+      }
       if (ctx) return ctx;
       var Impl = getAudioCtxImpl();
       if (!Impl) { onError("no-audio-context", "AudioContext 不可用"); return null; }

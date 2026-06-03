@@ -194,6 +194,44 @@ test("enqueue: ctx 处于 suspended 时防御性 resume", () => {
   assert.strictEqual(sources.length, 1);
 });
 
+test("enqueue: ctx 已 closed 时丢弃旧 ctx 并重建", () => {
+  const sources = [];
+  const created = [];
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources, { onCreate: (c) => { created.push(c); } }),
+  });
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(created.length, 1);
+  created[0].state = "closed";
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(created.length, 2);
+  assert.strictEqual(sources.length, 2);
+});
+
+test("enqueue: closed ctx 重建后从新 ctx 时间线起播，不继承陈旧 nextStartTime", () => {
+  const sources = [];
+  const created = [];
+  const player = createPcmPlayer({
+    sampleRate: 16000,
+    AudioCtxImpl: makeFakeCtx(sources, { onCreate: (c) => { created.push(c); } }),
+  });
+  // 第一帧把 nextStartTime 推到 0.1s（1600/16000）。
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(sources[0].startedAt, 0);
+  // ctx 被系统回收变 closed → 下次 enqueue 丢弃旧 ctx 并复位调度游标。新 ctx 的
+  // currentTime=0，若误继承陈旧 nextStartTime(0.1) 会把音频排到 0.1s 后（长静音）。
+  created[0].state = "closed";
+  player.enqueue(int16Buffer(new Array(1600).fill(0)));
+  assert.strictEqual(created.length, 2);
+  assert.strictEqual(sources[1].startedAt, 0, `重建后应从 0 起播，实际 ${sources[1].startedAt}`);
+  // 复位后 outstanding 也应只计新帧：旧 ctx 的孤儿 source 不再计入。
+  assert.strictEqual(player.isActive(), true);
+  sources[1].onended();
+  player.markEnded();
+  assert.strictEqual(player.isActive(), false);
+});
+
 test("可复用：stop 后再次 enqueue→onended→markEnded 能再次 drain，ctx 未关", () => {
   const sources = [];
   let drained = 0;

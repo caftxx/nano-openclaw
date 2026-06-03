@@ -63,6 +63,8 @@
     ttsFallback: false,       // 阿里云合成本会话内致命失败 → 回退本地 synth，直到用户手动换音色重试
     ttsTurnAudio: false,      // 本轮阿里云是否真正出过声（首帧音频到达才置位）；零发声失败时据它回退浏览器补读
     ttsConfigLoaded: false,   // /api/voice/config 是否已确定（成功/失败/断网都算）；未确定前不把存储音色误判为无效降级
+    replaySpeechOnVisible: false, // 锁屏/后台期间 TTS 不可靠；回前台后重播本轮回复
+    foregroundRecovery: false, // 曾切到非 visible；下次回前台做一次 Chrome 音频/识别恢复
   };
 
   // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
@@ -184,6 +186,31 @@
     const vo = getSelectedVoice();
     if (vo) { u.voice = vo; u.lang = vo.lang; }
     else u.lang = "zh-CN";
+  }
+  function resumeSpeechOutput() {
+    try { if (synth && typeof synth.resume === "function") synth.resume(); } catch (_) {}
+    if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} }
+  }
+  function deferSpeechReplay() {
+    if (!(v.assistantText || "").trim()) return;
+    v.replaySpeechOnVisible = true;
+    // speechSynthesis 在锁屏时会取消/挂起已排队 utterance；这些文本虽已计入
+    // spokenLen，但不一定真的出声。回前台从本轮开头重播，避免解锁后完全无声。
+    v.spokenLen = 0;
+  }
+  function recoverLocalSpeechAfterForeground() {
+    if (useAliyunTts()) return;
+    let synthBusy = false;
+    try { synthBusy = Boolean(synth && (synth.speaking || synth.pending || synth.paused)); } catch (_) {}
+    if (v.speaking || v.pendingSpeak.length || v.phase === "speaking" || synthBusy) {
+      deferSpeechReplay();
+      stopAllSpeech();
+    } else {
+      // Chrome Android 解锁后 speechSynthesis 可能处在 paused/stuck queue；
+      // 空 cancel + resume 能清掉这类无声队列，不影响后续新 utterance。
+      try { synth.cancel(); } catch (_) {}
+    }
+    resumeSpeechOutput();
   }
 
   // ── 语音识别 ──────────────────────────────────────────────────────────────
@@ -668,14 +695,17 @@
     if (v.engine === "aliyun") {
       // 阿里云无累积器：发当前未定 interim（SentenceEnd 已会自己发，这里只兜未断句的尾巴）。
       const t = (v.aliyunInterim || "").trim();
-      if (!t) return;
+      if (!t) { setPhase("listening", "还没识别到内容，请继续说话"); return; }
       v.aliyunInterim = "";
       stopRecognition();
       sendVoiceText(t);
       return;
     }
     // Web Speech：仍走累积器，flushNow 内部 onFlush → stopRecognition + sendVoiceText。
-    if (!v.acc || !v.acc.flushNow()) return;   // 没有任何待发文本：忽略这次点击
+    if (!v.acc || !v.acc.flushNow()) {
+      setPhase("listening", "还没识别到内容，请继续说话");
+      return;
+    }
   }
 
   function sendVoiceText(text) {
@@ -755,6 +785,7 @@
     u.rate = 1.05;
     u.onend = () => { v.speaking = false; drainSpeak(); };
     u.onerror = () => { v.speaking = false; drainSpeak(); };
+    resumeSpeechOutput();
     try { synth.speak(u); } catch (_) { v.speaking = false; drainSpeak(); }
   }
   // 短播报（如出错时读「出错了」）一律走浏览器 synth：单句、无需流式，避免为一句话
@@ -767,6 +798,7 @@
     applyVoice(u);
     u.onend = () => { v.speaking = false; if (done) done(); };
     u.onerror = () => { v.speaking = false; if (done) done(); };
+    resumeSpeechOutput();
     try { synth.speak(u); } catch (_) { v.speaking = false; if (done) done(); }
   }
   function stopAllSpeech() {
@@ -824,6 +856,7 @@
       case "chat.accepted":
         stopAllSpeech();
         v.assistantText = ""; v.spokenLen = 0;
+        v.replaySpeechOnVisible = false;
         v.ttsBegun = false;   // 新 turn：合成引擎尚未 begin，首段 enqueueSpeak 时再开一条流
         v.ttsTurnAudio = false;   // 新 turn：本轮阿里云尚未出声（首帧音频到达才置位）
         v.turnOpen = true;
@@ -836,14 +869,22 @@
       case "text.delta":
         v.assistantText += event.text || "";
         setAiBubble(v.captionAiNode, v.assistantText);
-        if (v.active && v.speakThisTurn) speakReadyChunks(false);
+        if (v.active && v.speakThisTurn) {
+          if (document.visibilityState === "visible") speakReadyChunks(false);
+          else deferSpeechReplay();
+        }
         break;
       case "turn.done":
         setAiBubble(v.captionAiNode, v.assistantText);
         v.captionAiNode = null;
         clearTurnState(event.turn_id, true);
-        if (v.active && v.speakThisTurn) speakReadyChunks(true);
+        if (v.active && v.speakThisTurn) {
+          if (document.visibilityState === "visible") speakReadyChunks(true);
+          else deferSpeechReplay();
+        }
+        if (document.visibilityState === "visible") v.replaySpeechOnVisible = false;
         v.speakThisTurn = false;
+        if (document.visibilityState !== "visible") break;
         if (useAliyunTts()) {
           // 阿里云：文本已全部投完 → 发 StopSynthesis 收尾；续听交给播放器 drain → onTtsDrained。
           if (v.ttsBegun && v.aliyunTts) { try { v.aliyunTts.end(); } catch (_) {} }
@@ -923,6 +964,8 @@
     v.captionAiNode = null;
     v.assistantText = "";
     v.spokenLen = 0;
+    v.replaySpeechOnVisible = false;
+    v.foregroundRecovery = false;
     stopAllSpeech();
     // 离开语音模式：释放播放器 AudioContext（stopAllSpeech 只 stop 不关 ctx，复用而已）。
     if (v.pcmPlayer) { try { v.pcmPlayer.dispose(); } catch (_) {} v.pcmPlayer = null; }
@@ -1033,20 +1076,64 @@
       if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} }
       const resolve = window.resolveTapAction || resolveTapAction;
       switch (resolve(v.phase, v.speaking)) {
-        case "interrupt": interruptSpeechForTurn(); break;
+        case "interrupt":
+          // 播报中若后端仍在生成，本次点击应取消整轮交互；若后端已经 done，
+          // 则没有可取消的 turn，只停止本地剩余播报。
+          if (hasOpenTurn()) cancelCurrentTurn();
+          else interruptSpeechForTurn();
+          break;
         case "cancel": cancelCurrentTurn(); break;
         case "flush": flushPendingNow(); break;
       }
     });
 
-    // 切走/锁屏再回到前台：wakeLock 被系统释放、识别已 abort 且常卡在坏状态
-    // （旧 recognizer 再 start() 会抛 InvalidStateError）。所以重申请常亮，并
-    // 丢掉旧 recognizer、建一个干净的重新起；留一点延迟等前台权限就绪。
+    // 切走/锁屏：小米/Android Chrome 在锁屏期间可能仍能语音交互，真正脆弱的是
+    // 解锁回到前台这一瞬间。后台不主动拆链路；回前台后清本地 TTS 卡住队列，并延迟
+    // 重建 recognizer，避开 Chrome 麦克风/语音服务刚恢复时的坏状态。
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible" || !v.open || !v.active) return;
+      if (!v.open || !v.active) return;
+      if (document.visibilityState !== "visible") {
+        releaseWakeLock();
+        v.foregroundRecovery = true;
+        return;
+      }
+      const needsRecovery = v.foregroundRecovery;
+      v.foregroundRecovery = false;
       requestWakeLock();
-      if (v.speaking || v.phase === "thinking") return;   // 正在读/等回复，别插队
-      scheduleRecognizerReset();                          // 等旧 recognizer onend 后干净重建（带 800ms 兜底）
+      if (needsRecovery) recoverLocalSpeechAfterForeground();
+      else resumeSpeechOutput();
+      if (hasOpenTurn()) {                                  // 正在等回复，别插队
+        setPhase("thinking", "等待当前回复结束…");
+        return;
+      }
+      if (v.replaySpeechOnVisible && (v.assistantText || "").trim()) {
+        v.replaySpeechOnVisible = false;
+        // 锁屏期间阿里云那条合成流可能仍开着、且前台已 push 过部分文本（ttsBegun 仍为 true）。
+        // 不先拆掉就从 spokenLen=0 重投全文，会把已合成的句子再读一遍，并复用陈旧的播放器
+        // 调度游标。stopAllSpeech 中止旧流 + stop() 复位播放器 + 清 ttsBegun，让下面的 replay
+        // 以 begin() 重开一条干净的流，从本轮开头完整重播一次。
+        stopAllSpeech();
+        v.speakThisTurn = true;
+        v.spokenLen = 0;
+        speakReadyChunks(true);
+        v.speakThisTurn = false;
+        if (useAliyunTts()) {
+          if (v.ttsBegun && v.aliyunTts) { try { v.aliyunTts.end(); } catch (_) {} }
+          else resumeListeningIfActive();
+        }
+        return;
+      }
+      if (needsRecovery) {
+        // 延迟重建 recognizer：先丢弃锁屏期间可能已卡死的旧实例（复用它再 start() 会抛
+        // InvalidStateError），并清运行态，等 ~1.2s 让 Chrome 麦克风/语音服务恢复就绪后，
+        // 由 scheduleResumeListening → startRecognition → _doStart 建一个干净的新实例开麦。
+        stopRecognition();
+        v.recog = null; v.aliyun = null;
+        v.recognizing = false; v.recogStarting = false; v.aliyunRunning = false;
+        scheduleResumeListening(1200);
+      } else {
+        scheduleRecognizerReset();                        // 等旧 recognizer onend 后干净重建（带 800ms 兜底）
+      }
     });
 
     // 深链：/voice 直接进语音态（未自动聆听，需用户点圆——浏览器要求手势）
