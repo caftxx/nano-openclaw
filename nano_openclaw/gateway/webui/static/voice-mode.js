@@ -61,7 +61,8 @@
     ttsRestfulFallback: false, // 本会话内流式已证实不可用 → 改走 RESTful 代理合成（不每轮重试流式）
     pcmPlayer: null,          // 流式 PCM 播放器（持有 Web Audio，合成音频投这里播放）
     ttsBegun: false,          // 本轮是否已对合成引擎调过 begin()（每个 turn 重置）
-    ttsChoice: "",            // 选中的合成音色 value（"local"=浏览器；其余=阿里云音色），独立于识别引擎
+    outMode: "",              // 语音输出引擎："local"=浏览器 | "aliyun-rest"=RESTful 代理 | "aliyun-flowing"=流式；独立于识别引擎
+    aliyunVoice: "",          // 阿里云音色 value（outMode 为阿里云任一时生效；右上角「音色」下拉选）
     ttsFallback: false,       // 阿里云合成本会话内致命失败 → 回退本地 synth，直到用户手动换音色重试
     ttsTurnAudio: false,      // 本轮阿里云是否真正出过声（首帧音频到达才置位）；零发声失败时据它回退浏览器补读
     ttsConfigLoaded: false,   // /api/voice/config 是否已确定（成功/失败/断网都算）；未确定前不把存储音色误判为无效降级
@@ -154,12 +155,15 @@
     elThink.classList.toggle("on", level !== "off");
   }
 
-  // ── 播报声音（TTS voice）──────────────────────────────────────────────────
-  // 声音由系统/浏览器提供（getVoices）；优先列中文声音，没有则全列。
+  // ── 右上角「音色」(TTS voice/timbre) ───────────────────────────────────────
+  // 右上角下拉是「音色」选择器，内容跟随底部「语音输出」引擎变化（见 buildTimbreOptions）：
+  //   - 输出=本地 → 列系统/浏览器提供的声音（getVoices，优先中文）
+  //   - 输出=阿里云/阿里云流式 → 列阿里云音色目录
   const VOICE_KEY = "nanoVoiceURI";
   const ENGINE_KEY = "nanoVoiceEngine";
   function allVoices() { try { return synth.getVoices() || []; } catch (_) { return []; } }
-  function buildVoiceOptions() {
+  // 本地模式音色：系统/浏览器声音（getVoices）；优先列中文声音，没有则全列。
+  function buildSystemVoiceOptions() {
     if (!elVoice) return;
     const voices = allVoices();
     if (!voices.length) return;        // 还没加载好，等 voiceschanged 再来
@@ -168,12 +172,12 @@
     elVoice.innerHTML = "";
     const def = document.createElement("option");
     def.value = "";
-    def.textContent = "🔊 系统默认";
+    def.textContent = "🗣 系统默认";
     elVoice.appendChild(def);
     for (const vo of list) {
       const o = document.createElement("option");
       o.value = vo.voiceURI;
-      o.textContent = `🔊 ${vo.name}`;
+      o.textContent = `🗣 ${vo.name}`;
       elVoice.appendChild(o);
     }
     // 恢复已选（不在列表则回退默认）
@@ -341,7 +345,7 @@
       if (o.value === "aliyun") {
         const ok = aliyunUsable();
         o.disabled = !ok;
-        o.textContent = ok ? "☁️ 阿里云" : "☁️ 阿里云（未配置）";
+        o.textContent = ok ? "🎤 阿里云" : "🎤 阿里云（未配置）";
       } else if (o.value === "webspeech") {
         o.disabled = !SR;
         o.textContent = SR ? "🎤 本地" : "🎤 本地（不支持）";
@@ -358,17 +362,26 @@
         if (res.ok) v.voiceCfg = await res.json();
       } catch (_) { /* 静默忽略：保持 v.voiceCfg=null，阿里云视为不可用 */ }
     }
-    // 无论成功/失败/断网，到这里配置状态都已确定 → 之后 buildTtsVoiceOptions 才允许据此降级音色。
+    // 无论成功/失败/断网，到这里配置状态都已确定 → 之后 buildOutModeOptions 才允许据此降级输出引擎。
     v.ttsConfigLoaded = true;
     applyEngineChoice();
-    resolveDefaultTtsChoice();   // 尚无音色偏好时按可用性定默认（阿里云默认音色 / 本地）
-    buildTtsVoiceOptions();      // 配置到位后渲染音色下拉（含阿里云音色项 + 禁用态）
+    resolveDefaultOutMode();      // 尚无输出引擎偏好时按可用性定默认（阿里云流式 / 本地）
+    resolveDefaultAliyunVoice();  // 尚无阿里云音色偏好时定后端默认音色
+    buildOutModeOptions();        // 配置到位后渲染输出引擎下拉 + 右上角音色（含禁用态）
   }
 
-  // ── 阿里云流式语音合成（TTS）──────────────────────────────────────────────
-  // 朗读输出独立于识别引擎：用户在底部「音色」下拉选「本地」走浏览器 speechSynthesis，
-  // 选某个阿里云音色则经 voice-tts-aliyun.js 流式合成、voice-pcm-player.js 无缝播放。
-  const TTS_VOICE_KEY = "nanoTtsVoice";
+  // ── 语音输出（TTS 合成引擎 + 音色）──────────────────────────────────────────
+  // 输出独立于识别引擎。底部「语音输出」下拉选引擎（本地 / 阿里云[RESTful] / 阿里云流式），
+  // 右上角「音色」下拉随之列出对应音色：本地=系统声音，阿里云任一=阿里云音色目录。
+  // 回退链：流式 →（运行失败）RESTful →（再失败）浏览器本地。
+  const OUTMODE_KEY = "nanoTtsMode";          // 持久化「语音输出」引擎选择
+  const ALIYUN_VOICE_KEY = "nanoAliyunVoice"; // 持久化阿里云音色选择
+  // 语音输出引擎选项（底部右侧下拉）；🔊 前缀标识「输出」。
+  const OUT_MODES = [
+    { value: "local", label: "本地" },
+    { value: "aliyun-rest", label: "阿里云" },
+    { value: "aliyun-flowing", label: "阿里云流式" },
+  ];
   // 阿里云 TTS 在浏览器侧是否具备运行条件：依赖 Web Audio（aliyunEnvOk 已含 AudioContext）
   // + 后端报告 tts.enabled + appkey/endpoint 齐全。与识别引擎选择无关。
   function aliyunTtsUsable() {
@@ -378,52 +391,76 @@
       && v.voiceCfg.appkey && v.voiceCfg.endpoint
     );
   }
-  // 当前是否应当用阿里云云端合成朗读（而非浏览器本地）：可用 + 未致命回退本地 + 选了非「本地」音色。
-  // 不区分流式/RESTful——两条云端路径共用此判定（停麦、隐藏浏览器音色下拉、turn.done 收尾等语义）。
-  function useCloudTts() {
-    return aliyunTtsUsable() && !v.ttsFallback && Boolean(v.ttsChoice) && v.ttsChoice !== "local";
+  // 当前是否选了阿里云任一输出引擎（rest / flowing）。
+  function aliyunOutSelected() {
+    return v.outMode === "aliyun-rest" || v.outMode === "aliyun-flowing";
   }
-  // 取当前应使用的云端合成引擎实例：回退后用 RESTful，否则流式。begin/push/end 统一经此。
+  // 当前是否应当用阿里云云端合成朗读（而非浏览器本地）：可用 + 未致命回退本地 + 选了阿里云输出引擎。
+  // 不区分流式/RESTful——两条云端路径共用此判定（停麦、turn.done 收尾等语义）。
+  function useCloudTts() {
+    return aliyunTtsUsable() && !v.ttsFallback && aliyunOutSelected();
+  }
+  // 取当前应使用的云端合成引擎实例：
+  //   - 输出=阿里云(RESTful) → 恒用 RESTful；
+  //   - 输出=阿里云流式 → 默认流式，运行中失败回退后（ttsRestfulFallback）转 RESTful。
+  // begin/push/end 统一经此。
   function currentCloudTts() {
+    if (v.outMode === "aliyun-rest") return ensureRestfulTts();
     return v.ttsRestfulFallback ? ensureRestfulTts() : ensureTts();
   }
-  // 尚无音色偏好（v.ttsChoice 为空串）时定默认：阿里云 TTS 可用 → 后端默认音色，否则「本地」。
+  // 尚无输出引擎偏好（v.outMode 为空串）时定默认：阿里云可用 → 阿里云流式，否则本地。
   // 已有偏好（用户选过 / localStorage 有值）则不动。
-  function resolveDefaultTtsChoice() {
-    if (v.ttsChoice) return;
-    v.ttsChoice = aliyunTtsUsable() ? ((v.voiceCfg.tts && v.voiceCfg.tts.voice) || "local") : "local";
+  function resolveDefaultOutMode() {
+    if (v.outMode) return;
+    v.outMode = aliyunTtsUsable() ? "aliyun-flowing" : "local";
   }
-  // 渲染底部「音色」下拉：首项「🔊 本地」(value=local) + 阿里云中文音色目录。
-  // 阿里云不可用时只列「本地」；当前选中 v.ttsChoice 不在列表则回退 local。
-  function buildTtsVoiceOptions() {
+  // 尚无阿里云音色偏好时定默认为后端默认音色。
+  function resolveDefaultAliyunVoice() {
+    if (v.aliyunVoice) return;
+    v.aliyunVoice = (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.voice) || "";
+  }
+  // 渲染底部「语音输出」下拉：本地 / 阿里云 / 阿里云流式；阿里云未配置时禁用并标注。
+  function buildOutModeOptions() {
     if (!elTtsVoice) return;
-    elTtsVoice.innerHTML = "";
-    const local = document.createElement("option");
-    local.value = "local";
-    local.textContent = "🔊 本地";
-    elTtsVoice.appendChild(local);
-    const voices = (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.voices) || [];
     const usable = aliyunTtsUsable();
-    if (usable) {
-      for (const vo of voices) {
-        const o = document.createElement("option");
-        o.value = vo.value;
-        o.textContent = `🗣 ${vo.label}`;
-        elTtsVoice.appendChild(o);
-      }
+    elTtsVoice.innerHTML = "";
+    for (const m of OUT_MODES) {
+      const o = document.createElement("option");
+      o.value = m.value;
+      const isAliyun = m.value !== "local";
+      o.disabled = isAliyun && !usable;
+      o.textContent = `🔊 ${m.label}${(isAliyun && !usable) ? "（未配置）" : ""}`;
+      elTtsVoice.appendChild(o);
     }
-    // 选中态：当前 ttsChoice 在新选项里就保留；非空但不在列表（音色被禁用/下线）回退 local。
-    // 空串（尚无偏好、配置未到位）不强写，留给 resolveDefaultTtsChoice 定默认，UI 先显「本地」。
-    const valid = v.ttsChoice && Array.from(elTtsVoice.options).some((o) => o.value === v.ttsChoice);
-    // config 未确定前，存储音色（如 zhixiaoxia）尚不在选项里 ≠ 无效——别误判降级成 local（一旦改了就回不来）。
-    // 仅 config 到位后仍不在列表（真被禁用/下线）才回退；展示层 config 未到时视觉显 local，但不改 v.ttsChoice。
-    if (v.ttsConfigLoaded && v.ttsChoice && !valid) v.ttsChoice = "local";
-    elTtsVoice.value = valid ? v.ttsChoice : "local";
-    updateBrowserVoiceVisibility();   // 同步右上角浏览器音色下拉的可见性
+    // config 已确定且选了阿里云但真不可用 → 降级本地；config 未到位前不误判（一旦改了回不来）。
+    if (v.ttsConfigLoaded && aliyunOutSelected() && !usable) v.outMode = "local";
+    // 展示：想用阿里云但当前不可用（多为 config 未到位）→ 视觉先显本地，但不改 v.outMode。
+    elTtsVoice.value = (aliyunOutSelected() && !usable) ? "local" : (v.outMode || "local");
+    buildTimbreOptions();   // 输出引擎决定右上角音色列表
   }
-  // 右上角浏览器音色下拉只在「本地合成」时有意义：选了生效的阿里云音色就隐藏，避免与底部「音色」下拉重复。
-  function updateBrowserVoiceVisibility() {
-    if (elVoice) elVoice.hidden = useCloudTts();
+  // 渲染右上角「音色」下拉：跟随输出引擎——本地列系统声音，阿里云任一列音色目录。
+  function buildTimbreOptions() {
+    if (aliyunOutSelected() && aliyunTtsUsable()) buildAliyunTimbreOptions();
+    else buildSystemVoiceOptions();
+  }
+  // 阿里云音色目录（右上角，outMode 为阿里云时）。
+  function buildAliyunTimbreOptions() {
+    if (!elVoice) return;
+    const voices = (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.voices) || [];
+    elVoice.innerHTML = "";
+    for (const vo of voices) {
+      const o = document.createElement("option");
+      o.value = vo.value;
+      o.textContent = `🗣 ${vo.label}`;
+      elVoice.appendChild(o);
+    }
+    const inList = (val) => Array.from(elVoice.options).some((o) => o.value === val);
+    // config 到位后，选中音色不在目录（未设 / 被下线）→ 取后端默认音色，再不行取首项。
+    if (v.ttsConfigLoaded && voices.length && !inList(v.aliyunVoice)) {
+      const def = (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.voice) || voices[0].value;
+      v.aliyunVoice = inList(def) ? def : voices[0].value;
+    }
+    elVoice.value = inList(v.aliyunVoice) ? v.aliyunVoice : (voices[0] ? voices[0].value : "");
   }
   // 阿里云合成失败回退本地时，把真实原因显示到提示横幅（手机上看不到 console）。
   // 多为 appkey 未开通「流式文本语音合成（商用版）」之类的服务端 TaskFailed。
@@ -470,7 +507,7 @@
       getConfig: () => ({
         appkey: v.voiceCfg && v.voiceCfg.appkey,
         endpoint: v.voiceCfg && v.voiceCfg.endpoint,
-        voice: v.ttsChoice,
+        voice: v.aliyunVoice,
         sampleRate: (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.sample_rate) || 16000,
       }),
       getToken: fetchVoiceToken,
@@ -485,7 +522,8 @@
         console.warn("[voice] tts(flowing)", name, msg);
         // 流式致命失败 → 本会话改走 RESTful 代理合成（不再每轮先试流式失败一次）。
         // 注意：这里只置 ttsRestfulFallback（转 RESTful），不置 ttsFallback（还没退到本地）。
-        // 用户手动换音色（elTtsVoice.onchange）会重置二者再试流式。
+        // 用户改「语音输出」引擎或换音色会重置二者再试流式。仅在「阿里云流式」输出时才会走到这里
+        // （RESTful 输出恒用 RESTful，不经流式引擎）。
         v.ttsRestfulFallback = true;
         clearTtsFallbackNotice();   // 转 RESTful 不弹「已回退本地」横幅（尚未退到本地）
         // 本轮零发声（多为 StartSynthesis 即 TaskFailed）：把"已算作已读"但没发声的文本退回，
@@ -527,7 +565,7 @@
       url: "/api/voice/tts",
       headers: authHeaders(),   // 鉴权 header 本会话稳定，建引擎时取快照即可
       getConfig: () => ({
-        voice: v.ttsChoice,
+        voice: v.aliyunVoice,
         sampleRate: (v.voiceCfg && v.voiceCfg.tts && v.voiceCfg.tts.sample_rate) || 16000,
       }),
       onAudio: (buf) => { v.ttsTurnAudio = true; ensurePlayer(); if (v.pcmPlayer) v.pcmPlayer.enqueue(buf); },
@@ -538,9 +576,8 @@
       },
       onError: (name, msg) => {
         console.warn("[voice] tts(restful)", name, msg);
-        // RESTful 也失败 → 回退链末端：退到浏览器本地 synth，直到用户换音色重试。
+        // RESTful 也失败 → 回退链末端：退到浏览器本地 synth，直到用户改输出引擎/换音色重试。
         v.ttsFallback = true;
-        updateBrowserVoiceVisibility();
         showTtsFallbackNotice(name + ": " + (msg || ""));
         const shouldReplayZeroAudio = !v.ttsTurnAudio && v.active
           && (v.speakThisTurn || !v.turnOpen)
@@ -984,8 +1021,7 @@
     document.body.classList.add("voice-open");
     buildThinkOptions(state.runtime && state.runtime.thinkingOptions);
     reflectThinking(state.thinkingLevel);
-    buildVoiceOptions();
-    buildTtsVoiceOptions();   // 合成音色下拉（配置已到位则含阿里云音色，否则仅「本地」）
+    buildOutModeOptions();    // 底部「语音输出」下拉 + 右上角「音色」（配置到位则含阿里云项与音色目录）
     seedCaptionsFromHistory();
 
     if (!secureOk) {
@@ -1025,7 +1061,8 @@
     v.spokenLen = 0;
     v.replaySpeechOnVisible = false;
     v.foregroundRecovery = false;
-    v.ttsRestfulFallback = false;   // 关浮层视为会话结束：清回退标志，下次重新从流式起试
+    v.ttsFallback = false;          // 关浮层视为会话结束：清回退标志，下次重新从所选引擎起试
+    v.ttsRestfulFallback = false;
     stopAllSpeech();
     v.restfulTts = null;            // 丢弃 RESTful 引擎实例（其 AbortController 无须显式释放）
     // 离开语音模式：释放播放器 AudioContext（stopAllSpeech 只 stop 不关 ctx，复用而已）。
@@ -1058,25 +1095,26 @@
     const micBtn = $("voiceMicBtn");
     if (micBtn) micBtn.onclick = () => openOverlay(true);   // 单击进全屏免提，无其它手势
 
-    // 合成音色偏好：读持久化（""=尚无偏好，留给 selectRecognitionEngine 拿到配置后定默认）。
-    try { v.ttsChoice = localStorage.getItem(TTS_VOICE_KEY) || ""; } catch (_) {}
+    // 输出引擎 / 阿里云音色 / 系统音色偏好：先读持久化（""=尚无偏好，留给 selectRecognitionEngine
+    // 拿到配置后定默认）。三者都要在 selectRecognitionEngine 之前读好——它会据此渲染两个下拉。
+    try { v.outMode = localStorage.getItem(OUTMODE_KEY) || ""; } catch (_) {}
+    try { v.aliyunVoice = localStorage.getItem(ALIYUN_VOICE_KEY) || ""; } catch (_) {}
+    try { v.voiceURI = localStorage.getItem(VOICE_KEY) || ""; } catch (_) {}
 
     // 识别引擎选路：后端 /api/voice/config 报告阿里云可用 + 浏览器支持 getUserMedia/AudioWorklet
     // → 用阿里云实时识别；否则回退浏览器内置 Web Speech（保留全部现有降级路径）。
-    // 不阻塞 init：配置异步拉取，拿到再切引擎；用户在配置返回前点开浮层时仍按默认 webspeech，
-    // 配置到位后下次进入即生效（getUserMedia 需用户手势，反正要等点圆才真正开麦）。
-    // 拿到配置后还会定合成音色默认值并渲染「音色」下拉（见 selectRecognitionEngine 末尾）。
+    // 不阻塞 init：配置异步拉取，拿到再切引擎、定输出引擎/音色默认并重渲两个下拉（见 selectRecognitionEngine 末尾）。
     selectRecognitionEngine();
 
-    // 合成音色切换：持久化选择；切换前若正在播报先停掉（避免旧引擎/旧音色继续读）。
+    // 底部右「语音输出」引擎切换：持久化；重置回退标志（重新从所选引擎起试）；重渲右上角音色；正在播报先停。
     if (elTtsVoice) elTtsVoice.onchange = () => {
-      v.ttsChoice = elTtsVoice.value;
-      try { localStorage.setItem(TTS_VOICE_KEY, v.ttsChoice); } catch (_) {}
-      v.ttsFallback = false;             // 用户手动换音色：清除回退标志，重新尝试阿里云合成
-      v.ttsRestfulFallback = false;      // 同样重置 RESTful 回退：用户主动要求重试流式合成
-      updateBrowserVoiceVisibility();    // 换回阿里云音色 → 隐藏；切回本地 → 显示
-      clearTtsFallbackNotice();          // 换音色重试，先清掉上次的失败提示
-      if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，新音色下轮生效
+      v.outMode = elTtsVoice.value;
+      try { localStorage.setItem(OUTMODE_KEY, v.outMode); } catch (_) {}
+      v.ttsFallback = false;             // 重新尝试所选引擎
+      v.ttsRestfulFallback = false;      // 流式回退标志也清掉
+      clearTtsFallbackNotice();
+      buildTimbreOptions();              // 输出引擎变了 → 右上角「音色」选项随之切换
+      if (v.speaking) stopAllSpeech();   // 正在播报中切换：立即停，下轮生效
     };
 
     // 引擎手动切换：持久化用户选择，停掉旧引擎当前识别、丢弃两种实例，重算 v.engine；
@@ -1090,18 +1128,28 @@
       if (wasListening && document.visibilityState === "visible") startRecognition();
     };
 
-    // 播报声音：读持久化偏好、建选项；声音是异步加载的，加载完再重建一次
-    try { v.voiceURI = localStorage.getItem(VOICE_KEY) || ""; } catch (_) {}
-    buildVoiceOptions();
-    if (synth && "onvoiceschanged" in synth) synth.onvoiceschanged = buildVoiceOptions;
+    // 初次渲染两个下拉（config 未到位前：输出下拉禁用阿里云项、音色列系统声音）；
+    // 系统声音异步加载，voiceschanged 时按当前输出引擎重建（本地→系统声音；阿里云→音色目录）。
+    buildOutModeOptions();
+    if (synth && "onvoiceschanged" in synth) synth.onvoiceschanged = buildTimbreOptions;
+    // 右上角「音色」切换：阿里云输出时存阿里云音色（清回退、正在播报先停）；本地输出时存系统声音并试听一句。
     if (elVoice) elVoice.onchange = () => {
-      v.voiceURI = elVoice.value;
-      try { localStorage.setItem(VOICE_KEY, v.voiceURI); } catch (_) {}
-      // 选完试听一句（仅在空闲、没在听/读真实对话时，避免被麦克风回采或打断回复）
-      if (!v.speaking && v.phase === "idle") {
-        const u = new SpeechSynthesisUtterance("你好，我是你的语音助手");
-        applyVoice(u); u.rate = 1.05;
-        try { synth.cancel(); synth.speak(u); } catch (_) {}
+      if (aliyunOutSelected()) {
+        v.aliyunVoice = elVoice.value;
+        try { localStorage.setItem(ALIYUN_VOICE_KEY, v.aliyunVoice); } catch (_) {}
+        v.ttsFallback = false;
+        v.ttsRestfulFallback = false;
+        clearTtsFallbackNotice();
+        if (v.speaking) stopAllSpeech();   // 换音色立即停，下轮生效
+      } else {
+        v.voiceURI = elVoice.value;
+        try { localStorage.setItem(VOICE_KEY, v.voiceURI); } catch (_) {}
+        // 选完试听一句（仅在空闲、没在听/读真实对话时，避免被麦克风回采或打断回复）
+        if (!v.speaking && v.phase === "idle") {
+          const u = new SpeechSynthesisUtterance("你好，我是你的语音助手");
+          applyVoice(u); u.rate = 1.05;
+          try { synth.cancel(); synth.speak(u); } catch (_) {}
+        }
       }
     };
 
