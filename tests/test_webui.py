@@ -867,7 +867,7 @@ def test_voice_config_configured_reports_available_without_secrets():
     # TTS 子对象：凭据齐全 + 默认 ttsEnabled → enabled True；默认音色/采样率；中文音色目录
     tts = body["tts"]
     assert tts["enabled"] is True
-    assert tts["voice"] == "xiaoyun"
+    assert tts["voice"] == "zhixiaoxia"
     assert tts["sample_rate"] == 16000
     voices = tts["voices"]
     assert isinstance(voices, list) and len(voices) > 50

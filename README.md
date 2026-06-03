@@ -280,7 +280,7 @@ voice: {
   region: "cn-shanghai",                 // 区域，决定默认网关 endpoint
   // endpoint: "",                       // 留空则按 region 推导 wss://nls-gateway-{region}.aliyuncs.com/ws/v1
   ttsEnabled: true,                      // 是否启用流式语音合成（关闭则朗读回退浏览器 speechSynthesis）
-  ttsVoice: "xiaoyun",                   // 默认合成音色（用户可在浮层「音色」下拉切换）
+  ttsVoice: "zhixiaoxia",                // 默认合成音色（用户可在浮层「音色」下拉切换）
   ttsSampleRate: 16000,                  // 合成采样率（Hz）
 }
 ```

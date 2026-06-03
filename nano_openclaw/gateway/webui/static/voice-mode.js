@@ -415,7 +415,7 @@
     // 选中态：当前 ttsChoice 在新选项里就保留；非空但不在列表（音色被禁用/下线）回退 local。
     // 空串（尚无偏好、配置未到位）不强写，留给 resolveDefaultTtsChoice 定默认，UI 先显「本地」。
     const valid = v.ttsChoice && Array.from(elTtsVoice.options).some((o) => o.value === v.ttsChoice);
-    // config 未确定前，存储音色（如 xiaoyun）尚不在选项里 ≠ 无效——别误判降级成 local（一旦改了就回不来）。
+    // config 未确定前，存储音色（如 zhixiaoxia）尚不在选项里 ≠ 无效——别误判降级成 local（一旦改了就回不来）。
     // 仅 config 到位后仍不在列表（真被禁用/下线）才回退；展示层 config 未到时视觉显 local，但不改 v.ttsChoice。
     if (v.ttsConfigLoaded && v.ttsChoice && !valid) v.ttsChoice = "local";
     elTtsVoice.value = valid ? v.ttsChoice : "local";
