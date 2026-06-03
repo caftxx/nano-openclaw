@@ -288,6 +288,74 @@ test("dispose: stop 在播 source 并关闭 ctx", () => {
   assert.strictEqual(createdCtx.closed, true);
 });
 
+// 把一个 ArrayBuffer 切成两片（off 处切开），返回两个独立的 ArrayBuffer。
+function sliceAb(ab, off) {
+  return [ab.slice(0, off), ab.slice(off)];
+}
+
+// 收集 player 实际解出并送进 createBuffer 的全部 Float32 样本（按排程顺序拼接）。
+function collectFloats(sources) {
+  const out = [];
+  for (const s of sources) {
+    const data = s.buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) out.push(data[i]);
+  }
+  return new Float32Array(out);
+}
+
+test("carry: 奇数字节边界拆两帧 enqueue，解出样本与整段一次 enqueue 一致", () => {
+  // 4 个已知 Int16 样本 = 8 字节。按奇数边界（3 字节处）切成两帧，第一帧末尾切在
+  // 第二个样本中间 → 不修正会全段字节错位 1 字节产生垃圾样本。
+  const values = [1000, -2000, 30000, -32768];
+  const full = int16Buffer(values);
+  const [a, b] = sliceAb(full, 3);            // 3 字节 + 5 字节，均含奇数边界
+
+  // 基准：整段一次 enqueue
+  const baseSources = [];
+  const basePlayer = createPcmPlayer({ sampleRate: 16000, AudioCtxImpl: makeFakeCtx(baseSources) });
+  basePlayer.enqueue(full);
+  const baseFloats = collectFloats(baseSources);
+  assert.strictEqual(baseFloats.length, 4);
+
+  // 跨帧：奇数边界拆两帧依次 enqueue
+  const sources = [];
+  const player = createPcmPlayer({ sampleRate: 16000, AudioCtxImpl: makeFakeCtx(sources) });
+  player.enqueue(a);   // 3 字节：第 1 样本(2字节)可播，余 1 字节存 carry
+  player.enqueue(b);   // 5 字节 + carry 1 = 6 字节：3 个样本可播
+  const floats = collectFloats(sources);
+
+  assert.strictEqual(floats.length, 4, `期望解出 4 个样本，实际 ${floats.length}`);
+  assert.deepStrictEqual(Array.from(floats), Array.from(baseFloats));
+});
+
+test("carry: 单帧奇数长度（1字节）只存 carry 不排程，下一帧补齐后解出", () => {
+  const sources = [];
+  const player = createPcmPlayer({ sampleRate: 16000, AudioCtxImpl: makeFakeCtx(sources) });
+  // 第一帧仅 1 字节：拼接后 total=1，usable=0 → 不排程，只存 carry
+  player.enqueue(new Uint8Array([0x34]).buffer);
+  assert.strictEqual(sources.length, 0, "1 字节不足一个样本，不应排程");
+  // 第二帧 1 字节：carry(0x34) + 0x12 = 2 字节 = 1 个 Int16(小端 0x1234=4660)
+  player.enqueue(new Uint8Array([0x12]).buffer);
+  assert.strictEqual(sources.length, 1);
+  const floats = collectFloats(sources);
+  assert.strictEqual(floats.length, 1);
+  const expected = pcm16ToFloat32(int16Buffer([0x1234]));
+  assert.ok(Math.abs(floats[0] - expected[0]) < 1e-9, `期望 ${expected[0]}，实际 ${floats[0]}`);
+});
+
+test("carry: stop 清空 carry，跨会话残留半样本不污染下一段", () => {
+  const sources = [];
+  const player = createPcmPlayer({ sampleRate: 16000, AudioCtxImpl: makeFakeCtx(sources) });
+  player.enqueue(new Uint8Array([0x99]).buffer);   // 1 字节存进 carry
+  player.stop();                                    // 应清空 carry
+  // 新一段：2 字节正好 1 个样本(0x1234)。若 carry 没清，会变成 0x99+0x12 错位。
+  player.enqueue(new Uint8Array([0x34, 0x12]).buffer);
+  const floats = collectFloats(sources);
+  assert.strictEqual(floats.length, 1);
+  const expected = pcm16ToFloat32(int16Buffer([0x1234]));
+  assert.ok(Math.abs(floats[0] - expected[0]) < 1e-9, `carry 未清污染了样本：实际 ${floats[0]}`);
+});
+
 test("enqueue: 空 buffer 忽略，不建 source", () => {
   const sources = [];
   const player = createPcmPlayer({ sampleRate: 16000, AudioCtxImpl: makeFakeCtx(sources) });

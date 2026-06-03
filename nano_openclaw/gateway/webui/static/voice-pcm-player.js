@@ -53,6 +53,7 @@
     var ended = false;         // markEnded()（SynthesisCompleted）后置位，开启 drain 判定
     var generation = 0;        // stop() 自增；onended 比对自身 generation 作废迟到回调
     var liveSources = [];      // 当前在播的 source 引用（stop 时统一 stop+disconnect）
+    var carry = null;          // 上一帧遗留的 1 字节（HTTP 分块切在 Int16 样本中间）；null 表示无遗留
 
     function getAudioCtxImpl() {
       if (opts.AudioCtxImpl) return opts.AudioCtxImpl;
@@ -74,6 +75,7 @@
         nextStartTime = 0;
         outstanding = 0;
         liveSources = [];
+        carry = null;
       }
       if (ctx) return ctx;
       var Impl = getAudioCtxImpl();
@@ -123,9 +125,23 @@
       if (!c) return;
       // 防御性：ctx 可能在非手势路径建出、或被系统挂起 → 尝试 resume，否则 source 永不播。
       if (c.state === "suspended") { try { c.resume(); } catch (_) {} }
+      // HTTP 流式分块边界是任意字节，常切在 Int16 样本中间（奇数字节）。跨帧保留奇数尾字节
+      // （carry），保证送进 pcm16ToFloat32 的永远是 2 字节对齐的偶数长度 buffer，避免字节
+      // 错位导致全是垃圾样本（刺耳蜂鸣/爆破）。
+      var incoming = new Uint8Array(arrayBuffer);
+      var total = (carry ? 1 : 0) + incoming.length;
+      var usable = total - (total % 2);             // 偶数长度部分
+      // 更新 carry：拼接后总长为奇则留最后一个 incoming 字节，否则清空。先算好以便提前 return。
+      var nextCarry = (total % 2) ? new Uint8Array([incoming[incoming.length - 1]]) : null;
+      if (usable < 2) { carry = nextCarry; return; }  // 拼接后还不够一个样本：只更新 carry
+      var alignedBuf = new Uint8Array(usable);
+      var off = 0;
+      if (carry) { alignedBuf[0] = carry[0]; off = 1; }
+      alignedBuf.set(incoming.subarray(0, usable - off), off);
+      carry = nextCarry;
       var floats;
       try {
-        floats = pcm16ToFloat32(arrayBuffer);
+        floats = pcm16ToFloat32(alignedBuf.buffer);
       } catch (err) {
         onError("decode", (err && err.message) || "PCM 解码失败");
         return;
@@ -176,6 +192,7 @@
       ended = false;
       outstanding = 0;
       nextStartTime = 0;
+      carry = null;
       for (var i = 0; i < liveSources.length; i++) {
         var src = liveSources[i];
         try { src.stop(); } catch (_) {}

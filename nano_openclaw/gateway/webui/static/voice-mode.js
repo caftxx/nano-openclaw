@@ -500,6 +500,12 @@
           v.spokenLen = 0;             // 退回到本轮开头
           v.ttsBegun = false;          // 让下次 enqueueSpeak 重新 begin 到 RESTful 引擎
           speakReadyChunks(!v.turnOpen); // 经 currentCloudTts() 自动选到 RESTful 重投
+          // turn 已结束时不会再有 turn.done 触发 end()：这里补发结束信号，让 RESTful 引擎
+          // 在队列排空后 onComplete → pcmPlayer.markEnded() → drain 续听，避免卡死在「朗读中」。
+          if (!v.turnOpen && v.ttsBegun) {
+            const tts = currentCloudTts();
+            if (tts) { try { tts.end(); } catch (_) {} }
+          }
           return;
         }
         // 本轮别卡在 speaking，按「读完」恢复续听（播放器若有在播则等其 drain）。

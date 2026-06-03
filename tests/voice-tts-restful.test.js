@@ -122,6 +122,61 @@ test("resp.body.getReader 流式读：每块都 onAudio", async () => {
   assert.deepStrictEqual(chunks, [10, 20]);
 });
 
+test("流式 reader：r.value 为带 byteOffset 的子视图时，onAudio 收到的字节是该视图实际字节", async () => {
+  // 模拟真实 reader：r.value 是指向更大底层 buffer 的子视图。若直接传 r.value.buffer，
+  // 会带上视图外的字节（错位/垃圾）；修复后应 slice 出恰好该视图的字节。
+  const larger = new Uint8Array([0, 1, 2, 3, 100, 101, 102, 103, 104, 105, 200, 201]);
+  const sub = new Uint8Array(larger.buffer, 4, 6);   // 实际视图字节 = [100,101,102,103,104,105]
+  const received = [];
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        let done = false;
+        return {
+          async read() {
+            if (done) return { done: true, value: undefined };
+            done = true;
+            return { done: false, value: sub };
+          },
+        };
+      },
+    },
+    async text() { return ""; },
+  });
+  const tts = createRestfulSynthesizer({
+    getConfig: () => ({ voice: "x", sampleRate: 16000 }),
+    onAudio: (buf) => received.push(Array.from(new Uint8Array(buf))),
+    fetchImpl,
+  });
+  tts.begin();
+  tts.push("hi");
+  tts.end();
+  await flush(15);
+  assert.strictEqual(received.length, 1);
+  // 必须恰为视图的 6 个字节，而非整块 12 字节底层 buffer。
+  assert.deepStrictEqual(received[0], [100, 101, 102, 103, 104, 105]);
+});
+
+// ── 契约：begin+push 后必须 end() 才会 onComplete（缺 end 即卡死，对应 voice-mode Bug 1）─
+test("契约：begin+push 后不 end → 不 onComplete；补 end → onComplete", async () => {
+  let completes = 0;
+  const tts = createRestfulSynthesizer({
+    getConfig: () => ({ voice: "x", sampleRate: 16000 }),
+    onComplete: () => { completes++; },
+    fetchImpl: async () => okResp([1]),
+  });
+  tts.begin();
+  tts.push("x");
+  await flush(15);
+  // 未 end()：endRequested 永远 false → onComplete 不触发（上层若不补 end 就会卡在朗读中）。
+  assert.strictEqual(completes, 0, "未 end 不应 onComplete");
+  tts.end();
+  await flush(15);
+  assert.strictEqual(completes, 1, "补 end 后应 onComplete 收尾");
+});
+
 // ── 失败：resp.ok=false → onError，不 onComplete ────────────────────────────
 test("resp.ok=false → onError(restful)，不触发 onComplete", async () => {
   let completes = 0;

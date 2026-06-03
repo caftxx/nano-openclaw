@@ -138,7 +138,12 @@
               var r = await reader.read();
               if (r.done) break;
               if (aborted || myGen !== generation) return;
-              if (r.value) onAudio(r.value.buffer);
+              // r.value 是 Uint8Array，可能是带 byteOffset 的子视图；.buffer 会指向更大的
+              // 底层 buffer 导致取错字节。slice 出恰好该视图的字节再投。
+              if (r.value && r.value.byteLength) {
+                var chunk = r.value;
+                onAudio(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+              }
             }
           } else {
             var ab = await resp.arrayBuffer();
