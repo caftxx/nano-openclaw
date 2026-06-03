@@ -692,7 +692,7 @@ class VoiceConfig(BaseModel):
         description="是否启用阿里云流式语音合成 TTS（关闭则前端朗读回退浏览器 speechSynthesis）",
     )
     ttsVoice: str = Field(
-        default="zhixiaoxia",
+        default="xiaoxian",
         description="阿里云流式语音合成默认音色（StartSynthesis 的 voice 取值，用户可在浮层下拉切换）",
     )
     ttsSampleRate: int = Field(

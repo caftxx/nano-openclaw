@@ -25,7 +25,7 @@ def test_catalog_values_unique():
 def test_catalog_contains_expected_chinese_voices():
     values = {x["value"] for x in ALIYUN_TTS_VOICES}
     assert "xiaoyun" in values        # 默认标准女声
-    assert "zhixiaoxia" in values     # 普通话女声
+    assert "xiaoxian" in values       # 默认音色（小仙·亲切女声）
 
 
 def test_catalog_excludes_known_foreign_voices():
