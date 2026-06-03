@@ -165,15 +165,17 @@
   // 本地模式音色：系统/浏览器声音（getVoices）；优先列中文声音，没有则全列。
   function buildSystemVoiceOptions() {
     if (!elVoice) return;
-    const voices = allVoices();
-    if (!voices.length) return;        // 还没加载好，等 voiceschanged 再来
-    const zh = voices.filter((vo) => /^zh/i.test(vo.lang));
-    const list = zh.length ? zh : voices;
+    // 先清空并放「系统默认」——即便声音还没加载，也要把可能残留的阿里云音色目录清掉，
+    // 保证切到「本地」输出后右上角音色立刻同步成系统声音（不显示上一个通道的音色）。
     elVoice.innerHTML = "";
     const def = document.createElement("option");
     def.value = "";
     def.textContent = "🗣 系统默认";
     elVoice.appendChild(def);
+    const voices = allVoices();
+    if (!voices.length) { elVoice.value = ""; return; }   // 声音未加载：先只显「系统默认」，voiceschanged 后重建
+    const zh = voices.filter((vo) => /^zh/i.test(vo.lang));
+    const list = zh.length ? zh : voices;
     for (const vo of list) {
       const o = document.createElement("option");
       o.value = vo.voiceURI;
@@ -391,9 +393,39 @@
       && v.voiceCfg.appkey && v.voiceCfg.endpoint
     );
   }
-  // 当前是否选了阿里云任一输出引擎（rest / flowing）。
+  // 当前是否选了阿里云任一输出引擎（rest / flowing）。指用户的「选择」，不含运行时回退。
   function aliyunOutSelected() {
     return v.outMode === "aliyun-rest" || v.outMode === "aliyun-flowing";
+  }
+  // 「当前实际生效」的输出引擎（区别于用户选择 v.outMode）：运行时回退会让生效引擎不同于所选。
+  //   - 选本地 → local
+  //   - 云端已彻底退本地（ttsFallback）→ local
+  //   - 选阿里云流式但已回退 RESTful（ttsRestfulFallback）→ aliyun-rest
+  //   - 否则 → 所选 v.outMode
+  // 底部「语音输出」下拉与右上角「音色」列表都以此为准，回退后 UI 反映真实正在用的引擎。
+  function effectiveOutMode() {
+    if (!aliyunOutSelected()) return v.outMode || "local";
+    if (v.ttsFallback) return "local";
+    if (v.outMode === "aliyun-flowing" && v.ttsRestfulFallback) return "aliyun-rest";
+    return v.outMode;
+  }
+  // 生效引擎是否为阿里云（rest / flowing）。
+  function effectiveAliyun() {
+    const e = effectiveOutMode();
+    return e === "aliyun-rest" || e === "aliyun-flowing";
+  }
+  // 把底部「语音输出」下拉的显示值同步为「当前生效引擎」（回退后调用，让 UI 不骗人）。
+  // 不改 v.outMode（用户的选择/偏好保持不变，下次会话仍从所选引擎起试）。
+  function syncOutModeSelect() {
+    if (!elTtsVoice) return;
+    const eff = effectiveOutMode();
+    const wantAliyun = (eff === "aliyun-rest" || eff === "aliyun-flowing");
+    elTtsVoice.value = (wantAliyun && !aliyunTtsUsable()) ? "local" : eff;
+  }
+  // 回退发生后同步整组输出 UI：下拉显示 + 右上角音色列表都跟生效引擎走。
+  function syncOutputUiToEffective() {
+    syncOutModeSelect();
+    buildTimbreOptions();
   }
   // 当前是否应当用阿里云云端合成朗读（而非浏览器本地）：可用 + 未致命回退本地 + 选了阿里云输出引擎。
   // 不区分流式/RESTful——两条云端路径共用此判定（停麦、turn.done 收尾等语义）。
@@ -434,13 +466,13 @@
     }
     // config 已确定且选了阿里云但真不可用 → 降级本地；config 未到位前不误判（一旦改了回不来）。
     if (v.ttsConfigLoaded && aliyunOutSelected() && !usable) v.outMode = "local";
-    // 展示：想用阿里云但当前不可用（多为 config 未到位）→ 视觉先显本地，但不改 v.outMode。
-    elTtsVoice.value = (aliyunOutSelected() && !usable) ? "local" : (v.outMode || "local");
-    buildTimbreOptions();   // 输出引擎决定右上角音色列表
+    // 显示「当前生效引擎」（回退后反映实际正在用的；想用阿里云但不可用→视觉显本地），不改 v.outMode。
+    syncOutModeSelect();
+    buildTimbreOptions();   // 生效引擎决定右上角音色列表
   }
-  // 渲染右上角「音色」下拉：跟随输出引擎——本地列系统声音，阿里云任一列音色目录。
+  // 渲染右上角「音色」下拉：跟随「当前生效引擎」——本地列系统声音，阿里云任一列音色目录。
   function buildTimbreOptions() {
-    if (aliyunOutSelected() && aliyunTtsUsable()) buildAliyunTimbreOptions();
+    if (effectiveAliyun() && aliyunTtsUsable()) buildAliyunTimbreOptions();
     else buildSystemVoiceOptions();
   }
   // 阿里云音色目录（右上角，outMode 为阿里云时）。
@@ -526,6 +558,7 @@
         // （RESTful 输出恒用 RESTful，不经流式引擎）。
         v.ttsRestfulFallback = true;
         clearTtsFallbackNotice();   // 转 RESTful 不弹「已回退本地」横幅（尚未退到本地）
+        syncOutputUiToEffective();  // 底部「语音输出」下拉同步成「阿里云」（生效引擎已变 RESTful）
         // 本轮零发声（多为 StartSynthesis 即 TaskFailed）：把"已算作已读"但没发声的文本退回，
         // 改用 RESTful 引擎重投本轮已累积文本。turn.done 可能先于 TaskFailed 到达，此时
         // turnOpen 已被清掉、speakThisTurn 已置 false，但 spokenLen 仍记录着投给流式却未出声的文本。
@@ -579,6 +612,7 @@
         // RESTful 也失败 → 回退链末端：退到浏览器本地 synth，直到用户改输出引擎/换音色重试。
         v.ttsFallback = true;
         showTtsFallbackNotice(name + ": " + (msg || ""));
+        syncOutputUiToEffective();  // 底部「语音输出」下拉同步成「本地」+ 右上角音色切系统声音（生效引擎已退本地）
         const shouldReplayZeroAudio = !v.ttsTurnAudio && v.active
           && (v.speakThisTurn || !v.turnOpen)
           && v.spokenLen > 0 && (v.assistantText || "").trim();
@@ -1134,7 +1168,7 @@
     if (synth && "onvoiceschanged" in synth) synth.onvoiceschanged = buildTimbreOptions;
     // 右上角「音色」切换：阿里云输出时存阿里云音色（清回退、正在播报先停）；本地输出时存系统声音并试听一句。
     if (elVoice) elVoice.onchange = () => {
-      if (aliyunOutSelected()) {
+      if (effectiveAliyun()) {   // 按「当前生效引擎」判定，回退到本地后选的就是系统声音
         v.aliyunVoice = elVoice.value;
         try { localStorage.setItem(ALIYUN_VOICE_KEY, v.aliyunVoice); } catch (_) {}
         v.ttsFallback = false;
