@@ -68,6 +68,7 @@
     ttsConfigLoaded: false,   // /api/voice/config 是否已确定（成功/失败/断网都算）；未确定前不把存储音色误判为无效降级
     replaySpeechOnVisible: false, // 锁屏/后台期间 TTS 不可靠；回前台后重播本轮回复
     foregroundRecovery: false, // 曾切到非 visible；下次回前台做一次 Chrome 音频/识别恢复
+    audioFocusGuard: null,     // 车机/Android 音频焦点保持：免提活跃时用无声 audio 防外部音乐恢复
   };
 
   // getUserMedia + AudioWorklet 是阿里云引擎的硬依赖（worklet 在音频线程里降采样转 PCM）。
@@ -198,6 +199,26 @@
   function resumeSpeechOutput() {
     try { if (synth && typeof synth.resume === "function") synth.resume(); } catch (_) {}
     if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} }
+    holdAudioFocus();
+  }
+  function ensureAudioFocusGuard() {
+    if (v.audioFocusGuard) return v.audioFocusGuard;
+    const make = window.createVoiceAudioFocusGuard
+      || (typeof createVoiceAudioFocusGuard !== "undefined" ? createVoiceAudioFocusGuard : null);
+    if (!make) return null;
+    v.audioFocusGuard = make({ log: (name, msg) => console.warn("[voice] audio-focus", name, msg) });
+    return v.audioFocusGuard;
+  }
+  function holdAudioFocus() {
+    if (!v.open || !v.active) return;
+    const guard = ensureAudioFocusGuard();
+    if (guard) { try { guard.start(); } catch (_) {} }
+  }
+  function releaseAudioFocus(dispose) {
+    const guard = v.audioFocusGuard;
+    if (!guard) return;
+    try { dispose ? guard.dispose() : guard.stop(); } catch (_) {}
+    if (dispose) v.audioFocusGuard = null;
   }
   function deferSpeechReplay() {
     if (!(v.assistantText || "").trim()) return;
@@ -259,6 +280,7 @@
         v.wantListen = false;
         v.recognizing = false;
         v.recogStarting = false;
+        releaseAudioFocus(false);
         releaseWakeLock();
       }
     };
@@ -306,6 +328,7 @@
           if (document.visibilityState !== "visible") return;
           setPhase("error", "麦克风权限被拒绝，请在浏览器设置中允许");
           v.active = false; v.speakThisTurn = false; v.wantListen = false;
+          releaseAudioFocus(false);
           releaseWakeLock();
           return;
         }
@@ -805,6 +828,7 @@
 
   function startLoop() {
     v.active = true;
+    holdAudioFocus();                       // 用户手势内抢住媒体焦点，覆盖停麦→TTS 首帧之间的空窗
     try { synth.cancel(); } catch (_) {}   // 用户手势内先解锁 TTS
     // 用户手势内建好并 resume 阿里云 TTS 的 AudioContext：移动端 Chrome 只认手势内的
     // resume，否则首帧音频到达时才懒建会停在 suspended（不出声 + source 不 onended 卡死）。
@@ -838,9 +862,11 @@
 
   function sendVoiceText(text) {
     if (!text) { resumeListeningIfActive(); return; }
+    holdAudioFocus();   // 停麦发送后到回复首段朗读前，仍保持媒体焦点，避免外部播放器恢复
     const sid = state.currentSession && state.currentSession.session_id;
     if (!sid) {
       v.active = false;
+      releaseAudioFocus(false);
       releaseWakeLock();
       setPhase("error", "没有可用会话");
       return;
@@ -849,6 +875,7 @@
     // response_style:"voice" → 后端给本轮 system prompt 追加口语化指令
     if (!send("chat.send", { session_id: sid, text, attachments: [], response_style: "voice" })) {
       v.active = false;
+      releaseAudioFocus(false);
       releaseWakeLock();
       setPhase("error", "未连接到服务器");
       return;
@@ -882,6 +909,7 @@
     if (useCloudTts()) {
       const tts = currentCloudTts();
       if (tts) {
+        holdAudioFocus();
         if (!v.ttsBegun) { v.ttsBegun = true; tts.begin(); }
         tts.push(text);
         v.speaking = true;
@@ -891,6 +919,7 @@
       }
     }
     v.pendingSpeak.push(text);
+    holdAudioFocus();
     drainSpeak();
   }
   function drainSpeak() {
@@ -908,6 +937,7 @@
     v.speaking = true;
     setPhase("speaking");
     stopRecognition();   // 朗读时停麦，防回环
+    holdAudioFocus();
     const u = new SpeechSynthesisUtterance(next);
     applyVoice(u);
     u.rate = 1.05;
@@ -922,6 +952,7 @@
     stopRecognition();
     v.speaking = true;
     setPhase("speaking");
+    holdAudioFocus();
     const u = new SpeechSynthesisUtterance(text);
     applyVoice(u);
     u.onend = () => { v.speaking = false; if (done) done(); };
@@ -1098,6 +1129,7 @@
     v.ttsFallback = false;          // 关浮层视为会话结束：清回退标志，下次重新从所选引擎起试
     v.ttsRestfulFallback = false;
     stopAllSpeech();
+    releaseAudioFocus(true);
     v.restfulTts = null;            // 丢弃 RESTful 引擎实例（其 AbortController 无须显式释放）
     // 离开语音模式：释放播放器 AudioContext（stopAllSpeech 只 stop 不关 ctx，复用而已）。
     if (v.pcmPlayer) { try { v.pcmPlayer.dispose(); } catch (_) {} v.pcmPlayer = null; }
@@ -1195,6 +1227,7 @@
         v.speakThisTurn = false;
         stopAllSpeech();
         stopRecognition();
+        releaseAudioFocus(false);
         releaseWakeLock();
         setPhase("idle", "已暂停，点击麦克风继续");
       }
@@ -1217,6 +1250,7 @@
     if (elOverlay) elOverlay.addEventListener("click", (e) => {
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
       // 点屏是用户手势：顺手解锁播放器 ctx，兜底首次未在点麦手势里解锁的情况。
+      holdAudioFocus();
       if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} }
       const resolve = window.resolveTapAction || resolveTapAction;
       switch (resolve(v.phase, v.speaking)) {
