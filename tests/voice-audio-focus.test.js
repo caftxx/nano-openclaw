@@ -20,6 +20,32 @@ class FakeAudio {
   pause() { this.pauseCalls++; }
 }
 
+class FakeTrack {
+  constructor() { this.stopped = false; this.onended = null; }
+  stop() { this.stopped = true; }
+}
+
+class FakeStream {
+  constructor() { this.tracks = [new FakeTrack(), new FakeTrack()]; }
+  getTracks() { return this.tracks; }
+}
+
+// behavior: "resolve" | "reject" | "throw"；记录每次的 constraints
+function fakeMediaDevices(behavior) {
+  return {
+    calls: [],
+    streams: [],
+    getUserMedia(constraints) {
+      this.calls.push(constraints);
+      if (behavior === "throw") throw new Error("boom");
+      if (behavior === "reject") return Promise.reject(new Error("denied"));
+      const stream = new FakeStream();
+      this.streams.push(stream);
+      return Promise.resolve(stream);
+    },
+  };
+}
+
 function fakeUrl() {
   return {
     created: [],
@@ -29,9 +55,12 @@ function fakeUrl() {
   };
 }
 
+// 让 getUserMedia 的 then/catch 微任务跑完
+const tick = () => new Promise((r) => setImmediate(r));
+
 test("start: 创建循环无声 audio，并调用 play 持有媒体焦点", () => {
   const url = fakeUrl();
-  const guard = createVoiceAudioFocusGuard({ AudioImpl: FakeAudio, URLImpl: url, BlobImpl: Blob, volume: 0.002 });
+  const guard = createVoiceAudioFocusGuard({ AudioImpl: FakeAudio, URLImpl: url, BlobImpl: Blob, mediaDevices: null, volume: 0.002 });
 
   guard.start();
   const audio = guard.getAudio();
@@ -48,7 +77,7 @@ test("start: 创建循环无声 audio，并调用 play 持有媒体焦点", () =
 });
 
 test("stop: 暂停但保留 audio，便于下一次用户手势复用", () => {
-  const guard = createVoiceAudioFocusGuard({ AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob });
+  const guard = createVoiceAudioFocusGuard({ AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob, mediaDevices: null });
 
   guard.start();
   const audio = guard.getAudio();
@@ -62,7 +91,7 @@ test("stop: 暂停但保留 audio，便于下一次用户手势复用", () => {
 
 test("dispose: 停止并释放 object URL", () => {
   const url = fakeUrl();
-  const guard = createVoiceAudioFocusGuard({ AudioImpl: FakeAudio, URLImpl: url, BlobImpl: Blob });
+  const guard = createVoiceAudioFocusGuard({ AudioImpl: FakeAudio, URLImpl: url, BlobImpl: Blob, mediaDevices: null });
 
   guard.start();
   guard.dispose();
@@ -93,4 +122,114 @@ test("makeSilentWavBlob: 默认时长跨过车机内容级媒体焦点门槛", a
 
   assert.strictEqual(buf.byteLength, 44 + 6 * 8000);
   assert.strictEqual(view.getUint32(40, true), 6 * 8000);
+});
+
+test("micHold: 偏好持麦时申请与识别采集同形态的占位流，不创建 audio", async () => {
+  const md = fakeMediaDevices("resolve");
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => true,
+  });
+
+  guard.start();
+  await tick();
+
+  assert.strictEqual(md.calls.length, 1);
+  // audio:true 与识别采集同形态（AEC 默认开）——实测这种采集才会让外部音乐暂停
+  assert.deepStrictEqual(md.calls[0], { audio: true });
+  assert.strictEqual(guard.getMicStream(), md.streams[0]);
+  assert.strictEqual(guard.getAudio(), null);   // 持麦路径不走静音 audio
+
+  guard.start();   // 已持有：不重复申请
+  await tick();
+  assert.strictEqual(md.calls.length, 1);
+});
+
+test("micHold: stop 归还麦克风轨道；等待期间 stop 则拿到后立即归还", async () => {
+  const md = fakeMediaDevices("resolve");
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => true,
+  });
+
+  guard.start();
+  await tick();
+  guard.stop();
+  assert.strictEqual(guard.getMicStream(), null);
+  assert.ok(md.streams[0].getTracks().every((t) => t.stopped));
+
+  guard.start();           // 重新申请
+  guard.stop();            // promise 还没 resolve 就 stop
+  await tick();
+  assert.strictEqual(guard.getMicStream(), null);
+  assert.ok(md.streams[1].getTracks().every((t) => t.stopped));
+});
+
+test("micHold: 轨道被系统收回后，下次 start 重新申请", async () => {
+  const md = fakeMediaDevices("resolve");
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => true,
+  });
+
+  guard.start();
+  await tick();
+  md.streams[0].getTracks()[0].onended();   // 模拟系统侧收回
+  assert.strictEqual(guard.getMicStream(), null);
+
+  guard.start();
+  await tick();
+  assert.strictEqual(md.calls.length, 2);
+  assert.strictEqual(guard.getMicStream(), md.streams[1]);
+});
+
+test("micHold: 申请失败退回静音 audio；getUserMedia 缺失直接走 audio", async () => {
+  const md = fakeMediaDevices("reject");
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => true,
+  });
+  guard.start();
+  await tick();
+  assert.strictEqual(guard.getMicStream(), null);
+  assert.strictEqual(guard.getAudio().playCalls, 1);   // 回退到静音 audio
+
+  const noMic = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: null, preferMicHold: () => true,
+  });
+  noMic.start();
+  assert.strictEqual(noMic.getAudio().playCalls, 1);
+});
+
+test("audioSession: 渐进增强——start 声明 play-and-record，stop 还原 auto", () => {
+  const session = { type: "auto" };
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: null, audioSession: session,
+  });
+
+  guard.start();
+  assert.strictEqual(session.type, "play-and-record");
+  guard.stop();
+  assert.strictEqual(session.type, "auto");
+});
+
+test("micHold: 偏好切回 audio（引擎切 webspeech）时归还占位麦", async () => {
+  const md = fakeMediaDevices("resolve");
+  let engine = "aliyun";
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => engine === "aliyun",
+  });
+
+  guard.start();
+  await tick();
+  assert.strictEqual(guard.getMicStream(), md.streams[0]);
+
+  engine = "webspeech";
+  guard.start();
+  assert.strictEqual(guard.getMicStream(), null);
+  assert.ok(md.streams[0].getTracks().every((t) => t.stopped));
+  assert.strictEqual(guard.getAudio().playCalls, 1);
 });

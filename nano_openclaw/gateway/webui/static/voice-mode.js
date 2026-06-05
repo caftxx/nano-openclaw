@@ -206,11 +206,19 @@
     const make = window.createVoiceAudioFocusGuard
       || (typeof createVoiceAudioFocusGuard !== "undefined" ? createVoiceAudioFocusGuard : null);
     if (!make) return null;
-    v.audioFocusGuard = make({ log: (name, msg) => console.warn("[voice] audio-focus", name, msg) });
+    v.audioFocusGuard = make({
+      log: (name, msg) => console.warn("[voice] audio-focus", name, msg),
+      // aliyun 引擎页面自采音，可叠一条占位麦克风流（同 App 内并发采集无冲突）；
+      // webspeech 的识别采集在浏览器服务侧，页面持麦可能被 Android 并发采集限制
+      // 静音掉识别，退回无声 audio 兜底。
+      preferMicHold: () => v.engine === "aliyun",
+    });
     return v.audioFocusGuard;
   }
   function holdAudioFocus() {
-    if (!v.open || !v.active) return;
+    // 浮层开着就持有（不要求 v.active）：打开 voice 页面外部音乐即应暂停，
+    // 否则聆听会把音乐采进识别；暂停免提也不放音乐回来，✕ 退出才释放。
+    if (!v.open) return;
     const guard = ensureAudioFocusGuard();
     if (guard) { try { guard.start(); } catch (_) {} }
   }
@@ -866,7 +874,6 @@
     const sid = state.currentSession && state.currentSession.session_id;
     if (!sid) {
       v.active = false;
-      releaseAudioFocus(false);
       releaseWakeLock();
       setPhase("error", "没有可用会话");
       return;
@@ -875,7 +882,6 @@
     // response_style:"voice" → 后端给本轮 system prompt 追加口语化指令
     if (!send("chat.send", { session_id: sid, text, attachments: [], response_style: "voice" })) {
       v.active = false;
-      releaseAudioFocus(false);
       releaseWakeLock();
       setPhase("error", "未连接到服务器");
       return;
@@ -1084,6 +1090,7 @@
     v.open = true;
     elOverlay.hidden = false;
     document.body.classList.add("voice-open");
+    holdAudioFocus();   // 打开浮层即占焦点停外部音乐（占位麦不需要手势，权限已授过即生效）
     buildThinkOptions(state.runtime && state.runtime.thinkingOptions);
     reflectThinking(state.thinkingLevel);
     buildOutModeOptions();    // 底部「语音输出」下拉 + 右上角「音色」（配置到位则含阿里云项与音色目录）
@@ -1191,6 +1198,7 @@
       if (recogBusy()) stopRecognition();              // 用旧 engine 停掉当前识别
       v.aliyun = null; v.recog = null;                 // 两种实例都丢弃，避免切换后残留
       applyEngineChoice();                             // 重算 v.engine + 刷新下拉
+      holdAudioFocus();                                // 焦点 guard 按新引擎换轨（持麦 ↔ 静音 audio）
       if (wasListening && document.visibilityState === "visible") startRecognition();
     };
 
@@ -1227,7 +1235,7 @@
         v.speakThisTurn = false;
         stopAllSpeech();
         stopRecognition();
-        releaseAudioFocus(false);
+        // 不释放音频焦点：浮层开着就维持静音环境，✕ 退出才把声音还给外部音乐
         releaseWakeLock();
         setPhase("idle", "已暂停，点击麦克风继续");
       }
@@ -1269,7 +1277,10 @@
     // 解锁回到前台这一瞬间。后台不主动拆链路；回前台后清本地 TTS 卡住队列，并延迟
     // 重建 recognizer，避开 Chrome 麦克风/语音服务刚恢复时的坏状态。
     document.addEventListener("visibilitychange", () => {
-      if (!v.open || !v.active) return;
+      if (!v.open) return;
+      // 回前台先重占焦点（即使免提未激活）：后台期间占位麦可能被系统收回（track onended 已清引用）
+      if (document.visibilityState === "visible") holdAudioFocus();
+      if (!v.active) return;
       if (document.visibilityState !== "visible") {
         releaseWakeLock();
         v.foregroundRecovery = true;
