@@ -10,6 +10,12 @@
  *   （Chrome / 百度 T7）都可靠的焦点通道；且不注册 Media Session，车机媒体面板
  *   不会出现一条循环曲目。只在页面自采音的引擎（aliyun）下用：webspeech 的识别
  *   采集在浏览器服务侧，页面持麦可能被 Android 并发采集限制静音掉识别。
+ *
+ *   ⚠ 持麦的代价：带 AEC 的采集会让 Android 进入通信模式（MODE_IN_COMMUNICATION）
+ *   ——音乐被暂停正是这个机制——但通信模式下音量键变成调「通话音量」，且输出走
+ *   通话通路（手机扬声器/听筒），不走 A2DP/CarWith 媒体通路，TTS 会从手机而不是
+ *   车机音响出声。所以 preferMicHold 必须在「有声音要播」时返回 false（朗读期间
+ *   放麦走媒体通路），只在聆听/思考/空闲阶段持麦。
  * - 无声 <audio>（兜底）：循环播放 6s 近静音 WAV（跨过 Chromium 5s 内容级媒体
  *   门槛）。副作用是会以一条 6s 曲目出现在媒体面板，且个别内核（百度 T7）不为
  *   网页 <audio> 申请系统焦点。
@@ -74,6 +80,7 @@
     var active = false;
     var micStream = null;
     var micPending = false;
+    var primed = false;   // 静音 audio 是否已在用户手势内成功 play 过（解锁 autoplay）
 
     function micUsable() {
       return Boolean(mediaDevices && typeof mediaDevices.getUserMedia === "function");
@@ -102,7 +109,9 @@
       }
       p.then(function (stream) {
         micPending = false;
-        if (!active) { stopTracks(stream); return; }   // 等待期间已 stop：立即归还
+        // 等待期间已 stop、或策略已切走（如进入朗读改走静音 audio）：立即归还,
+        // 别覆盖现行策略（此时静音 audio 可能正占着媒体焦点,不能停它）。
+        if (!active || !preferMicHold()) { stopTracks(stream); return; }
         micStream = stream;
         // 系统侧收回轨道（设备抢占等）：清引用，下次 start() 重新申请。
         try {
@@ -190,8 +199,30 @@
         startMicHold();   // 已持有/申请中则 no-op；静音 audio 在拿到麦后才停，避免换轨空窗
         return null;
       }
-      stopMicHold();      // 偏好切回 audio（如引擎切到 webspeech）：先归还占位麦
-      return startSilentAudio();
+      // 偏好切回 audio（引擎切 webspeech / 朗读期间释放占位麦）：先起静音 audio
+      // 再归还占位麦，避免焦点空窗让外部音乐窜回。
+      var p = startSilentAudio();
+      stopMicHold();
+      return p;
+    }
+
+    // 在用户手势内调用：把静音 audio 元素成功 play 一次，解锁后续非手势 play()。
+    // 持麦路径平时不播静音 audio，而「朗读释放占位麦 → 切静音 audio」发生在非手势
+    // 上下文（TTS 首段到达时），从未在手势内播过的元素会被 autoplay 策略拦下。
+    // 播放成功后若现行策略仍是持麦则立即暂停，媒体面板不残留曲目。
+    function prime() {
+      if (primed) return;
+      var p = startSilentAudio();
+      if (!p || typeof p.then !== "function") {
+        // play() 不返回 promise（老内核）：保守按已解锁处理
+        primed = true;
+        if (!active || micStream || micPending) stopSilentAudio();
+        return;
+      }
+      p.then(function () {
+        primed = true;
+        if (!active || micStream || micPending) stopSilentAudio();
+      }, function () { /* 被 autoplay 策略拦下：保持未解锁，下次手势再试 */ });
     }
 
     function stop() {
@@ -208,6 +239,7 @@
       }
       objectUrl = "";
       audio = null;
+      primed = false;   // 元素已丢弃，重建后需重新在手势内解锁
     }
 
     function isActive() {
@@ -222,7 +254,7 @@
       return micStream;
     }
 
-    return { start: start, stop: stop, dispose: dispose, isActive: isActive, getAudio: getAudio, getMicStream: getMicStream };
+    return { start: start, stop: stop, prime: prime, dispose: dispose, isActive: isActive, getAudio: getAudio, getMicStream: getMicStream };
   }
 
   createVoiceAudioFocusGuard.makeSilentWavBlob = makeSilentWavBlob;

@@ -233,3 +233,105 @@ test("micHold: 偏好切回 audio（引擎切 webspeech）时归还占位麦", a
   assert.ok(md.streams[0].getTracks().every((t) => t.stopped));
   assert.strictEqual(guard.getAudio().playCalls, 1);
 });
+
+test("换轨顺序: mic→audio 先起静音 audio 再归还占位麦（无焦点空窗）", async () => {
+  const events = [];
+  class OrderedAudio extends FakeAudio {
+    play() { events.push("audio-play"); return super.play(); }
+  }
+  const md = fakeMediaDevices("resolve");
+  let speaking = false;
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: OrderedAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => !speaking,
+  });
+
+  guard.start();
+  await tick();
+  md.streams[0].getTracks().forEach((t) => {
+    const orig = t.stop.bind(t);
+    t.stop = () => { events.push("mic-stop"); orig(); };
+  });
+
+  speaking = true;   // 进入朗读：释放占位麦走媒体通路（防通信模式劫持路由）
+  guard.start();
+  assert.strictEqual(guard.getMicStream(), null);
+  assert.strictEqual(events[0], "audio-play");   // 静音 audio 先占住媒体焦点
+  assert.ok(events.slice(1).every((e) => e === "mic-stop"));
+});
+
+test("micHold: 等待期间偏好切走（进入朗读）→ 拿到麦立即归还且不打断静音 audio", async () => {
+  const md = fakeMediaDevices("resolve");
+  let speaking = false;
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => !speaking,
+  });
+
+  guard.start();           // 占位麦申请中（promise 未 resolve）
+  speaking = true;
+  guard.start();           // 已切到 audio 策略
+  await tick();            // 占位麦此刻才 resolve
+
+  assert.strictEqual(guard.getMicStream(), null);
+  assert.ok(md.streams[0].getTracks().every((t) => t.stopped));   // 立即归还
+  assert.strictEqual(guard.getAudio().playCalls, 1);
+  assert.strictEqual(guard.getAudio().pauseCalls, 0);   // 现行静音 audio 不被迟到的麦停掉
+});
+
+test("prime: 手势内解锁静音 audio——持麦策略下播一次立即暂停，且只解锁一次", async () => {
+  const md = fakeMediaDevices("resolve");
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => true,
+  });
+
+  guard.start();
+  await tick();
+  assert.strictEqual(guard.getMicStream(), md.streams[0]);
+
+  guard.prime();
+  const audio = guard.getAudio();
+  assert.strictEqual(audio.playCalls, 1);
+  await tick();
+  assert.strictEqual(audio.pauseCalls, 1);   // 持麦策略下解锁完立即停，媒体面板不残留曲目
+
+  guard.prime();   // 已解锁：no-op
+  assert.strictEqual(audio.playCalls, 1);
+});
+
+test("prime: audio 策略下不打断正在播放的静音 audio", async () => {
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: null, preferMicHold: () => false,
+  });
+
+  guard.start();
+  guard.prime();
+  await tick();
+  assert.strictEqual(guard.getAudio().pauseCalls, 0);   // 静音 audio 是现行策略，不能停
+});
+
+test("朗读周期: 聆听持麦 → 朗读放麦走媒体通路 → 回聆听重新持麦并停静音 audio", async () => {
+  const md = fakeMediaDevices("resolve");
+  let phase = "listening";
+  const guard = createVoiceAudioFocusGuard({
+    AudioImpl: FakeAudio, URLImpl: fakeUrl(), BlobImpl: Blob,
+    mediaDevices: md, preferMicHold: () => phase !== "speaking",
+  });
+
+  guard.start();
+  await tick();
+  assert.strictEqual(guard.getMicStream(), md.streams[0]);
+
+  phase = "speaking";
+  guard.start();
+  assert.strictEqual(guard.getMicStream(), null);       // 放麦：退出通信模式，TTS 走媒体通路
+  assert.strictEqual(guard.getAudio().playCalls, 1);    // 静音 audio 顶住焦点
+
+  phase = "listening";
+  guard.start();
+  await tick();
+  assert.strictEqual(guard.getMicStream(), md.streams[1]);          // 重新持麦
+  assert.strictEqual(guard.getAudio().pauseCalls, 1);               // 麦到手后静音 audio 停
+});

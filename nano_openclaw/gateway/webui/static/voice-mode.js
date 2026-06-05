@@ -108,6 +108,9 @@
     if (elEmoji) elEmoji.textContent = ui.emoji;
     if (elLabel) elLabel.textContent = ui.label;
     if (elStatus) elStatus.textContent = statusOverride != null ? statusOverride : ui.status;
+    // 焦点 guard 策略随 phase 换轨（guard.start 幂等）：进 speaking 释放占位麦走媒体
+    // 通路（防通信模式把 TTS 路由到手机扬声器），离开 speaking 重新持麦压住外部音乐。
+    holdAudioFocus();
   }
 
   // ── 字幕（镜像会话，用 app.js 的 renderMarkdown 保持渲染一致）──────────────
@@ -211,16 +214,23 @@
       // aliyun 引擎页面自采音，可叠一条占位麦克风流（同 App 内并发采集无冲突）；
       // webspeech 的识别采集在浏览器服务侧，页面持麦可能被 Android 并发采集限制
       // 静音掉识别，退回无声 audio 兜底。
-      preferMicHold: () => v.engine === "aliyun",
+      // 朗读期间必须放麦：持麦（带 AEC 采集）会让 Android 进通信模式——音量键变
+      // 「通话音量」、输出走通话通路（手机扬声器而非 A2DP/CarWith 媒体通路），
+      // TTS 会从手机出声而到不了车机音响。聆听/思考/空闲阶段持麦保持外部音乐暂停。
+      preferMicHold: () => v.engine === "aliyun" && v.phase !== "speaking",
     });
     return v.audioFocusGuard;
   }
-  function holdAudioFocus() {
+  function holdAudioFocus(gestureUnlock) {
     // 浮层开着就持有（不要求 v.active）：打开 voice 页面外部音乐即应暂停，
     // 否则聆听会把音乐采进识别；暂停免提也不放音乐回来，✕ 退出才释放。
     if (!v.open) return;
     const guard = ensureAudioFocusGuard();
-    if (guard) { try { guard.start(); } catch (_) {} }
+    if (!guard) return;
+    try { guard.start(); } catch (_) {}
+    // 用户手势内顺带解锁静音 audio 的 autoplay：朗读期间「释放占位麦 → 切静音
+    // audio」发生在非手势上下文，元素若从未在手势内 play 过会被 autoplay 拦下。
+    if (gestureUnlock && typeof guard.prime === "function") { try { guard.prime(); } catch (_) {} }
   }
   function releaseAudioFocus(dispose) {
     const guard = v.audioFocusGuard;
@@ -836,7 +846,7 @@
 
   function startLoop() {
     v.active = true;
-    holdAudioFocus();                       // 用户手势内抢住媒体焦点，覆盖停麦→TTS 首帧之间的空窗
+    holdAudioFocus(true);                   // 用户手势内抢住媒体焦点（顺带解锁静音 audio），覆盖停麦→TTS 首帧之间的空窗
     try { synth.cancel(); } catch (_) {}   // 用户手势内先解锁 TTS
     // 用户手势内建好并 resume 阿里云 TTS 的 AudioContext：移动端 Chrome 只认手势内的
     // resume，否则首帧音频到达时才懒建会停在 suspended（不出声 + source 不 onended 卡死）。
@@ -1090,7 +1100,7 @@
     v.open = true;
     elOverlay.hidden = false;
     document.body.classList.add("voice-open");
-    holdAudioFocus();   // 打开浮层即占焦点停外部音乐（占位麦不需要手势，权限已授过即生效）
+    holdAudioFocus(true);   // 打开浮层即占焦点停外部音乐（占位麦不需要手势，权限已授过即生效；顺带手势内解锁静音 audio）
     buildThinkOptions(state.runtime && state.runtime.thinkingOptions);
     reflectThinking(state.thinkingLevel);
     buildOutModeOptions();    // 底部「语音输出」下拉 + 右上角「音色」（配置到位则含阿里云项与音色目录）
@@ -1257,8 +1267,8 @@
     //   朗读中 → 打断本地播报；思考中 → 取消后端回复；聆听中 → 立即发送（不等去抖）。
     if (elOverlay) elOverlay.addEventListener("click", (e) => {
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
-      // 点屏是用户手势：顺手解锁播放器 ctx，兜底首次未在点麦手势里解锁的情况。
-      holdAudioFocus();
+      // 点屏是用户手势：顺手解锁播放器 ctx 和静音 audio，兜底首次未在点麦手势里解锁的情况。
+      holdAudioFocus(true);
       if (v.pcmPlayer) { try { v.pcmPlayer.unlock(); } catch (_) {} }
       const resolve = window.resolveTapAction || resolveTapAction;
       switch (resolve(v.phase, v.speaking)) {
