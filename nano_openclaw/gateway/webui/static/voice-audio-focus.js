@@ -23,38 +23,20 @@
  * UMD：依赖全部可注入（Audio/URL/Blob/audioSession），node --test 可测。
  */
 (function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) module.exports = factory();
-  else root.createVoiceAudioFocusGuard = factory();
-})(typeof self !== "undefined" ? self : this, function () {
+  if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./voice-wav.js"));
+  else root.createVoiceAudioFocusGuard = factory(root.VoiceWav);
+})(typeof self !== "undefined" ? self : this, function (wav) {
   "use strict";
-
-  function writeAscii(view, offset, text) {
-    for (var i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
-  }
 
   // 生成 4s 近静音 WAV（8bit 单声道 8kHz）。时长 <5s（见头注释 C1）；
   // 交替 127/128 而非纯 128：个别平台会把完全静音流优化掉。
   function makeSilentWavBlob(BlobImpl, seconds, sampleRate) {
     seconds = seconds || 4;
     sampleRate = sampleRate || 8000;
-    var samples = Math.max(1, Math.floor(seconds * sampleRate));
-    var buf = new ArrayBuffer(44 + samples);
-    var view = new DataView(buf);
-    writeAscii(view, 0, "RIFF");
-    view.setUint32(4, 36 + samples, true);
-    writeAscii(view, 8, "WAVE");
-    writeAscii(view, 12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);          // PCM
-    view.setUint16(22, 1, true);          // mono
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate, true); // byteRate（8bit mono）
-    view.setUint16(32, 1, true);          // blockAlign
-    view.setUint16(34, 8, true);          // bitsPerSample
-    writeAscii(view, 36, "data");
-    view.setUint32(40, samples, true);
-    for (var i = 0; i < samples; i++) view.setUint8(44 + i, i % 2 ? 127 : 128);
-    return new BlobImpl([buf], { type: "audio/wav" });
+    var n = Math.max(1, Math.floor(seconds * sampleRate));
+    var samples = new Uint8Array(n);
+    for (var i = 0; i < n; i++) samples[i] = i % 2 ? 127 : 128;
+    return wav.makeWavBlob(BlobImpl, sampleRate, samples);
   }
 
   function createVoiceAudioFocusGuard(opts) {

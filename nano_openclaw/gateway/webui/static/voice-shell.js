@@ -50,6 +50,7 @@
   let lastFocusMode = "released";
   let wakeLock = null;
   const timers = {};            // tag -> timeout id
+  const timerArmedAt = {};      // tag -> 最近一次armed时刻（wakeIdle 节流用）
 
   const prefs = { engine: "", outMode: "", aliyunVoice: "", voiceURI: "" };
   let voiceCfg = null;
@@ -84,7 +85,7 @@
     }
     return kw;
   }
-  function inStandby() { return Boolean(model.ctx.wake && !model.ctx.wake.awake); }
+  function inStandby() { return core.inStandby(model.ctx); }   // 判定单源在 core
   // startMic 实际使用的引擎：待机本地听关键词，唤醒后切回所选引擎【W2】。
   function desiredEngineName() { return inStandby() ? "webspeech" : resolvedEngine(); }
   // 输出引擎：用户偏好优先；无偏好且 config 已到 → 阿里云可用默认流式，否则本地。
@@ -285,8 +286,13 @@
         break;
       }
       case "armTimer": {
+        // wakeIdle 在说话期间每个 interim 都会重置——节流到 2s 一次，避免高频
+        // clearTimeout/setTimeout 空转（回落语义只需 20s±2s 精度）。
+        if (cmd.tag === "wakeIdle" && timers.wakeIdle
+            && Date.now() - (timerArmedAt.wakeIdle || 0) < 2000) break;
         const ms = cmd.ms != null ? cmd.ms : ensureRecognizer().startTimeoutMs;   //【A5】
         if (timers[cmd.tag]) clearTimeout(timers[cmd.tag]);
+        timerArmedAt[cmd.tag] = Date.now();
         timers[cmd.tag] = setTimeout(() => {
           timers[cmd.tag] = null;
           dispatch({ type: "TIMEOUT", tag: cmd.tag });

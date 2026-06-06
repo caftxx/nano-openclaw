@@ -46,39 +46,43 @@
   var SENTENCE_END = /[。！？!?；;\n]/;
   var ACTIVE_STATES = { starting: 1, capturing: 1, thinking: 1, speaking: 1, cooldown: 1 };
   var WAKE_IDLE_MS = 20000;   // 唤醒后连续对话窗口：聆听中静默 20s 回落待唤醒
-  var WAKE_STRIP = /[\s。，、！？!?.,;；:：'"""''()（）]+/g;
+  var WAKE_SEP = /[\s。，、！？!?.,;；:：'"""''()（）]/;   // 唤醒匹配忽略的分隔符（单字符判定，无 g 防 lastIndex 状态）
 
   function isActive(state) { return Boolean(ACTIVE_STATES[state]); }
 
   // 唤醒词匹配（纯函数）——**按拼音等价类**而非字面量：ASR 写成哪个同音字无法控制
   // （"小克"常被写成 小课/小柯/小科），逐字取无声调主读音音节比较，同音即命中。
   // 多音字两侧用同一份主读音映射（voice-pinyin.js），即使取的不是语境读音也一致命中。
-  // 归一化去空白/中英标点；非常用汉字/非汉字按小写原字符比较（英文唤醒词照常工作）。
-  // remainder 为关键词之后的原文尾巴（"小课今天天气"→"今天天气"），非空时一句话直达。
+  // 分隔符（空白/中英标点）不参与比较；非常用汉字/非汉字按小写原字符比较（英文唤醒词照常）。
+  // remainder 为关键词之后的**原文切片**（仅修剪头部分隔符）：token 记录原文索引，
+  // 空格与内部标点原样保留——"hey nano, play some music" 直达发送 "play some music"
+  // 而不是被去空格的 "playsomemusic"。
   function wakeTokens(text) {
-    var norm = String(text || "").replace(WAKE_STRIP, "");
+    var raw = String(text || "");
     var toks = [];
-    for (var i = 0; i < norm.length; i++) {
-      var ch = norm[i];
+    for (var i = 0; i < raw.length; i++) {
+      var ch = raw[i];
+      if (WAKE_SEP.test(ch)) continue;   // 分隔符不是 token，但原文索引语义保留
       var sy = pinyin && pinyin.syllableOf ? pinyin.syllableOf(ch) : null;
-      toks.push({ raw: ch, key: sy || ch.toLowerCase() });
+      toks.push({ pos: i, key: sy || ch.toLowerCase() });
     }
-    return toks;
+    return { raw: raw, toks: toks };
   }
   function matchWake(text, keywords) {
-    var toks = wakeTokens(text);
+    var t = wakeTokens(text);
     for (var k = 0; k < (keywords || []).length; k++) {
-      var kw = wakeTokens(keywords[k]);
+      var kw = wakeTokens(keywords[k]).toks;
       if (!kw.length) continue;
-      for (var i = 0; i + kw.length <= toks.length; i++) {
+      for (var i = 0; i + kw.length <= t.toks.length; i++) {
         var hit = true;
         for (var j = 0; j < kw.length; j++) {
-          if (toks[i + j].key !== kw[j].key) { hit = false; break; }
+          if (t.toks[i + j].key !== kw[j].key) { hit = false; break; }
         }
         if (hit) {
-          var rem = "";
-          for (var t = i + kw.length; t < toks.length; t++) rem += toks[t].raw;
-          return { matched: true, remainder: rem };
+          // 关键词末 token 之后的原文，修剪头部分隔符（"小克，今天" → "今天"）
+          var start = t.toks[i + kw.length - 1].pos + 1;
+          while (start < t.raw.length && WAKE_SEP.test(t.raw[start])) start++;
+          return { matched: true, remainder: t.raw.slice(start).trim() };
         }
       }
     }
@@ -92,6 +96,15 @@
   }
 
   function inStandby(ctx) { return Boolean(ctx.wake && !ctx.wake.awake); }
+
+  // 唤醒动作的公共序列（关键词命中 / 待机点屏手动唤醒共用）：
+  // 提示音 + 停待机麦——后续由调用方决定续听（startMic 按 awake 切回所选引擎）还是直达发送。
+  function wakeUpCmds(ctx, cmds) {
+    ctx.wake.awake = true;
+    cmds.push({ type: "chime" });
+    cmds.push({ type: "stopMic" });
+    cmds.push({ type: "clearTimer", tag: "start" });
+  }
 
   // 音频焦点派生【C3】：浮层开着（含 paused）一律持 4s 近静音保持音的瞬态焦点，
   // closed/error 释放。刻意**不存在持麦档**：曾用占位麦（AEC 采集）压外部音乐，但
@@ -274,11 +287,8 @@
           case "starting":
             if (inStandby(ctx)) {
               // 待机点屏 = 手动唤醒（兜底唤醒词识别不出来的场景）【W5】
-              ctx.wake.awake = true;
-              cmds.push({ type: "chime" });
-              cmds.push({ type: "stopMic" });
-              cmds.push({ type: "clearTimer", tag: "start" });
-              return res(startListening(ctx, cmds), ctx, cmds);   // startMic 按 awake 切回所选引擎
+              wakeUpCmds(ctx, cmds);
+              return res(startListening(ctx, cmds), ctx, cmds);
             }
             cmds.push({ type: "flushMic" });   // 立即发送：shell 调 flushNow，空则回 FLUSH_EMPTY
             return res(state, ctx, cmds);
@@ -343,14 +353,12 @@
           // 待机：只做唤醒词匹配，不发送【W1/W2/W3】
           var m = matchWake(text, ctx.wake.keywords);
           if (!m.matched) {
-            // 非唤醒词：丢弃，原地续听（recognizer 仍在跑，flush 已清空其缓冲）
-            ctx.statusOverride = "待唤醒：未命中唤醒词";
+            // 非唤醒词：静默丢弃、原地续听（recognizer 仍在跑，flush 已清空其缓冲）。
+            // 不设 statusOverride——顶掉待机提示语后没有事件会把它清回来，
+            // 提示「说"xx"开始对话」会永久消失。
             return res(state, ctx, cmds);
           }
-          ctx.wake.awake = true;
-          cmds.push({ type: "chime" });
-          cmds.push({ type: "stopMic" });
-          cmds.push({ type: "clearTimer", tag: "start" });
+          wakeUpCmds(ctx, cmds);
           if (m.remainder) {
             // 一句话直达："小克今天天气" → 唤醒并直接发送尾巴【W3】
             cmds.push({ type: "chatSend", text: m.remainder });
@@ -422,6 +430,7 @@
         if (state === "capturing" || state === "starting") {
           cmds.push({ type: "stopMic" });
           cmds.push({ type: "clearTimer", tag: "start" });
+          cmds.push({ type: "clearTimer", tag: "wakeIdle" });   // 进入对话，回落计时随之失效
           return res("thinking", ctx, cmds);
         }
         if (state === "speaking" || state === "cooldown") {
@@ -557,6 +566,7 @@
         // 聆听族：丢弃锁屏期间可能卡死的旧识别实例，延迟 1.2s 等浏览器恢复再开麦【D1】
         cmds.push({ type: "stopMic" });
         cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "clearTimer", tag: "wakeIdle" });   // 恢复路径重开麦时会重新armed
         cmds.push({ type: "armTimer", tag: "cooldown", ms: 1200 });
         return res("cooldown", ctx, cmds);
       }
@@ -580,5 +590,6 @@
     focusMode: focusMode,
     isActive: isActive,
     matchWake: matchWake,
+    inStandby: inStandby,
   };
 });

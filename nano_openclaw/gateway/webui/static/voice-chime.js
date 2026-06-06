@@ -10,41 +10,26 @@
  * UMD：依赖全部可注入（Audio/URL/Blob），node --test 可测。
  */
 (function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) module.exports = factory();
-  else root.createVoiceChime = factory();
-})(typeof self !== "undefined" ? self : this, function () {
+  if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./voice-wav.js"));
+  else root.createVoiceChime = factory(root.VoiceWav);
+})(typeof self !== "undefined" ? self : this, function (wav) {
   "use strict";
 
   // 双音「叮」：880Hz → 1320Hz 各 ~0.11s，指数衰减包络，8bit 单声道 8kHz。
   function makeChimeWavBlob(BlobImpl, sampleRate) {
     sampleRate = sampleRate || 8000;
     var seg = Math.floor(sampleRate * 0.11);
-    var samples = seg * 2;
-    var buf = new ArrayBuffer(44 + samples);
-    var view = new DataView(buf);
-    function ascii(off, text) { for (var i = 0; i < text.length; i++) view.setUint8(off + i, text.charCodeAt(i)); }
-    ascii(0, "RIFF");
-    view.setUint32(4, 36 + samples, true);
-    ascii(8, "WAVE");
-    ascii(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate, true);
-    view.setUint16(32, 1, true);
-    view.setUint16(34, 8, true);
-    ascii(36, "data");
-    view.setUint32(40, samples, true);
+    var n = seg * 2;
+    var samples = new Uint8Array(n);
     var freqs = [880, 1320];
-    for (var i = 0; i < samples; i++) {
+    for (var i = 0; i < n; i++) {
       var f = freqs[(i / seg) | 0];
       var t = (i % seg) / sampleRate;
       var env = Math.exp(-t * 18);   // 指数衰减：清脆不刺耳
       var v = Math.sin(2 * Math.PI * f * t) * env * 90;   // 90/127 ≈ 0.7 FS 峰值
-      view.setUint8(44 + i, 128 + Math.round(v));
+      samples[i] = 128 + Math.round(v);
     }
-    return new BlobImpl([buf], { type: "audio/wav" });
+    return wav.makeWavBlob(BlobImpl, sampleRate, samples);
   }
 
   function createVoiceChime(opts) {
