@@ -1,0 +1,478 @@
+/* 语音免提核心状态机 —— 纯函数，零 DOM / 零 IO / 零计时器。
+ *
+ *   transition(model, event) -> { state, ctx, commands[] }
+ *
+ * 副作用全部以 command 形式返回，由 voice-shell.js 解释执行；外部发生的一切
+ * （识别回调 / 合成回调 / 聊天事件 / 点击 / 可见性 / 计时器到点）统一归一成事件
+ * 喂进来。这让所有竞态都能用「事件序列回放」做纯单测（tests/voice-core.test.js）。
+ *
+ * ── 状态 ─────────────────────────────────────────────────────────────────────
+ *   closed     浮层未开
+ *   paused     浮层开着、免提未激活（含深链 /voice 进入）
+ *   starting   已命令开麦、等识别引擎确认（自带超时重建【A4】，窗口由引擎申报【A5】）
+ *   capturing  正在聆听
+ *   thinking   已发送 / turn 流式中、且当前无播报
+ *   speaking   有声音在播（含云端合成排队播放、本地 synth、错误短播报）
+ *   cooldown   定时等待后再开麦：读完后 500ms 防外放尾音回采【D3】；
+ *              回前台 1200ms 等浏览器麦克风/语音服务恢复【D1】
+ *   error      不可恢复错误（HTTPS 硬阻断 / 前台拒麦 / 连接丢失）
+ *
+ * ── 关键正交维度（不是状态、是 ctx 字段）────────────────────────────────────
+ *   ctx.hidden        页面在后台/锁屏【A1/D2】：后台不主动拆链路（小米锁屏仍可对话），
+ *                     但不开新麦、不起新播报；该读未读的内容记 resumeReplay，
+ *                     回前台全文重播一次且只一次。
+ *   ctx.turn          当前 turn：open（流式中）/ muted（本轮禁播报：暂停态接的 turn、
+ *                     或用户点屏打断【E1】）/ sentUpTo（按句末标点切句的进度游标）/
+ *                     pushed（本轮是否投过合成）/ anyAudio（本轮是否出过声）/
+ *                     cancelRequested（已发 turn.cancel，防重复刷【E2】）
+ *
+ * 音频焦点不在命令列里：它是状态的派生纯函数 focusMode(state)【C3】，shell 每次
+ * 迁移后 diff 换轨——浮层开着即持静音保持音的瞬态焦点，closed/error 释放。任何
+ * 阶段都不做 AEC 采集/持麦（通信模式 = 假"来电"，其进入/退出会劫持音量键与
+ * TTS 路由，并触发车机在"通话结束"时自动唤醒已暂停的音乐，详见 focusMode 注释）。
+ *
+ * UMD：node --test 直接 require。
+ */
+(function (root, factory) {
+  if (typeof module !== "undefined" && module.exports) module.exports = factory();
+  else root.VoiceCore = factory();
+})(typeof self !== "undefined" ? self : this, function () {
+  "use strict";
+
+  var SENTENCE_END = /[。！？!?；;\n]/;
+  var ACTIVE_STATES = { starting: 1, capturing: 1, thinking: 1, speaking: 1, cooldown: 1 };
+
+  function isActive(state) { return Boolean(ACTIVE_STATES[state]); }
+
+  // 音频焦点派生【C3】：浮层开着（含 paused）一律持 4s 近静音保持音的瞬态焦点，
+  // closed/error 释放。刻意**不存在持麦档**：曾用占位麦（AEC 采集）压外部音乐，但
+  // AEC 采集让 Android 进通信模式 = 系统层面"来电话"——音量键变通话音量、TTS 被
+  // 路由到手机；更要命的是释放麦时"通话结束"，车机/蓝牙栈按通话结束的标准行为
+  // 自动恢复媒体播放（AVRCP PLAY），把用户手动暂停的音乐在朗读开始的瞬间叫醒。
+  // 瞬态保持音对实际用法足够：用户进语音页前音乐已暂停，没人发 GAIN 它就不会醒；
+  // 正在播的音乐则只被压低（may-duck），不强行暂停。
+  function focusMode(state) {
+    if (state === "closed" || state === "error") return "released";
+    return "silent-audio";
+  }
+
+  function createInitialModel() {
+    return {
+      state: "closed",
+      ctx: {
+        hidden: false,
+        hardBlock: null,        // "https" | "no-sr" | null（OPEN 时注入）
+        statusOverride: "",     // 状态行临时文案（识别中：xxx 等），随迁移清空
+        turn: null,
+        resumeReplay: false,    // 锁屏期间有该读未读的内容【D2】
+      },
+    };
+  }
+
+  // ── 内部小工具（全部纯函数，操作浅拷贝）────────────────────────────────────
+  function res(state, ctx, commands) { return { state: state, ctx: ctx, commands: commands || [] }; }
+
+  function newTurn(id, muted) {
+    return {
+      id: id || "",
+      open: true,
+      text: "",
+      sentUpTo: 0,        // 已投合成的文本进度（按句末标点切）
+      muted: Boolean(muted),
+      cancelRequested: false,
+      anyAudio: false,
+      pushed: false,
+    };
+  }
+
+  // 从 turn.text[sentUpTo..] 切出「到最后一个句末标点为止」的整句块；没有整句返回 null。
+  function readyChunk(turn) {
+    var rest = turn.text.slice(turn.sentUpTo);
+    if (!rest) return null;
+    var lastEnd = -1;
+    for (var i = rest.length - 1; i >= 0; i--) {
+      if (SENTENCE_END.test(rest[i])) { lastEnd = i; break; }
+    }
+    if (lastEnd < 0) return null;
+    return { text: rest.slice(0, lastEnd + 1).trim(), advance: lastEnd + 1 };
+  }
+
+  // 给 turn 投一段合成文本：首段补 speakerBegin（懒开流——muted/paused 的 turn
+  // 永远不该开 TTS 连接）。
+  function speakCmds(turn, text, cmds) {
+    if (!turn.pushed) { cmds.push({ type: "speakerBegin" }); turn.pushed = true; }
+    cmds.push({ type: "speak", text: text });
+  }
+
+  // 进入 starting：开麦 + 启动看门狗计时器（ms 由 shell 按引擎 startTimeoutMs 填）【A4/A5】。
+  function startListening(cmds) {
+    cmds.push({ type: "startMic" });
+    cmds.push({ type: "armTimer", tag: "start", ms: null });
+    return "starting";
+  }
+
+  // turn 收尾后的去向：本轮出过声 → 冷却 500ms 防尾音回采【D3】；没出过声立即开麦。
+  function resumeAfterTurn(turn, cmds) {
+    if (turn && turn.anyAudio) {
+      cmds.push({ type: "armTimer", tag: "cooldown", ms: 500 });
+      return "cooldown";
+    }
+    return startListening(cmds);
+  }
+
+  function turnIsOpen(ctx, event) {
+    return Boolean((ctx.turn && ctx.turn.open) || (event && event.externalTurnOpen));
+  }
+
+  // ── 主迁移函数 ──────────────────────────────────────────────────────────────
+  function transition(model, event) {
+    var state = model.state;
+    var ctx = Object.assign({}, model.ctx);
+    if (ctx.turn) ctx.turn = Object.assign({}, ctx.turn);
+    ctx.statusOverride = "";   // 临时文案默认随迁移清空，需要的分支自己重设
+    var cmds = [];
+    var turn = ctx.turn;
+    var chunk, tail;
+
+    switch (event.type) {
+
+      // ── 浮层开关 ──────────────────────────────────────────────────────────
+      case "OPEN": {
+        if (state !== "closed") {
+          // 已开着：autoStart 且暂停中 → 等同点圆启动（openOverlay(true) 旧语义）
+          if (event.autoStart && state === "paused" && !ctx.hardBlock) {
+            return transition({ state: state, ctx: ctx }, { type: "TOGGLE", externalTurnOpen: event.externalTurnOpen });
+          }
+          return res(state, ctx, cmds);
+        }
+        ctx = createInitialModel().ctx;
+        ctx.hidden = Boolean(event.hidden);
+        ctx.hardBlock = event.hardBlock || null;
+        if (ctx.hardBlock) {
+          ctx.statusOverride = ctx.hardBlock === "https"
+            ? "需要 HTTPS 才能使用麦克风" : "浏览器不支持语音识别";
+          return res("error", ctx, cmds);
+        }
+        if (event.autoStart) {
+          cmds.push({ type: "primeAudio" });
+          cmds.push({ type: "wakeLock", on: true });
+          if (event.externalTurnOpen) {
+            ctx.statusOverride = "等待当前回复结束…";
+            return res("thinking", ctx, cmds);
+          }
+          return res(startListening(cmds), ctx, cmds);
+        }
+        return res("paused", ctx, cmds);
+      }
+
+      case "CLOSE": {
+        if (state === "closed") return res(state, ctx, cmds);
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "stopSpeech" });
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "clearTimer", tag: "cooldown" });
+        cmds.push({ type: "wakeLock", on: false });
+        cmds.push({ type: "teardown" });   // shell：dispose 播放器/合成链、释放焦点 guard
+        return res("closed", createInitialModel().ctx, cmds);
+      }
+
+      // ── 点圆（开始/暂停免提）─────────────────────────────────────────────
+      case "TOGGLE": {
+        if (state === "closed" || ctx.hardBlock) return res(state, ctx, cmds);
+        if (state === "paused" || state === "error") {
+          if (state === "error") ctx.hardBlock = null;   // 非硬阻断错误允许重试
+          cmds.push({ type: "primeAudio" });             // 手势内解锁静音 audio/播放器【B2/C3】
+          cmds.push({ type: "wakeLock", on: true });
+          if (turnIsOpen(ctx, event)) {
+            ctx.statusOverride = "等待当前回复结束…";
+            return res("thinking", ctx, cmds);
+          }
+          return res(startListening(cmds), ctx, cmds);
+        }
+        // 活跃 → 暂停：不释放焦点（浮层开着维持静音环境，✕ 退出才放音乐回来）
+        if (turn) { turn.muted = true; }
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "stopSpeech" });
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "clearTimer", tag: "cooldown" });
+        cmds.push({ type: "wakeLock", on: false });
+        ctx.statusOverride = "已暂停，点击麦克风继续";
+        return res("paused", ctx, cmds);
+      }
+
+      // ── 点屏空白处（手势意图按状态路由，吸收旧 resolveTapAction）──────────
+      case "TAP": {
+        // 点屏是用户手势：无论路由到哪个分支，先顺手解锁静音保持音/播放器 ctx 的
+        // autoplay（与 OPEN/TOGGLE 同一命令通道，可回放测试可见）。
+        cmds.push({ type: "primeAudio" });
+        switch (state) {
+          case "capturing":
+          case "starting":
+            cmds.push({ type: "flushMic" });   // 立即发送：shell 调 flushNow，空则回 FLUSH_EMPTY
+            return res(state, ctx, cmds);
+          case "thinking":
+            if (turnIsOpen(ctx, event)) {
+              ctx.statusOverride = "正在停止当前回复…";
+              if (turn && turn.cancelRequested) return res(state, ctx, cmds);   // 防重复刷【E2】
+              if (turn) turn.cancelRequested = true;
+              cmds.push({ type: "cancelTurn", turnId: (turn && turn.id) || event.externalTurnId || "" });
+              return res(state, ctx, cmds);
+            }
+            return res(startListening(cmds), ctx, cmds);   // 无可取消的 turn：回聆听
+          case "speaking":
+            cmds.push({ type: "stopSpeech" });
+            if (turn && turn.open) {
+              // 后端仍在生成：取消整轮；muted 防后续 delta 再开口【E1】
+              turn.muted = true;
+              ctx.statusOverride = "正在停止当前回复…";
+              if (!turn.cancelRequested) {
+                turn.cancelRequested = true;
+                cmds.push({ type: "cancelTurn", turnId: turn.id });
+              }
+              return res("thinking", ctx, cmds);
+            }
+            return res(startListening(cmds), ctx, cmds);   // 只剩本地播报：停掉立即续听
+          case "cooldown":
+            cmds.push({ type: "clearTimer", tag: "cooldown" });
+            return res(startListening(cmds), ctx, cmds);
+          default:
+            return res(state, ctx, cmds);
+        }
+      }
+
+      case "FLUSH_EMPTY": {
+        if (state === "capturing" || state === "starting") {
+          ctx.statusOverride = "还没识别到内容，请继续说话";
+        }
+        return res(state, ctx, cmds);
+      }
+
+      // ── 识别引擎事件 ──────────────────────────────────────────────────────
+      case "MIC_STARTED": {
+        if (state !== "starting") return res(state, ctx, cmds);
+        cmds.push({ type: "clearTimer", tag: "start" });
+        return res("capturing", ctx, cmds);
+      }
+
+      case "MIC_INTERIM": {
+        if (state === "capturing" || state === "starting") {
+          ctx.statusOverride = "识别中：" + (event.text || "");
+        }
+        return res(state, ctx, cmds);
+      }
+
+      case "MIC_FINAL": {
+        if (state !== "capturing" && state !== "starting") return res(state, ctx, cmds);
+        var text = (event.text || "").trim();
+        if (!text) return res(state, ctx, cmds);
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "chatSend", text: text });
+        return res("thinking", ctx, cmds);
+      }
+
+      case "MIC_ENDED": {
+        // 自然静音超时/服务掉线的续听接力；后台不重启（回前台统一恢复）【A1】
+        if (state !== "capturing" && state !== "starting") return res(state, ctx, cmds);
+        if (ctx.hidden) return res("starting", ctx, cmds);
+        return res(startListening(cmds), ctx, cmds);
+      }
+
+      case "MIC_ERROR": {
+        if (event.kind !== "denied") return res(state, ctx, cmds);   // 非权限错误：等 MIC_ENDED 续听重试
+        if (ctx.hidden) return res(state, ctx, cmds);                // 后台拒麦是暂时的【A1】
+        if (!isActive(state)) return res(state, ctx, cmds);
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "wakeLock", on: false });
+        ctx.statusOverride = "麦克风权限被拒绝，请在浏览器设置中允许";
+        return res("error", ctx, cmds);
+      }
+
+      case "TIMEOUT": {
+        if (event.tag === "start") {
+          // 聆听看门狗【A4】：starting 卡死（onstart 不回 / start 抛错被吞）→ 强制重建重开
+          if (state !== "starting" || ctx.hidden) return res(state, ctx, cmds);
+          cmds.push({ type: "rebuildMic" });
+          cmds.push({ type: "armTimer", tag: "start", ms: null });
+          return res(state, ctx, cmds);
+        }
+        if (event.tag === "cooldown") {
+          if (state !== "cooldown" || ctx.hidden) return res(state, ctx, cmds);
+          if (turnIsOpen(ctx, event)) {
+            ctx.statusOverride = "等待当前回复结束…";
+            return res("thinking", ctx, cmds);
+          }
+          return res(startListening(cmds), ctx, cmds);
+        }
+        return res(state, ctx, cmds);
+      }
+
+      // ── 聊天事件（app.js 同一 ws/session 喂入）────────────────────────────
+      case "CHAT_ACCEPTED": {
+        if (state === "closed") return res(state, ctx, cmds);
+        cmds.push({ type: "stopSpeech" });   // 新 turn 接管：旧播报清场
+        ctx.resumeReplay = false;
+        // muted：非活跃态（暂停中）接的 turn 本轮禁播报（旧 speakThisTurn=v.active）
+        ctx.turn = newTurn(event.turnId, !isActive(state));
+        if (state === "capturing" || state === "starting") {
+          cmds.push({ type: "stopMic" });
+          cmds.push({ type: "clearTimer", tag: "start" });
+          return res("thinking", ctx, cmds);
+        }
+        if (state === "speaking" || state === "cooldown") {
+          cmds.push({ type: "clearTimer", tag: "cooldown" });
+          return res("thinking", ctx, cmds);
+        }
+        return res(state, ctx, cmds);   // thinking 维持；paused 维持（muted 已置）
+      }
+
+      case "TEXT_DELTA": {
+        if (!turn) return res(state, ctx, cmds);
+        turn.text += event.text || "";
+        if (turn.muted || !isActive(state)) return res(state, ctx, cmds);
+        if (ctx.hidden) {
+          // 后台不起播报：标记回前台全文重播【D2】
+          if (turn.text.trim()) ctx.resumeReplay = true;
+          return res(state, ctx, cmds);
+        }
+        chunk = readyChunk(turn);
+        if (chunk) {
+          turn.sentUpTo += chunk.advance;
+          if (chunk.text) {
+            speakCmds(turn, chunk.text, cmds);
+            return res("speaking", ctx, cmds);
+          }
+        }
+        if (state === "thinking") ctx.statusOverride = "正在接收回复…";
+        return res(state, ctx, cmds);
+      }
+
+      case "TURN_DONE": {
+        if (!turn) return res(state, ctx, cmds);
+        turn.open = false;
+        turn.cancelRequested = false;
+        if (turn.muted || !isActive(state)) {
+          // 本轮禁播报（被打断/暂停）：活跃态回聆听，暂停态原地
+          if (!isActive(state)) return res(state, ctx, cmds);
+          if (ctx.hidden) return res("starting", ctx, cmds);
+          cmds.push({ type: "stopSpeech" });   // 防御：打断后的残余队列
+          return res(resumeAfterTurn(turn, cmds), ctx, cmds);
+        }
+        if (ctx.hidden) {
+          if (turn.text.trim()) ctx.resumeReplay = true;
+          return res(state, ctx, cmds);
+        }
+        tail = turn.text.slice(turn.sentUpTo).trim();
+        turn.sentUpTo = turn.text.length;
+        if (tail) speakCmds(turn, tail, cmds);
+        if (turn.pushed) {
+          cmds.push({ type: "speakerEnd" });   // 文本流收尾：云端发 Stop / 本地标记排空即完【B4】
+          return res("speaking", ctx, cmds);
+        }
+        return res(resumeAfterTurn(turn, cmds), ctx, cmds);   // 整轮无可读文本
+      }
+
+      case "TURN_ERROR": {
+        ctx.turn = null;
+        cmds.push({ type: "stopSpeech" });
+        if (!isActive(state)) return res(state, ctx, cmds);
+        if (ctx.hidden) return res("starting", ctx, cmds);
+        cmds.push({ type: "speakOnce", text: "出错了" });   // 读完 SPEAK_DRAINED → cooldown → 续听
+        return res("speaking", ctx, cmds);
+      }
+
+      case "TURN_CANCELLED": {
+        ctx.turn = null;
+        cmds.push({ type: "stopSpeech" });
+        if (!isActive(state)) return res(state, ctx, cmds);
+        if (ctx.hidden) return res("starting", ctx, cmds);
+        return res(startListening(cmds), ctx, cmds);
+      }
+
+      // ── 合成端事件 ────────────────────────────────────────────────────────
+      case "SPEAK_AUDIBLE": {
+        if (turn) turn.anyAudio = true;   // 无 turn 的 speakOnce 场景：drained 时按出过声走冷却
+        return res(state, ctx, cmds);
+      }
+
+      case "SPEAK_DRAINED": {
+        if (state !== "speaking") return res(state, ctx, cmds);
+        if (turn && turn.open) {
+          ctx.statusOverride = "正在接收回复…";
+          return res("thinking", ctx, cmds);   // 句间空隙：等更多 delta【E1】
+        }
+        return res(resumeAfterTurn(turn || { anyAudio: true }, cmds), ctx, cmds);
+      }
+
+      case "SPEAKER_RESET": {
+        // 用户换「语音输出」引擎/音色：正在播立即停，本轮按读完处理；链由 shell 重建
+        if (state !== "speaking") return res(state, ctx, cmds);
+        cmds.push({ type: "stopSpeech" });
+        if (turn) { turn.muted = true; }   // 本轮剩余 delta 不再用旧链开口
+        if (turn && turn.open) {
+          ctx.statusOverride = "正在接收回复…";
+          return res("thinking", ctx, cmds);
+        }
+        return res(resumeAfterTurn(turn, cmds), ctx, cmds);
+      }
+
+      // ── 可见性（锁屏/切后台/回前台）──────────────────────────────────────
+      case "HIDDEN": {
+        if (state === "closed" || ctx.hidden) return res(state, ctx, cmds);
+        ctx.hidden = true;
+        cmds.push({ type: "wakeLock", on: false });
+        // 后台不主动拆链路：锁屏期间可能仍能对话；脆弱的是回前台那一瞬间【A1/D1】
+        return res(state, ctx, cmds);
+      }
+
+      case "VISIBLE": {
+        if (state === "closed" || !ctx.hidden) return res(state, ctx, cmds);
+        ctx.hidden = false;
+        cmds.push({ type: "recoverSpeechOutput" });   // synth 清卡死队列 / 播放器 unlock / 焦点 refresh
+        if (!isActive(state)) return res(state, ctx, cmds);
+        cmds.push({ type: "wakeLock", on: true });
+        var needReplay = (ctx.resumeReplay || event.speechBusy)
+          && turn && turn.text.trim() && !turn.muted;
+        if (needReplay) {
+          // 全文重播一次且只一次【D2】：先整链拆干净（旧合成流/陈旧播放游标【D1】），
+          // 再从本轮开头完整重投
+          ctx.resumeReplay = false;
+          cmds.push({ type: "stopSpeech" });
+          turn.sentUpTo = turn.text.length;
+          turn.pushed = false;
+          speakCmds(turn, turn.text.trim(), cmds);
+          if (!turn.open) cmds.push({ type: "speakerEnd" });
+          return res("speaking", ctx, cmds);
+        }
+        if (state === "speaking") return res(state, ctx, cmds);   // 云端播报跨后台仍在放：别打断
+        if (turn && turn.open) {
+          ctx.statusOverride = "等待当前回复结束…";
+          return res("thinking", ctx, cmds);
+        }
+        // 聆听族：丢弃锁屏期间可能卡死的旧识别实例，延迟 1.2s 等浏览器恢复再开麦【D1】
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "armTimer", tag: "cooldown", ms: 1200 });
+        return res("cooldown", ctx, cmds);
+      }
+
+      // ── 连接层失败（shell 上报）──────────────────────────────────────────
+      case "SEND_FAILED": {
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "wakeLock", on: false });
+        ctx.statusOverride = event.message || "未连接到服务器";
+        return res("error", ctx, cmds);
+      }
+
+      default:
+        return res(state, ctx, cmds);
+    }
+  }
+
+  return {
+    createInitialModel: createInitialModel,
+    transition: transition,
+    focusMode: focusMode,
+    isActive: isActive,
+  };
+});

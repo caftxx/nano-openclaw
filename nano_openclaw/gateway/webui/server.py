@@ -124,9 +124,9 @@ def create_app(
     @app.get("/voice", response_class=HTMLResponse)
     async def voice() -> str:
         # /voice is a deep-link into the unified WebUI: it serves index.html and
-        # voice-mode.js auto-opens the hands-free overlay (browser
-        # SpeechRecognition -> chat.send over /ws -> speechSynthesis reads back),
-        # sharing the same session/runtime as the chat surface.
+        # voice-shell.js auto-opens the hands-free overlay (recognizer adapter
+        # -> chat.send over /ws -> synthesizer chain reads back), sharing the
+        # same session/runtime as the chat surface.
         path = static_dir / "index.html"
         return path.read_text(encoding="utf-8")
 

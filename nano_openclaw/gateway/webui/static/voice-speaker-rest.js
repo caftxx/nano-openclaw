@@ -1,33 +1,34 @@
 /* 阿里云 RESTful 语音合成引擎 —— 经后端代理 /api/voice/tts（POST JSON）合成。
  *
- * 作为流式合成（voice-tts-aliyun.js）不可用/失败时的自动备选：流式仅商用版可用、
- * 不支持试用版，未开通账号每轮首句会 TaskFailed；RESTful 是标准「语音合成」产品，
- * 试用版亦可用。回退链：流式 →（不可用/失败）RESTful 代理 →（再失败）浏览器本地。
+ * 回退链第二级【B3】：流式仅商用版可用、不支持试用，未开通账号每轮首句 TaskFailed；
+ * RESTful 是标准「语音合成」产品，试用版亦可用。
  *
- * 为何经后端代理：阿里云 RESTful 文档明确「不支持纯 JavaScript 直接调用」——CORS
- * 跨域 + 泄露 appkey 风险。故浏览器只 POST 文本到本端 /api/voice/tts，由后端带
- * 临时 Token + appkey 调阿里云，把 PCM 音频字节回流。浏览器永不接触 AK/SK/appkey。
+ * 为何经后端代理：阿里云 RESTful 文档明确「不支持纯 JavaScript 直接调用」——CORS +
+ * 泄露 appkey 风险。浏览器只 POST 文本到本端 /api/voice/tts，后端带临时 Token + appkey
+ * 调阿里云回流 PCM。浏览器永不接触 AK/SK/appkey。
  *
- * 为何串行：RESTful 一次请求合一段音频、整段返回（或流式分块），多段之间必须按文本
- * 顺序串行播放，否则音频会乱序。内部 FIFO 队列 + 单跑泵保证顺序。音频字节投给上层
- * voice-pcm-player.js 播放（与流式引擎同结构，保持本文件 node 可测）。
+ * 为何串行：RESTful 一次请求合一段音频，多段必须按文本顺序串行投放，否则音频乱序。
+ * 内部 FIFO 队列 + 单跑泵保证顺序。
  *
- * 接口与流式引擎一致：{begin, push, end, abort}，voice-mode.js 通过 currentCloudTts()
- * 在两者间统一切换。
+ * 历史坑位（语义必须保持）：
+ *  - 【B4】reader 的 r.value 是带 byteOffset 的子视图，.buffer 指向更大的底层 buffer，
+ *    直接投会取到视图外字节 → 必须按 byteOffset 精确 slice。
+ *  - end() 后队列排空才 onCompleted（begin+push 不 end 永不 complete——上游 turn.done
+ *    才知道文本流结束）；onCompleted 仅一次。
+ *  - abort：AbortController 取消在途请求 + generation 作废迟到 then/catch。
  *
- * UMD 导出：既能被 node --test require（单测 splitForTts 纯函数 + 注入 fetch 跑泵），
- * 也在浏览器挂 window.createRestfulSynthesizer。
+ * UMD：fetchImpl 注入；splitForTts 纯函数挂工厂上供 node --test。
  */
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) module.exports = factory();
-  else root.createRestfulSynthesizer = factory();
+  else root.createRestSpeaker = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var MAX_LEN = 300;   // 阿里云 RESTful 单次文本上限 300 字符，超出会被截断。
-  var SENTENCE_END = /[。！？!?；;\n]/;
+  var MAX_LEN = 300;   // 阿里云 RESTful 单次文本上限 300 字符，超出被服务端截断。
 
-  // 把文本切成每段 ≤MAX_LEN 的片段：先在句末标点处切，单段仍超长再硬切到 ≤MAX_LEN。
+  // 切成每段 ≤MAX_LEN：到达上限即切（送进来的本就是状态机按句末标点切好的整句，
+  // 只有单句超 300 字才会走到这里，硬切兜底即可）。
   function splitForTts(text) {
     if (!text) return [];
     if (text.length <= MAX_LEN) return [text];
@@ -35,11 +36,7 @@
     var buf = "";
     for (var i = 0; i < text.length; i++) {
       buf += text[i];
-      if (SENTENCE_END.test(text[i]) && buf.length >= MAX_LEN) {
-        out.push(buf);
-        buf = "";
-      } else if (buf.length >= MAX_LEN) {
-        // 没遇到句末标点但已到上限：硬切，避免超过 300 被服务端截断。
+      if (buf.length >= MAX_LEN) {
         out.push(buf);
         buf = "";
       }
@@ -48,32 +45,29 @@
     return out;
   }
 
-  // 浏览器侧工厂：
-  //   opts = { url, headers, getConfig, onAudio, onStart, onComplete, onError, fetchImpl }
-  function createRestfulSynthesizer(opts) {
+  // 工厂：opts = { url, headers, getConfig, onAudio, onCompleted, onError, fetchImpl }
+  //   getConfig() -> {voice, sampleRate}
+  function createRestSpeaker(opts) {
     opts = opts || {};
     var url = opts.url || "/api/voice/tts";
     var headers = opts.headers || {};
-    var getConfig = opts.getConfig;   // () -> {voice, sampleRate}
+    var getConfig = opts.getConfig;
     var onAudio = opts.onAudio || function () {};
-    var onStart = opts.onStart || function () {};
-    var onComplete = opts.onComplete || function () {};
+    var onCompleted = opts.onCompleted || function () {};
     var onError = opts.onError || function () {};
     var fetchImpl = opts.fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
 
     var queue = [];
     var pumping = false;
-    var started = false;        // 是否已触发过 onStart（首段开播时一次）
-    var completed = false;       // 是否已触发过 onComplete（仅一次）
-    var endRequested = false;    // 调过 end()：队列排空后触发 onComplete
-    var aborted = false;         // abort() 后忽略一切迟到回调
-    var controller = null;       // AbortController：取消在途请求
-    var generation = 0;          // abort 自增，作废 in-flight 的 then/catch
+    var completed = false;
+    var endRequested = false;
+    var aborted = false;
+    var generation = 0;
+    var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
 
     function reset() {
       queue = [];
       pumping = false;
-      started = false;
       completed = false;
       endRequested = false;
       aborted = false;
@@ -83,7 +77,7 @@
     function maybeComplete() {
       if (endRequested && queue.length === 0 && !pumping && !completed && !aborted) {
         completed = true;
-        onComplete();
+        onCompleted();
       }
     }
 
@@ -113,9 +107,8 @@
         } catch (err) {
           if (aborted || myGen !== generation) return;   // abort 取消的请求：静默退出
           pumping = false;
-          var emsg = (err && err.message) || "请求失败";
           queue = [];
-          onError("restful", emsg);
+          onError("restful", (err && err.message) || "请求失败");
           return;
         }
         if (aborted || myGen !== generation) return;
@@ -128,9 +121,6 @@
           onError("restful", reason);
           return;
         }
-        // 首段成功开播：触发一次 onStart。
-        if (!started) { started = true; onStart(); }
-        // 读音频：优先流式 reader 边收边投，否则整段 arrayBuffer。
         try {
           if (resp.body && typeof resp.body.getReader === "function") {
             var reader = resp.body.getReader();
@@ -138,9 +128,8 @@
               var r = await reader.read();
               if (r.done) break;
               if (aborted || myGen !== generation) return;
-              // r.value 是 Uint8Array，可能是带 byteOffset 的子视图；.buffer 会指向更大的
-              // 底层 buffer 导致取错字节。slice 出恰好该视图的字节再投。
               if (r.value && r.value.byteLength) {
+                // 按 byteOffset 精确 slice 子视图字节【B4】。
                 var chunk = r.value;
                 onAudio(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
               }
@@ -163,9 +152,7 @@
       maybeComplete();
     }
 
-    function begin() {
-      reset();
-    }
+    function begin() { reset(); }
 
     function push(text) {
       if (!text || aborted) return;
@@ -179,7 +166,7 @@
     function end() {
       if (aborted) return;
       endRequested = true;
-      maybeComplete();   // 泵已空闲且队列空：立即收尾
+      maybeComplete();   // 泵空闲且队列空：立即收尾
     }
 
     function abort() {
@@ -190,13 +177,9 @@
       try { if (controller) controller.abort(); } catch (_) {}
     }
 
-    // 构造时先建一个 controller，begin() 会重置。
-    controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
-
-    return { begin: begin, push: push, end: end, abort: abort };
+    return { begin: begin, push: push, end: end, abort: abort, name: "aliyun-rest" };
   }
 
-  // 暴露纯函数以便单测。
-  createRestfulSynthesizer.splitForTts = splitForTts;
-  return createRestfulSynthesizer;
+  createRestSpeaker.splitForTts = splitForTts;
+  return createRestSpeaker;
 });

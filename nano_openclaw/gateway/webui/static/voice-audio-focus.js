@@ -1,24 +1,26 @@
-/* 车机/Android 音频焦点保持：免提会话活跃时占住系统音频焦点，防外部音乐恢复混播。
+/* 音频焦点 guard —— 语音浮层期间持一条静音保持音的瞬态焦点（Chrome / Android）。
  *
- * 部分车机浏览器在 getUserMedia 停麦后会把系统音频焦点还给上一个媒体 App，导致外部
- * 音乐恢复；随后浏览器 TTS/WebAudio 又不一定重新抢占焦点，出现助手语音和音乐混播。
- * guard 在用户手势内启动，贯穿「聆听 -> 思考 -> 朗读 -> 再聆听」整段语音会话，
- * 退出或暂停免提时停止。两种占焦点策略：
+ * 设计要点（历史坑位语义）：
+ *  - 【C1】保持音是 4s 近静音 WAV 循环：时长刻意压在 Chromium 5s「内容级媒体」门槛
+ *    之下——内容级会创建媒体会话，在车机媒体面板显示一条进度条曲目；<5s 只拿
+ *    GAIN_TRANSIENT_MAY_DUCK 瞬态焦点、无面板条目。瞬态焦点对实际用法足够：用户
+ *    进语音页前音乐已暂停，没人发 GAIN 它就不会醒；正在播的音乐只被压低不强行暂停。
+ *    近静音而非纯静音 + volume 0.001 而非 0，避免被平台当无声流优化掉。
+ *  - 【C3】刻意**没有持麦档**：曾用占位麦（AEC 采集）压外部音乐，但 AEC 采集让
+ *    Android 进通信模式 = 系统层面"来电话"——音量键变通话音量、TTS 走通话通路
+ *    从手机出声到不了车机；释放麦时"通话结束"，车机/蓝牙栈按通话结束的标准行为
+ *    自动恢复媒体播放（AVRCP PLAY），把用户手动暂停的音乐在朗读开始瞬间叫醒。
+ *  - 保持音的 autoplay 解锁：焦点换挡可能发生在非手势上下文（如 TTS 首帧到达时），
+ *    从未在手势内 play 过的元素会被 autoplay 策略拦下 → 须在用户手势内 prime()。
  *
- * - 占位麦克风流（主，preferMicHold() 为 true 时）：持续握住一条不消费音频的
- *   getUserMedia 流。实测车机上「语音输入时外部音乐必暂停」——采集是两类内核
- *   （Chrome / 百度 T7）都可靠的焦点通道；且不注册 Media Session，车机媒体面板
- *   不会出现一条循环曲目。只在页面自采音的引擎（aliyun）下用：webspeech 的识别
- *   采集在浏览器服务侧，页面持麦可能被 Android 并发采集限制静音掉识别。
+ * 渐进增强 navigator.audioSession（W3C Audio Session API，目前仅 Safari 16.4+）：
+ * 占焦点时声明 play-and-record（页面同时有识别采集），释放时还原 auto。
  *
- *   ⚠ 持麦的代价：带 AEC 的采集会让 Android 进入通信模式（MODE_IN_COMMUNICATION）
- *   ——音乐被暂停正是这个机制——但通信模式下音量键变成调「通话音量」，且输出走
- *   通话通路（手机扬声器/听筒），不走 A2DP/CarWith 媒体通路，TTS 会从手机而不是
- *   车机音响出声。所以 preferMicHold 必须在「有声音要播」时返回 false（朗读期间
- *   放麦走媒体通路），只在聆听/思考/空闲阶段持麦。
- * - 无声 <audio>（兜底）：循环播放 6s 近静音 WAV（跨过 Chromium 5s 内容级媒体
- *   门槛）。副作用是会以一条 6s 曲目出现在媒体面板，且个别内核（百度 T7）不为
- *   网页 <audio> 申请系统焦点。
+ * 由 shell 以两档模式驱动（focusMode 纯函数派生，随状态机迁移 diff 换轨）：
+ *   setMode("silent-audio") 浮层开着：循环保持音持瞬态焦点
+ *   setMode("released")     退出语音：还焦点
+ *
+ * UMD：依赖全部可注入（Audio/URL/Blob/audioSession），node --test 可测。
  */
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) module.exports = factory();
@@ -30,32 +32,28 @@
     for (var i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
   }
 
+  // 生成 4s 近静音 WAV（8bit 单声道 8kHz）。时长 <5s（见头注释 C1）；
+  // 交替 127/128 而非纯 128：个别平台会把完全静音流优化掉。
   function makeSilentWavBlob(BlobImpl, seconds, sampleRate) {
-    // Chromium 系车机内核可能按 metadata duration 判定是否为「内容级」媒体；
-    // 太短即便 loop 也可能只拿 transient/may-duck 焦点。默认 6s 保守跨过 5s 门槛。
-    seconds = seconds || 6;
+    seconds = seconds || 4;
     sampleRate = sampleRate || 8000;
     var samples = Math.max(1, Math.floor(seconds * sampleRate));
-    var header = 44;
-    var buf = new ArrayBuffer(header + samples);
+    var buf = new ArrayBuffer(44 + samples);
     var view = new DataView(buf);
-
     writeAscii(view, 0, "RIFF");
     view.setUint32(4, 36 + samples, true);
     writeAscii(view, 8, "WAVE");
     writeAscii(view, 12, "fmt ");
-    view.setUint32(16, 16, true);      // PCM fmt chunk size
-    view.setUint16(20, 1, true);       // PCM
-    view.setUint16(22, 1, true);       // mono
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);          // PCM
+    view.setUint16(22, 1, true);          // mono
     view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate, true); // byteRate: 8-bit mono
-    view.setUint16(32, 1, true);       // blockAlign
-    view.setUint16(34, 8, true);       // bitsPerSample
+    view.setUint32(28, sampleRate, true); // byteRate（8bit mono）
+    view.setUint16(32, 1, true);          // blockAlign
+    view.setUint16(34, 8, true);          // bitsPerSample
     writeAscii(view, 36, "data");
     view.setUint32(40, samples, true);
-    // 近静音而非纯 128：避免个别平台把完全静音流优化掉；配合 volume=0.001 基本不可闻。
-    for (var i = 0; i < samples; i++) view.setUint8(header + i, i % 2 ? 127 : 128);
-
+    for (var i = 0; i < samples; i++) view.setUint8(44 + i, i % 2 ? 127 : 128);
     return new BlobImpl([buf], { type: "audio/wav" });
   }
 
@@ -64,100 +62,36 @@
     var AudioImpl = opts.AudioImpl || (typeof Audio !== "undefined" ? Audio : null);
     var URLImpl = opts.URLImpl || (typeof URL !== "undefined" ? URL : null);
     var BlobImpl = opts.BlobImpl || (typeof Blob !== "undefined" ? Blob : null);
-    var mediaDevices = opts.mediaDevices !== undefined
-      ? opts.mediaDevices
-      : (typeof navigator !== "undefined" ? navigator.mediaDevices : null);
-    // W3C Audio Session API：声明本页音频是「边放边录」的语音会话，由平台接管焦点仲裁。
-    // 这是本问题的标准解，目前仅 Safari 16.4+ 实现（Chrome/Android 未实现，设了无害）。
     var audioSession = opts.audioSession !== undefined
       ? opts.audioSession
       : (typeof navigator !== "undefined" ? navigator.audioSession : null);
-    var preferMicHold = opts.preferMicHold || function () { return false; };
     var log = opts.log || function () {};
 
+    var mode = "released";
     var audio = null;
     var objectUrl = "";
-    var active = false;
-    var micStream = null;
-    var micPending = false;
-    var primed = false;   // 静音 audio 是否已在用户手势内成功 play 过（解锁 autoplay）
+    var primed = false;   // 保持音是否已在手势内成功 play 过（autoplay 解锁）
 
-    function micUsable() {
-      return Boolean(mediaDevices && typeof mediaDevices.getUserMedia === "function");
+    function setAudioSessionType(type) {
+      if (!audioSession) return;
+      try { audioSession.type = type; } catch (_) {}
     }
 
-    function stopTracks(stream) {
-      try {
-        stream.getTracks().forEach(function (t) { try { t.stop(); } catch (_) {} });
-      } catch (_) {}
-    }
-
-    // ── 占位麦克风流 ────────────────────────────────────────────────────────
-    function startMicHold() {
-      if (micStream || micPending) return;
-      micPending = true;
-      var p;
-      try {
-        // 与识别采集同形态（audio:true，AEC 默认开）：实测正是这种采集会让外部音乐暂停，
-        // 占位流复用同一路径，别用关 AEC 的"轻量"配置偏离它。
-        p = mediaDevices.getUserMedia({ audio: true });
-      } catch (err) {
-        micPending = false;
-        log("mic-hold", (err && err.message) || "申请占位麦克风失败");
-        startSilentAudio();
-        return;
-      }
-      p.then(function (stream) {
-        micPending = false;
-        // 等待期间已 stop、或策略已切走（如进入朗读改走静音 audio）：立即归还,
-        // 别覆盖现行策略（此时静音 audio 可能正占着媒体焦点,不能停它）。
-        if (!active || !preferMicHold()) { stopTracks(stream); return; }
-        micStream = stream;
-        // 系统侧收回轨道（设备抢占等）：清引用，下次 start() 重新申请。
-        try {
-          stream.getTracks().forEach(function (t) {
-            t.onended = function () { if (micStream === stream) micStream = null; };
-          });
-        } catch (_) {}
-        stopSilentAudio();   // 麦到手后不再需要静音 audio 兜底
-      }, function (err) {
-        micPending = false;
-        log("mic-hold", (err && err.message) || "申请占位麦克风失败");
-        if (active) startSilentAudio();   // 拿不到麦 → 退回静音 audio
-      });
-    }
-
-    function stopMicHold() {
-      if (!micStream) return;
-      stopTracks(micStream);
-      micStream = null;
-    }
-
-    // ── 无声 <audio> 兜底 ──────────────────────────────────────────────────
     function ensureAudio() {
       if (audio) return audio;
       if (!AudioImpl) { log("no-audio", "Audio 不可用"); return null; }
-      try {
-        audio = new AudioImpl();
-      } catch (err) {
-        audio = null;
-        log("audio-create", (err && err.message) || "创建 Audio 失败");
-        return null;
-      }
+      try { audio = new AudioImpl(); }
+      catch (err) { audio = null; log("audio-create", (err && err.message) || "创建 Audio 失败"); return null; }
       audio.loop = true;
       audio.preload = "auto";
       audio.playsInline = true;
       audio.muted = false;
-      // 不设 0，避免部分平台把它当成无需音频焦点的静音媒体优化掉。
-      audio.volume = opts.volume == null ? 0.001 : opts.volume;
-
+      audio.volume = opts.volume == null ? 0.001 : opts.volume;   // 不设 0，防被当无声流优化掉【C1】
       if (BlobImpl && URLImpl && typeof URLImpl.createObjectURL === "function") {
         try {
           objectUrl = URLImpl.createObjectURL(makeSilentWavBlob(BlobImpl, opts.seconds, opts.sampleRate));
           audio.src = objectUrl;
-        } catch (err) {
-          log("audio-src", (err && err.message) || "创建静音音频失败");
-        }
+        } catch (err) { log("audio-src", (err && err.message) || "创建保持音频失败"); }
       }
       return audio;
     }
@@ -166,15 +100,11 @@
       var a = ensureAudio();
       if (!a || !a.src || typeof a.play !== "function") return null;
       var p = null;
-      try {
-        p = a.play();
-      } catch (err) {
-        log("audio-play", (err && err.message) || "启动静音音频失败");
-        return null;
-      }
+      try { p = a.play(); }
+      catch (err) { log("audio-play", (err && err.message) || "启动保持音失败"); return null; }
       if (p && typeof p.catch === "function") {
         p.catch(function (err) {
-          if (active) log("audio-play", (err && err.message) || "启动静音音频失败");
+          if (mode !== "released") log("audio-play", (err && err.message) || "启动保持音失败");
         });
       }
       return p || null;
@@ -186,75 +116,52 @@
       try { audio.currentTime = 0; } catch (_) {}
     }
 
-    function setAudioSessionType(type) {
-      if (!audioSession) return;
-      try { audioSession.type = type; } catch (_) {}
-    }
-
-    // ── 对外生命周期 ────────────────────────────────────────────────────────
-    function start() {
-      active = true;
-      setAudioSessionType("play-and-record");
-      if (preferMicHold() && micUsable()) {
-        startMicHold();   // 已持有/申请中则 no-op；静音 audio 在拿到麦后才停，避免换轨空窗
-        return null;
+    // 两档模式驱动。幂等。
+    function setMode(next) {
+      mode = next;
+      if (next === "released") {
+        setAudioSessionType("auto");   // 还平台默认仲裁
+        stopSilentAudio();
+        return;
       }
-      // 偏好切回 audio（引擎切 webspeech / 朗读期间释放占位麦）：先起静音 audio
-      // 再归还占位麦，避免焦点空窗让外部音乐窜回。
-      var p = startSilentAudio();
-      stopMicHold();
-      return p;
+      setAudioSessionType("play-and-record");
+      startSilentAudio();
     }
 
-    // 在用户手势内调用：把静音 audio 元素成功 play 一次，解锁后续非手势 play()。
-    // 持麦路径平时不播静音 audio，而「朗读释放占位麦 → 切静音 audio」发生在非手势
-    // 上下文（TTS 首段到达时），从未在手势内播过的元素会被 autoplay 策略拦下。
-    // 播放成功后若现行策略仍是持麦则立即暂停，媒体面板不残留曲目。
+    // 回前台等时机重申当前模式（后台期间播放可能被系统打断）。
+    function refresh() { setMode(mode); }
+
+    // 用户手势内调用：把保持音成功 play 一次，解锁后续非手势 play()。
+    // 解锁后若当前模式并非占焦点，立即暂停，媒体侧不残留播放。
     function prime() {
       if (primed) return;
       var p = startSilentAudio();
       if (!p || typeof p.then !== "function") {
-        // play() 不返回 promise（老内核）：保守按已解锁处理
-        primed = true;
-        if (!active || micStream || micPending) stopSilentAudio();
+        primed = true;                 // play() 不返回 promise（老内核）：保守按已解锁处理
+        if (mode !== "silent-audio") stopSilentAudio();
         return;
       }
       p.then(function () {
         primed = true;
-        if (!active || micStream || micPending) stopSilentAudio();
-      }, function () { /* 被 autoplay 策略拦下：保持未解锁，下次手势再试 */ });
-    }
-
-    function stop() {
-      active = false;
-      setAudioSessionType("auto");   // 还给平台默认仲裁，外部音乐可恢复
-      stopMicHold();
-      stopSilentAudio();
+        if (mode !== "silent-audio") stopSilentAudio();
+      }, function () { /* 被 autoplay 拦下：保持未解锁，下次手势再试 */ });
     }
 
     function dispose() {
-      stop();
+      setMode("released");
       if (objectUrl && URLImpl && typeof URLImpl.revokeObjectURL === "function") {
         try { URLImpl.revokeObjectURL(objectUrl); } catch (_) {}
       }
       objectUrl = "";
       audio = null;
-      primed = false;   // 元素已丢弃，重建后需重新在手势内解锁
+      primed = false;                  // 元素已丢弃，重建后需重新手势解锁
     }
 
-    function isActive() {
-      return active;
-    }
-
-    function getAudio() {
-      return audio;
-    }
-
-    function getMicStream() {
-      return micStream;
-    }
-
-    return { start: start, stop: stop, prime: prime, dispose: dispose, isActive: isActive, getAudio: getAudio, getMicStream: getMicStream };
+    return {
+      setMode: setMode, refresh: refresh, prime: prime, dispose: dispose,
+      getMode: function () { return mode; },
+      getAudio: function () { return audio; },
+    };
   }
 
   createVoiceAudioFocusGuard.makeSilentWavBlob = makeSilentWavBlob;
