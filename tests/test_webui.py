@@ -838,6 +838,20 @@ def test_voice_config_unconfigured_reports_unavailable():
     # 未配置时 TTS 不可用（凭据缺失），但音色目录仍返回列表（前端下拉始终能渲染「本地」+目录）
     assert body["tts"]["enabled"] is False
     assert isinstance(body["tts"]["voices"], list) and len(body["tts"]["voices"]) > 50
+    # 唤醒词默认空串（前端据此不启用待唤醒模式）
+    assert body["wake_word"] == ""
+
+
+def test_voice_config_wake_word_passthrough():
+    from fastapi.testclient import TestClient
+    from nano_openclaw.config.types import VoiceConfig
+
+    app = _make_voice_app(VoiceConfig(wakeWord="小克,小可"))
+    with TestClient(app) as client:
+        res = client.get("/api/voice/config")
+    assert res.status_code == 200
+    # 唤醒词（含逗号分隔变体）原样下发，前端进入待唤醒模式
+    assert res.json()["wake_word"] == "小克,小可"
 
 
 def test_voice_config_configured_reports_available_without_secrets():

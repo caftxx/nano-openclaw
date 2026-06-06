@@ -144,6 +144,8 @@ def create_app(
             "provider": cfg.provider,
             "appkey": cfg.appkey,
             "endpoint": cfg.resolved_endpoint(),
+            # 唤醒词（逗号分隔变体）：非空时前端免提进入「待唤醒」待机模式。
+            "wake_word": cfg.wakeWord,
             # TTS 子对象：复用同一 AK/SK / 网关 / 临时 Token，仅 namespace 不同。
             # enabled 需在凭据可用的前提下再叠 ttsEnabled 开关；voices 始终回中文音色目录。
             "tts": {

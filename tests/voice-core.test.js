@@ -8,7 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const VoiceCore = require("../nano_openclaw/gateway/webui/static/voice-core.js");
-const { createInitialModel, transition, focusMode } = VoiceCore;
+const { createInitialModel, transition, focusMode, matchWake } = VoiceCore;
 
 // ── 回放工具 ────────────────────────────────────────────────────────────────
 function replay(events, model) {
@@ -399,6 +399,128 @@ test("C3：focusMode 全表——浮层开着一律 silent-audio 瞬态保持音
   // 关闭/错误：释放，外部音乐可恢复仲裁
   assert.strictEqual(focusMode("closed"), "released");
   assert.strictEqual(focusMode("error"), "released");
+});
+
+// ── W 组：唤醒词门控（待唤醒模式）──────────────────────────────────────────
+const WAKE_BOOT = [
+  { type: "OPEN", autoStart: true, wakeKeyword: "小克,小可" },
+  { type: "MIC_STARTED" },
+];
+
+test("W1：带 wakeKeyword 进循环 → 待机聆听；非唤醒词丢弃不发送、原地续听", () => {
+  let r = replay([{ type: "OPEN", autoStart: true, wakeKeyword: "小克,小可" }]);
+  assert.strictEqual(r.model.state, "starting");
+  assert.deepStrictEqual(r.model.ctx.wake, { keywords: ["小克", "小可"], awake: false });
+  assert.ok(!r.cmds.some((c) => c.type === "armTimer" && c.tag === "wakeIdle"), "待机不armed回落计时器");
+  r = replay([{ type: "MIC_STARTED" }, { type: "MIC_FINAL", text: "今天天气真好" }], r.model);
+  assert.strictEqual(r.model.state, "capturing", "非唤醒词原地续听");
+  assert.ok(!has(r.cmds, "chatSend"), "待机听到的话绝不发给 agent");
+  assert.ok(!has(r.cmds, "stopMic"), "recognizer 继续跑，不重启");
+});
+
+test("W1：不配 wakeKeyword 行为与无此功能完全一致（wake=null 直接对话）", () => {
+  const r = replay([...BOOT, { type: "MIC_FINAL", text: "你好" }]);
+  assert.strictEqual(r.model.state, "thinking");
+  assert.ok(has(r.cmds, "chatSend"));
+});
+
+test("W2：唤醒词命中 → chime + 停麦重开（shell 据 awake 切回所选引擎）+ 进入连续对话", () => {
+  let r = replay([...WAKE_BOOT, { type: "MIC_FINAL", text: "小克" }]);
+  assert.strictEqual(r.model.ctx.wake.awake, true);
+  assert.ok(has(r.cmds, "chime"), "唤醒反馈提示音");
+  assert.ok(has(r.cmds, "stopMic") && has(r.cmds, "startMic"), "停待机麦、按 awake 重开（引擎切换）");
+  assert.ok(r.cmds.some((c) => c.type === "armTimer" && c.tag === "wakeIdle" && c.ms === 20000),
+    "唤醒后聆听armed 20s 静默回落计时器");
+  // 唤醒后说话走正常发送
+  r = replay([{ type: "MIC_STARTED" }, { type: "MIC_FINAL", text: "今天天气" }], r.model);
+  assert.strictEqual(get(r.cmds, "chatSend").text, "今天天气");
+  assert.ok(r.cmds.some((c) => c.type === "clearTimer" && c.tag === "wakeIdle"), "进入对话回落计时失效");
+});
+
+test("W3：一句话直达——\"小克今天天气\" → chime + 直接发送尾巴", () => {
+  const r = replay([...WAKE_BOOT, { type: "MIC_FINAL", text: "小克，今天天气。" }]);
+  assert.strictEqual(r.model.state, "thinking");
+  assert.ok(has(r.cmds, "chime"));
+  assert.strictEqual(get(r.cmds, "chatSend").text, "今天天气");
+  assert.strictEqual(r.model.ctx.wake.awake, true);
+});
+
+test("W4：唤醒后聆听静默 20s → 回落待机（停麦重开，shell 切回本地引擎）；说话中 interim 重置计时", () => {
+  let r = replay([
+    ...WAKE_BOOT,
+    { type: "MIC_FINAL", text: "小可" },          // 唤醒
+    { type: "MIC_STARTED" },
+  ]);
+  r = replay([{ type: "MIC_INTERIM", text: "正在说" }], r.model);
+  assert.ok(r.cmds.some((c) => c.type === "armTimer" && c.tag === "wakeIdle"), "语音活动重置回落计时");
+  r = replay([{ type: "TIMEOUT", tag: "wakeIdle" }], r.model);
+  assert.strictEqual(r.model.ctx.wake.awake, false, "静默到点回落待机");
+  assert.ok(has(r.cmds, "stopMic") && has(r.cmds, "startMic"), "重开麦让 shell 切回待机本地引擎");
+  // 回落后再说非唤醒词：不发送
+  r = replay([{ type: "MIC_STARTED" }, { type: "MIC_FINAL", text: "随便聊聊" }], r.model);
+  assert.ok(!has(r.cmds, "chatSend"));
+});
+
+test("W4：对话进行中（thinking/speaking）不存在回落——wakeIdle 只在聆听态armed", () => {
+  const r = replay([
+    ...WAKE_BOOT,
+    { type: "MIC_FINAL", text: "小克今天天气" },   // 一句话直达 → thinking
+    { type: "TIMEOUT", tag: "wakeIdle" },          // 迟到的回落计时（已 clear，防御性触发）
+  ]);
+  assert.strictEqual(r.model.state, "thinking", "对话中迟到的 wakeIdle 不得回落");
+  assert.strictEqual(r.model.ctx.wake.awake, true);
+});
+
+test("W4：turn 读完续听重新armed回落计时（连续对话窗口随轮次滚动）", () => {
+  const r = replay([
+    ...WAKE_BOOT,
+    { type: "MIC_FINAL", text: "小克今天天气" },
+    { type: "CHAT_ACCEPTED", turnId: "t1" },
+    { type: "TEXT_DELTA", text: "晴。" },
+    { type: "TURN_DONE", turnId: "t1" },
+    { type: "SPEAK_AUDIBLE" },
+    { type: "SPEAK_DRAINED" },                     // cooldown
+    { type: "TIMEOUT", tag: "cooldown" },          // → 续听
+  ]);
+  assert.strictEqual(r.model.state, "starting");
+  assert.ok(r.cmds.some((c) => c.type === "armTimer" && c.tag === "wakeIdle"), "续听时窗口重新armed");
+});
+
+test("W5：待机点屏 = 手动唤醒（兜底唤醒词识别不出）；TOGGLE 暂停再恢复 → 重新待机", () => {
+  let r = replay([...WAKE_BOOT, { type: "TAP" }]);
+  assert.strictEqual(r.model.ctx.wake.awake, true, "点屏直接唤醒");
+  assert.ok(has(r.cmds, "chime") && has(r.cmds, "startMic"));
+  // 暂停 → 恢复：重新待机
+  r = replay([{ type: "TOGGLE" }], r.model);
+  assert.strictEqual(r.model.state, "paused");
+  assert.ok(r.cmds.some((c) => c.type === "clearTimer" && c.tag === "wakeIdle"));
+  r = replay([{ type: "TOGGLE", wakeKeyword: "小克,小可" }], r.model);
+  assert.strictEqual(r.model.ctx.wake.awake, false, "恢复后重新要求唤醒");
+});
+
+test("W6：matchWake 纯函数——标点/大小写/remainder/英文唤醒词", () => {
+  const kws = ["小克", "Hey Nano"];
+  assert.deepStrictEqual(matchWake("小克", kws), { matched: true, remainder: "" });
+  assert.deepStrictEqual(matchWake("小克，今天天气！", kws), { matched: true, remainder: "今天天气" });
+  assert.deepStrictEqual(matchWake("hey nano, play music", kws), { matched: true, remainder: "playmusic" });
+  assert.strictEqual(matchWake("你好世界", kws).matched, false);
+  assert.strictEqual(matchWake("", kws).matched, false);
+  assert.strictEqual(matchWake("前缀小克后缀", kws).remainder, "后缀", "句中命中取关键词之后的尾巴");
+});
+
+test("W6：拼音同音匹配——ASR 写成哪个同音字都命中，remainder 保留原文", () => {
+  const kws = ["小克"];
+  // ASR 常见同音误写全部等价（xiao-ke）
+  for (const variant of ["小课", "小柯", "小科", "小可", "晓客", "笑克"]) {
+    assert.strictEqual(matchWake(variant, kws).matched, true, variant);
+  }
+  // 一句话直达的 remainder 取原文（不是拼音）
+  assert.deepStrictEqual(matchWake("小课，今天天气", kws), { matched: true, remainder: "今天天气" });
+  // 声母/韵母不同不命中（拼音等价类，不是模糊匹配）
+  assert.strictEqual(matchWake("小哥", kws).matched, false, "ge≠ke");
+  assert.strictEqual(matchWake("校长", kws).matched, false, "zhang≠ke");
+  // 多音字两侧同映射：唤醒词本身含多音字也一致命中
+  assert.strictEqual(matchWake("银行", ["银行"]).matched, true);
 });
 
 // ── 杂项防御 ────────────────────────────────────────────────────────────────

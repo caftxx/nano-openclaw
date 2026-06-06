@@ -40,7 +40,10 @@
   // ── shell 持有的全部可变状态 ──────────────────────────────────────────────
   let model = core.createInitialModel();
   let view = null;
-  let recognizer = null;        // 当前识别适配器（按 resolvedEngine 懒建）
+  let recognizer = null;        // 当前识别适配器（按 desiredEngineName 懒建）
+  let recognizerStandby = false; // 当前实例是否为待机模式（待唤醒短去抖本地引擎）
+  let chime = null;             // 唤醒提示音
+  let warnedWakeNoSr = false;
   let speaker = null;           // FallbackSpeaker 合成链（按 selectedOut 组装）
   let localHelper = null;       // 独立本地合成器：speakOnce / 音色试听 / 锁屏卡死检测
   let guard = null;             // 音频焦点 guard
@@ -71,6 +74,19 @@
     if (prefs.engine === "webspeech") return "webspeech";
     return aliyunUsable() ? "aliyun" : "webspeech";
   }
+  // 待唤醒模式【W1】：config 配了 wakeWord 且本机支持 Web Speech 才启用
+  // （待机引擎固定本地——免费听关键词，阿里云待机持续计费不可取）。
+  function wakeKeyword() {
+    const kw = (voiceCfg && voiceCfg.wake_word) || "";
+    if (kw && !SR) {
+      if (!warnedWakeNoSr) { warnedWakeNoSr = true; console.warn("[voice] wakeWord 已配置但本机不支持 Web Speech，待唤醒模式禁用"); }
+      return "";
+    }
+    return kw;
+  }
+  function inStandby() { return Boolean(model.ctx.wake && !model.ctx.wake.awake); }
+  // startMic 实际使用的引擎：待机本地听关键词，唤醒后切回所选引擎【W2】。
+  function desiredEngineName() { return inStandby() ? "webspeech" : resolvedEngine(); }
   // 输出引擎：用户偏好优先；无偏好且 config 已到 → 阿里云可用默认流式，否则本地。
   function selectedOut() {
     if (prefs.outMode) return prefs.outMode;
@@ -93,7 +109,13 @@
 
   // ── 端口：识别 ───────────────────────────────────────────────────────────
   function ensureRecognizer() {
+    // 引擎或待机/对话模式不匹配 → 丢弃重建（唤醒/回落时的引擎切换走这里）【W2/W4】
+    const standby = inStandby();
+    if (recognizer && (recognizer.name !== desiredEngineName() || recognizerStandby !== standby)) {
+      dropRecognizer();
+    }
     if (recognizer) return recognizer;
+    recognizerStandby = standby;
     const cbs = {
       onStarted: () => dispatch({ type: "MIC_STARTED" }),
       onInterim: (text) => dispatch({ type: "MIC_INTERIM", text }),
@@ -105,13 +127,18 @@
       onEnded: () => dispatch({ type: "MIC_ENDED" }),
       log: (k, m) => console.warn("[voice] recog", k, m),
     };
-    if (resolvedEngine() === "aliyun") {
+    if (desiredEngineName() === "aliyun") {
       recognizer = window.createAliyunRecognizer(Object.assign({
         getConfig: () => ({ appkey: voiceCfg && voiceCfg.appkey, endpoint: voiceCfg && voiceCfg.endpoint }),
         getToken: fetchVoiceToken,
       }, cbs));
+    } else if (standby) {
+      // 待机模式差异参数（非双源）：待机语句只有唤醒词/唤醒词+短指令，短去抖快速 flush；
+      // 正式对话仍用适配器默认（base1600/max3200，单一来源在 voice-recognizer-webspeech.js）
+      recognizer = window.createWebspeechRecognizer(Object.assign({
+        baseSilenceMs: 800, maxSilenceMs: 1600,
+      }, cbs));
     } else {
-      // 去抖参数用适配器默认值（base1600/max3200，单一来源在 voice-recognizer-webspeech.js）
       recognizer = window.createWebspeechRecognizer(cbs);
     }
     return recognizer;
@@ -198,6 +225,14 @@
   function ensureSpeaker() { return speaker || buildSpeaker(); }
 
   // ── 端口：音频焦点 / wakeLock ────────────────────────────────────────────
+  function ensureChime() {
+    if (chime) return chime;
+    chime = window.createVoiceChime({
+      log: (name, msg) => console.warn("[voice]", name, msg),
+    });
+    return chime;
+  }
+
   function ensureGuard() {
     if (guard) return guard;
     guard = window.createVoiceAudioFocusGuard({
@@ -293,13 +328,17 @@
       case "speakOnce":
         ensureLocalHelper().sayOnce(cmd.text, () => dispatch({ type: "SPEAK_DRAINED" }));
         break;
+      case "chime":
+        ensureChime().play();   // 唤醒提示音「叮」（非手势上下文，靠 primeAudio 解锁）
+        break;
       case "wakeLock":
         if (cmd.on) requestWakeLock();
         else releaseWakeLock();
         break;
       case "primeAudio":
-        // 用户手势内：解锁静音 audio 的 autoplay【C3】+ 播放器 ctx【B2】+ 清 synth 队列
+        // 用户手势内：解锁静音 audio 的 autoplay【C3】+ 播放器 ctx【B2】+ 提示音 + 清 synth 队列
         try { ensureGuard().prime(); } catch (_) {}
+        try { ensureChime().prime(); } catch (_) {}
         if (speaker) { try { speaker.unlock(); } catch (_) {} }
         else if (selectedOut() !== "local") { try { ensureSpeaker().unlock(); } catch (_) {} }
         try { if (synth) synth.cancel(); } catch (_) {}
@@ -314,6 +353,7 @@
         // ✕ 退出：释放一切（焦点还给外部音乐、播放器 ctx 关闭、回退记忆复位）
         if (speaker) { try { speaker.dispose(); } catch (_) {} speaker = null; }
         if (guard) { try { guard.dispose(); } catch (_) {} guard = null; }
+        if (chime) { try { chime.dispose(); } catch (_) {} chime = null; }
         lastFocusMode = "released";
         dropRecognizer();
         effectiveOut = "";
@@ -396,6 +436,7 @@
       hardBlock: computeHardBlock(),
       externalTurnOpen: externalTurnOpen(),
       hidden: document.visibilityState !== "visible",
+      wakeKeyword: wakeKeyword(),
     });
   }
   function closeOverlay() { dispatch({ type: "CLOSE" }); }
@@ -456,7 +497,7 @@
     }
     if (speaker) buildSpeaker();   // 已建过链（不太可能这么早）：按新配置重组
     // 引擎选路可能随配置变化（webspeech→aliyun）：丢弃空闲的旧实例，下次开麦用新引擎
-    if (recognizer && recognizer.name !== resolvedEngine() && !recognizer.busy()) dropRecognizer();
+    if (recognizer && recognizer.name !== desiredEngineName() && !recognizer.busy()) dropRecognizer();
     markControlsDirty();
     renderAll();
   }
@@ -479,7 +520,7 @@
     if (els.exit) els.exit.onclick = closeOverlay;
     if (els.circle) els.circle.onclick = () => {
       if (els.circle.disabled) return;
-      dispatch({ type: "TOGGLE", externalTurnOpen: externalTurnOpen() });
+      dispatch({ type: "TOGGLE", externalTurnOpen: externalTurnOpen(), wakeKeyword: wakeKeyword() });
     };
 
     // 点圆/字幕/底栏以外的空白区：手势意图由状态机路由（flush/cancel/interrupt），

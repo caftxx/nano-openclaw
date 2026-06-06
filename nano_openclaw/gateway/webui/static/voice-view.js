@@ -68,6 +68,15 @@
       if (closed) return;
 
       var ui = PHASE_UI[model.state] || PHASE_UI.paused;
+      // 待唤醒模式【W1】：聆听族状态显示待机视觉（灰圆 💤），提示唤醒词
+      var wake = model.ctx.wake;
+      if (wake && !wake.awake
+          && (model.state === "starting" || model.state === "capturing" || model.state === "cooldown")) {
+        ui = {
+          cls: "off", emoji: "💤", label: "待唤醒",
+          status: "说“" + wake.keywords[0] + "”开始对话 · 点屏幕直接唤醒",
+        };
+      }
       if (els.circle) {
         els.circle.className = "voice-circle " + ui.cls;
         els.circle.disabled = Boolean(model.ctx.hardBlock);

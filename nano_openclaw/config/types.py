@@ -699,6 +699,13 @@ class VoiceConfig(BaseModel):
         default=16000,
         description="阿里云流式语音合成采样率（Hz），与前端 PCM 播放器一致",
     )
+    wakeWord: str = Field(
+        default="",
+        description=(
+            "语音浮层唤醒词；配置后免提进入「待唤醒」待机，听到唤醒词才开始对话。"
+            "支持逗号分隔多个同音变体（如 \"小克,小可\"），留空则不启用待唤醒模式"
+        ),
+    )
 
     @property
     def available(self) -> bool:
