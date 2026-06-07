@@ -391,7 +391,11 @@ async def repl(
                         todo_store=todo_store,
                     )
                     await session.run_turn(user_input)
-        except TurnCancelled:
+        except (TurnCancelled, KeyboardInterrupt):
+            # SIGINT can still slip through the watcher on Windows (no raw mode)
+            # and during POSIX setup/teardown windows where ISIG is briefly on,
+            # so treat KeyboardInterrupt during a turn as a soft cancel rather
+            # than letting it crash the whole REPL.
             console.print("\n[dim](turn cancelled)[/]")
             continue
         except Exception as exc:  # noqa: BLE001 — surface model/network errors to user
@@ -1067,7 +1071,17 @@ def _load_input_history(messages: list[Message]) -> None:
 
 @contextmanager
 def _escape_cancellation_token() -> Iterator[CancellationToken]:
-    """Listen for Esc during a turn and flip a cancellation token when pressed."""
+    """Listen for Esc during a turn and flip a cancellation token when pressed.
+
+    POSIX additionally captures Ctrl+C as a soft cancel: the watcher holds
+    raw mode for the lifetime of an active read window, so ISIG is off and
+    SIGINT can't fire — translating the ``\\x03`` byte into a token flip is
+    the only path that gets Ctrl+C noticed. Windows does NOT enter raw mode
+    here (msvcrt path has no termios), so SIGINT still raises
+    KeyboardInterrupt naturally; we deliberately don't intercept ``\\x03``
+    there. Callers must catch KeyboardInterrupt around the turn for the
+    Windows / pre-raw-mode windows.
+    """
     token = CancellationToken()
 
     stop_event = threading.Event()
@@ -1118,19 +1132,26 @@ def _escape_cancellation_token() -> Iterator[CancellationToken]:
     input_handle = create_input()
 
     def watch_for_escape() -> None:
+        # Hold raw_mode for the whole read window so ISIG stays off the entire
+        # turn (preventing SIGINT races at the per-iteration boundary) and we
+        # don't tcsetattr thousands of times per second. Release it only when
+        # the pause-handshake fires so approval prompts can read normally.
         try:
             while not stop_event.is_set() and not token.is_cancelled:
                 if _wait_if_input_paused():
                     continue
                 with input_handle.raw_mode():
-                    for kp in input_handle.read_keys():
-                        if kp.key == Keys.Escape:
-                            token.cancel()
-                            return
-                        if stop_event.is_set() or token.is_cancelled:
-                            return
+                    while not stop_event.is_set() and not token.is_cancelled:
                         if token._input_pause_requested.is_set():
                             break
+                        keys_read = False
+                        for kp in input_handle.read_keys():
+                            keys_read = True
+                            if kp.key in (Keys.Escape, Keys.ControlC):
+                                token.cancel()
+                                return
+                        if not keys_read:
+                            time.sleep(0.01)
         except Exception:
             return
 

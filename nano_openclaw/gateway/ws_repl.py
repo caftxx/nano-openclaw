@@ -2,8 +2,9 @@
 
 This is a deliberately simpler loop than the embedded ``cli.repl`` — the
 daemon owns history / approvals / cron / dreaming, so the client's only
-job is: take user input, fire ``chat.send``, and render incoming PushFrame
-payloads as they arrive.
+job is: take user input, fire ``chat.send``, render incoming PushFrame
+payloads as they arrive, and translate Esc / Ctrl+C into ``chat.abort``
+while a turn is streaming.
 
 Slash commands are delegated to :mod:`gateway.slash` so the surface +
 rendering match embedded mode exactly. The streaming-event renderer
@@ -16,6 +17,7 @@ the cli helpers expect.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -37,6 +39,14 @@ from nano_openclaw.cli import (
     _render_compaction,
     _truncate_one_line,
 )
+
+# Esc / Ctrl+C cancellation reuses the embedded REPL's background key
+# watcher. The cancellation token can't ride ``chat.send`` on the wire
+# path (WebSocketBackend drops it), so ws_repl polls the token itself
+# and translates the flip into a ``chat.abort`` RPC — see
+# ``_abort_on_escape``. Ctrl+C on Windows falls through to the
+# KeyboardInterrupt fallback (no raw mode there).
+from nano_openclaw.cli import _escape_cancellation_token
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -413,6 +423,40 @@ class _PayloadRenderer:
         return False
 
 
+async def _safe_abort(backend: Backend, turn_id: str, console: Console) -> bool:
+    """Send ``chat.abort`` and surface failure to the user.
+
+    Two call sites share this: the Esc-watcher poller and the
+    KeyboardInterrupt fallback. Both used to swallow exceptions silently,
+    which left the render loop blocked with no feedback when the abort RPC
+    timed out (daemon hung) — the very case a user is most likely to be
+    mashing Esc. Printing the failure breaks the silence so the user knows
+    to ^C their way out instead of waiting.
+    """
+    try:
+        await backend.chat_abort(turn_id=turn_id)
+        return True
+    except Exception as exc:  # noqa: BLE001 — turn may already be finishing
+        console.print(
+            f"\n[yellow](abort failed: {type(exc).__name__}: {markup.escape(str(exc))})[/]"
+        )
+        return False
+
+
+async def _abort_on_escape(
+    backend: Backend, turn_id: str, token: Any, console: Console
+) -> None:
+    """Fire ``chat.abort`` once the Esc watcher flips the cancellation token.
+
+    The daemon answers with a ``turn.cancelled`` push event, which
+    ``_PayloadRenderer`` turns into ``(turn cancelled)`` and ends the
+    stream loop — no client-side teardown needed beyond this RPC.
+    """
+    while not token.is_cancelled:
+        await asyncio.sleep(0.05)
+    await _safe_abort(backend, turn_id, console)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # REPL main loop
 # ────────────────────────────────────────────────────────────────────────────
@@ -484,25 +528,42 @@ async def ws_repl(
                 continue
 
             try:
-                async for evt in sub:
-                    payload_turn = evt.payload.get("turn_id")
-                    payload_session = evt.payload.get("session_key") or evt.payload.get("session_id")
-                    # Only render events tied to *this* turn — multiple WS
-                    # clients sharing a daemon means other sessions' deltas
-                    # could otherwise spill into this TUI.
-                    if payload_turn and payload_turn != turn_id:
-                        continue
-                    if not session_key and payload_session:
-                        session_key = str(payload_session)
-                        state["session_key"] = session_key
-                    done = renderer.render(evt)
-                    if done:
-                        break
+                # POSIX: Esc / Ctrl+C are both captured by the watcher (raw
+                # mode is held during the turn so neither raises SIGINT) and
+                # flip the token; the poller task translates that into
+                # ``chat.abort`` and the daemon's ``turn.cancelled`` push
+                # ends the render loop below.
+                # Windows: only Esc is watcher-driven; Ctrl+C arrives as
+                # KeyboardInterrupt and is handled by the except clause.
+                with _escape_cancellation_token() as cancel_token:
+                    abort_task = asyncio.create_task(
+                        _abort_on_escape(backend, turn_id, cancel_token, console)
+                    )
+                    try:
+                        async for evt in sub:
+                            payload_turn = evt.payload.get("turn_id")
+                            payload_session = evt.payload.get("session_key") or evt.payload.get("session_id")
+                            # Only render events tied to *this* turn — multiple WS
+                            # clients sharing a daemon means other sessions' deltas
+                            # could otherwise spill into this TUI.
+                            if payload_turn and payload_turn != turn_id:
+                                continue
+                            if not session_key and payload_session:
+                                session_key = str(payload_session)
+                                state["session_key"] = session_key
+                            done = renderer.render(evt)
+                            if done:
+                                break
+                    finally:
+                        abort_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await abort_task
             except (asyncio.CancelledError, KeyboardInterrupt):
-                try:
-                    await backend.chat_abort(turn_id=turn_id)
-                except Exception:  # noqa: BLE001
-                    pass
+                # Real SIGINT path: Windows console (no raw mode), no-tty
+                # stdin, or POSIX windows where ISIG is briefly on. The
+                # watcher's token path covers the steady-state case; this
+                # is the safety net.
+                await _safe_abort(backend, turn_id, console)
                 console.print("\n[dim](aborted)[/]")
                 continue
     finally:

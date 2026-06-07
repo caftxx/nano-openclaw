@@ -315,6 +315,8 @@ class WebSocketBackend(Backend):
         text: str,
         attachments: list[PromptAttachment] | None = None,
         # Embedded-only kwargs — accepted but ignored on the wire path.
+        # Esc-to-cancel for remote TUI lives in ws_repl._abort_on_escape,
+        # which translates the token flip into a chat.abort RPC instead.
         on_local_event: Any = None,
         cancellation_token: Any = None,
         turn_source: str = "tui",

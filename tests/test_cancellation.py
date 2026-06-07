@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sys
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -379,6 +382,292 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
     output = console.export_text()
     assert "turn cancelled" in output.lower()
     assert "error:" not in output.lower()
+
+
+def test_ws_repl_escape_aborts_turn(monkeypatch):
+    """Esc during a remote-mode turn must reach the daemon as ``chat.abort``.
+
+    Regression: the WebSocket path drops ``cancellation_token`` on the wire,
+    so ws_repl wires its own Esc watcher → ``chat.abort`` RPC. The fake
+    backend simulates Esc by flipping the token after the first delta, then
+    blocks the stream until the abort lands — if ws_repl never sends the
+    abort, the test hangs (caught by the asyncio timeout) instead of passing.
+    """
+    from contextlib import contextmanager
+
+    from nano_openclaw.gateway.backend import PushEvent
+    from nano_openclaw.gateway.ws_repl import ws_repl
+
+    console = Console(record=True)
+    inputs = iter(["hello", "/quit"])
+
+    async def fake_prompt_async():
+        return next(inputs)
+
+    fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
+    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
+
+    # Real token, fake key source — the watcher thread reads the tty, which
+    # doesn't exist under pytest. The fake backend flips the token instead.
+    token = CancellationToken()
+
+    @contextmanager
+    def fake_escape_token():
+        yield token
+
+    monkeypatch.setattr(
+        "nano_openclaw.gateway.ws_repl._escape_cancellation_token", fake_escape_token,
+    )
+
+    class FakeBackend:
+        def __init__(self):
+            self.abort_calls: list[str] = []
+            self._abort_landed: asyncio.Event | None = None
+
+        async def runtime_get(self):
+            return SimpleNamespace(agent_id="agent", model_id="model")
+
+        async def chat_send(self, **_kwargs):
+            return "turn-1"
+
+        async def chat_abort(self, *, turn_id: str) -> None:
+            self.abort_calls.append(turn_id)
+            assert self._abort_landed is not None
+            self._abort_landed.set()
+
+        def subscribe(self, session_key=None):
+            self._abort_landed = asyncio.Event()
+
+            async def gen():
+                yield PushEvent(
+                    event="agent.event",
+                    payload={"type": "text.delta", "text": "hi", "turn_id": "turn-1"},
+                    seq=1,
+                )
+                token.cancel()  # simulate the Esc keypress mid-stream
+                await self._abort_landed.wait()
+                yield PushEvent(
+                    event="agent.event",
+                    payload={"type": "turn.cancelled", "turn_id": "turn-1"},
+                    seq=2,
+                )
+
+            return gen()
+
+        async def aclose(self):
+            pass
+
+    backend = FakeBackend()
+
+    async def run_with_timeout():
+        await asyncio.wait_for(
+            ws_repl(backend, session_key="s1", console=console), timeout=10,
+        )
+
+    asyncio.run(run_with_timeout())
+
+    assert backend.abort_calls == ["turn-1"]
+    output = console.export_text()
+    assert "turn cancelled" in output.lower()
+    assert "error:" not in output.lower()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX watcher branch only")
+def test_escape_token_posix_watcher_exits_on_external_cancel(monkeypatch):
+    """External ``token.cancel()`` releases the watcher within the join
+    timeout, and ``raw_mode`` is entered exactly once for the whole read
+    window — proves the prior per-iteration ISIG-toggle anti-pattern (and
+    its accompanying CPU spin) is gone.
+    """
+    from nano_openclaw.cli import _escape_cancellation_token
+
+    class _FakeInput:
+        def __init__(self) -> None:
+            self.raw_entries = 0
+            self.read_calls = 0
+            self.closed = False
+
+        def raw_mode(self):
+            @contextmanager
+            def _ctx():
+                self.raw_entries += 1
+                yield
+            return _ctx()
+
+        def read_keys(self):
+            self.read_calls += 1
+            return []
+
+        def close(self):
+            self.closed = True
+
+    fake = _FakeInput()
+    monkeypatch.setattr("prompt_toolkit.input.create_input", lambda: fake)
+
+    start = time.monotonic()
+    with _escape_cancellation_token() as token:
+        # Let the watcher run a few iterations of the empty-read sleep loop.
+        time.sleep(0.05)
+        assert fake.read_calls >= 1, "watcher thread did not run"
+        assert fake.raw_entries == 1, (
+            f"raw_mode entered {fake.raw_entries}× — should be held once "
+            "across the whole read window to keep ISIG off."
+        )
+        token.cancel()
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"context teardown took {elapsed:.2f}s (watcher hung?)"
+    assert fake.closed, "input_handle.close() was not called on teardown"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX watcher branch only")
+def test_escape_token_posix_watcher_catches_ctrl_c_key(monkeypatch):
+    """POSIX raw_mode means SIGINT is masked; the watcher must translate
+    a ``Keys.ControlC`` keypress into ``token.cancel()`` so embedded mode
+    can soft-cancel the in-flight turn.
+    """
+    from prompt_toolkit.keys import Keys
+
+    from nano_openclaw.cli import _escape_cancellation_token
+
+    class _CtrlCInput:
+        def __init__(self) -> None:
+            self._delivered = False
+
+        def raw_mode(self):
+            @contextmanager
+            def _ctx():
+                yield
+            return _ctx()
+
+        def read_keys(self):
+            if self._delivered:
+                return []
+            self._delivered = True
+            return [SimpleNamespace(key=Keys.ControlC)]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("prompt_toolkit.input.create_input", lambda: _CtrlCInput())
+
+    with _escape_cancellation_token() as token:
+        for _ in range(50):
+            if token.is_cancelled:
+                break
+            time.sleep(0.02)
+    assert token.is_cancelled, "watcher did not translate Ctrl+C key into token.cancel()"
+
+
+def test_repl_keyboard_interrupt_during_turn_soft_cancels(monkeypatch):
+    """Mid-turn ``KeyboardInterrupt`` is recovered as a soft ``(turn
+    cancelled)`` so the REPL doesn't crash. Covers Windows (no raw mode →
+    SIGINT fires) and the brief POSIX windows where ISIG is still on.
+    """
+    registry = ToolRegistry()
+    cfg = LoopConfig(model="test-model")
+    console = Console(record=True)
+
+    inputs = iter(["hello", "/quit"])
+
+    async def fake_prompt_async():
+        return next(inputs)
+
+    fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
+    monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
+    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
+    monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "nano_openclaw.cli.AgentSession.run_turn",
+        AsyncMock(side_effect=KeyboardInterrupt()),
+    )
+
+    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg))
+
+    output = console.export_text()
+    assert "turn cancelled" in output.lower()
+    assert "traceback" not in output.lower()
+    assert "error:" not in output.lower()
+
+
+def test_ws_repl_abort_failure_surfaces_feedback(monkeypatch):
+    """When ``chat.abort`` fails (daemon hung / timeout / disconnect), the
+    user must see a visible hint instead of staring at a silent frozen
+    stream — that silence was the exact failure mode the previous bare
+    ``except Exception: pass`` produced.
+    """
+    from nano_openclaw.gateway.backend import PushEvent
+    from nano_openclaw.gateway.ws_repl import ws_repl
+
+    console = Console(record=True)
+    inputs = iter(["hello", "/quit"])
+
+    async def fake_prompt_async():
+        return next(inputs)
+
+    fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
+    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
+
+    token = CancellationToken()
+
+    @contextmanager
+    def fake_escape_token():
+        yield token
+
+    monkeypatch.setattr(
+        "nano_openclaw.gateway.ws_repl._escape_cancellation_token", fake_escape_token,
+    )
+
+    class FailingBackend:
+        def __init__(self):
+            self._abort_attempted: asyncio.Event | None = None
+
+        async def runtime_get(self):
+            return SimpleNamespace(agent_id="agent", model_id="model")
+
+        async def chat_send(self, **_kwargs):
+            return "turn-1"
+
+        async def chat_abort(self, *, turn_id: str) -> None:
+            assert self._abort_attempted is not None
+            self._abort_attempted.set()
+            raise RuntimeError("daemon busy")
+
+        def subscribe(self, session_key=None):
+            self._abort_attempted = asyncio.Event()
+
+            async def gen():
+                yield PushEvent(
+                    event="agent.event",
+                    payload={"type": "text.delta", "text": "hi", "turn_id": "turn-1"},
+                    seq=1,
+                )
+                token.cancel()  # simulate Esc
+                # Wait for the abort RPC to have fired and failed, then end
+                # the loop so the test can assert on the printed feedback.
+                await self._abort_attempted.wait()
+                yield PushEvent(
+                    event="agent.event",
+                    payload={"type": "turn.cancelled", "turn_id": "turn-1"},
+                    seq=2,
+                )
+
+            return gen()
+
+        async def aclose(self):
+            pass
+
+    backend = FailingBackend()
+
+    async def run_with_timeout():
+        await asyncio.wait_for(
+            ws_repl(backend, session_key="s1", console=console), timeout=10,
+        )
+
+    asyncio.run(run_with_timeout())
+
+    output = console.export_text()
+    assert "abort failed" in output.lower()
+    assert "runtimeerror" in output.lower()
 
 
 def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
