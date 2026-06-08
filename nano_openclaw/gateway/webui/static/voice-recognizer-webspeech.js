@@ -22,6 +22,9 @@
  *    自愈交给核心的 starting 超时重建【A4】。
  *  - 手动「点屏立即发送」（flushNow）要带上当前未定 interim：最后几个字常还没 final。
  *    自动（静音）flush 只发已确认 buffer：到点时 interim 多半已 final 或已作废。
+ *  - 【A8】自然 onend 必须丢弃 SR 实例（recog=null）。连续聆听里 onend→续听是最高频
+ *    路径，复用同一个 webkitSpeechRecognition 反复 start 会让 Chrome 识别服务随次数
+ *    退化（成功率越用越低）。主动 stop/rebuild 已在 abortQuiet 置 null，独缺自然结束这条。
  *
  * UMD：SR / 计时器可注入，node --test 可测。
  */
@@ -129,6 +132,11 @@
         if (r !== recog) return;     // 被替换的旧对象
         running = false;
         starting = false;
+        // 丢弃已自然结束的 SR 实例【A8】：连续聆听里 onend→续听是最高频路径，复用同一个
+        // webkitSpeechRecognition 对象反复 start 会让 Chrome 识别服务随次数退化（识别结果
+        // 越来越少、成功率下降）。每段都建新实例（与 aliyun 适配器每次新建 ws 同构）。
+        // 必须在 onEnded() 之前置 null——onEnded 会同步驱动核心续听 start()，留旧引用就会复用。
+        recog = null;
         onEnded();                   // 非主动结束（主动停止已在 abortQuiet 摘引用）
       };
       return r;

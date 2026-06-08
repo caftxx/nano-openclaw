@@ -130,6 +130,21 @@ test("A2：stop 清半句（不误发）且不触发 onEnded；自然 onend 才�
   assert.strictEqual(out.ended, 1, "非主动结束应上报，核心续听接力");
 });
 
+test("A8：自然 onend 后续听必建新 SR 实例（不复用——复用会让 Chrome 识别随次数退化）", () => {
+  const { rec, sr, FakeSR } = makeAdapter();
+  rec.start();
+  const r1 = sr();
+  r1.onstart();
+  assert.strictEqual(FakeSR.instances.length, 1);
+  r1.onend();                                    // 自然静音超时结束（续听接力最高频路径）
+  rec.start();                                   // 核心据 MIC_ENDED 续听重开
+  assert.strictEqual(FakeSR.instances.length, 2, "onend 后必须建新实例，绝不复用已 end 的对象");
+  const r2 = sr();
+  assert.notStrictEqual(r2, r1);
+  assert.strictEqual(r1.started, 1, "旧实例不得被二次 start");
+  assert.strictEqual(r2.started, 1, "新实例被 start");
+});
+
 test("A2：被 rebuild 替换的旧对象回调一律忽略", () => {
   const { rec, out, sr, FakeSR } = makeAdapter();
   rec.start();
