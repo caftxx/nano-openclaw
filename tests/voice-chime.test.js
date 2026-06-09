@@ -1,67 +1,76 @@
-/* 唤醒提示音：WAV 生成（短、可闻、双音）/ prime 手势解锁 / play 非手势播放 / dispose */
+/* 唤醒提示音：Web Audio 合成（双音、短、可闻）/ prime 手势内 resume 解锁 /
+ * play 非手势调度 / dispose 关闭 ctx。注入 FakeAudioContext，纯本地可测。 */
 const test = require("node:test");
 const assert = require("node:assert");
 const createVoiceChime = require("../nano_openclaw/gateway/webui/static/voice-chime.js");
-const { makeChimeWavBlob } = createVoiceChime;
 
-function FakeBlob(parts, opts) { this.parts = parts; this.type = opts && opts.type; }
-const FakeURL = {
-  revoked: 0,
-  createObjectURL() { return "blob:chime"; },
-  revokeObjectURL() { this.revoked++; },
-};
-function makeFakeAudio(events) {
-  function FakeAudio() {
-    this.src = ""; this.volume = 1; this.currentTime = 0;
-    this.play = () => { events.push(["play", this.volume]); return Promise.resolve(); };
-    this.pause = () => { events.push(["pause"]); };
-    FakeAudio.last = this;
+function makeFakeCtx(events) {
+  function FakeCtx() {
+    this.state = "suspended";
+    this.currentTime = 0;
+    this.destination = { name: "dest" };
+    this.resume = () => { this.state = "running"; events.push(["resume"]); return Promise.resolve(); };
+    this.close = () => { this.state = "closed"; events.push(["close"]); return Promise.resolve(); };
+    this.createOscillator = () => ({
+      frequency: { setValueAtTime: (v, t) => events.push(["osc-freq", v, t]) },
+      connect: () => {},
+      start: (t) => events.push(["osc-start", t]),
+      stop: (t) => events.push(["osc-stop", t]),
+    });
+    this.createGain = () => ({
+      gain: {
+        setValueAtTime: (v, t) => events.push(["gain-set", v, t]),
+        exponentialRampToValueAtTime: (v, t) => events.push(["gain-ramp", v, t]),
+      },
+      connect: () => {},
+    });
+    FakeCtx.last = this;
   }
-  return FakeAudio;
+  return FakeCtx;
 }
-const tick = () => new Promise((r) => setImmediate(r));
 
-test("WAV：~0.22s 双音（远短于 5s 媒体会话门槛），峰值可闻（远超近静音 ±1）", () => {
-  const captured = [];
-  function CapBlob(parts, opts) { captured.push(parts[0]); FakeBlob.call(this, parts, opts); }
-  makeChimeWavBlob(CapBlob);
-  const buf = captured[0];
-  const samples = buf.byteLength - 44;
-  assert.ok(samples / 8000 < 0.5, "必须远短于 5s（瞬态焦点、无媒体会话）");
-  const view = new DataView(buf);
-  let maxDev = 0;
-  for (let i = 44; i < buf.byteLength; i++) maxDev = Math.max(maxDev, Math.abs(view.getUint8(i) - 128));
-  assert.ok(maxDev >= 60, `提示音必须可闻（峰值 ±${maxDev}）`);
-});
-
-test("prime：手势内静音 play 一次解锁后立即暂停（听不到）；play：恢复音量从头播", async () => {
+test("play：双音 880→1320Hz、总时长 <0.5s（瞬态焦点）、包络可闻", () => {
   const events = [];
-  const chime = createVoiceChime({
-    AudioImpl: makeFakeAudio(events), URLImpl: FakeURL, BlobImpl: FakeBlob, log: () => {},
-  });
-  chime.prime();
-  await tick();
-  assert.deepStrictEqual(events[0], ["play", 0], "prime 必须静音（volume 0）");
-  assert.deepStrictEqual(events[1], ["pause"], "解锁完立即暂停");
-  events.length = 0;
+  const chime = createVoiceChime({ AudioContextImpl: makeFakeCtx(events), volume: 0.5, log() {} });
   chime.play();
-  assert.strictEqual(events[0][0], "play");
-  assert.ok(events[0][1] > 0, "正式播放恢复音量");
-  assert.strictEqual(chime.getAudio().currentTime, 0, "从头播");
+  const freqs = events.filter((e) => e[0] === "osc-freq").map((e) => e[1]);
+  assert.deepStrictEqual(freqs, [880, 1320], "双音 880→1320");
+  const starts = events.filter((e) => e[0] === "osc-start").map((e) => e[1]);
+  const stops = events.filter((e) => e[0] === "osc-stop").map((e) => e[1]);
+  assert.strictEqual(starts.length, 2, "两段 oscillator");
+  assert.ok(Math.max(...stops) - Math.min(...starts) < 0.5, "总时长远短于 5s（无媒体会话）");
+  const peaks = events.filter((e) => e[0] === "gain-set").map((e) => e[1]);
+  assert.ok(peaks.length === 2 && peaks.every((p) => p > 0), "包络峰值可闻（>0）");
 });
 
-test("prime 幂等；dispose 释放 objectURL 并复位", async () => {
+test("play('sleep')：回落待机降调 1320→880（与唤醒升调反向，区分醒/睡）", () => {
   const events = [];
-  const before = FakeURL.revoked;
-  const chime = createVoiceChime({
-    AudioImpl: makeFakeAudio(events), URLImpl: FakeURL, BlobImpl: FakeBlob, log: () => {},
-  });
+  const chime = createVoiceChime({ AudioContextImpl: makeFakeCtx(events), volume: 0.5, log() {} });
+  chime.play("sleep");
+  const freqs = events.filter((e) => e[0] === "osc-freq").map((e) => e[1]);
+  assert.deepStrictEqual(freqs, [1320, 880], "降调 1320→880");
+});
+
+test("prime：手势内创建并 resume 解锁 autoplay；幂等不重复 resume", () => {
+  const events = [];
+  const chime = createVoiceChime({ AudioContextImpl: makeFakeCtx(events), log() {} });
   chime.prime();
-  await tick();
-  chime.prime();   // 已解锁：no-op
-  await tick();
-  assert.strictEqual(events.filter((e) => e[0] === "play").length, 1);
+  assert.strictEqual(events.filter((e) => e[0] === "resume").length, 1, "prime 必须 resume 解锁");
+  chime.prime(); // 已解锁：no-op
+  assert.strictEqual(events.filter((e) => e[0] === "resume").length, 1, "prime 幂等");
+});
+
+test("play 不依赖 <audio> 解码：无 ctx 实现时静默不抛", () => {
+  const chime = createVoiceChime({ AudioContextImpl: null, log() {} });
+  assert.doesNotThrow(() => { chime.prime(); chime.play(); });
+});
+
+test("dispose：close AudioContext 并复位", () => {
+  const events = [];
+  const chime = createVoiceChime({ AudioContextImpl: makeFakeCtx(events), log() {} });
+  chime.prime();
+  assert.ok(chime.getContext(), "prime 后持有 ctx");
   chime.dispose();
-  assert.strictEqual(FakeURL.revoked, before + 1);
-  assert.strictEqual(chime.getAudio(), null);
+  assert.ok(events.some((e) => e[0] === "close"), "dispose 必须 close ctx");
+  assert.strictEqual(chime.getContext(), null, "复位");
 });

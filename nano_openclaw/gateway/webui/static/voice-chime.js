@@ -1,110 +1,114 @@
-/* 唤醒提示音 —— 合成一声短「叮」（双音正弦 ~0.22s），<audio> 元素播放。
+/* 唤醒提示音 —— Web Audio 合成一声短「叮」（双音 880→1320Hz，各 ~0.11s，指数衰减）。
  *
- * 为什么不经 voice-pcm-player：提示音与合成播放链路语义无关，走播放器会污染
- * drain gate / onAudible（零发声判定）。独立 <audio> + 预生成 WAV blob 最轻。
- * 时长 <5s → Chromium 只拿瞬态焦点，不创建媒体会话（车机面板无条目）。
+ * 为什么不再用 <audio> 解码 WAV：旧实现喂 8bit/8kHz WAV 给 <audio> 解码，Chrome
+ * 能放，但部分国产内核（百度 T7 / 小米自带浏览器）的精简音频解码栈对 8bit PCM
+ * 或 8kHz 低采样率解码失败/静默——叮听不到。改用 OscillatorNode 纯合成，不经任何
+ * 容器/编码解码，凡支持 (webkit)AudioContext 的内核都出声。
  *
- * autoplay：唤醒发生在非手势上下文（识别回调），从未在手势内 play 过的元素会被
- * 拦下 → 须在用户手势内 prime()（静音 play 一次解锁，与 focus guard 同款套路）。
+ * 为什么不经 voice-pcm-player：提示音与 TTS 播放链路语义无关，独立 AudioContext
+ * 不污染播放器的 drain gate / onAudible（零发声判定）。
  *
- * UMD：依赖全部可注入（Audio/URL/Blob），node --test 可测。
+ * autoplay：唤醒发生在非手势上下文（识别回调）。AudioContext 在移动端首次须在用户
+ * 手势内创建并 resume()→running，否则其后 schedule 的 oscillator 不发声。故 prime()
+ * 在手势内建 ctx + resume（与 voice-pcm-player 的 ctx-in-gesture 同款套路）。
+ *
+ * 时长 ~0.22s（<5s）：Chromium 只拿瞬态焦点，不建媒体会话（车机面板无条目）。
+ *
+ * UMD：AudioContext 可注入，node --test 可测。
  */
 (function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./voice-wav.js"));
-  else root.createVoiceChime = factory(root.VoiceWav);
-})(typeof self !== "undefined" ? self : this, function (wav) {
+  if (typeof module !== "undefined" && module.exports) module.exports = factory();
+  else root.createVoiceChime = factory();
+})(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  // 双音「叮」：880Hz → 1320Hz 各 ~0.11s，指数衰减包络，8bit 单声道 8kHz。
-  function makeChimeWavBlob(BlobImpl, sampleRate) {
-    sampleRate = sampleRate || 8000;
-    var seg = Math.floor(sampleRate * 0.11);
-    var n = seg * 2;
-    var samples = new Uint8Array(n);
-    var freqs = [880, 1320];
-    for (var i = 0; i < n; i++) {
-      var f = freqs[(i / seg) | 0];
-      var t = (i % seg) / sampleRate;
-      var env = Math.exp(-t * 18);   // 指数衰减：清脆不刺耳
-      var v = Math.sin(2 * Math.PI * f * t) * env * 90;   // 90/127 ≈ 0.7 FS 峰值
-      samples[i] = 128 + Math.round(v);
-    }
-    return wav.makeWavBlob(BlobImpl, sampleRate, samples);
-  }
+  // 双音「叮」各 SEG 秒，指数衰减包络（清脆不刺耳）。唤醒升调（880→1320，"醒"）／
+  // 回落待机降调（1320→880，"睡"）——同段提示音两个方向，一耳朵区分醒/睡。
+  var TONES_WAKE = [880, 1320];
+  var TONES_SLEEP = [1320, 880];
+  var SEG = 0.11;     // 每音时长（秒）
+  var PEAK = 0.7;     // 包络峰值（相对满刻度），再乘 opts.volume
 
   function createVoiceChime(opts) {
     opts = opts || {};
-    var AudioImpl = opts.AudioImpl || (typeof Audio !== "undefined" ? Audio : null);
-    var URLImpl = opts.URLImpl || (typeof URL !== "undefined" ? URL : null);
-    var BlobImpl = opts.BlobImpl || (typeof Blob !== "undefined" ? Blob : null);
+    var CtxImpl = opts.AudioContextImpl ||
+      (typeof window !== "undefined" ? (window.AudioContext || window.webkitAudioContext) : null);
     var log = opts.log || function () {};
 
-    var audio = null;
-    var objectUrl = "";
+    var ctx = null;
     var primed = false;
 
-    function ensureAudio() {
-      if (audio) return audio;
-      if (!AudioImpl || !URLImpl || !BlobImpl) return null;
+    function ensureCtx() {
+      if (ctx) return ctx;
+      if (!CtxImpl) { log("chime-create", "AudioContext 不可用"); return null; }
       try {
-        audio = new AudioImpl();
-        objectUrl = URLImpl.createObjectURL(makeChimeWavBlob(BlobImpl));
-        audio.src = objectUrl;
-        audio.preload = "auto";
-        audio.playsInline = true;
+        ctx = new CtxImpl();
       } catch (err) {
-        audio = null;
-        log("chime-create", (err && err.message) || "创建提示音失败");
+        ctx = null;
+        log("chime-create", (err && err.message) || "创建 AudioContext 失败");
       }
-      return audio;
+      return ctx;
     }
 
-    // 用户手势内调用：静音 play 一次解锁 autoplay，立即暂停（听不到）。
+    function resumeIfNeeded(c) {
+      if (c && c.state === "suspended" && typeof c.resume === "function") {
+        try {
+          var p = c.resume();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        } catch (_) {}
+      }
+    }
+
+    // 用户手势内调用：创建 + resume AudioContext 解锁 autoplay（不发声）。
     function prime() {
       if (primed) return;
-      var a = ensureAudio();
-      if (!a) return;
-      a.volume = 0;
-      var p = null;
-      try { p = a.play(); } catch (_) { return; }
-      var done = function () {
-        primed = true;
-        try { a.pause(); a.currentTime = 0; } catch (_) {}
-      };
-      if (p && typeof p.then === "function") p.then(done, function () { /* 拦下：下次手势再试 */ });
-      else done();
+      var c = ensureCtx();
+      if (!c) return;
+      resumeIfNeeded(c);
+      primed = true;
     }
 
-    // 播放提示音（唤醒命中时，非手势上下文——靠 prime 过的解锁状态）。
-    function play() {
-      var a = ensureAudio();
-      if (!a) return;
+    // 调度一声「叮」（非手势上下文，靠 prime 过的 running ctx）。
+    // variant: "sleep" → 降调（回落待机），其余 → 升调（唤醒）。
+    function play(variant) {
+      var c = ensureCtx();
+      if (!c) return;
+      resumeIfNeeded(c);   // ctx 可能被系统挂起，best-effort 续上
       try {
-        a.volume = opts.volume == null ? 0.5 : opts.volume;
-        a.currentTime = 0;
-        var p = a.play();
-        if (p && typeof p.catch === "function") {
-          p.catch(function (err) { log("chime-play", (err && err.message) || "播放提示音失败"); });
+        var vol = opts.volume == null ? 0.5 : opts.volume;
+        var tones = variant === "sleep" ? TONES_SLEEP : TONES_WAKE;
+        var t0 = c.currentTime;
+        for (var i = 0; i < tones.length; i++) {
+          var start = t0 + i * SEG;
+          var osc = c.createOscillator();
+          var gain = c.createGain();
+          osc.frequency.setValueAtTime(tones[i], start);
+          // 指数衰减包络：峰值 → 近零（exponentialRamp 不能落到 0，用 1e-4 兜底）。
+          gain.gain.setValueAtTime(vol * PEAK, start);
+          gain.gain.exponentialRampToValueAtTime(0.0001, start + SEG);
+          osc.connect(gain);
+          gain.connect(c.destination);
+          osc.start(start);
+          osc.stop(start + SEG);
         }
-      } catch (err) { log("chime-play", (err && err.message) || "播放提示音失败"); }
+      } catch (err) {
+        log("chime-play", (err && err.message) || "播放提示音失败");
+      }
     }
 
     function dispose() {
-      try { if (audio) audio.pause(); } catch (_) {}
-      if (objectUrl && URLImpl && typeof URLImpl.revokeObjectURL === "function") {
-        try { URLImpl.revokeObjectURL(objectUrl); } catch (_) {}
+      if (ctx && typeof ctx.close === "function") {
+        try { ctx.close(); } catch (_) {}
       }
-      objectUrl = "";
-      audio = null;
+      ctx = null;
       primed = false;
     }
 
     return {
       prime: prime, play: play, dispose: dispose,
-      getAudio: function () { return audio; },
+      getContext: function () { return ctx; },
     };
   }
 
-  createVoiceChime.makeChimeWavBlob = makeChimeWavBlob;
   return createVoiceChime;
 });

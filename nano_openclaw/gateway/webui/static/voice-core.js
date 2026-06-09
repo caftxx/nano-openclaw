@@ -413,6 +413,7 @@
           if ((state !== "capturing" && state !== "starting") || ctx.hidden) return res(state, ctx, cmds);
           if (!ctx.wake || !ctx.wake.awake) return res(state, ctx, cmds);
           ctx.wake.awake = false;
+          cmds.push({ type: "chime", variant: "sleep" });   // 回落待机降调提示音（区别于唤醒升调），提示"又要重新唤醒了"
           cmds.push({ type: "stopMic" });
           cmds.push({ type: "clearTimer", tag: "start" });
           return res(startListening(ctx, cmds), ctx, cmds);

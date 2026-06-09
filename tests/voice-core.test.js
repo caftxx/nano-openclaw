@@ -467,6 +467,7 @@ test("W4：唤醒后聆听静默 20s → 回落待机（停麦重开，shell 切
   assert.ok(r.cmds.some((c) => c.type === "armTimer" && c.tag === "wakeIdle"), "语音活动重置回落计时");
   r = replay([{ type: "TIMEOUT", tag: "wakeIdle" }], r.model);
   assert.strictEqual(r.model.ctx.wake.awake, false, "静默到点回落待机");
+  assert.ok(r.cmds.some((c) => c.type === "chime" && c.variant === "sleep"), "回落待机降调提示音");
   assert.ok(has(r.cmds, "stopMic") && has(r.cmds, "startMic"), "重开麦让 shell 切回待机本地引擎");
   // 回落后再说非唤醒词：不发送
   r = replay([{ type: "MIC_STARTED" }, { type: "MIC_FINAL", text: "随便聊聊" }], r.model);

@@ -229,6 +229,7 @@
   function ensureChime() {
     if (chime) return chime;
     chime = window.createVoiceChime({
+      volume: 0.9,   // 提示音独立 AudioContext，音量与 TTS 朗读分开调大（默认 0.5 偏小）
       log: (name, msg) => console.warn("[voice]", name, msg),
     });
     return chime;
@@ -335,7 +336,7 @@
         ensureLocalHelper().sayOnce(cmd.text, () => dispatch({ type: "SPEAK_DRAINED" }));
         break;
       case "chime":
-        ensureChime().play();   // 唤醒提示音「叮」（非手势上下文，靠 primeAudio 解锁）
+        ensureChime().play(cmd.variant);   // 唤醒升调／回落待机降调(variant:"sleep")；非手势靠 primeAudio 解锁
         break;
       case "wakeLock":
         if (cmd.on) requestWakeLock();
