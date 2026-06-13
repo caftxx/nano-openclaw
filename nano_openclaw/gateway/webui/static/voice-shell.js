@@ -57,6 +57,7 @@
   let configLoaded = false;     //【B7】
   let effectiveOut = "";        // 合成链当前生效级（降级上报驱动）【B8】
   let fallbackNotice = "";
+  let aliyunAsrBlockedByBluetooth = false; // Chrome 只给蓝牙电话麦时，本轮退本地 ASR 保 TTS 出声
 
   function store(key, val) { try { localStorage.setItem(key, val); } catch (_) {} }
   function load(key) { try { return localStorage.getItem(key) || ""; } catch (_) { return ""; } }
@@ -88,6 +89,10 @@
   function inStandby() { return core.inStandby(model.ctx); }   // 判定单源在 core
   // startMic 实际使用的引擎：待机本地听关键词，唤醒后切回所选引擎【W2】。
   function desiredEngineName() { return inStandby() ? "webspeech" : resolvedEngine(); }
+  function activeEngineName() {
+    if (aliyunAsrBlockedByBluetooth && SR && resolvedEngine() === "aliyun") return "webspeech";
+    return desiredEngineName();
+  }
   // 输出引擎：用户偏好优先；无偏好且 config 已到 → 阿里云可用默认流式，否则本地。
   function selectedOut() {
     if (prefs.outMode) return prefs.outMode;
@@ -112,7 +117,7 @@
   function ensureRecognizer() {
     // 引擎或待机/对话模式不匹配 → 丢弃重建（唤醒/回落时的引擎切换走这里）【W2/W4】
     const standby = inStandby();
-    if (recognizer && (recognizer.name !== desiredEngineName() || recognizerStandby !== standby)) {
+    if (recognizer && (recognizer.name !== activeEngineName() || recognizerStandby !== standby)) {
       dropRecognizer();
     }
     if (recognizer) return recognizer;
@@ -123,12 +128,16 @@
       onFinal: (text) => dispatch({ type: "MIC_FINAL", text }),
       onError: (kind, msg) => {
         if (kind !== "denied") console.warn("[voice] mic error:", kind, msg);
+        if (kind === "bluetooth-hfp" && SR) {
+          aliyunAsrBlockedByBluetooth = true;
+          markControlsDirty();
+        }
         dispatch({ type: "MIC_ERROR", kind });
       },
       onEnded: () => dispatch({ type: "MIC_ENDED" }),
       log: (k, m) => console.warn("[voice] recog", k, m),
     };
-    if (desiredEngineName() === "aliyun") {
+    if (activeEngineName() === "aliyun") {
       recognizer = window.createAliyunRecognizer(Object.assign({
         getConfig: () => ({ appkey: voiceCfg && voiceCfg.appkey, endpoint: voiceCfg && voiceCfg.endpoint }),
         getToken: fetchVoiceToken,
@@ -504,7 +513,7 @@
     }
     if (speaker) buildSpeaker();   // 已建过链（不太可能这么早）：按新配置重组
     // 引擎选路可能随配置变化（webspeech→aliyun）：丢弃空闲的旧实例，下次开麦用新引擎
-    if (recognizer && recognizer.name !== desiredEngineName() && !recognizer.busy()) dropRecognizer();
+    if (recognizer && recognizer.name !== activeEngineName() && !recognizer.busy()) dropRecognizer();
     markControlsDirty();
     renderAll();
   }
@@ -550,6 +559,7 @@
     if (els.engine) els.engine.onchange = () => {
       prefs.engine = els.engine.value;
       store(ENGINE_KEY, prefs.engine);
+      aliyunAsrBlockedByBluetooth = false;
       const listening = model.state === "starting" || model.state === "capturing";
       dropRecognizer();              // 丢弃旧引擎实例（stop 不触发 onEnded）
       markControlsDirty();

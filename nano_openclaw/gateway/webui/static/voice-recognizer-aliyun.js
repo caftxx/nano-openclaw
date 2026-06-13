@@ -65,6 +65,41 @@
     return nls.envelope(appkey, taskId, "SpeechTranscriber", "StopTranscription", undefined, makeMsgId);
   }
 
+  function labelOf(device) {
+    return String((device && device.label) || "").toLowerCase();
+  }
+
+  function isBluetoothInput(device) {
+    var label = labelOf(device);
+    return /bluetooth|bt|hands[- ]?free|headset|hfp|sco|car|auto|vehicle|蓝牙|车机|车载|免提|耳机|电话/.test(label);
+  }
+
+  function isBuiltInInput(device) {
+    var label = labelOf(device);
+    return /built[- ]?in|internal|phone|primary|bottom|front|back|内置|手机|本机|麦克风/.test(label)
+      && !isBluetoothInput(device);
+  }
+
+  function isGenericDefaultInput(device) {
+    return /default|communications|communication|默认|通信/.test(labelOf(device));
+  }
+
+  function choosePreferredInputDevice(devices) {
+    var inputs = (devices || []).filter(function (d) { return d && d.kind === "audioinput" && d.deviceId; });
+    var labelled = inputs.filter(function (d) { return labelOf(d); });
+    if (!labelled.length) return { device: null, bluetoothOnly: false };
+    var hasBluetooth = labelled.some(isBluetoothInput);
+    var safe = labelled.filter(function (d) { return !isBluetoothInput(d); });
+    if (!safe.length) return { device: null, bluetoothOnly: hasBluetooth };
+    var builtin = safe.filter(isBuiltInInput);
+    if (builtin.length) return { device: builtin[0], bluetoothOnly: false };
+    if (hasBluetooth) {
+      safe = safe.filter(function (d) { return !isGenericDefaultInput(d); });
+      if (!safe.length) return { device: null, bluetoothOnly: true };
+    }
+    return { device: (builtin[0] || safe[0] || null), bluetoothOnly: false };
+  }
+
   // 工厂：opts = { getConfig, getToken, onStarted, onInterim, onFinal, onError, onEnded,
   //               WebSocketImpl?, setupAudio?, workletUrl? }
   function createAliyunRecognizer(opts) {
@@ -84,6 +119,7 @@
     var generation = 0;        // 中止令牌【A7】
     var audioCtx = null;
     var workletNode = null;
+    var sourceNode = null;
     var micStream = null;
     var taskId = "";
     var started = false;       // 已收 TranscriptionStarted（可发音频）
@@ -93,8 +129,10 @@
 
     function cleanupAudio() {
       try { if (workletNode) workletNode.disconnect(); } catch (_) {}
+      try { if (sourceNode) sourceNode.disconnect(); } catch (_) {}
       try { if (micStream) micStream.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
       try { if (audioCtx) audioCtx.close(); } catch (_) {}
+      sourceNode = null;
       workletNode = null;
       micStream = null;
       audioCtx = null;
@@ -140,18 +178,34 @@
       // 进通信模式 = 系统层面"来电话"——音量键变通话音量；停麦时"通话结束"，车机/
       // 蓝牙栈会按通话结束的标准行为自动恢复媒体播放（AVRCP PLAY），把用户手动暂停
       // 的音乐叫醒。AEC 在本场景没有价值：朗读期间识别麦是关的，不存在回声路径。
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
-      });
+      var mediaDevices = opts.mediaDevices ||
+        (typeof navigator !== "undefined" ? navigator.mediaDevices : null);
+      var audioConstraints = { echoCancellation: false, noiseSuppression: true, autoGainControl: true };
+      if (mediaDevices && typeof mediaDevices.enumerateDevices === "function") {
+        try {
+          var choice = choosePreferredInputDevice(await mediaDevices.enumerateDevices());
+          if (choice.bluetoothOnly) {
+            var e = new Error("当前 Chrome 只暴露蓝牙电话麦克风，阿里云 ASR 会占用 HFP 导致 TTS 无声");
+            e.name = "BluetoothHfpInputError";
+            throw e;
+          }
+          if (choice.device && choice.device.deviceId) {
+            audioConstraints.deviceId = { exact: choice.device.deviceId };
+          }
+        } catch (err) {
+          if (err && err.name === "BluetoothHfpInputError") throw err;
+        }
+      }
+      micStream = await mediaDevices.getUserMedia({ audio: audioConstraints });
       var Ctx = window.AudioContext || window.webkitAudioContext;
       audioCtx = new Ctx();
       await audioCtx.audioWorklet.addModule(workletUrl);
-      var source = audioCtx.createMediaStreamSource(micStream);
+      sourceNode = audioCtx.createMediaStreamSource(micStream);
       workletNode = new AudioWorkletNode(audioCtx, "voice-pcm-downsampler", {
         processorOptions: { targetRate: 16000, frameBytes: 3200 },
       });
       workletNode.port.onmessage = function (e) { sendAudio(e.data); };
-      source.connect(workletNode);
+      sourceNode.connect(workletNode);
       // 不接 destination：避免麦克风回放到扬声器形成回环。
     }
     var setupAudio = opts.setupAudio || setupAudioReal;
@@ -182,6 +236,10 @@
         await setupAudio();
       } catch (err) {
         if (myGen !== generation) { cleanupAudio(); return; }   // abort 发生在开麦期间：关麦退出
+        if (err && err.name === "BluetoothHfpInputError") {
+          fail("bluetooth-hfp", err.message || "蓝牙电话麦克风会导致 TTS 无声");
+          return;
+        }
         fail("mic", (err && err.name) || (err && err.message) || "麦克风初始化失败");
         return;
       }
@@ -288,5 +346,7 @@
   createAliyunRecognizer.makeId = makeId;
   createAliyunRecognizer.buildStartCommand = buildStartCommand;
   createAliyunRecognizer.buildStopCommand = buildStopCommand;
+  createAliyunRecognizer.choosePreferredInputDevice = choosePreferredInputDevice;
+  createAliyunRecognizer.isBluetoothInput = isBluetoothInput;
   return createAliyunRecognizer;
 });

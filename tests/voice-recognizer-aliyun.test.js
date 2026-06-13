@@ -7,7 +7,9 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const createAliyunRecognizer = require("../nano_openclaw/gateway/webui/static/voice-recognizer-aliyun.js");
-const { parseAliyunEvent, makeId, buildStartCommand, buildStopCommand } = createAliyunRecognizer;
+const {
+  parseAliyunEvent, makeId, buildStartCommand, buildStopCommand, choosePreferredInputDevice,
+} = createAliyunRecognizer;
 
 // ── Fakes ───────────────────────────────────────────────────────────────────
 function makeFakeWS() {
@@ -84,6 +86,36 @@ test("指令帧：StartTranscription 含 PCM 16k 与断句参数；Stop 无 payl
   const stop = buildStopCommand("ak", "t".repeat(32), () => "m".repeat(32));
   assert.strictEqual(stop.header.name, "StopTranscription");
   assert.strictEqual(stop.payload, undefined);
+});
+
+test("车机蓝牙：阿里云 ASR 优先选择手机/内置麦，避开 HFP/Hands-Free 输入", () => {
+  const devices = [
+    { kind: "audioinput", deviceId: "bt", label: "Bluetooth Hands-Free AG Audio" },
+    { kind: "audioinput", deviceId: "phone", label: "Built-in Phone Microphone" },
+  ];
+  const choice = choosePreferredInputDevice(devices);
+  assert.strictEqual(choice.device.deviceId, "phone");
+  assert.strictEqual(choice.bluetoothOnly, false);
+});
+
+test("车机蓝牙：Default + Bluetooth 组合不可信，触发本轮退回本地 ASR", () => {
+  const devices = [
+    { kind: "audioinput", deviceId: "default", label: "Default" },
+    { kind: "audioinput", deviceId: "bt", label: "Bluetooth Headset" },
+  ];
+  const choice = choosePreferredInputDevice(devices);
+  assert.strictEqual(choice.device, null);
+  assert.strictEqual(choice.bluetoothOnly, true);
+});
+
+test("车机蓝牙：标签不可见时不强选设备，也不误判 bluetoothOnly", () => {
+  const devices = [
+    { kind: "audioinput", deviceId: "default", label: "" },
+    { kind: "audioinput", deviceId: "x", label: "" },
+  ];
+  const choice = choosePreferredInputDevice(devices);
+  assert.strictEqual(choice.device, null);
+  assert.strictEqual(choice.bluetoothOnly, false);
 });
 
 // ── 生命周期 ────────────────────────────────────────────────────────────────

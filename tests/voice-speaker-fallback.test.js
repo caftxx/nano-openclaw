@@ -262,6 +262,19 @@ test("契约：shell 的播放器工厂必须整体展开 cb（防逐键枚举�
     "shell 的 createPlayer 必须 Object.assign({...}, cb) 整体展开转发");
 });
 
+test("车机场景回归：Chrome 只暴露蓝牙 HFP 麦时，本轮阿里云 ASR 自动退本地识别", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src = fs.readFileSync(
+    path.join(__dirname, "../nano_openclaw/gateway/webui/static/voice-shell.js"), "utf8");
+  assert.match(src, /aliyunAsrBlockedByBluetooth/,
+    "shell 需要记录阿里云 ASR 被蓝牙 HFP 输入阻断的状态");
+  assert.match(src, /kind === ["']bluetooth-hfp["'][\s\S]*aliyunAsrBlockedByBluetooth = true/,
+    "收到 bluetooth-hfp 错误后应标记阻断");
+  assert.match(src, /aliyunAsrBlockedByBluetooth[\s\S]*return ["']webspeech["']/,
+    "阻断后 activeEngineName 应退到 WebSpeech，避免继续占用蓝牙电话通道");
+});
+
 // ── 集成：真实 pcm-player 接进回退链（closed-ctx 解卡路径）──────────────────
 function makeRealCtx() {
   return {
