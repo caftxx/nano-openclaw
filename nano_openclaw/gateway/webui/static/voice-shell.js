@@ -41,10 +41,12 @@
   let model = core.createInitialModel();
   let view = null;
   let recognizer = null;        // 当前识别适配器（按 desiredEngineName 懒建）
+  let recognizerProvider = null;
   let recognizerStandby = false; // 当前实例是否为待机模式（待唤醒短去抖本地引擎）
   let chime = null;             // 唤醒提示音
   let warnedWakeNoSr = false;
   let speaker = null;           // FallbackSpeaker 合成链（按 selectedOut 组装）
+  let speakerProvider = null;
   let localHelper = null;       // 独立本地合成器：speakOnce / 音色试听 / 锁屏卡死检测
   let guard = null;             // 音频焦点 guard
   let lastFocusMode = "released";
@@ -114,6 +116,18 @@
   }
 
   // ── 端口：识别 ───────────────────────────────────────────────────────────
+  function ensureRecognizerProvider() {
+    if (recognizerProvider) return recognizerProvider;
+    recognizerProvider = window.createVoiceRecognizerProvider({
+      createAliyunRecognizer: window.createAliyunRecognizer,
+      createWebspeechRecognizer: window.createWebspeechRecognizer,
+      getAliyunConfig: () => ({ appkey: voiceCfg && voiceCfg.appkey, endpoint: voiceCfg && voiceCfg.endpoint }),
+      getToken: fetchVoiceToken,
+      log: (k, m) => console.warn("[voice] recog", k, m),
+    });
+    return recognizerProvider;
+  }
+
   function ensureRecognizer() {
     // 引擎或待机/对话模式不匹配 → 丢弃重建（唤醒/回落时的引擎切换走这里）【W2/W4】
     const standby = inStandby();
@@ -137,20 +151,10 @@
       onEnded: () => dispatch({ type: "MIC_ENDED" }),
       log: (k, m) => console.warn("[voice] recog", k, m),
     };
-    if (activeEngineName() === "aliyun") {
-      recognizer = window.createAliyunRecognizer(Object.assign({
-        getConfig: () => ({ appkey: voiceCfg && voiceCfg.appkey, endpoint: voiceCfg && voiceCfg.endpoint }),
-        getToken: fetchVoiceToken,
-      }, cbs));
-    } else if (standby) {
-      // 待机模式差异参数（非双源）：待机语句只有唤醒词/唤醒词+短指令，短去抖快速 flush；
-      // 正式对话仍用适配器默认（base1600/max3200，单一来源在 voice-recognizer-webspeech.js）
-      recognizer = window.createWebspeechRecognizer(Object.assign({
-        baseSilenceMs: 800, maxSilenceMs: 1600,
-      }, cbs));
-    } else {
-      recognizer = window.createWebspeechRecognizer(cbs);
-    }
+    recognizer = ensureRecognizerProvider().create(activeEngineName(), {
+      standby,
+      callbacks: cbs,
+    });
     return recognizer;
   }
   function dropRecognizer() {
@@ -177,59 +181,39 @@
     markControlsDirty();   // 生效引擎/回退状态变化 → 下拉需重渲
     const out = selectedOut();
     effectiveOut = out;
-    const localLevel = {
-      name: "local", usesPlayer: false,
-      create: (cb) => window.createLocalSpeaker({
-        getVoice: getSelectedSystemVoice,
-        onAudible: cb.onAudible, onCompleted: cb.onCompleted, onError: cb.onError,
-      }),
-    };
-    const flowingLevel = {
-      name: "aliyun-flowing", usesPlayer: true,
-      create: (cb) => window.createFlowingSpeaker({
-        getConfig: () => ({
+    if (!speakerProvider) {
+      speakerProvider = window.createVoiceSpeakerProvider({
+        createFallbackSpeaker: window.createFallbackSpeaker,
+        createLocalSpeaker: window.createLocalSpeaker,
+        createFlowingSpeaker: window.createFlowingSpeaker,
+        createRestSpeaker: window.createRestSpeaker,
+        createVoicePcmPlayer: window.createVoicePcmPlayer,
+        getSelectedSystemVoice,
+        getAliyunConfig: () => ({
           appkey: voiceCfg && voiceCfg.appkey,
           endpoint: voiceCfg && voiceCfg.endpoint,
           voice: currentAliyunVoice(),
           sampleRate: ttsSampleRate(),
         }),
         getToken: fetchVoiceToken,
-        onAudio: cb.onAudio, onCompleted: cb.onCompleted, onError: cb.onError,
-      }),
-    };
-    const restLevel = {
-      name: "aliyun-rest", usesPlayer: true,
-      create: (cb) => window.createRestSpeaker({
-        url: "/api/talk/speak",
-        headers: authHeaders(),
-        getConfig: () => ({ voice: currentAliyunVoice(), sampleRate: ttsSampleRate() }),
-        onAudio: cb.onAudio, onCompleted: cb.onCompleted, onError: cb.onError,
-      }),
-    };
-    // 回退链【B3】：流式→RESTful→本地；RESTful 起→本地；本地恒本地。
-    const levels = out === "aliyun-flowing" ? [flowingLevel, restLevel, localLevel]
-      : out === "aliyun-rest" ? [restLevel, localLevel]
-      : [localLevel];
-    speaker = window.createFallbackSpeaker({
-      levels,
-      // cb 全量展开转发（onDrained/onAudible/onInterrupted/onError，键名与播放器
-      // 选项 1:1）——不逐键枚举：曾因按过期契约只转发两个键，把零发声判定
-      // （onAudible）和解卡先掐引擎（onInterrupted）在生产路径上整段丢成死代码。
-      createPlayer: (cb) => window.createVoicePcmPlayer(Object.assign({
-        sampleRate: ttsSampleRate(),
-      }, cb)),
-      onAudible: () => dispatch({ type: "SPEAK_AUDIBLE" }),
-      onDrained: () => dispatch({ type: "SPEAK_DRAINED" }),
-      onFallback: (levelName, reason) => {
-        effectiveOut = levelName;
-        // 降到本地才弹横幅（手机上看不到 console）【B6】；流式→RESTful 静默换轨
-        fallbackNotice = levelName === "local"
-          ? `阿里云语音合成失败，已回退本地音色。原因：${reason}（换音色可重试）` : "";
-        markControlsDirty();
-        renderAll();
-      },
-      log: (k, m) => console.warn("[voice]", k, m),
-    });
+        headers: authHeaders,
+        sampleRate: ttsSampleRate,
+        callbacks: {
+          onAudible: () => dispatch({ type: "SPEAK_AUDIBLE" }),
+          onDrained: () => dispatch({ type: "SPEAK_DRAINED" }),
+          onFallback: (levelName, reason) => {
+            effectiveOut = levelName;
+            // 降到本地才弹横幅（手机上看不到 console）【B6】；流式→RESTful 静默换轨
+            fallbackNotice = levelName === "local"
+              ? `阿里云语音合成失败，已回退本地音色。原因：${reason}（换音色可重试）` : "";
+            markControlsDirty();
+            renderAll();
+          },
+        },
+        log: (k, m) => console.warn("[voice]", k, m),
+      });
+    }
+    speaker = speakerProvider.build(out);
     return speaker;
   }
   function ensureSpeaker() { return speaker || buildSpeaker(); }

@@ -249,17 +249,16 @@ test("契约：createPlayer 收到的 cb 必须含全部四个回调（端口面
   }
 });
 
-test("契约：shell 的播放器工厂必须整体展开 cb（防逐键枚举漏转发把修复丢成死代码）", () => {
-  // voice-shell.js 引用 window/document，node 装载不了——退而求其次做 source 级断言：
+test("契约：speaker provider 的播放器工厂必须整体展开 cb（防逐键枚举漏转发把修复丢成死代码）", () => {
   // 工厂必须以 Object.assign({...}, cb) 形式全量转发。曾因按过期契约只转发
   // onDrained/onError，onAudible（零发声判定）与 onInterrupted（解卡掐引擎）
   // 在生产路径上整段失效而测试全绿。
   const fs = require("node:fs");
   const path = require("node:path");
   const src = fs.readFileSync(
-    path.join(__dirname, "../nano_openclaw/gateway/webui/static/voice-shell.js"), "utf8");
-  assert.match(src, /createPlayer:\s*\(cb\)\s*=>\s*window\.createVoicePcmPlayer\(Object\.assign\([^;]*\}\s*,\s*cb\)\)/,
-    "shell 的 createPlayer 必须 Object.assign({...}, cb) 整体展开转发");
+    path.join(__dirname, "../nano_openclaw/gateway/webui/static/voice-speaker-provider.js"), "utf8");
+  assert.match(src, /createPlayer:\s*function\s*\(cb\)\s*\{[\s\S]*createVoicePcmPlayer\(Object\.assign\([^;]*\}\s*,\s*cb\)\)/,
+    "speaker provider 的 createPlayer 必须 Object.assign({...}, cb) 整体展开转发");
 });
 
 test("车机场景回归：Chrome 只暴露蓝牙 HFP 麦时，本轮阿里云 ASR 自动退本地识别", () => {
