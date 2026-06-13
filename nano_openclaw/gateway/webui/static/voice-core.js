@@ -18,8 +18,9 @@
  *   error      不可恢复错误（HTTPS 硬阻断 / 前台拒麦 / 连接丢失）
  *
  * ── 关键正交维度（不是状态、是 ctx 字段）────────────────────────────────────
- *   ctx.hidden        页面在后台/锁屏【A1/D2】：后台不主动拆链路（小米锁屏仍可对话），
- *                     但不开新麦、不起新播报；该读未读的内容记 resumeReplay，
+ *   ctx.hidden        页面在后台/锁屏【A1/D2】：后台丢弃识别器，避免移动 Chrome
+ *                     把 WebSpeech/getUserMedia 服务挂成半死；后台不开新麦、不起播报；
+ *                     回前台重建识别器；该读未读的内容记 resumeReplay，
  *                     回前台全文重播一次且只一次。
  *   ctx.turn          当前 turn：open（流式中）/ muted（本轮禁播报：暂停态接的 turn、
  *                     或用户点屏打断【E1】）/ sentUpTo（按句末标点切句的进度游标）/
@@ -536,7 +537,13 @@
         if (state === "closed" || ctx.hidden) return res(state, ctx, cmds);
         ctx.hidden = true;
         cmds.push({ type: "wakeLock", on: false });
-        // 后台不主动拆链路：锁屏期间可能仍能对话；脆弱的是回前台那一瞬间【A1/D1】
+        if (state === "starting" || state === "capturing") {
+          cmds.push({ type: "dropMic" });
+          cmds.push({ type: "clearTimer", tag: "start" });
+          cmds.push({ type: "clearTimer", tag: "wakeIdle" });
+        }
+        // 浏览器后台/锁屏不保证继续听麦；先丢弃识别器，回前台再统一 cooldown
+        // 重建，避免旧 wrapper 占着 busy 却不再产出结果【A1/D1】。
         return res(state, ctx, cmds);
       }
 
@@ -565,7 +572,7 @@
           return res("thinking", ctx, cmds);
         }
         // 聆听族：丢弃锁屏期间可能卡死的旧识别实例，延迟 1.2s 等浏览器恢复再开麦【D1】
-        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "dropMic" });
         cmds.push({ type: "clearTimer", tag: "start" });
         cmds.push({ type: "clearTimer", tag: "wakeIdle" });   // 恢复路径重开麦时会重新armed
         cmds.push({ type: "armTimer", tag: "cooldown", ms: 1200 });

@@ -1,5 +1,5 @@
 /* 语音核心状态机 —— 历史坑位的事件序列回放回归（编号对应重写前的 bugfix commit）：
- * 【A1】后台拒麦不拆免提，回前台恢复          【A4】纯前台卡死由 starting 超时自愈
+ * 【A1】后台丢弃识别器，回前台恢复            【A4】纯前台卡死由 starting 超时自愈
  * 【C3】焦点派生：全程无持麦档（防假通话周期）  【D1】回前台延迟重建识别
  * 【D2】锁屏内容回前台全文重播一次且只一次     【D3】读完 500ms 冷却防尾音回采
  * 【E1】句读完 turn 未 done 不提前开麦         【E2】思考中点屏取消 + 防重复刷
@@ -139,8 +139,12 @@ test("续听接力：MIC_ENDED（自然静音超时）→ 前台立即重开", (
   assert.ok(has(r.cmds, "startMic"));
 });
 
-test("A1：后台拒麦/掉线不拆免提——hidden 时 MIC_ERROR(denied) 忽略、MIC_ENDED 不重启", () => {
-  let r = replay([...BOOT, { type: "HIDDEN" }, { type: "MIC_ERROR", kind: "denied" }]);
+test("A1：后台丢弃识别器且不重开——hidden 时 MIC_ERROR(denied) 忽略、MIC_ENDED 不重启", () => {
+  let r = replay([...BOOT, { type: "HIDDEN" }]);
+  assert.strictEqual(r.model.state, "capturing");
+  assert.ok(has(r.cmds, "dropMic"), "进后台先丢弃识别器，避免 Chrome 识别服务半死");
+  assert.ok(r.cmds.some((c) => c.type === "clearTimer" && c.tag === "start"));
+  r = replay([{ type: "MIC_ERROR", kind: "denied" }], r.model);
   assert.strictEqual(r.model.state, "capturing", "后台拒麦是暂时的，不进 error");
   r = replay([{ type: "MIC_ENDED" }], r.model);
   assert.strictEqual(r.model.state, "starting");
@@ -156,7 +160,7 @@ test("前台拒麦才是真拒绝 → error + 收回 wakeLock", () => {
 test("A1/D1：回前台恢复——丢弃旧识别实例，延迟 1.2s 重建开麦", () => {
   let r = replay([...BOOT, { type: "HIDDEN" }, { type: "VISIBLE" }]);
   assert.strictEqual(r.model.state, "cooldown");
-  assert.ok(has(r.cmds, "stopMic"), "丢弃锁屏期间可能卡死的旧实例");
+  assert.ok(has(r.cmds, "dropMic"), "丢弃锁屏期间可能卡死的旧识别器 wrapper");
   assert.strictEqual(get(r.cmds, "armTimer").ms, 1200, "等浏览器麦克风/语音服务恢复");
   assert.ok(has(r.cmds, "recoverSpeechOutput"));
   r = replay([{ type: "TIMEOUT", tag: "cooldown" }], r.model);

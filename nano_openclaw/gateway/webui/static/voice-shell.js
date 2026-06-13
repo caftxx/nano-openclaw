@@ -283,6 +283,9 @@
       case "stopMic":
         if (recognizer) recognizer.stop();
         break;
+      case "dropMic":
+        dropRecognizer();
+        break;
       case "rebuildMic": {
         // 丢弃可能卡死的实例建新的【A4】（aliyun 的 rebuild 内部即 stop+start）
         const rec = ensureRecognizer();
@@ -596,17 +599,25 @@
     // 系统声音异步加载：voiceschanged 后重渲音色下拉
     if (synth && "onvoiceschanged" in synth) synth.onvoiceschanged = () => { markControlsDirty(); renderAll(); };
 
-    // 可见性：后台不拆链路，回前台统一恢复【A1/D1/D2】
+    // 可见性：后台丢弃识别器，回前台统一恢复【A1/D1/D2】。移动端 Chrome/部分
+    // WebView 切 App 时 pagehide/pageshow/focus 比 visibilitychange 更可靠，统一归一。
+    function reportVisible() {
+      // 本地 synth 锁屏会静默丢/挂起队列；卡着即触发全文重播
+      const speechBusy = Boolean(
+        (effectiveOut || selectedOut()) === "local" && speaker && speaker.busy()
+      );
+      dispatch({ type: "VISIBLE", speechBusy });
+    }
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") {
-        // 本地 synth 锁屏会静默丢/挂起队列；卡着即触发全文重播
-        const speechBusy = Boolean(
-          (effectiveOut || selectedOut()) === "local" && speaker && speaker.busy()
-        );
-        dispatch({ type: "VISIBLE", speechBusy });
-      } else {
-        dispatch({ type: "HIDDEN" });
-      }
+      if (document.visibilityState === "visible") reportVisible();
+      else dispatch({ type: "HIDDEN" });
+    });
+    window.addEventListener("pagehide", () => dispatch({ type: "HIDDEN" }));
+    window.addEventListener("pageshow", () => {
+      if (document.visibilityState === "visible") reportVisible();
+    });
+    window.addEventListener("focus", () => {
+      if (document.visibilityState === "visible") reportVisible();
     });
 
     // 深链：/voice 直接进语音态（不自动聆听——浏览器要求手势才能开麦）
