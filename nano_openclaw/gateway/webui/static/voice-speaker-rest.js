@@ -1,10 +1,10 @@
-/* 阿里云 RESTful 语音合成引擎 —— 经后端代理 /api/voice/tts（POST JSON）合成。
+/* Talk RESTful 语音合成引擎 —— 经后端代理 /api/talk/speak（POST JSON）合成。
  *
  * 回退链第二级【B3】：流式仅商用版可用、不支持试用，未开通账号每轮首句 TaskFailed；
  * RESTful 是标准「语音合成」产品，试用版亦可用。
  *
  * 为何经后端代理：阿里云 RESTful 文档明确「不支持纯 JavaScript 直接调用」——CORS +
- * 泄露 appkey 风险。浏览器只 POST 文本到本端 /api/voice/tts，后端带临时 Token + appkey
+ * 泄露 appkey 风险。浏览器只 POST 文本到本端 /api/talk/speak，后端带临时 Token + appkey
  * 调阿里云回流 PCM。浏览器永不接触 AK/SK/appkey。
  *
  * 为何串行：RESTful 一次请求合一段音频，多段必须按文本顺序串行投放，否则音频乱序。
@@ -49,7 +49,7 @@
   //   getConfig() -> {voice, sampleRate}
   function createRestSpeaker(opts) {
     opts = opts || {};
-    var url = opts.url || "/api/voice/tts";
+    var url = opts.url || "/api/talk/speak";
     var headers = opts.headers || {};
     var getConfig = opts.getConfig;
     var onAudio = opts.onAudio || function () {};
@@ -86,12 +86,16 @@
       pumping = true;
       var myGen = generation;
       while (queue.length > 0 && !aborted && myGen === generation) {
-        var text = queue.shift();
+        var item = queue.shift();
+        var text = item && item.text;
+        var directive = (item && item.directive) || {};
         var cfg = getConfig ? getConfig() : {};
         var body = {
           text: text,
-          voice: cfg && cfg.voice,
-          sample_rate: (cfg && cfg.sampleRate) || 16000,
+          voiceId: directive.voiceId || directive.voice || (cfg && cfg.voice),
+          sampleRate: (cfg && cfg.sampleRate) || 16000,
+          speed: directive.speed,
+          rateWpm: directive.rateWpm,
         };
         var reqHeaders = {};
         for (var k in headers) { if (Object.prototype.hasOwnProperty.call(headers, k)) reqHeaders[k] = headers[k]; }
@@ -122,7 +126,14 @@
           return;
         }
         try {
-          if (resp.body && typeof resp.body.getReader === "function") {
+          var contentType = "";
+          try { contentType = (resp.headers && resp.headers.get && resp.headers.get("content-type")) || ""; } catch (_) {}
+          if (contentType.indexOf("application/json") >= 0) {
+            var data = await resp.json();
+            var abJson = base64ToArrayBuffer(data && data.audioBase64);
+            if (aborted || myGen !== generation) return;
+            onAudio(abJson);
+          } else if (resp.body && typeof resp.body.getReader === "function") {
             var reader = resp.body.getReader();
             while (true) {
               var r = await reader.read();
@@ -135,7 +146,8 @@
               }
             }
           } else {
-            var ab = await resp.arrayBuffer();
+            var ab;
+            ab = await resp.arrayBuffer();
             if (aborted || myGen !== generation) return;
             onAudio(ab);
           }
@@ -154,11 +166,11 @@
 
     function begin() { reset(); }
 
-    function push(text) {
+    function push(text, directive) {
       if (!text || aborted) return;
       var parts = splitForTts(text);
       for (var i = 0; i < parts.length; i++) {
-        if (parts[i]) queue.push(parts[i]);
+        if (parts[i]) queue.push({ text: parts[i], directive: directive || null });
       }
       if (!pumping) pump();
     }
@@ -180,6 +192,18 @@
     return { begin: begin, push: push, end: end, abort: abort, name: "aliyun-rest" };
   }
 
+  function base64ToArrayBuffer(b64) {
+    if (!b64) return new ArrayBuffer(0);
+    var decode = typeof atob === "function"
+      ? atob
+      : function (s) { return Buffer.from(s, "base64").toString("binary"); };
+    var bin = decode(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }
+
   createRestSpeaker.splitForTts = splitForTts;
+  createRestSpeaker.base64ToArrayBuffer = base64ToArrayBuffer;
   return createRestSpeaker;
 });

@@ -31,6 +31,37 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
+  function parseTalkDirective(text) {
+    var raw = String(text || "").replace(/\r\n/g, "\n");
+    var lines = raw.split("\n");
+    var first = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].trim()) { first = i; break; }
+    }
+    if (first < 0) return { directive: null, text: text };
+    var head = lines[first].trim();
+    if (head.charAt(0) !== "{" || head.charAt(head.length - 1) !== "}") {
+      return { directive: null, text: text };
+    }
+    var obj;
+    try { obj = JSON.parse(head); } catch (_) { return { directive: null, text: text }; }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return { directive: null, text: text };
+    var directive = {};
+    var voice = obj.voice || obj.voice_id || obj.voiceId;
+    if (typeof voice === "string" && voice.trim()) directive.voiceId = voice.trim();
+    var speed = typeof obj.speed === "number" ? obj.speed : null;
+    if (speed != null && speed > 0.5 && speed < 2.0) directive.speed = speed;
+    var rate = typeof obj.rateWpm === "number" ? obj.rateWpm
+      : (typeof obj.rate === "number" ? obj.rate : (typeof obj.wpm === "number" ? obj.wpm : null));
+    if (rate != null && rate > 0) directive.rateWpm = rate;
+    var format = obj.output_format || obj.outputFormat || obj.format;
+    if (typeof format === "string" && format.trim()) directive.outputFormat = format.trim();
+    if (!Object.keys(directive).length) return { directive: null, text: text };
+    lines.splice(first, 1);
+    if (first < lines.length && !lines[first].trim()) lines.splice(first, 1);
+    return { directive: directive, text: lines.join("\n") };
+  }
+
   // 工厂：opts = {
   //   levels: [{ name, usesPlayer, create(cb) }],
   //     cb = { onAudio(buf), onAudible(), onCompleted(), onError(name, msg) }
@@ -57,6 +88,8 @@
     var endRequested = false;  // 本轮上游已调 end()【B4】
     var audioHeard = false;    // 本轮是否出过声【B5】
     var audibleFired = false;  // onAudible 仅上报一次
+    var begun = false;
+    var turnDirective = null;
 
     function anyCloudLevel() {
       for (var i = 0; i < levels.length; i++) if (levels[i].usesPlayer) return true;
@@ -140,8 +173,8 @@
           // 零发声重投【B5】：把本轮已投文本全量交给下一级。
           if (player) { try { player.stop(); } catch (_) {} }
           var eng = engineAt(currentIdx);
-          eng.begin();
-          for (var i = 0; i < pushed.length; i++) eng.push(pushed[i]);
+          eng.begin(turnDirective);
+          for (var i = 0; i < pushed.length; i++) eng.push(pushed[i], turnDirective);
           if (endRequested) eng.end();   // 上游已收尾：补 end，别让新引擎永不 complete【B4】
           return;
         }
@@ -164,17 +197,30 @@
       endRequested = false;
       audioHeard = false;
       audibleFired = false;
-      engineAt(currentIdx).begin();
+      begun = false;
+      turnDirective = null;
     }
 
     function push(text) {
       if (!text) return;
+      if (!begun) {
+        var parsed = parseTalkDirective(text);
+        turnDirective = parsed.directive;
+        text = parsed.text;
+        engineAt(currentIdx).begin(turnDirective);
+        begun = true;
+      }
+      if (!text) return;
       pushed.push(text);
-      engineAt(currentIdx).push(text);
+      engineAt(currentIdx).push(text, turnDirective);
     }
 
     function end() {
       endRequested = true;
+      if (!begun) {
+        engineAt(currentIdx).begin(turnDirective);
+        begun = true;
+      }
       engineAt(currentIdx).end();
     }
 
@@ -184,6 +230,8 @@
       endRequested = false;
       audioHeard = false;
       audibleFired = false;
+      begun = false;
+      turnDirective = null;
       for (var i = 0; i < engines.length; i++) {
         if (engines[i]) { try { engines[i].abort(); } catch (_) {} }
       }
@@ -218,5 +266,6 @@
     };
   }
 
+  createFallbackSpeaker.parseTalkDirective = parseTalkDirective;
   return createFallbackSpeaker;
 });

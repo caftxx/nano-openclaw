@@ -200,7 +200,7 @@
     const restLevel = {
       name: "aliyun-rest", usesPlayer: true,
       create: (cb) => window.createRestSpeaker({
-        url: "/api/voice/tts",
+        url: "/api/talk/speak",
         headers: authHeaders(),
         getConfig: () => ({ voice: currentAliyunVoice(), sampleRate: ttsSampleRate() }),
         onAudio: cb.onAudio, onCompleted: cb.onCompleted, onError: cb.onError,

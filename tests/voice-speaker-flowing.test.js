@@ -77,6 +77,17 @@ test("Started 前 push 的文本先攒队列，Started 后按序补发", async (
   assert.deepStrictEqual(ws.sent.slice(1).map((s) => JSON.parse(s).payload.text), ["第一句。", "第二句。"]);
 });
 
+test("Talk directive：首段音色覆盖 StartSynthesis voice", async () => {
+  const { sp, FakeWS } = makeSpeaker();
+  sp.begin({ voiceId: "longxiaochun" });
+  sp.push("第一句。", { voiceId: "longxiaochun" });
+  await tick();
+  const ws = FakeWS.instances[0];
+  ws.open();
+  const start = JSON.parse(ws.sent[0]);
+  assert.strictEqual(start.payload.voice, "longxiaochun");
+});
+
 test("Started 前调 end()：Started 后补发 StopSynthesis（缓存文本不丢）", async () => {
   const { sp, FakeWS } = makeSpeaker();
   sp.begin();

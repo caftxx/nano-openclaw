@@ -40,6 +40,7 @@
     var endRequested = false;
     var completed = false;
     var audibleFired = false;
+    var turnDirective = null;
 
     function applyVoice(u) {
       var vo = null;
@@ -68,7 +69,7 @@
       }
       var u = new UtteranceImpl(next);
       applyVoice(u);
-      u.rate = rate;
+      u.rate = (turnDirective && typeof turnDirective.speed === "number") ? turnDirective.speed : rate;
       u.onstart = function () {
         if (!audibleFired) { audibleFired = true; onAudible(); }
       };
@@ -86,10 +87,12 @@
       endRequested = false;
       completed = false;
       audibleFired = false;
+      turnDirective = null;
     }
 
-    function push(text) {
+    function push(text, directive) {
       if (!text) return;
+      if (directive) turnDirective = directive;
       queue.push(text);
       drain();
     }

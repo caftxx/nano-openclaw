@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import secrets
 from pathlib import Path
@@ -21,8 +22,7 @@ from nano_openclaw.gateway._event_payload import (
 )
 from nano_openclaw.gateway.backend import BackendError, BusyError, NotFoundError, PushEvent
 from nano_openclaw.gateway.webui.aliyun_token import AliyunTokenProvider, TokenError
-from nano_openclaw.gateway.webui.aliyun_tts import synthesize_tts, TtsError
-from nano_openclaw.gateway.webui.voice_catalog import ALIYUN_TTS_VOICES
+from nano_openclaw.tts import TalkSpeakError, build_talk_config, synthesize_talk_speech
 from nano_openclaw.runtime import AgentRuntime
 from nano_openclaw.gateway.agent_backend_session import BackendSessionManager, display_history, message_text
 
@@ -63,15 +63,19 @@ class RuntimeSetRequest(BaseModel):
 
 class VoiceTtsRequest(BaseModel):
     text: str
-    voice: str = ""        # 空则用 config 默认音色
+    voice: str = ""        # legacy alias for voice_id
+    voiceId: str = ""
     sample_rate: int = 0   # 0 则用 config 默认采样率
+    sampleRate: int = 0
+    speed: float | None = None
+    rateWpm: int | None = None
 
 
 def _ensure_voice_token_provider(app: Any, cfg: Any) -> AliyunTokenProvider:
     """按当前 config 的 AK/SK/region 复用或重建缓存 Token provider。
 
     支持 config 热重载后凭据变化能及时反映（旧 provider 凭据不匹配则丢弃重建）。
-    供 /api/voice/token 与 /api/voice/tts 共用。
+    供 /api/voice/token 与 /api/talk/speak 共用。
     """
     provider: AliyunTokenProvider | None = app.state.voice_token_provider
     if provider is None or not provider.matches(
@@ -136,25 +140,11 @@ def create_app(
 
     @app.get("/api/voice/config", dependencies=[Depends(require_http_token)])
     async def voice_config() -> dict[str, Any]:
-        # 仅暴露前端选路 + 直连阿里云所需的非敏感字段；绝不返回 AK/SK。
-        # available 决定前端走阿里云还是回退 Web Speech。
-        cfg = app.state.backend.runtime.config.voice
-        return {
-            "available": cfg.available,
-            "provider": cfg.provider,
-            "appkey": cfg.appkey,
-            "endpoint": cfg.resolved_endpoint(),
-            # 唤醒词（逗号分隔变体）：非空时前端免提进入「待唤醒」待机模式。
-            "wake_word": cfg.wakeWord,
-            # TTS 子对象：复用同一 AK/SK / 网关 / 临时 Token，仅 namespace 不同。
-            # enabled 需在凭据可用的前提下再叠 ttsEnabled 开关；voices 始终回中文音色目录。
-            "tts": {
-                "enabled": cfg.available and cfg.ttsEnabled,
-                "voice": cfg.ttsVoice,
-                "sample_rate": cfg.ttsSampleRate,
-                "voices": ALIYUN_TTS_VOICES,
-            },
-        }
+        return build_talk_config(app.state.backend.runtime.config)
+
+    @app.get("/api/talk/config", dependencies=[Depends(require_http_token)])
+    async def talk_config() -> dict[str, Any]:
+        return {"config": build_talk_config(app.state.backend.runtime.config)}
 
     @app.get("/api/voice/token", dependencies=[Depends(require_http_token)])
     async def voice_token() -> dict[str, Any]:
@@ -174,36 +164,38 @@ def create_app(
             "endpoint": cfg.resolved_endpoint(),
         }
 
-    @app.post("/api/voice/tts", dependencies=[Depends(require_http_token)])
-    async def voice_tts(req: VoiceTtsRequest) -> Response:
-        # RESTful 代理合成：浏览器永不接触 AK/SK（appkey 也不下发），后端用临时 Token +
-        # appkey 调阿里云标准语音合成（POST /stream/v1/tts），把音频字节回流。作为前端
-        # 流式合成不可用/失败时的自动备选（流式 → RESTful → 浏览器本地）。
+    @app.post("/api/talk/speak", dependencies=[Depends(require_http_token)])
+    async def talk_speak(req: VoiceTtsRequest) -> dict[str, Any]:
         cfg = app.state.backend.runtime.config.voice
-        if not cfg.available:
-            raise HTTPException(status_code=503, detail="阿里云语音未配置")
-        if not req.text or not req.text.strip():
-            raise HTTPException(status_code=400, detail="text 不能为空")
-        provider = _ensure_voice_token_provider(app, cfg)
+        provider = _ensure_voice_token_provider(app, cfg) if cfg.available else None
         try:
-            token_id, _ = await asyncio.to_thread(provider.get_token)
-        except TokenError as exc:
-            raise HTTPException(status_code=502, detail=f"签发 Token 失败: {exc}") from exc
-        voice = req.voice or cfg.ttsVoice
-        sample_rate = req.sample_rate or cfg.ttsSampleRate
-        try:
-            audio = await asyncio.to_thread(
-                synthesize_tts,
-                url=cfg.resolved_rest_tts_url(),
-                appkey=cfg.appkey,
-                token=token_id,
+            result = await asyncio.to_thread(
+                synthesize_talk_speech,
+                app.state.backend.runtime.config,
                 text=req.text,
-                voice=voice,
-                sample_rate=sample_rate,
+                voice_id=req.voiceId or req.voice or None,
+                sample_rate=req.sampleRate or req.sample_rate or None,
+                speed=req.speed,
+                rate_wpm=req.rateWpm,
+                token_provider=provider,
             )
-        except TtsError as exc:
-            raise HTTPException(status_code=502, detail=f"语音合成失败: {exc}") from exc
-        return Response(content=audio, media_type="application/octet-stream")
+        except TalkSpeakError as exc:
+            raise HTTPException(
+                status_code=503 if exc.fallback_eligible else 502,
+                detail={
+                    "message": str(exc),
+                    "reason": exc.reason,
+                    "fallbackEligible": exc.fallback_eligible,
+                },
+            ) from exc
+        return {
+            "audioBase64": base64.b64encode(result.audio).decode("ascii"),
+            "provider": result.provider,
+            "outputFormat": result.output_format,
+            "voiceCompatible": result.voice_compatible,
+            "mimeType": result.mime_type,
+            "fileExtension": result.file_extension,
+        }
 
     @app.get("/api/sessions", dependencies=[Depends(require_http_token)])
     async def sessions() -> dict[str, Any]:

@@ -82,6 +82,7 @@
     var appkey = "";
     var pendingTexts = [];      // Started 前先攒文本
     var endRequested = false;   // Started 前调过 end()：Started 后补发 StopSynthesis
+    var directive = null;
 
     function reset() {
       ws = null;
@@ -105,8 +106,9 @@
       pendingTexts = [];
     }
 
-    async function begin() {
+    async function begin(nextDirective) {
       if (ws || starting) return;   // 抗重入
+      directive = nextDirective || null;
       starting = true;
       started = false;
       endRequested = false;
@@ -153,7 +155,10 @@
         if (sock !== ws) return;
         try {
           sock.send(JSON.stringify(
-            buildStartSynthesis(appkey, taskId, { voice: cfg.voice, sampleRate: cfg.sampleRate })
+            buildStartSynthesis(appkey, taskId, {
+              voice: (directive && (directive.voiceId || directive.voice)) || cfg.voice,
+              sampleRate: cfg.sampleRate,
+            })
           ));
         } catch (_) { onError("ws", "发送 StartSynthesis 失败"); }
       };
@@ -192,9 +197,9 @@
     }
 
     // 投递一段文本。未建连自动 begin；未 started 先入队。
-    function push(text) {
+    function push(text, nextDirective) {
       if (!text) return;
-      if (!ws && !starting) begin();
+      if (!ws && !starting) begin(nextDirective);
       if (!started || !ws || ws.readyState !== 1) {
         pendingTexts.push(text);
         return;

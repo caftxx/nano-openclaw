@@ -5,7 +5,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const createRestSpeaker = require("../nano_openclaw/gateway/webui/static/voice-speaker-rest.js");
-const { splitForTts } = createRestSpeaker;
+const { splitForTts, base64ToArrayBuffer } = createRestSpeaker;
 
 function okResponse(bytes) {
   return {
@@ -30,7 +30,7 @@ function streamResponse(chunks) {
 function makeSpeaker(fetchImpl, extra) {
   const out = { audio: [], completed: 0, errors: [] };
   const sp = createRestSpeaker(Object.assign({
-    url: "/api/voice/tts",
+    url: "/api/talk/speak",
     headers: { Authorization: "Bearer t" },
     getConfig: () => ({ voice: "xiaoxian", sampleRate: 16000 }),
     fetchImpl,
@@ -147,9 +147,63 @@ test("请求体：携带文本/音色/采样率与鉴权 header", async () => {
   sp.begin();
   sp.push("你好。");
   await tick(); await tick(); await tick();
-  assert.strictEqual(captured.url, "/api/voice/tts");
+  assert.strictEqual(captured.url, "/api/talk/speak");
   const body = JSON.parse(captured.init.body);
-  assert.deepStrictEqual(body, { text: "你好。", voice: "xiaoxian", sample_rate: 16000 });
+  assert.deepStrictEqual(body, {
+    text: "你好。",
+    voiceId: "xiaoxian",
+    sampleRate: 16000,
+  });
   assert.strictEqual(captured.init.headers.Authorization, "Bearer t");
   assert.strictEqual(captured.init.headers["Content-Type"], "application/json");
+});
+
+test("talk.speak JSON 响应：解码 audioBase64 并传给播放器", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    headers: { get: () => "application/json" },
+    json: async () => ({ audioBase64: Buffer.from([7, 8, 9]).toString("base64") }),
+  });
+  const { sp, out } = makeSpeaker(fetchImpl);
+  sp.begin();
+  sp.push("你好。");
+  await tick(); await tick(); await tick();
+  assert.deepStrictEqual([...out.audio[0]], [7, 8, 9]);
+  assert.deepStrictEqual([...new Uint8Array(base64ToArrayBuffer("AQID"))], [1, 2, 3]);
+});
+
+test("talk.speak JSON 响应带 ReadableStream 时不得把 JSON 字节当 PCM 播放", async () => {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify({
+    audioBase64: Buffer.from([10, 11, 12]).toString("base64"),
+  }));
+  const fetchImpl = async () => ({
+    ok: true,
+    headers: { get: () => "application/json; charset=utf-8" },
+    body: {
+      getReader: () => ({
+        read: async () => ({ done: false, value: jsonBytes }),
+      }),
+    },
+    json: async () => ({ audioBase64: Buffer.from([10, 11, 12]).toString("base64") }),
+  });
+  const { sp, out } = makeSpeaker(fetchImpl);
+  sp.begin();
+  sp.push("你好。");
+  await tick(); await tick(); await tick();
+  assert.deepStrictEqual([...out.audio[0]], [10, 11, 12]);
+});
+
+test("Talk directive：push 第二参数覆盖 voiceId 和 speed", async () => {
+  let captured;
+  const fetchImpl = async (url, init) => {
+    captured = JSON.parse(init.body);
+    return okResponse(new Uint8Array([1]));
+  };
+  const { sp } = makeSpeaker(fetchImpl);
+  sp.begin();
+  sp.push("你好。", { voiceId: "longxiaochun", speed: 1.2, rateWpm: 190 });
+  await tick(); await tick(); await tick();
+  assert.strictEqual(captured.voiceId, "longxiaochun");
+  assert.strictEqual(captured.speed, 1.2);
+  assert.strictEqual(captured.rateWpm, 190);
 });

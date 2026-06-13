@@ -25,6 +25,7 @@ from nano_openclaw.gateway.methods import (
     runtime as _runtime,
     sessions as _sessions,
     subagents as _subagents,
+    talk as _talk,
     todos as _todos,
 )
 
@@ -41,6 +42,7 @@ CORE_HANDLERS: dict[str, Handler] = {
     **_runtime.HANDLERS,
     **_channels.HANDLERS,
     **_subagents.HANDLERS,
+    **_talk.HANDLERS,
     **_features.HANDLERS,
     **_introspection.HANDLERS,
     **_health.HANDLERS,
