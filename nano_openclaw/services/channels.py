@@ -14,17 +14,92 @@ Two roles:
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount, ChannelStatus
 from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
     from nano_openclaw.core.runtime import AgentRuntime
     from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
+    from nano_openclaw.core.tools import ToolRegistry
 
 
 log = get_logger(__name__)
+
+
+ChannelState = Literal["stopped", "starting", "running", "error"]
+
+
+@dataclass
+class ChannelAccount:
+    """One configured account of a channel adapter."""
+
+    id: str
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ChannelStatus:
+    """Public-facing status of one channel adapter instance."""
+
+    channel_id: str
+    account_id: str
+    state: ChannelState
+    error: str | None = None
+    started_at: float | None = None
+
+
+class ChannelAdapter(ABC):
+    """One running instance = one channel adapter x one account."""
+
+    id: ClassVar[str] = ""
+
+    def __init__(self, account: ChannelAccount) -> None:
+        if not self.id:
+            raise TypeError(f"{type(self).__name__}.id class attribute must be set")
+        self.account = account
+        self._state: ChannelState = "stopped"
+        self._error: str | None = None
+        self._started_at: float | None = None
+
+    @abstractmethod
+    async def start(self, runtime: "AgentRuntime", gateway: Any | None = None) -> None:
+        """Launch the channel adapter's background task(s)."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Tear down the channel adapter's background tasks. Idempotent."""
+
+    def status(self) -> ChannelStatus:
+        return ChannelStatus(
+            channel_id=self.id,
+            account_id=self.account.id,
+            state=self._state,
+            error=self._error,
+            started_at=self._started_at,
+        )
+
+    def decorate_tools(self, base: "ToolRegistry", sender_key: str) -> "ToolRegistry":
+        """Return a registry suitable for one turn started by ``sender_key``."""
+        return base
+
+    async def notify_completion(
+        self,
+        *,
+        target_key: str,
+        status: str,
+        summary: str,
+        job: "CronJob",
+        record: "CronRunRecord",
+    ) -> None:
+        """Cron scheduler calls this when a channel-created job finishes."""
+        return None
+
+    def make_created_by(self, sender_key: str) -> str:
+        """Three-segment marker: ``{channel_id}:{account_id}:{sender_key}``."""
+        return f"{self.id}:{self.account.id}:{sender_key}"
 
 
 class ChannelManager:

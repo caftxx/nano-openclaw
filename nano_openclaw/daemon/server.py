@@ -45,7 +45,7 @@ from nano_openclaw.core.runtime import build_agent_runtime
 import nano_openclaw.adapters.channels.wechat  # noqa: F401
 
 if TYPE_CHECKING:
-    from nano_openclaw.adapters.channels.base import ChannelAccount
+    from nano_openclaw.services.channels import ChannelAccount
     from nano_openclaw.core.runtime import AgentRuntime
 
 
@@ -248,7 +248,7 @@ async def _start_configured_channels(
     through ``backend.manager`` — that's how wechat sessions show up
     alongside webui/tui sessions in the unified ``/sessions`` list.
     """
-    from nano_openclaw.adapters.channels.base import ChannelAccount
+    from nano_openclaw.services.channels import ChannelAccount
     from nano_openclaw.wechat.login_cli import discover_persisted_account_ids
 
     # Wechat accounts are discovered purely from persisted login tokens —

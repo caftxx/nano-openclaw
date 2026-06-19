@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from nano_openclaw.core.attachments import decode_attachment_payloads
-from nano_openclaw.api.event_payload import (
+from nano_openclaw.services.event_payload import (
     event_to_payload as _event_to_payload,
     is_replayable_activity_payload as _is_replayable_activity_payload,
     jsonable as _jsonable,

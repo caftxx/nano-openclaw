@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nano_openclaw.api.event_payload import jsonable
+from nano_openclaw.services.event_payload import jsonable
 
 
 # ────────────────────────────────────────────────────────────────────────────

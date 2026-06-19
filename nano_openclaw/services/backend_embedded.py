@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from nano_openclaw.core.attachments import PromptAttachment
-from nano_openclaw.api.event_payload import (
+from nano_openclaw.services.event_payload import (
     event_to_payload,
     is_replayable_activity_payload,
     jsonable,
@@ -988,7 +988,7 @@ class EmbeddedBackend(Backend):
     ) -> ChannelStatusEntry:
         if self.channel_manager is None:
             raise NotImplementedError("channels_start: channel manager not configured")
-        from nano_openclaw.adapters.channels.base import ChannelAccount
+        from nano_openclaw.services.channels import ChannelAccount
 
         instance = await self.channel_manager.start(
             channel_id,
