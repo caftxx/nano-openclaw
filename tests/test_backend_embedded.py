@@ -324,4 +324,6 @@ def test_channels_stop_reports_actual_state_when_adapter_stop_fails(tmp_path):
     assert stopped.channel_id == "failing-stop"
     assert stopped.state == "running"
     assert stopped.error == "stop failed"
-    assert [(s.channel_id, s.state) for s in statuses] == [("failing-stop", "running")]
+    assert [(s.channel_id, s.state, s.error) for s in statuses] == [
+        ("failing-stop", "running", "stop failed")
+    ]

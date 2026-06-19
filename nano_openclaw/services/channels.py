@@ -177,7 +177,9 @@ class ChannelManager:
         try:
             await instance.stop()
         except Exception as exc:  # noqa: BLE001
-            log.warning("channel.stop.error", f"{channel_id}/{account_id}: {type(exc).__name__}: {exc}")
+            message = f"{type(exc).__name__}: {exc}"
+            instance._error = str(exc) or message
+            log.warning("channel.stop.error", f"{channel_id}/{account_id}: {message}")
             return False
         self._instances.pop(key, None)
         return True
