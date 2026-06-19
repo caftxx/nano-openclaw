@@ -10,8 +10,8 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from nano_openclaw.core.attachments import PromptAttachment
 from nano_openclaw.api.context import GatewayContext
+from nano_openclaw.services.backend import PromptAttachment
 
 
 async def chat_send(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:

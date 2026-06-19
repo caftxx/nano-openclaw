@@ -68,7 +68,7 @@ def _make_ctx(tmp_path: Path) -> tuple[GatewayContext, EmbeddedBackend]:
     runtime = _fake_runtime(tmp_path)
     backend = EmbeddedBackend(runtime)
     ctx = GatewayContext(
-        runtime=runtime, backend=backend, channel_manager=ChannelManager(),
+        backend=backend, channel_manager=ChannelManager(), state_dir=runtime.state_dir,
     )
     return ctx, backend
 
@@ -159,7 +159,7 @@ def test_active_memory_set_preserves_existing_fields(tmp_path):
     """
     async def run():
         ctx, backend = _make_ctx(tmp_path)
-        ctx.runtime.cfg.active_memory_config = ActiveMemoryConfig(
+        backend.runtime.cfg.active_memory_config = ActiveMemoryConfig(
             enabled=True,
             query_mode=QueryMode.RECENT,
             prompt_style=PromptStyle.STRICT,
@@ -242,7 +242,7 @@ def test_dreaming_set_lazy_creates_and_includes_status(tmp_path):
 def test_dreaming_set_preserves_existing_fields(tmp_path):
     async def run():
         ctx, backend = _make_ctx(tmp_path)
-        ctx.runtime.cfg.dreaming_config = DreamingConfig(
+        backend.runtime.cfg.dreaming_config = DreamingConfig(
             enabled=True,
             frequency="daily",
             min_score=2.5,
@@ -279,8 +279,8 @@ def test_dreaming_run_no_workspace_raises_backend_error(tmp_path):
     """
     async def run():
         ctx, backend = _make_ctx(tmp_path)
-        ctx.runtime.cfg.dreaming_config = DreamingConfig(enabled=True)
-        ctx.runtime.workspace_dir = None
+        backend.runtime.cfg.dreaming_config = DreamingConfig(enabled=True)
+        backend.runtime.workspace_dir = None
         try:
             with pytest.raises(BackendError):
                 await backend.dreaming_run()

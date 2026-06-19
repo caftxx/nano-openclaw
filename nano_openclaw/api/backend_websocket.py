@@ -32,7 +32,6 @@ from typing import Any, Literal
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from nano_openclaw.core.attachments import PromptAttachment
 from nano_openclaw.services.backend import (
     Backend,
     BackendError,
@@ -44,6 +43,7 @@ from nano_openclaw.services.backend import (
     ModelChoice,
     NotFoundError,
     PendingApproval,
+    PromptAttachment,
     PushEvent,
     PushEventKind,
     RuntimeSnapshot,

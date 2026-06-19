@@ -73,7 +73,7 @@ def _fake_runtime(tmp_path: Path, *, registry: ToolRegistry | None = None) -> Si
 def _ctx(tmp_path: Path, *, registry: ToolRegistry | None = None) -> tuple[GatewayContext, EmbeddedBackend]:
     runtime = _fake_runtime(tmp_path, registry=registry)
     backend = EmbeddedBackend(runtime)
-    return GatewayContext(runtime=runtime, backend=backend, channel_manager=ChannelManager()), backend
+    return GatewayContext(backend=backend, channel_manager=ChannelManager(), state_dir=runtime.state_dir), backend
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ def test_runtime_get_payload_round_trip_via_dispatch(tmp_path):
     """
     async def run():
         ctx, backend = _ctx(tmp_path)
-        ctx.runtime.cfg.context_budget = 100_000
+        backend.runtime.cfg.context_budget = 100_000
         try:
             raw = json.dumps({"id": "rg", "method": "runtime.get", "params": {}})
             return await _dispatch_one(ctx, raw)

@@ -121,9 +121,9 @@ class _RunningServer:
         self.runtime = _fake_runtime(tmp_path)
         self.backend = EmbeddedBackend(self.runtime)
         self.ctx = GatewayContext(
-            runtime=self.runtime,
             backend=self.backend,
             channel_manager=ChannelManager(),
+            state_dir=self.runtime.state_dir,
         )
         self.app = FastAPI()
         register_ws_route(self.app, self.ctx)

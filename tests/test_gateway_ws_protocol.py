@@ -96,9 +96,9 @@ def _make_ctx(tmp_path: Path) -> tuple[GatewayContext, EmbeddedBackend]:
     channel_manager = ChannelManager()
     backend = EmbeddedBackend(runtime, channel_manager=channel_manager)
     ctx = GatewayContext(
-        runtime=runtime,
         backend=backend,
         channel_manager=channel_manager,
+        state_dir=runtime.state_dir,
     )
     return ctx, backend
 

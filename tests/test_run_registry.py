@@ -248,7 +248,7 @@ def test_rpc_chat_abort_cancels_cron_turn(tmp_path):
         runtime = _fake_runtime(tmp_path)
         backend = EmbeddedBackend(runtime)
         ctx = GatewayContext(
-            runtime=runtime, backend=backend, channel_manager=ChannelManager(),
+            backend=backend, channel_manager=ChannelManager(), state_dir=runtime.state_dir,
         )
         cron_token = CancellationToken()
         runtime.run_registry.register(

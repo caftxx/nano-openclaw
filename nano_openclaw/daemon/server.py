@@ -1,4 +1,4 @@
-"""Daemon entry point: one process owning the AgentRuntime and frontends.
+"""Daemon entry point: one process owning the runtime and frontends.
 
 ``run_daemon`` is the foreground async main: build runtime, mount the
 WebUI ASGI app on uvicorn, start every configured channel as an asyncio
@@ -12,7 +12,7 @@ Channel hosting (Phase 3 v1):
   per account through the global ``ChannelManager``. Other channels (when
   added later) follow the same pattern: import for side-effect registration,
   enumerate accounts, ``await registry.start(...)``.
-- Channels share the daemon's single ``AgentRuntime`` instance — that's
+- Channels share the daemon's single runtime service instance — that's
   what makes cron / dreaming / subagent runner singletons safe.
 
 The daemon mounts the WebUI plus the ``/rpc`` WebSocket API used by remote
@@ -26,7 +26,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 
@@ -46,7 +46,6 @@ import nano_openclaw.adapters.channels.wechat  # noqa: F401
 
 if TYPE_CHECKING:
     from nano_openclaw.services.channels import ChannelAccount
-    from nano_openclaw.core.runtime import AgentRuntime
 
 
 log = get_logger(__name__)
@@ -137,9 +136,9 @@ async def run_daemon(
     started_channels: list[tuple[str, str]] = []
     backend: EmbeddedBackend = EmbeddedBackend(runtime, channel_manager=channel_manager)
     gateway_ctx = GatewayContext(
-        runtime=runtime,
         backend=backend,
         channel_manager=channel_manager,
+        state_dir=runtime.state_dir,
     )
 
     try:
@@ -236,7 +235,7 @@ def _request_uvicorn_exit(server: "uvicorn.Server") -> None:  # type: ignore[nam
 
 
 async def _start_configured_channels(
-    runtime: "AgentRuntime",
+    runtime: Any,
     registry,
     started_channels: list[tuple[str, str]],
     console: Console,
