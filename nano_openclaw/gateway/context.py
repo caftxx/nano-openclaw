@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from nano_openclaw.channels.registry import ChannelRegistry
     from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
-    from nano_openclaw.runtime import AgentRuntime
+    from nano_openclaw.core.runtime import AgentRuntime
 
 
 @dataclass

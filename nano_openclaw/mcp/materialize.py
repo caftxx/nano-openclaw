@@ -11,7 +11,7 @@ import re
 from typing import Any, Dict, List, Set
 
 from nano_openclaw.mcp.runtime import McpRuntime, McpToolInfo
-from nano_openclaw.tools import Tool
+from nano_openclaw.core.tools import Tool
 
 
 def materialize_mcp_tools(

@@ -7,7 +7,7 @@ import pytest
 from rich.console import Console
 
 from nano_openclaw.cli import _list_skills
-from nano_openclaw.loop import LoopConfig
+from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.skills import Skill, SkillEntry
 
 

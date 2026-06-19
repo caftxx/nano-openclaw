@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nano_openclaw.compact import (
+from nano_openclaw.core.compact import (
     CHARS_PER_TOKEN,
     DEFAULT_RECENT_TURNS,
     DEFAULT_THRESHOLD_RATIO,
@@ -23,7 +23,7 @@ from nano_openclaw.compact import (
     compact_if_needed,
 )
 from nano_openclaw.config.types import MemoryFlushConfig
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 
 
 def make_text_message(role: str, text: str) -> Message:

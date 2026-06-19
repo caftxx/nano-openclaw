@@ -1,6 +1,6 @@
 """Tests for external content security wrapper."""
 
-from nano_openclaw.external_content import wrap_external_content, _sanitize_tokens
+from nano_openclaw.core.external_content import wrap_external_content, _sanitize_tokens
 
 
 def test_wrap_external_content_adds_markers():

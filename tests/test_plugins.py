@@ -4,7 +4,7 @@ import sys
 
 from nano_openclaw.config.types import NanoOpenClawConfig, PluginEntryConfig, PluginsConfig
 from nano_openclaw.plugins.loader import load_plugins
-from nano_openclaw.tools import Tool, build_core_registry
+from nano_openclaw.core.tools import Tool, build_core_registry
 
 
 def _dispatch(registry, *args):
@@ -66,7 +66,7 @@ def test_custom_plugin_load_keeps_builtin_plugins(tmp_path):
     plugin_file = tmp_path / "custom_plugin.py"
     plugin_file.write_text(
         """
-from nano_openclaw.tools import Tool
+from nano_openclaw.core.tools import Tool
 
 class Plugin:
     id = "custom"
@@ -189,7 +189,7 @@ def test_path_plugin_can_register_tool(tmp_path):
     plugin_file = tmp_path / "custom_plugin.py"
     plugin_file.write_text(
         """
-from nano_openclaw.tools import Tool
+from nano_openclaw.core.tools import Tool
 
 class Plugin:
     id = "custom"
@@ -251,7 +251,7 @@ def test_loaded_plugin_metadata_includes_registered_tools_and_hooks(tmp_path):
     plugin_file = tmp_path / "custom_plugin.py"
     plugin_file.write_text(
         """
-from nano_openclaw.tools import Tool
+from nano_openclaw.core.tools import Tool
 
 class Plugin:
     id = "custom"

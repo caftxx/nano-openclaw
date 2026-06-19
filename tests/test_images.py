@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-from nano_openclaw.images import (
+from nano_openclaw.core.images import (
     _compress_image,
     _is_safe_ref,
     _load_local,
@@ -95,7 +95,7 @@ def test_parse_at_prefixed_relative_path(sample_png, tmp_path):
     img = Image.new("RGB", (50, 50), color="yellow")
     img.save(full_path, format="PNG")
     
-    with patch("nano_openclaw.images.os.getcwd", return_value=str(tmp_path)):
+    with patch("nano_openclaw.core.images.os.getcwd", return_value=str(tmp_path)):
         text = f"@{rel_path} relative image"
         cleaned, refs = parse_image_refs(text)
         assert str(full_path) in refs
@@ -233,8 +233,8 @@ def test_load_remote_image(sample_image_bytes):
     mock_response.__enter__ = MagicMock(return_value=mock_response)
     mock_response.__exit__ = MagicMock(return_value=False)
     
-    with patch("nano_openclaw.images.urllib.request.urlopen", return_value=mock_response):
-        with patch("nano_openclaw.images._assert_safe_url"):
+    with patch("nano_openclaw.core.images.urllib.request.urlopen", return_value=mock_response):
+        with patch("nano_openclaw.core.images._assert_safe_url"):
             b64, mime = load_image(url)
             assert isinstance(b64, str)
             assert mime == "image/png"
@@ -243,14 +243,14 @@ def test_load_remote_image(sample_image_bytes):
 def test_load_remote_too_large():
     """Test that oversized remote images are rejected."""
     url = "https://example.com/huge.jpg"
-    with patch("nano_openclaw.images._assert_safe_url"):
-        with patch("nano_openclaw.images.urllib.request.Request"):
+    with patch("nano_openclaw.core.images._assert_safe_url"):
+        with patch("nano_openclaw.core.images.urllib.request.Request"):
             mock_response = MagicMock()
             mock_response.headers.get.return_value = str(_MAX_DOWNLOAD_BYTES + 1000)
             mock_response.__enter__ = MagicMock(return_value=mock_response)
             mock_response.__exit__ = MagicMock(return_value=False)
             
-            with patch("nano_openclaw.images.urllib.request.urlopen", return_value=mock_response):
+            with patch("nano_openclaw.core.images.urllib.request.urlopen", return_value=mock_response):
                 with pytest.raises(ValueError, match="远程图片过大"):
                     load_image(url)
 
@@ -411,7 +411,7 @@ def test_is_safe_ref_rejects_traversal():
 
 def test_assert_safe_url_blocks_localhost():
     """Test that localhost URLs are blocked."""
-    with patch("nano_openclaw.images.socket.getaddrinfo") as mock_getaddr:
+    with patch("nano_openclaw.core.images.socket.getaddrinfo") as mock_getaddr:
         mock_getaddr.return_value = [(None, None, None, None, ("127.0.0.1", None))]
         
         with pytest.raises(ValueError, match="SSRF"):
@@ -420,7 +420,7 @@ def test_assert_safe_url_blocks_localhost():
 
 def test_assert_safe_url_blocks_private_network():
     """Test that private network addresses are blocked."""
-    with patch("nano_openclaw.images.socket.getaddrinfo") as mock_getaddr:
+    with patch("nano_openclaw.core.images.socket.getaddrinfo") as mock_getaddr:
         mock_getaddr.return_value = [(None, None, None, None, ("192.168.1.1", None))]
         
         with pytest.raises(ValueError, match="SSRF"):
@@ -429,7 +429,7 @@ def test_assert_safe_url_blocks_private_network():
 
 def test_assert_safe_url_allows_public():
     """Test that public URLs are allowed."""
-    with patch("nano_openclaw.images.socket.getaddrinfo") as mock_getaddr:
+    with patch("nano_openclaw.core.images.socket.getaddrinfo") as mock_getaddr:
         mock_getaddr.return_value = [(None, None, None, None, ("8.8.8.8", None))]
         
         _assert_safe_url("https://example.com/image.png")
@@ -437,7 +437,7 @@ def test_assert_safe_url_allows_public():
 
 def test_assert_safe_url_unresolvable():
     """Test that unresolvable host raises ValueError."""
-    with patch("nano_openclaw.images.socket.getaddrinfo", side_effect=Exception("DNS fail")):
+    with patch("nano_openclaw.core.images.socket.getaddrinfo", side_effect=Exception("DNS fail")):
         with pytest.raises(ValueError, match="cannot resolve"):
             _assert_safe_url("https://nonexistent.invalid/img.png")
 

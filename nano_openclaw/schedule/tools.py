@@ -9,7 +9,7 @@ from typing import Any
 
 from nano_openclaw.schedule.store import CronStore, new_job_id
 from nano_openclaw.schedule.types import CronJob, CronJobState
-from nano_openclaw.tools import Tool
+from nano_openclaw.core.tools import Tool
 
 
 def build_cron_tools(cron_dir: Path) -> list[Tool]:

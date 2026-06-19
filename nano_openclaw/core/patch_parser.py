@@ -22,7 +22,7 @@ V4A format::
 
 Usage::
 
-    from nano_openclaw.patch_parser import apply_v4a_patch
+    from nano_openclaw.core.patch_parser import apply_v4a_patch
     result = apply_v4a_patch(patch_text, workspace_dir)
     if result.success:
         ...

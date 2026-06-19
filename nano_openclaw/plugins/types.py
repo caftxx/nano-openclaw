@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol
 if TYPE_CHECKING:
     from nano_openclaw.config.types import NanoOpenClawConfig
     from nano_openclaw.plugins.registry import HookRegistry
-    from nano_openclaw.tools import Tool, ToolRegistry
+    from nano_openclaw.core.tools import Tool, ToolRegistry
 
 HookName = Literal[
     "before_prompt_build",

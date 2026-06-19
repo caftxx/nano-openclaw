@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.patch_parser import (
+from nano_openclaw.core.patch_parser import (
     OperationType,
     apply_v4a_patch,
     parse_v4a_patch,
@@ -433,7 +433,7 @@ def test_tools_registry_dispatches_apply_patch(tmp_path):
     import asyncio
     import inspect
 
-    from nano_openclaw.tools import build_core_registry
+    from nano_openclaw.core.tools import build_core_registry
 
     registry = build_core_registry()
     registry.set_workspace_dir(tmp_path)

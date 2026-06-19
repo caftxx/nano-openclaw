@@ -224,8 +224,8 @@ class TestIntegration:
         import nano_openclaw.memory.daily as daily
         from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig
         from nano_openclaw.plugins.loader import load_plugins
-        from nano_openclaw.prompt import build_system_prompt
-        from nano_openclaw.tools import build_core_registry
+        from nano_openclaw.core.prompt import build_system_prompt
+        from nano_openclaw.core.tools import build_core_registry
 
         class FixedDatetime(datetime):
             @classmethod

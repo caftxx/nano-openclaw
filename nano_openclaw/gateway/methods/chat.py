@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from nano_openclaw.attachments import PromptAttachment
+from nano_openclaw.core.attachments import PromptAttachment
 from nano_openclaw.gateway.context import GatewayContext
 
 

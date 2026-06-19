@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.tools import ToolRegistry
 from nano_openclaw.wechat import bot as bot_module
 from nano_openclaw.wechat.bot import WechatBot
 from nano_openclaw.wechat.ilink import is_session_expired

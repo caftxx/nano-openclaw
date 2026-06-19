@@ -19,7 +19,7 @@ import pytest
 from nano_openclaw.gateway.agent_backend_session import AgentBackendSession
 from nano_openclaw.gateway.backend import SessionUsageReport
 from nano_openclaw.gateway.slash import _HANDLERS, _cmd_usage
-from nano_openclaw.loop import SessionUsageStats
+from nano_openclaw.core.loop import SessionUsageStats
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ def test_agent_session_uses_provided_usage_stats_by_reference():
     """When AgentSession is constructed with a shared usage_stats instance,
     mutations through the session attribute must be visible on the original
     object — that's what makes /usage work across turns."""
-    from nano_openclaw.loop import AgentSession, LoopConfig
+    from nano_openclaw.core.loop import AgentSession, LoopConfig
 
     shared = SessionUsageStats()
 

@@ -397,7 +397,7 @@ def test_on_event_callback_receives_memory_extracted(tmp_path: Path) -> None:
     """When the extractor writes paths, it pushes a MemoryExtracted event
     through ``payload['on_event']`` so the TUI / WebUI can render it.
     """
-    from nano_openclaw._stream_events import MemoryExtracted
+    from nano_openclaw.core._stream_events import MemoryExtracted
 
     cfg = _enabled_cfg()
     payload = _make_payload(workspace=tmp_path)

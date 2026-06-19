@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.attachments import (
+from nano_openclaw.core.attachments import (
     AttachmentAttached,
     PromptAttachment,
     decode_attachment_payloads,
 )
-from nano_openclaw.loop import AgentSession, LoopConfig, Message
-from nano_openclaw.provider import MessageEnd, TextDelta
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import AgentSession, LoopConfig, Message
+from nano_openclaw.core.provider import MessageEnd, TextDelta
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def test_decode_attachment_payloads_accepts_base64():
@@ -48,7 +48,7 @@ def test_agent_session_persists_non_image_attachment_and_injects_path(monkeypatc
         yield TextDelta(text="ok")
         yield MessageEnd(stop_reason="end_turn", usage={})
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     try:
         tmp_dir.mkdir(parents=True)

@@ -15,7 +15,7 @@ from rich.console import Console
 
 from nano_openclaw.cli import _manual_compact, repl
 from nano_openclaw.config.types import MemoryFlushConfig
-from nano_openclaw.loop import (
+from nano_openclaw.core.loop import (
     AgentSession,
     CancellationToken,
     LoopConfig,
@@ -23,10 +23,10 @@ from nano_openclaw.loop import (
     TurnCancelled,
     _build_memory_flush_prompt,
 )
-from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptReader, load_session_store
 from nano_openclaw.session.transcript import TranscriptWriter
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
 def test_agent_session_cancellation_during_stream_discards_turn(monkeypatch):
@@ -39,7 +39,7 @@ def test_agent_session_cancellation_during_stream_discards_turn(monkeypatch):
         yield TextDelta(text="partial")
         yield MessageEnd(stop_reason="end_turn")
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     with pytest.raises(TurnCancelled):
         session = AgentSession(
@@ -91,7 +91,7 @@ def test_agent_session_cancellation_before_tool_dispatch_discards_turn(monkeypat
             yield ToolUseEnd(id="tool-1")
             yield MessageEnd(stop_reason="tool_use")
 
-        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+        monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
         with pytest.raises(TurnCancelled):
             session = AgentSession(
@@ -125,7 +125,7 @@ def test_agent_session_success_does_not_duplicate_immediate_user_message(monkeyp
         yield TextDelta(text="reply")
         yield MessageEnd(stop_reason="end_turn", usage={})
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     try:
         writer = TranscriptWriter(tmp_dir / "session.jsonl")
@@ -198,8 +198,8 @@ def test_agent_session_memory_flush_is_silent_and_dispatches_tools(monkeypatch):
             yield TextDelta(text="main reply")
             yield MessageEnd(stop_reason="end_turn", usage={})
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
-    monkeypatch.setattr("nano_openclaw.loop.datetime", _fixed_datetime())
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.datetime", _fixed_datetime())
 
     try:
         session = AgentSession(
@@ -244,7 +244,7 @@ def test_agent_session_skips_memory_flush_without_write_tool(monkeypatch):
         yield TextDelta(text="main reply")
         yield MessageEnd(stop_reason="end_turn", usage={})
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     session = AgentSession(
         history=history,
@@ -311,8 +311,8 @@ def test_manual_compact_runs_silent_memory_flush(monkeypatch):
     async def fake_compact_if_needed(history_arg, **_kwargs):
         return history_arg, "manual summary"
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
-    monkeypatch.setattr("nano_openclaw.loop.datetime", _fixed_datetime())
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.datetime", _fixed_datetime())
     monkeypatch.setattr("nano_openclaw.cli.compact_if_needed", fake_compact_if_needed)
 
     try:
@@ -337,7 +337,7 @@ def test_manual_compact_runs_silent_memory_flush(monkeypatch):
 
 
 def test_build_memory_flush_prompt_replaces_date_and_adds_time(monkeypatch):
-    monkeypatch.setattr("nano_openclaw.loop.datetime", _fixed_datetime())
+    monkeypatch.setattr("nano_openclaw.core.loop.datetime", _fixed_datetime())
 
     prompt = _build_memory_flush_prompt("Store memory/YYYY-MM-DD.md")
 
@@ -694,7 +694,7 @@ def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
         monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
         monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
         monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+        monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
         asyncio.run(repl(
             registry,

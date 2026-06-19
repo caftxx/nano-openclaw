@@ -24,8 +24,8 @@ from nano_openclaw.gateway.protocol import METHODS_V1
 from nano_openclaw.gateway.run_registry import RunRegistry
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import _HANDLERS as SLASH_HANDLERS
-from nano_openclaw.loop import CancellationToken, LoopConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import CancellationToken, LoopConfig
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def _fake_runtime(tmp_path: Path, *, restart_strategy: str = "exec") -> SimpleNamespace:
@@ -184,7 +184,7 @@ def test_restart_slash_calls_backend_gateway_restart():
 def test_restart_tool_registered_after_runtime_build(tmp_path):
     """``_register_restart_tool`` (invoked from build_agent_runtime) wires
     a ``restart`` Tool into the ToolRegistry and binds it to the runtime."""
-    from nano_openclaw.runtime import _register_restart_tool
+    from nano_openclaw.core.runtime import _register_restart_tool
 
     runtime = _fake_runtime(tmp_path)
     _register_restart_tool(runtime)
@@ -194,7 +194,7 @@ def test_restart_tool_registered_after_runtime_build(tmp_path):
 def test_restart_tool_sets_pending_flag_and_schedules_watcher(monkeypatch, tmp_path):
     """Calling the tool flips ``runtime.pending_restart`` and arms one
     watcher task. A second call is a no-op (no stacked watchers)."""
-    from nano_openclaw.runtime import _register_restart_tool
+    from nano_openclaw.core.runtime import _register_restart_tool
 
     runtime = _fake_runtime(tmp_path, restart_strategy="exec")
     _register_restart_tool(runtime)
@@ -238,7 +238,7 @@ def test_restart_watcher_only_fires_when_registry_drains(monkeypatch, tmp_path):
     """The deferred watcher must wait for the run_registry to empty before
     invoking ``perform_restart`` — otherwise it would kill the calling
     turn mid-execution."""
-    from nano_openclaw.runtime import _register_restart_tool
+    from nano_openclaw.core.runtime import _register_restart_tool
 
     runtime = _fake_runtime(tmp_path)
     _register_restart_tool(runtime)

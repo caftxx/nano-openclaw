@@ -19,7 +19,7 @@ from nano_openclaw.plugins.builtin.review_fork_plugin import (
     reset_state,
 )
 from nano_openclaw.subagent.types import SubagentRunRecord, SubagentStatus
-from nano_openclaw.tools import ToolRegistry, build_core_registry
+from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 
 
 def _make_payload(

@@ -20,7 +20,7 @@ from nano_openclaw.channels.base import Channel, ChannelAccount, ChannelStatus
 from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
-    from nano_openclaw.runtime import AgentRuntime
+    from nano_openclaw.core.runtime import AgentRuntime
     from nano_openclaw.schedule.types import CronJob, CronRunRecord
 
 

@@ -26,11 +26,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from nano_openclaw.compact import compact_if_needed, estimate_tokens
+from nano_openclaw.core.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.gateway import slash
 from nano_openclaw.logger import get_logger
 from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
-from nano_openclaw.loop import (
+from nano_openclaw.core.loop import (
     ActiveMemoryRecall,
     Compaction,
     ImageAttached,
@@ -53,8 +53,8 @@ from nano_openclaw.loop import (
     AgentSession,
     run_pre_compaction_memory_flush,
 )
-from nano_openclaw._stream_events import MemoryExtracted
-from nano_openclaw.provider import (
+from nano_openclaw.core._stream_events import MemoryExtracted
+from nano_openclaw.core.provider import (
     MessageEnd,
     TextDelta,
     ThinkingBlockComplete,
@@ -79,7 +79,7 @@ from nano_openclaw.skills import (
     filter_visible_skills,
     get_or_load_skills,
 )
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.tools import ToolRegistry
 
 logger = get_logger(__name__)
 
@@ -473,7 +473,7 @@ async def _manual_compact(
         )
 
         if summary:
-            from nano_openclaw.loop import append_active_todo_reminder
+            from nano_openclaw.core.loop import append_active_todo_reminder
 
             append_active_todo_reminder(history, todo_store)
             _render_compaction(console, summary=summary)

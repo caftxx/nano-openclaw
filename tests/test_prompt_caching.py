@@ -13,7 +13,7 @@ Covers:
 from __future__ import annotations
 
 from nano_openclaw.config.types import PromptCachingConfig
-from nano_openclaw.prompt_caching import (
+from nano_openclaw.core.prompt_caching import (
     apply_anthropic_cache_control,
     build_cacheable_system,
 )

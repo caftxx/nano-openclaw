@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from nano_openclaw._provider_openai import _to_openai_messages, _to_openai_tools
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.provider import MessageEnd, ToolUseEnd, ToolUseStart, stream_response
+from nano_openclaw.core._provider_openai import _to_openai_messages, _to_openai_tools
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.provider import MessageEnd, ToolUseEnd, ToolUseStart, stream_response
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ def test_tool_schema_conversion():
 
 
 def test_multiple_tools_conversion():
-    from nano_openclaw.tools import build_core_registry
+    from nano_openclaw.core.tools import build_core_registry
 
     schemas = build_core_registry().schemas()  # Anthropic format
     openai_tools = _to_openai_tools(schemas)

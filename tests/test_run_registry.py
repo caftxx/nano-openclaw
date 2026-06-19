@@ -22,8 +22,8 @@ import pytest
 from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.run_registry import RunEntry, RunRegistry, cron_turn_id
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
-from nano_openclaw.loop import CancellationToken, LoopConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import CancellationToken, LoopConfig
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def _fake_runtime(tmp_path: Path) -> SimpleNamespace:

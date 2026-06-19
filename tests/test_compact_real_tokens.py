@@ -16,13 +16,13 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-import nano_openclaw.compact as compact_mod
-from nano_openclaw.compact import (
+import nano_openclaw.core.compact as compact_mod
+from nano_openclaw.core.compact import (
     CompactionState,
     compact_if_needed,
     estimate_tokens,
 )
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 
 
 def _text(role: str, text: str) -> Message:

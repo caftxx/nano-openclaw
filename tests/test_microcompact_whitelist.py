@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from nano_openclaw.compact import (
+from nano_openclaw.core.compact import (
     _COMPACTABLE_TOOL_NAMES,
     _DUPLICATE_TOOL_RESULT_TEXT,
     _PRUNE_INPUT_THRESHOLD_CHARS,
@@ -22,7 +22,7 @@ from nano_openclaw.compact import (
     _prune_old_tool_results,
     _tool_result_text,
 )
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 
 
 # ---------------------------------------------------------------------------

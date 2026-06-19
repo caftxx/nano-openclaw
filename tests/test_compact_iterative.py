@@ -15,7 +15,7 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-from nano_openclaw.compact import (
+from nano_openclaw.core.compact import (
     SUMMARY_PREFIX,
     CompactionState,
     _build_summary_prompt,
@@ -25,7 +25,7 @@ from nano_openclaw.compact import (
     compact_if_needed,
     summarize_history,
 )
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 
 
 def _text(role: str, text: str) -> Message:

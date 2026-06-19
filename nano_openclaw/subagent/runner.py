@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from nano_openclaw.logger import get_logger
-from nano_openclaw.loop import (
+from nano_openclaw.core.loop import (
     LoopConfig,
     Message,
     CancellationToken,
@@ -27,7 +27,7 @@ from nano_openclaw.loop import (
     ToolResult,
     AgentSession,
 )
-from nano_openclaw.provider import MessageEnd, ToolUseStart
+from nano_openclaw.core.provider import MessageEnd, ToolUseStart
 from nano_openclaw.subagent.registry import SubagentRegistry, get_registry
 from nano_openclaw.subagent.types import (
     SubagentConfig,
@@ -38,7 +38,7 @@ from nano_openclaw.subagent.types import (
     build_subagent_session_key,
     parse_session_key,
 )
-from nano_openclaw.tools import ToolRegistry, build_core_registry
+from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 from nano_openclaw.session import TranscriptWriter
 
 logger = get_logger(__name__)

@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nano_openclaw.compact import CompactionState
-from nano_openclaw.loop import Message, SessionUsageStats
+from nano_openclaw.core.compact import CompactionState
+from nano_openclaw.core.loop import Message, SessionUsageStats
 from nano_openclaw.todo import TodoStore
 from nano_openclaw.session import (
     TranscriptReader,

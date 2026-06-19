@@ -1,7 +1,7 @@
 """Built-in web tools plugin."""
 
 from nano_openclaw.plugins.types import PluginApi
-from nano_openclaw.tools import build_web_tools
+from nano_openclaw.core.tools import build_web_tools
 
 
 class WebPlugin:

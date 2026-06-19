@@ -23,7 +23,7 @@ from nano_openclaw.memory.tools import (
 )
 from nano_openclaw.config.types import MemorySearchConfig, NanoOpenClawConfig, PluginsConfig
 from nano_openclaw.plugins.loader import load_plugins
-from nano_openclaw.tools import build_core_registry
+from nano_openclaw.core.tools import build_core_registry
 
 
 def _dispatch_result(registry, *args):

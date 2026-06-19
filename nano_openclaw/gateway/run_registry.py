@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from nano_openclaw.loop import CancellationToken
+    from nano_openclaw.core.loop import CancellationToken
 
 
 RunOrigin = Literal["chat", "cron", "channel", "subagent"]

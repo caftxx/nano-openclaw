@@ -368,7 +368,7 @@ def _read_file(args: dict[str, Any], workspace_dir: str | None = None) -> "str |
     if suffix in _IMAGE_EXTS:
         # Return the image as a content block so the model can actually see it,
         # rather than a stub that triggers a pointless retry.
-        from nano_openclaw.images import load_image, to_anthropic_image_block
+        from nano_openclaw.core.images import load_image, to_anthropic_image_block
         try:
             b64, mime = load_image(str(path))
         except Exception as exc:
@@ -409,7 +409,7 @@ def _list_dir(args: dict[str, Any], workspace_dir: str | None = None) -> str:
 def _apply_patch(args: dict[str, Any], workspace_dir: str | None = None) -> str:
     """Apply a V4A-format patch."""
     try:
-        from nano_openclaw.patch_parser import apply_v4a_patch
+        from nano_openclaw.core.patch_parser import apply_v4a_patch
     except Exception as exc:  # pragma: no cover — defensive import guard
         raise RuntimeError(f"Patch failed: import error: {exc}") from exc
 

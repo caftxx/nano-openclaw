@@ -35,7 +35,7 @@ from nano_openclaw.config import (
     resolve_state_dir,
 )
 from nano_openclaw.logger import get_logger, resolve_log_level
-from nano_openclaw.loop import LoopConfig
+from nano_openclaw.core.loop import LoopConfig
 
 log = get_logger(__name__)
 from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
@@ -43,7 +43,7 @@ from nano_openclaw.memory.dreaming import DreamingConfig, start_dreaming_schedul
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
 from nano_openclaw.session import resolve_agent_sessions_dir, resolve_session_store_path
-from nano_openclaw.tools import ToolRegistry, build_core_registry
+from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 
 
 @dataclass
@@ -345,7 +345,7 @@ def _register_restart_tool(runtime: AgentRuntime) -> None:
     """
     import asyncio
 
-    from nano_openclaw.tools import Tool
+    from nano_openclaw.core.tools import Tool
 
     async def _wait_and_restart(rt: AgentRuntime, strategy: str) -> None:
         # Wait until the calling turn (and any other in-flight turns) finish.

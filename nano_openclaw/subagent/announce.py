@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 from nano_openclaw.subagent.registry import SubagentRegistry
 from nano_openclaw.subagent.runner import SubagentRunnerResult
 from nano_openclaw.subagent.types import SubagentRunRecord, SubagentStatus

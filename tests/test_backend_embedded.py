@@ -24,8 +24,8 @@ from nano_openclaw.gateway.backend_embedded import (
     EmbeddedBackend,
     SUBSCRIBER_QUEUE_MAX,
 )
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def _fake_runtime(tmp_path: Path) -> SimpleNamespace:

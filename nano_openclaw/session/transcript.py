@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..loop import Message
+from nano_openclaw.core.loop import Message
 from .truncate import truncate_tool_result
 from .types import (
     SessionHeader,

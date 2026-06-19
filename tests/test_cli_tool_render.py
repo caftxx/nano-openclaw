@@ -3,7 +3,7 @@ import asyncio
 from rich.console import Console
 
 from nano_openclaw.cli import _build_tool_tree, _make_event_handler
-from nano_openclaw.loop import (
+from nano_openclaw.core.loop import (
     Compaction,
     ImageAttached,
     SkillInvoked,
@@ -14,7 +14,7 @@ from nano_openclaw.loop import (
     ToolResult,
     _consume_one_assistant_turn,
 )
-from nano_openclaw.provider import MessageEnd, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.core.provider import MessageEnd, ToolUseDelta, ToolUseEnd, ToolUseStart
 
 
 def test_event_handler_keeps_tool_tree_without_result_content():
@@ -249,7 +249,7 @@ def test_consume_assistant_turn_keeps_interleaved_tool_calls(monkeypatch):
         yield ToolUseEnd(id="tool-2")
         yield MessageEnd(stop_reason="tool_use", usage={})
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     blocks, stop_reason, _usage = asyncio.run(
         _consume_one_assistant_turn(

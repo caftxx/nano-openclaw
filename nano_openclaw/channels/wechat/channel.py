@@ -23,7 +23,7 @@ from nano_openclaw.wechat.login_cli import load_persisted_token
 from nano_openclaw.wechat.notify import NotifyItem, NotifyQueue
 
 if TYPE_CHECKING:
-    from nano_openclaw.runtime import AgentRuntime
+    from nano_openclaw.core.runtime import AgentRuntime
     from nano_openclaw.schedule.types import CronJob, CronRunRecord
 
 

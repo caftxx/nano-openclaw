@@ -9,13 +9,13 @@ import pytest
 
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
-from nano_openclaw.attachments import AttachmentAttached, AttachmentError
+from nano_openclaw.core.attachments import AttachmentAttached, AttachmentError
 from nano_openclaw.gateway.backend import PushEvent
-from nano_openclaw.loop import CancellationToken, SubagentAnnounced, SubagentEvent, ToolResult
-from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.core.loop import CancellationToken, SubagentAnnounced, SubagentEvent, ToolResult
+from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.tools import Tool, ToolRegistry
 from nano_openclaw.gateway.approval_broker import ApprovalBroker
 from nano_openclaw.config.types import AgentDefaultsConfig, AgentsConfig, ModelDefinition, ModelProvider, ModelsConfig, NanoOpenClawConfig
 from nano_openclaw.gateway.webui.server import (
@@ -75,7 +75,7 @@ def test_webui_serializes_memory_extracted_for_activity():
     activity list. Also confirm the payload survives the replay filter so
     a page reload mid-turn can re-render the save banner.
     """
-    from nano_openclaw._stream_events import MemoryExtracted
+    from nano_openclaw.core._stream_events import MemoryExtracted
 
     payload = _event_to_payload(
         MemoryExtracted(
@@ -749,7 +749,7 @@ def test_runtime_image_model_options_only_include_image_capable_models():
 
 
 def _message(role: str, text: str):
-    from nano_openclaw.loop import Message
+    from nano_openclaw.core.loop import Message
 
     return Message(role, [{"type": "text", "text": text}])
 

@@ -32,7 +32,7 @@ from typing import Any, Literal
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from nano_openclaw.attachments import PromptAttachment
+from nano_openclaw.core.attachments import PromptAttachment
 from nano_openclaw.gateway.backend import (
     Backend,
     BackendError,

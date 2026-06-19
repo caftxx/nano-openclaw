@@ -291,7 +291,7 @@ async def _run_subagent(
     state: ExtractorState,
 ) -> None:
     """Run one extraction round, advance the cursor on success, drain pending."""
-    from nano_openclaw._stream_events import MemoryExtracted
+    from nano_openclaw.core._stream_events import MemoryExtracted
 
     session_key = str(payload.get("session_key") or "default")
     started_at = time.time()
@@ -367,8 +367,8 @@ async def _execute_extraction(payload: dict[str, Any], cfg: ExtractMemoriesConfi
     ``_run_subagent`` (which owns the cursor + coalesce bookkeeping).
     """
     from dataclasses import replace as dc_replace
-    from nano_openclaw.loop import AgentSession, CancellationToken, LoopConfig, Message
-    from nano_openclaw.tools import Tool, ToolRegistry, _read_file, _list_dir, _write_file
+    from nano_openclaw.core.loop import AgentSession, CancellationToken, LoopConfig, Message
+    from nano_openclaw.core.tools import Tool, ToolRegistry, _read_file, _list_dir, _write_file
     from nano_openclaw.todo import TodoStore
 
     workspace_dir_raw = payload.get("workspace_dir") or ""

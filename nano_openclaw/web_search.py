@@ -11,7 +11,7 @@ from typing import Any
 
 from ddgs import DDGS
 
-from nano_openclaw.external_content import wrap_external_content
+from nano_openclaw.core.external_content import wrap_external_content
 from nano_openclaw.logger import get_logger
 
 log = get_logger(__name__)

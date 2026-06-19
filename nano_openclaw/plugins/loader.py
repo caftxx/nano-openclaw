@@ -10,7 +10,7 @@ from typing import Any
 from nano_openclaw.config.types import NanoOpenClawConfig, PluginEntryConfig, PluginsConfig
 from nano_openclaw.plugins.registry import HookRegistry, LoadedHook, LoadedPlugin
 from nano_openclaw.plugins.types import PluginApi
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.tools import ToolRegistry
 
 BUILTIN_PLUGINS = {
     "memory": "nano_openclaw.plugins.builtin.memory_plugin.MemoryPlugin",

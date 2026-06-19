@@ -30,8 +30,8 @@ from nano_openclaw.gateway.context import GatewayContext
 from nano_openclaw.gateway.run_registry import RunRegistry
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import HELP_TEXT, QuitREPL, handle_slash
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
 def _registry_with_tool() -> ToolRegistry:
@@ -244,7 +244,7 @@ def test_session_switch_by_index_updates_state(tmp_path):
     backend, console, _ = _backend_and_console(tmp_path)
 
     async def run():
-        from nano_openclaw.loop import Message
+        from nano_openclaw.core.loop import Message
         # Seed two sessions so /sessions list returns them. Need a message
         # each — sessions_list filters out empty sessions.
         s1 = backend.manager.create()
@@ -278,7 +278,7 @@ def test_sessions_delete_removes_transcript_file(tmp_path):
     backend, console, buf = _backend_and_console(tmp_path)
 
     async def run():
-        from nano_openclaw.loop import Message
+        from nano_openclaw.core.loop import Message
         # Create a session with at least one message so sessions_list surfaces
         # it (the manager filters out empty sessions).
         sess = backend.manager.create()
@@ -309,7 +309,7 @@ def test_sessions_delete_active_session_returns_busy(tmp_path):
     backend, console, buf = _backend_and_console(tmp_path)
 
     async def run():
-        from nano_openclaw.loop import Message
+        from nano_openclaw.core.loop import Message
         sess = backend.manager.create()
         msg = Message("user", [{"type": "text", "text": "hi"}])
         sess.history.append(msg)

@@ -26,8 +26,8 @@ from nano_openclaw.workspace import (
     load_workspace_bootstrap_files,
     trim_bootstrap_content,
 )
-from nano_openclaw.prompt import build_system_prompt
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.prompt import build_system_prompt
+from nano_openclaw.core.tools import ToolRegistry
 
 
 @pytest.fixture

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from nano_openclaw.compact import (
+from nano_openclaw.core.compact import (
     SUMMARY_PREFIX,
     _align_boundary_backward,
     _ensure_last_user_message_in_tail,
@@ -23,7 +23,7 @@ from nano_openclaw.compact import (
     _sanitize_tool_pairs,
     compact_if_needed,
 )
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 
 
 def _text(role: str, text: str) -> Message:

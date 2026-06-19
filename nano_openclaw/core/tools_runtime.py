@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.tools import Tool, ToolRegistry
 
 if TYPE_CHECKING:
     from nano_openclaw.gateway.backend import Backend

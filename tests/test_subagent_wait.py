@@ -4,12 +4,12 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress, ToolResult
-from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.core.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress, ToolResult
+from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.subagent.registry import reset_registry
 from nano_openclaw.subagent.runner import SubagentRunner, get_runner, reset_runner
 from nano_openclaw.subagent.types import SpawnParams
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
 def test_agent_session_waits_for_spawned_subagent_before_next_model_turn(monkeypatch):
@@ -75,7 +75,7 @@ def test_agent_session_waits_for_spawned_subagent_before_next_model_turn(monkeyp
         }
 
     monkeypatch.setattr(ToolRegistry, "dispatch", async_dispatch)
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     history: list[Message] = []
     session = AgentSession(

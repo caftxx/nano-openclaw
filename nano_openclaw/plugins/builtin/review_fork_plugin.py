@@ -16,7 +16,7 @@ from typing import Any, Optional
 from nano_openclaw.logger import get_logger
 from nano_openclaw.plugins.builtin.review_fork_prompt import REVIEW_PROMPT
 from nano_openclaw.plugins.types import PluginApi
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.tools import ToolRegistry
 
 logger = get_logger(__name__)
 
@@ -220,7 +220,7 @@ class ReviewForkState:
         )
         def _on_review_event(ev: Any) -> None:
             try:
-                from nano_openclaw.loop import SubagentAnnounced
+                from nano_openclaw.core.loop import SubagentAnnounced
                 if isinstance(ev, SubagentAnnounced):
                     self._append_result_log(
                         now=time.time(),

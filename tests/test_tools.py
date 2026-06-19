@@ -11,7 +11,7 @@ from rich.console import Console
 from nano_openclaw.approvals import ApprovalDecision, ApprovalPolicy
 from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig, ToolsConfig
 from nano_openclaw.plugins.loader import load_plugins
-from nano_openclaw.tools import ToolRegistry, build_core_registry
+from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 
 # Patch ToolRegistry.dispatch to be synchronous for tests — avoids changing
 # every call site while still exercising the full dispatch logic.
@@ -503,8 +503,8 @@ def test_web_plugin_uses_web_tool_defaults_from_config(monkeypatch):
         }
         return {"text": "ok"}
 
-    monkeypatch.setattr("nano_openclaw.tools.web_search", fake_search)
-    monkeypatch.setattr("nano_openclaw.tools.web_fetch", fake_fetch)
+    monkeypatch.setattr("nano_openclaw.core.tools.web_search", fake_search)
+    monkeypatch.setattr("nano_openclaw.core.tools.web_fetch", fake_fetch)
 
     assert registry.get("web_search") is not None
     assert registry.get("web_fetch") is not None

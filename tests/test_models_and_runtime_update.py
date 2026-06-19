@@ -24,8 +24,8 @@ from nano_openclaw.gateway.backend import BusyError
 from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.run_registry import RunRegistry
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def _model_def(model_id: str, *, name: str | None = None, inputs=("text",), reasoning=False, ctx=200000, max_tokens=8192):

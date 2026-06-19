@@ -354,7 +354,7 @@ class TestActiveMemoryIntegration:
 
     def test_loop_config_accepts_active_memory_config(self):
         """LoopConfig should accept active_memory_config parameter."""
-        from nano_openclaw.loop import LoopConfig
+        from nano_openclaw.core.loop import LoopConfig
 
         am_config = ActiveMemoryConfig(enabled=False)
         cfg = LoopConfig(active_memory_config=am_config)
@@ -363,14 +363,14 @@ class TestActiveMemoryIntegration:
 
     def test_loop_config_default_none(self):
         """LoopConfig default for active_memory_config should be None."""
-        from nano_openclaw.loop import LoopConfig
+        from nano_openclaw.core.loop import LoopConfig
 
         cfg = LoopConfig()
         assert cfg.active_memory_config is None
 
     def test_active_memory_recall_event_importable(self):
         """ActiveMemoryRecall event should be importable from loop."""
-        from nano_openclaw.loop import ActiveMemoryRecall
+        from nano_openclaw.core.loop import ActiveMemoryRecall
 
         result = ActiveMemoryResult(
             context="[test]",

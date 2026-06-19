@@ -18,8 +18,8 @@ from nano_openclaw.gateway.run_registry import RunRegistry
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import _resolve_model_option, handle_slash
 from nano_openclaw.gateway.slash_renderer import MarkdownRenderer, PlainRenderer
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def _model_def(model_id: str, *, name=None, inputs=("text",)):

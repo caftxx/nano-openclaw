@@ -24,8 +24,8 @@ from nano_openclaw.gateway.protocol import METHODS_V1
 from nano_openclaw.gateway.run_registry import RunRegistry
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
 from nano_openclaw.gateway.ws_route import _dispatch_one
-from nano_openclaw.loop import LoopConfig
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
 def _registry_with_two_tools() -> ToolRegistry:

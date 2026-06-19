@@ -8,7 +8,7 @@ import json
 import pytest
 
 from nano_openclaw.todo import TodoStore, VALID_STATUSES
-from nano_openclaw.tools import ToolExecutionContext, ToolRegistry, build_core_registry
+from nano_openclaw.core.tools import ToolExecutionContext, ToolRegistry, build_core_registry
 
 
 def _dispatch_sync(registry: ToolRegistry, *args, **kwargs) -> dict:
@@ -256,7 +256,7 @@ def test_compact_reinjection_builds_user_message():
     ``format_for_injection`` snapshot. Other layers downstream
     (transcript writer, /usage stats) rely on that shape.
     """
-    from nano_openclaw.loop import Message
+    from nano_openclaw.core.loop import Message
 
     store = TodoStore()
     store.write(

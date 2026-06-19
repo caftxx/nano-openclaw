@@ -323,7 +323,7 @@ def test_wechat_channel_decorate_tools_injects_three_segment_marker():
     so that args.created_by becomes 'wechat:{account}:{sender}'.
     """
     from nano_openclaw.channels.wechat import WechatChannel
-    from nano_openclaw.tools import Tool, ToolRegistry
+    from nano_openclaw.core.tools import Tool, ToolRegistry
 
     captured: dict = {}
 
@@ -349,7 +349,7 @@ def test_wechat_channel_decorate_tools_injects_three_segment_marker():
 
 def test_wechat_channel_default_account_marker():
     from nano_openclaw.channels.wechat import WechatChannel
-    from nano_openclaw.tools import Tool, ToolRegistry
+    from nano_openclaw.core.tools import Tool, ToolRegistry
 
     captured: dict = {}
 

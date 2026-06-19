@@ -4,9 +4,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from nano_openclaw.loop import AgentSession, LoopConfig, Message
-from nano_openclaw.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.loop import AgentSession, LoopConfig, Message
+from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.core.tools import ToolRegistry
 
 
 async def _tool_use_batch_stream(tool_names: list[str]):
@@ -30,7 +30,7 @@ def test_agent_session_run_turn_mutates_owned_history(monkeypatch):
         yield TextDelta(text="done")
         yield MessageEnd(stop_reason="end_turn", usage={})
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
     history: list[Message] = []
     session = AgentSession(
@@ -78,7 +78,7 @@ def test_denied_approval_skips_later_tools_in_same_batch(monkeypatch):
             "content": [{"type": "text", "text": f"approval denied for {name}"}],
         }
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
     monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
 
     history: list[Message] = []
@@ -126,7 +126,7 @@ def test_denial_markers_are_stripped_from_all_tool_results(monkeypatch):
             "content": [{"type": "text", "text": f"approval denied for {name}"}],
         }
 
-    monkeypatch.setattr("nano_openclaw.loop.stream_response", fake_stream_response)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
     monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
 
     history: list[Message] = []

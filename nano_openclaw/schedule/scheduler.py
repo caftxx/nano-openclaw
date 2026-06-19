@@ -205,8 +205,8 @@ async def _execute_job(
     from dataclasses import replace as dc_replace
     from nano_openclaw.gateway.approval_broker import NonInteractiveApprovalHandler
     from nano_openclaw.gateway.run_registry import cron_turn_id
-    from nano_openclaw.loop import AgentSession, CancellationToken, Message, TurnCancelled
-    from nano_openclaw.tools import build_core_registry
+    from nano_openclaw.core.loop import AgentSession, CancellationToken, Message, TurnCancelled
+    from nano_openclaw.core.tools import build_core_registry
 
     run_id = str(uuid.uuid4())
     turn_id = cron_turn_id(job.id, run_id)

@@ -351,7 +351,7 @@ class AnthropicRecallBackend(RecallBackend):
         # Build thinking params if requested
         thinking_params: dict = {}
         if config.thinking and config.thinking != "off":
-            from nano_openclaw.loop import THINKING_BUDGETS
+            from nano_openclaw.core.loop import THINKING_BUDGETS
             budget = THINKING_BUDGETS.get(config.thinking, 1024)  # type: ignore[arg-type]
             if budget:
                 thinking_params = {"thinking": {"type": "enabled", "budget_tokens": budget}}

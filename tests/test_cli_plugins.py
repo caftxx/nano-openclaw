@@ -5,7 +5,7 @@ from rich.console import Console
 from nano_openclaw.cli import _list_hooks, _list_plugins
 from nano_openclaw.config.types import NanoOpenClawConfig
 from nano_openclaw.plugins.loader import load_plugins
-from nano_openclaw.tools import build_core_registry
+from nano_openclaw.core.tools import build_core_registry
 
 
 def test_list_plugins_no_plugins_loaded():

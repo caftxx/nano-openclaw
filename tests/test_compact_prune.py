@@ -15,7 +15,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-from nano_openclaw.compact import (
+from nano_openclaw.core.compact import (
     _DUPLICATE_TOOL_RESULT_TEXT,
     _IMAGE_REMOVED_PLACEHOLDER,
     _prune_old_tool_results,
@@ -25,7 +25,7 @@ from nano_openclaw.compact import (
     _truncate_tool_use_input,
     compact_if_needed,
 )
-from nano_openclaw.loop import Message
+from nano_openclaw.core.loop import Message
 
 
 def _text(role: str, text: str) -> Message:

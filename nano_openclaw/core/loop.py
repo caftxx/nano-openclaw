@@ -24,7 +24,7 @@ from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
-from nano_openclaw.compact import (
+from nano_openclaw.core.compact import (
     CompactionState,
     compact_if_needed,
     estimate_tokens,
@@ -32,7 +32,7 @@ from nano_openclaw.compact import (
 )
 from nano_openclaw.config.types import ExtractMemoriesConfig, MemoryFlushConfig
 from nano_openclaw.logger import get_logger
-from nano_openclaw.attachments import (
+from nano_openclaw.core.attachments import (
     AttachmentAttached,
     AttachmentError,
     PromptAttachment,
@@ -40,7 +40,7 @@ from nano_openclaw.attachments import (
     is_image_mime,
     save_non_image_attachment,
 )
-from nano_openclaw.images import (
+from nano_openclaw.core.images import (
     describe_image,
     load_image,
     load_image_bytes,
@@ -49,8 +49,8 @@ from nano_openclaw.images import (
 )
 from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
 from nano_openclaw.memory.dreaming import DreamingConfig
-from nano_openclaw.prompt import VOICE_STYLE_PROMPT, build_system_prompt
-from nano_openclaw.provider import (
+from nano_openclaw.core.prompt import VOICE_STYLE_PROMPT, build_system_prompt
+from nano_openclaw.core.provider import (
     MessageEnd,
     StreamEvent,
     TextDelta,
@@ -73,7 +73,7 @@ from nano_openclaw.skills import (
     SlashCommand,
 )
 from nano_openclaw.todo import TodoStore
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.tools import ToolRegistry
 from nano_openclaw.workspace import (
     WorkspaceBootstrapFile,
     get_or_load_bootstrap_files,

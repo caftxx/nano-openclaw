@@ -20,10 +20,10 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .logger import get_logger
+from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
-    from .config.types import MemoryFlushConfig
+    from nano_openclaw.config.types import MemoryFlushConfig
     from .loop import Message
 
 logger = get_logger(__name__)

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from nano_openclaw.loop import LoopConfig
+from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.subagent import (
     SpawnParams,
     SubagentContextMode,
@@ -17,7 +17,7 @@ from nano_openclaw.subagent import (
     SubagentRunner,
     get_runner,
 )
-from nano_openclaw.tools import Tool, ToolRegistry
+from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
 @dataclass

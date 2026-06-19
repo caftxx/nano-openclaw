@@ -29,10 +29,10 @@ from nano_openclaw.gateway.protocol import ErrorCode, METHODS_V1
 from nano_openclaw.gateway.run_registry import RunRegistry
 from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
 from nano_openclaw.gateway.ws_route import _dispatch_one
-from nano_openclaw.loop import LoopConfig
+from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
 from nano_openclaw.memory.dreaming import DreamingConfig
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.tools import ToolRegistry
 
 
 def _fake_runtime(tmp_path: Path) -> SimpleNamespace:

@@ -14,7 +14,7 @@ from typing import Any, Literal
 import httpx
 from readability import Document
 
-from nano_openclaw.external_content import wrap_external_content
+from nano_openclaw.core.external_content import wrap_external_content
 from nano_openclaw.logger import get_logger
 from nano_openclaw.ssrf_guard import assert_public_url, SsrfBlockedError
 

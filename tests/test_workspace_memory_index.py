@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from nano_openclaw.memory.topics import MAX_INDEX_BYTES, MAX_INDEX_LINES
-from nano_openclaw.prompt import build_system_prompt
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.prompt import build_system_prompt
+from nano_openclaw.core.tools import ToolRegistry
 from nano_openclaw.workspace import load_workspace_memory_index
 
 

@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from nano_openclaw.attachments import PromptAttachment
+from nano_openclaw.core.attachments import PromptAttachment
 from nano_openclaw.gateway._event_payload import (
     event_to_payload,
     is_replayable_activity_payload,
@@ -53,16 +53,16 @@ from nano_openclaw.gateway.backend import (
     SubagentInfo,
 )
 from nano_openclaw.logger import get_logger
-from nano_openclaw.loop import (
+from nano_openclaw.core.loop import (
     AgentSession,
     CancellationToken,
     TurnCancelled,
     append_active_todo_reminder,
 )
-from nano_openclaw.tools import ToolRegistry
+from nano_openclaw.core.tools import ToolRegistry
 
 if TYPE_CHECKING:
-    from nano_openclaw.runtime import AgentRuntime
+    from nano_openclaw.core.runtime import AgentRuntime
 
 
 log = get_logger(__name__)
@@ -189,7 +189,7 @@ class EmbeddedBackend(Backend):
         )
         if not no_tools:
             try:
-                from nano_openclaw.tools_runtime import register_runtime_tools
+                from nano_openclaw.core.tools_runtime import register_runtime_tools
                 register_runtime_tools(runtime.registry, self)
             except Exception as exc:  # noqa: BLE001 — tool wiring is non-fatal
                 log.warning("backend.runtime_tools.register_failed", f"{type(exc).__name__}: {exc}")
@@ -669,7 +669,7 @@ class EmbeddedBackend(Backend):
         that fits the budget triggers a single compaction pass — same
         semantics as the legacy embedded-mode ``/compact`` slash command.
         """
-        from nano_openclaw.compact import compact_if_needed, estimate_tokens
+        from nano_openclaw.core.compact import compact_if_needed, estimate_tokens
 
         try:
             session = self.manager.get_or_load(session_key or None)
@@ -895,7 +895,7 @@ class EmbeddedBackend(Backend):
         # working transparently. We update ``self.manager.model`` (not the
         # manager instance) so any AgentBackendSession that callers already
         # hold remains connected to the same per-session transcripts.
-        from nano_openclaw.runtime import build_agent_runtime, image_model_id_from_ref
+        from nano_openclaw.core.runtime import build_agent_runtime, image_model_id_from_ref
 
         async with self.runtime.runtime_guard.writer():
             old = self.runtime

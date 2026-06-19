@@ -7,7 +7,7 @@ from nano_openclaw.memory.daily import build_daily_memory_prelude
 from nano_openclaw.memory.extractor import clear_state as _clear_extractor_state
 from nano_openclaw.memory.extractor import run_extractor
 from nano_openclaw.plugins.types import PluginApi
-from nano_openclaw.tools import build_memory_tools
+from nano_openclaw.core.tools import build_memory_tools
 
 
 class MemoryPlugin:

@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from nano_openclaw.attachments import decode_attachment_payloads
+from nano_openclaw.core.attachments import decode_attachment_payloads
 from nano_openclaw.gateway._event_payload import (
     event_to_payload as _event_to_payload,
     is_replayable_activity_payload as _is_replayable_activity_payload,
@@ -23,7 +23,7 @@ from nano_openclaw.gateway._event_payload import (
 from nano_openclaw.gateway.backend import BackendError, BusyError, NotFoundError, PushEvent
 from nano_openclaw.gateway.webui.aliyun_token import AliyunTokenProvider, TokenError
 from nano_openclaw.tts import TalkSpeakError, build_talk_config, synthesize_talk_speech
-from nano_openclaw.runtime import AgentRuntime
+from nano_openclaw.core.runtime import AgentRuntime
 from nano_openclaw.gateway.agent_backend_session import BackendSessionManager, display_history, message_text
 
 

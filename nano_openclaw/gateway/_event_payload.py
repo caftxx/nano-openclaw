@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from nano_openclaw._stream_events import MemoryExtracted
-from nano_openclaw.attachments import AttachmentAttached, AttachmentError
-from nano_openclaw.loop import (
+from nano_openclaw.core._stream_events import MemoryExtracted
+from nano_openclaw.core.attachments import AttachmentAttached, AttachmentError
+from nano_openclaw.core.loop import (
     ActiveMemoryRecall,
     Compaction,
     ImageAttached,
@@ -27,7 +27,7 @@ from nano_openclaw.loop import (
     SubagentSpawned,
     ToolResult,
 )
-from nano_openclaw.provider import (
+from nano_openclaw.core.provider import (
     MessageEnd,
     TextDelta,
     ThinkingBlockComplete,
