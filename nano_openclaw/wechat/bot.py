@@ -256,7 +256,7 @@ class WechatBot:
                     self.notify_queue.mark_sent(item.job_id, item.created_at)
 
     async def _handle_slash_command(self, uid: str, cmd: str) -> str | None:
-        """Defer to the shared ``gateway/slash.py`` dispatcher via a
+        """Defer to the shared ``services/slash.py`` dispatcher via a
         ``PlainRenderer`` so WeChat sees the exact same surface as TUI / WebUI
         (single source of truth, including ``/help`` ordering + content).
 
@@ -276,7 +276,7 @@ class WechatBot:
             )
             return "⚠️ Slash commands require the daemon backend. Start WeChat through `gateway run`."
 
-        from nano_openclaw.gateway.slash import handle_slash, QuitREPL
+        from nano_openclaw.services.slash import handle_slash, QuitREPL
         from nano_openclaw.services.slash_renderer import PlainRenderer
 
         # Bind a session for this uid so /clear / /context / etc. operate on

@@ -1345,11 +1345,11 @@ $("sendBtn").onclick = (event) => {
   }
 };
 
-// Mirror of gateway/slash.py::_HANDLERS so the WebUI front-end routes the
+// Mirror of services/slash.py::_HANDLERS so the WebUI front-end routes the
 // same set of commands through ``command.run`` instead of leaking them to
 // chat.send (where the agent would treat ``/model`` as a regular message
 // and likely fire the ``switch_model`` tool). Keep in sync with
-// ``_HANDLERS`` and ``HELP_TEXT`` in nano_openclaw/gateway/slash.py.
+// ``_HANDLERS`` and ``HELP_TEXT`` in nano_openclaw/services/slash.py.
 const BUILTIN_COMMANDS = new Set([
   // banner / lifecycle
   "help", "quit", "exit", "q", "save",

@@ -27,7 +27,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nano_openclaw.core.compact import compact_if_needed, estimate_tokens
-from nano_openclaw.gateway import slash
+from nano_openclaw.services import slash
 from nano_openclaw.logger import get_logger
 from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.core.loop import (
@@ -188,7 +188,7 @@ async def repl(
         # surface and one set of Rich renderers. When backend is None (legacy
         # direct invocation paths), fall through to the inline branches below.
         if backend is not None and user_input.startswith("/"):
-            from nano_openclaw.gateway.slash import QuitREPL, handle_slash
+            from nano_openclaw.services.slash import QuitREPL, handle_slash
             slash_state = {"session_key": session_id, "session_changed": False}
             try:
                 handled = await handle_slash(user_input, backend, console, slash_state)
@@ -1412,7 +1412,7 @@ def _slash_completer() -> WordCompleter:
 
     Imported lazily to avoid a top-of-file cycle through ``gateway.slash``.
     """
-    from nano_openclaw.gateway.slash import HELP_ENTRIES
+    from nano_openclaw.services.slash import HELP_ENTRIES
     words: list[str] = []
     for entry in HELP_ENTRIES:
         words.append(entry.command)

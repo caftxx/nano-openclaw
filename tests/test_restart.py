@@ -23,7 +23,7 @@ from nano_openclaw.api.methods import CORE_HANDLERS
 from nano_openclaw.api.protocol import METHODS
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
-from nano_openclaw.gateway.slash import _HANDLERS as SLASH_HANDLERS
+from nano_openclaw.services.slash import _HANDLERS as SLASH_HANDLERS
 from nano_openclaw.core.loop import CancellationToken, LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
 

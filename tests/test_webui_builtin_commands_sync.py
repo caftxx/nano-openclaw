@@ -9,7 +9,7 @@ fires a tool with the same semantics (e.g. ``/model`` triggering
 ``switch_model``).
 
 This test parses ``BUILTIN_COMMANDS`` straight out of app.js and asserts
-that every verb in ``gateway/slash.py::_HANDLERS`` is present. New slash
+that every verb in ``services/slash.py::_HANDLERS`` is present. New slash
 commands therefore have to be wired into the front-end before this passes
 green again.
 """
@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from nano_openclaw.gateway.slash import _HANDLERS
+from nano_openclaw.services.slash import _HANDLERS
 
 APP_JS = Path(__file__).resolve().parent.parent / "nano_openclaw" / "adapters" / "webui" / "static" / "app.js"
 
@@ -65,5 +65,5 @@ def test_webui_builtin_commands_are_a_subset_or_known_extras():
     assert not extras, (
         f"app.js BUILTIN_COMMANDS has unexpected verbs {sorted(extras)} "
         f"that don't exist server-side. Either remove them from app.js or "
-        f"add the matching handler to gateway/slash.py::_HANDLERS."
+        f"add the matching handler to services/slash.py::_HANDLERS."
     )

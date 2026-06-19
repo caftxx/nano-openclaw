@@ -105,7 +105,7 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
                 "message": f"already on {model_ref}",
             })
         try:
-            from nano_openclaw.gateway.slash import _resolve_model_option
+            from nano_openclaw.services.slash import _resolve_model_option
             target = _resolve_model_option(getattr(backend, "runtime").config, model_ref) if hasattr(backend, "runtime") else None
         except (KeyError, ValueError) as exc:
             return _err(f"unknown or ambiguous model: {exc}")
@@ -149,7 +149,7 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
     # is a routine UX knob (mirrors ``/thinking`` slash). The model can flip
     # it the same way it flips other knobs, no approval round-trip.
     async def _set_thinking(args: dict[str, Any]) -> str:
-        from nano_openclaw.gateway.slash import THINKING_LEVELS
+        from nano_openclaw.services.slash import THINKING_LEVELS
 
         level = str(args.get("level") or "").strip().lower()
         if not level:

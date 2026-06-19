@@ -1,6 +1,6 @@
 """Tests for the three SlashRenderer implementations.
 
-These guard the rendering contract so handlers in ``gateway/slash.py`` keep
+These guard the rendering contract so handlers in ``services/slash.py`` keep
 working when output goes through any of the frontends:
 
 - RichRenderer  → TUI Console

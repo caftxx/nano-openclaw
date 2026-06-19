@@ -14,7 +14,7 @@ import pytest
 from rich.console import Console
 
 from nano_openclaw.services.backend import SessionInfo, SessionList
-from nano_openclaw.gateway.slash import _render_sessions_table
+from nano_openclaw.services.slash import _render_sessions_table
 
 
 def _session(sid: str, *, current: bool = False, msg_count: int = 1) -> SessionInfo:

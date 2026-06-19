@@ -28,6 +28,7 @@ shared module out of stdin/exit business.
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Awaitable, Callable
 from typing import Any, NamedTuple
 
 from rich import markup
@@ -122,6 +123,30 @@ THINKING_LEVELS: tuple[str, ...] = (
 
 class QuitREPL(Exception):
     """Sentinel raised by ``/quit`` for the outer REPL to catch."""
+
+
+SlashHandler = Callable[[Backend, SlashRenderer, dict[str, Any], list[str], str], Awaitable[None]]
+
+
+class SlashRegistry:
+    """Small command registry used by the slash dispatcher."""
+
+    def __init__(self) -> None:
+        self._handlers: dict[str, SlashHandler] = {}
+
+    def register(
+        self,
+        command: str,
+        handler: SlashHandler,
+        description: str = "",
+        args: str = "",
+    ) -> None:
+        if not command.startswith("/"):
+            raise ValueError("slash command must start with '/'")
+        self._handlers[command] = handler
+
+    def handlers(self) -> dict[str, SlashHandler]:
+        return dict(self._handlers)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1126,30 +1151,40 @@ def renderer_for(mode: str, *, console: Console | None = None, **kwargs) -> Slas
 # ────────────────────────────────────────────────────────────────────────────
 
 
-_HANDLERS = {
-    "/clear": _cmd_clear,
-    "/new": _cmd_new,
-    "/sessions": _cmd_sessions,
-    "/session": _cmd_session,
-    "/context": _cmd_context,
-    "/checkpoint": _cmd_checkpoint,
-    "/curator": _cmd_curator,
-    "/compact": _cmd_compact,
-    "/usage": _cmd_usage,
-    "/todos": _cmd_todos,
-    "/tools": _cmd_tools,
-    "/skills": _cmd_skills,
-    "/plugins": _cmd_plugins,
-    "/hooks": _cmd_hooks,
-    "/subagents": _cmd_subagents,
-    "/health": _cmd_health,
-    "/channels": _cmd_channels,
-    "/runtime": _cmd_runtime,
-    "/active-memory": _cmd_active_memory,
-    "/dreaming": _cmd_dreaming,
-    "/review-fork": _cmd_review_fork,
-    "/restart": _cmd_restart,
-    "/models": _cmd_models,
-    "/model": _cmd_model,
-    "/thinking": _cmd_thinking,
-}
+def _build_registry() -> SlashRegistry:
+    registry = SlashRegistry()
+    for entry in HELP_ENTRIES:
+        handler = {
+            "/active-memory": _cmd_active_memory,
+            "/channels": _cmd_channels,
+            "/clear": _cmd_clear,
+            "/compact": _cmd_compact,
+            "/context": _cmd_context,
+            "/checkpoint": _cmd_checkpoint,
+            "/curator": _cmd_curator,
+            "/dreaming": _cmd_dreaming,
+            "/health": _cmd_health,
+            "/hooks": _cmd_hooks,
+            "/model": _cmd_model,
+            "/models": _cmd_models,
+            "/new": _cmd_new,
+            "/plugins": _cmd_plugins,
+            "/restart": _cmd_restart,
+            "/review-fork": _cmd_review_fork,
+            "/runtime": _cmd_runtime,
+            "/session": _cmd_session,
+            "/sessions": _cmd_sessions,
+            "/skills": _cmd_skills,
+            "/subagents": _cmd_subagents,
+            "/thinking": _cmd_thinking,
+            "/todos": _cmd_todos,
+            "/tools": _cmd_tools,
+            "/usage": _cmd_usage,
+        }.get(entry.command)
+        if handler is not None:
+            registry.register(entry.command, handler, entry.description, entry.args)
+    return registry
+
+
+_REGISTRY = _build_registry()
+_HANDLERS = _REGISTRY.handlers()

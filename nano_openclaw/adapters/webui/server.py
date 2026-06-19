@@ -371,11 +371,11 @@ def create_app(
                     session_id_cmd = message.get("session_id")
                     runtime_before_command = backend.runtime
 
-                    # Try the shared dispatcher first (gateway/slash.py). It
+                    # Try the shared dispatcher first (services/slash.py). It
                     # handles all 19 core commands — including /models /model
                     # — through Backend RPCs, so webui no longer needs its own
                     # branches for /clear /new /sessions /model /context …
-                    from nano_openclaw.gateway.slash import handle_slash, QuitREPL
+                    from nano_openclaw.services.slash import handle_slash, QuitREPL
                     from nano_openclaw.services.slash_renderer import MarkdownRenderer
                     backend = app.state.backend
                     md = MarkdownRenderer()

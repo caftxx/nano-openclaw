@@ -26,7 +26,7 @@ from rich.console import Console
 from rich.live import Live
 
 from nano_openclaw.services.backend import Backend, BusyError, PushEvent
-from nano_openclaw.gateway.slash import HELP_TEXT, QuitREPL, handle_slash
+from nano_openclaw.services.slash import HELP_TEXT, QuitREPL, handle_slash
 
 # Reuse the embedded mode's pure renderer helpers verbatim — both modes
 # render identical Rich widgets, only the event source differs.

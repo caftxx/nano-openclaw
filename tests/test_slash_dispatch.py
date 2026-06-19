@@ -1,4 +1,4 @@
-"""Shared slash dispatcher (gateway/slash.py) tests.
+"""Shared slash dispatcher (services/slash.py) tests.
 
 Verifies that:
 
@@ -29,7 +29,7 @@ from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
-from nano_openclaw.gateway.slash import HELP_TEXT, QuitREPL, handle_slash
+from nano_openclaw.services.slash import HELP_TEXT, QuitREPL, handle_slash
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import Tool, ToolRegistry
 

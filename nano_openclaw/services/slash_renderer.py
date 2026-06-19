@@ -1,6 +1,6 @@
 """Slash-command renderers — three implementations of one Protocol.
 
-Why this exists: ``gateway/slash.py`` used to hardcode Rich Console output,
+Why this exists: ``services/slash.py`` used to hardcode Rich Console output,
 which only suited the TUI. WebUI and WeChat each grew their own slash
 dispatcher with bespoke Markdown / plain-text rendering, drifting apart over
 time. This module gives ``handle_slash`` a single render abstraction so the
