@@ -508,20 +508,36 @@ function renderSessions() {
     .filter((s) => !query || sessionMatches(s, query))
     .forEach((session) => {
       const isRunning = Boolean(state.activeTurnsBySession.get(session.session_id) || session.active_turn_id);
-      const btn = document.createElement("button");
-      btn.className = `session-item ${state.currentSession?.session_id === session.session_id ? "active" : ""} ${isRunning ? "is-running" : ""}`;
+      const item = document.createElement("div");
+      item.className = `session-item ${state.currentSession?.session_id === session.session_id ? "active" : ""} ${isRunning ? "is-running" : ""}`;
+      item.setAttribute("role", "button");
+      item.tabIndex = 0;
       const startDate = session.created_at ? new Date(session.created_at * 1000).toLocaleDateString() : "";
-      btn.innerHTML = `<span class="session-id">${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
-        <span class="session-preview">${escapeHtml(session.preview || session.session_id.slice(0, 8))}</span>
-        <span class="session-meta">
-          <span class="session-meta-text">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}${startDate ? ` · ${startDate}` : ""}</span>
-          ${isRunning ? `<span class="session-spinner" title="Processing" aria-label="Processing"></span>` : ""}
-        </span>`;
-      btn.onclick = () => {
+      item.innerHTML = `<span class="session-content">
+          <span class="session-id">${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
+          <span class="session-preview">${escapeHtml(session.preview || session.session_id.slice(0, 8))}</span>
+          <span class="session-meta">
+            <span class="session-meta-text">${session.message_count || 0} messages · ${escapeHtml(session.model || "")}${startDate ? ` · ${startDate}` : ""}</span>
+            ${isRunning ? `<span class="session-spinner" title="Processing" aria-label="Processing"></span>` : ""}
+          </span>
+        </span>
+        <button type="button" class="session-delete" title="Delete session" aria-label="Delete session ${escapeHtml(session.title || session.session_id.slice(0, 8))}">×</button>`;
+      const selectSession = () => {
         send("session.select", { session_id: session.session_id });
         if (isMobileViewport()) closeDrawers();
       };
-      $("sessionList").appendChild(btn);
+      item.onclick = selectSession;
+      item.onkeydown = (event) => {
+        if (event.target !== item) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        selectSession();
+      };
+      item.querySelector(".session-delete").onclick = (event) => {
+        event.stopPropagation();
+        send("session.delete", { session_id: session.session_id });
+      };
+      $("sessionList").appendChild(item);
     });
 }
 

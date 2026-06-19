@@ -411,6 +411,40 @@ def test_webui_push_adapter_maps_session_changed_to_session_updated():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_webui_push_adapter_deleted_session_selects_remaining_session():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        deleted = manager.create()
+        remaining = manager.create()
+
+        manager._loaded.pop(deleted.session_id, None)
+        deleted.transcript_path.unlink(missing_ok=True)
+        store = load_session_store(store_path)
+        store["sessions"].pop(deleted.session_id, None)
+        if store.get("lastSessionId") == deleted.session_id:
+            store["lastSessionId"] = remaining.session_id
+        save_session_store(store_path, store)
+
+        payloads = _webui_payloads_from_push(
+            PushEvent(
+                event="session.changed",
+                payload={"session_id": deleted.session_id, "reason": "deleted"},
+                seq=1,
+            ),
+            manager,
+            turn_sessions={},
+        )
+
+        assert payloads[0]["type"] == "session.updated"
+        assert payloads[0]["session"]["session_id"] == remaining.session_id
+        assert all(item["session_id"] != deleted.session_id for item in payloads[0]["sessions"])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_web_session_select_uses_store_id_not_transcript_header_id():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:

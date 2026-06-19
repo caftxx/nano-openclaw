@@ -287,6 +287,23 @@ def create_app(
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue
                     await emit({"type": "session.updated", "session": _session_payload(manager, session)})
+                elif msg_type == "session.delete":
+                    req = SessionSelectRequest(**message)
+                    try:
+                        await backend.sessions_delete(req.session_id)
+                    except BusyError as exc:
+                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
+                        continue
+                    except NotFoundError as exc:
+                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
+                        continue
+                    session = manager.get_or_load(None)
+                    await emit({
+                        "type": "session.updated",
+                        "session": _session_payload(manager, session),
+                        "sessions": manager.list(),
+                        "deleted_session_id": req.session_id,
+                    })
                 elif msg_type == "thinking.set":
                     req = ThinkingSetRequest(**message)
                     if req.level not in _thinking_levels():

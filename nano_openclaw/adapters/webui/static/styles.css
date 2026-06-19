@@ -244,16 +244,25 @@ textarea::placeholder {
 .session-item {
   width: 100%;
   min-height: 36px;
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   padding: 8px 9px;
   color: var(--ink);
   text-align: left;
   border-radius: 8px;
+  cursor: pointer;
 }
 
 .session-item.active,
 .session-item:hover {
   background: var(--sidebar-hover);
+}
+
+.session-content {
+  display: block;
+  min-width: 0;
+  flex: 1;
 }
 
 .session-id,
@@ -289,6 +298,35 @@ textarea::placeholder {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-delete {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  height: 22px;
+  margin-top: -2px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--subtle);
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.session-item:hover .session-delete,
+.session-item:focus .session-delete,
+.session-item:focus-within .session-delete,
+.session-delete:focus-visible {
+  opacity: 1;
+}
+
+.session-delete:hover,
+.session-delete:focus-visible {
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .session-spinner {
