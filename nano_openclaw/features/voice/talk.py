@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from nano_openclaw.adapters.webui.aliyun_token import AliyunTokenProvider, TokenError
+from nano_openclaw.features.voice.aliyun_token import AliyunTokenProvider, TokenError
 from nano_openclaw.adapters.webui.aliyun_tts import TtsError, synthesize_tts
 from nano_openclaw.adapters.webui.voice_catalog import ALIYUN_TTS_VOICES
 

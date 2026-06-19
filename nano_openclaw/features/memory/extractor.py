@@ -1,7 +1,7 @@
 """Stop-hook memory extractor.
 
 Mirrors claude-code ``services/extractMemories/extractMemories.ts``. Triggered
-by the ``after_turn`` plugin hook (wired in ``plugins/builtin/memory_plugin.py``);
+by the ``after_turn`` plugin hook (wired in ``features/memory/plugin.py``);
 each eligible main-agent turn fires-and-forgets a short-lived subagent that
 reads the new messages and distills them into ``memory/topics/*.md`` topic
 files plus a ``memory/MEMORY.md`` index entry.

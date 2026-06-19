@@ -21,7 +21,7 @@ from nano_openclaw.services.event_payload import (
     jsonable as _jsonable,
 )
 from nano_openclaw.services.backend import BackendError, BusyError, NotFoundError, PushEvent
-from nano_openclaw.adapters.webui.aliyun_token import AliyunTokenProvider, TokenError
+from nano_openclaw.features.voice.aliyun_token import AliyunTokenProvider, TokenError
 from nano_openclaw.features.voice import TalkSpeakError, build_talk_config, synthesize_talk_speech
 from nano_openclaw.core.runtime import AgentRuntime
 from nano_openclaw.services.agent_session import BackendSessionManager, display_history, message_text
