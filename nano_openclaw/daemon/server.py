@@ -77,6 +77,8 @@ async def run_daemon(
     import uvicorn  # local import to keep cold-start cheap for non-daemon paths
 
     from nano_openclaw.adapters.webui.server import create_app
+    from nano_openclaw.services.runs import RunRegistry
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 
     console = Console()
 
@@ -84,6 +86,8 @@ async def run_daemon(
     runtime = await build_agent_runtime(
         config_path=config_path,
         agent_id=agent_id,
+        run_registry=RunRegistry(),
+        runtime_guard=RuntimeUpdateGuard(),
         restart_callback=perform_restart,
     )
 

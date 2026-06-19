@@ -29,12 +29,10 @@ can describe what to do but the user runs the slash explicitly.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from nano_openclaw.core.runtime_options import THINKING_LEVELS, resolve_model_option
 from nano_openclaw.core.tools import Tool, ToolRegistry
-
-if TYPE_CHECKING:
-    from nano_openclaw.services.backend import Backend
 
 
 def _ok(payload: dict[str, Any]) -> str:
@@ -45,7 +43,7 @@ def _err(message: str, **extras: Any) -> str:
     return json.dumps({"ok": False, "error": message, **extras}, ensure_ascii=False)
 
 
-def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
+def register_runtime_tools(registry: ToolRegistry, backend: Any) -> None:
     """Register the runtime introspection / switch tools onto ``registry``.
 
     Idempotent: re-registering overwrites the existing entry. Safe to call
@@ -105,8 +103,7 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
                 "message": f"already on {model_ref}",
             })
         try:
-            from nano_openclaw.services.slash import _resolve_model_option
-            target = _resolve_model_option(getattr(backend, "runtime").config, model_ref) if hasattr(backend, "runtime") else None
+            target = resolve_model_option(getattr(backend, "runtime").config, model_ref) if hasattr(backend, "runtime") else None
         except (KeyError, ValueError) as exc:
             return _err(f"unknown or ambiguous model: {exc}")
         target_ref = target["ref"] if target else model_ref
@@ -149,8 +146,6 @@ def register_runtime_tools(registry: ToolRegistry, backend: "Backend") -> None:
     # is a routine UX knob (mirrors ``/thinking`` slash). The model can flip
     # it the same way it flips other knobs, no approval round-trip.
     async def _set_thinking(args: dict[str, Any]) -> str:
-        from nano_openclaw.services.slash import THINKING_LEVELS
-
         level = str(args.get("level") or "").strip().lower()
         if not level:
             return _err(

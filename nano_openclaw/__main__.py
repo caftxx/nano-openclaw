@@ -284,11 +284,16 @@ async def _async_main(
             print("no previous session to resume — starting fresh", file=sys.stderr)
 
     console = Console()
+    from nano_openclaw.services.runs import RunRegistry
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
+
     runtime = await build_agent_runtime(
         config_path=config,
         agent_id=agent,
         session_id=session_id or new_session_id(),  # runtime needs a key for cron / cfg.session_key
         console=console,
+        run_registry=RunRegistry(),
+        runtime_guard=RuntimeUpdateGuard(),
     )
 
     for var_name, cfg_path in runtime.warnings:

@@ -934,6 +934,8 @@ class EmbeddedBackend(Backend):
                     agent_id=target_agent,
                     model_ref_override=model_ref or old.model_ref,
                     image_model_ref_override=target_image_ref,
+                    run_registry=old.run_registry,
+                    runtime_guard=old.runtime_guard,
                 )
                 if thinking_level is not None:
                     new_runtime.cfg.thinking_level = thinking_level

@@ -16,9 +16,10 @@ import pytest
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
-from nano_openclaw.services.slash import _resolve_model_option, handle_slash
+from nano_openclaw.services.slash import handle_slash
 from nano_openclaw.services.slash_renderer import MarkdownRenderer, PlainRenderer
 from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.core.runtime_options import resolve_model_option
 from nano_openclaw.core.tools import ToolRegistry
 
 
@@ -221,11 +222,11 @@ def test_resolve_model_option_disambiguation():
             ]),
         })
     )
-    found = _resolve_model_option(config, "claude-sonnet-4-5")
+    found = resolve_model_option(config, "claude-sonnet-4-5")
     assert found["ref"] == "anthropic/claude-sonnet-4-5"
 
-    found2 = _resolve_model_option(config, "anthropic/claude-sonnet-4-5")
+    found2 = resolve_model_option(config, "anthropic/claude-sonnet-4-5")
     assert found2["ref"] == "anthropic/claude-sonnet-4-5"
 
     with pytest.raises(KeyError):
-        _resolve_model_option(config, "nope/none")
+        resolve_model_option(config, "nope/none")

@@ -34,6 +34,7 @@ from typing import Any, NamedTuple
 from rich import markup
 from rich.console import Console
 
+from nano_openclaw.core.runtime_options import THINKING_LEVELS, resolve_model_option
 from nano_openclaw.services.backend import Backend, BackendError, BusyError, NotFoundError
 from nano_openclaw.services.slash_renderer import (
     MarkdownRenderer,
@@ -111,14 +112,6 @@ def _table_row(entry: HelpEntry) -> list[str]:
 
 HELP_TEXT = "  ".join(_rich_token(e) for e in HELP_ENTRIES)
 HELP_TABLE_ROWS: list[list[str]] = [_table_row(e) for e in HELP_ENTRIES]
-
-
-# Mirrors ``loop.ThinkingLevel`` Literal — kept here as a runtime-iterable set
-# so the slash handler and the LLM tool can validate input without importing
-# typing internals. See ``loop.THINKING_BUDGETS`` for the per-level token map.
-THINKING_LEVELS: tuple[str, ...] = (
-    "off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max",
-)
 
 
 class QuitREPL(Exception):
@@ -664,51 +657,6 @@ async def _cmd_runtime(backend, renderer: SlashRenderer, state, args, cmd):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_model_option(config: Any, query: str) -> dict[str, Any]:
-    """Resolve a user query into a single model. Accepts:
-    - ``provider/model-id`` exact ref
-    - ``model-id`` (matches a single model across providers)
-    - ``provider/`` (matches the provider's primary if unique)
-
-    Raises ``KeyError`` for unknown query, ``ValueError`` for ambiguous query.
-    Returns ``{"ref", "id", "provider", "name"}`` with at least ref and id set.
-    """
-    query = (query or "").strip()
-    if not query:
-        raise KeyError("empty model query")
-
-    providers = getattr(getattr(config, "models", None), "providers", None) or {}
-    candidates: list[dict[str, Any]] = []
-    for provider_id, provider in providers.items():
-        for model in getattr(provider, "models", []) or []:
-            ref = f"{provider_id}/{model.id}"
-            candidates.append({
-                "ref": ref,
-                "id": model.id,
-                "provider": provider_id,
-                "name": model.name or model.id,
-            })
-
-    # Exact ref match first
-    for c in candidates:
-        if c["ref"] == query:
-            return c
-
-    # Provider-prefixed (e.g. "anthropic/something")
-    if "/" in query:
-        # No exact match above — bail with KeyError
-        raise KeyError(f"unknown model: {query}")
-
-    # Bare id — must match exactly one
-    matches = [c for c in candidates if c["id"] == query]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        refs = ", ".join(m["ref"] for m in matches)
-        raise ValueError(f"ambiguous: {query} — try one of {refs}")
-    raise KeyError(f"unknown model: {query}")
-
-
 async def _cmd_models(backend, renderer: SlashRenderer, state, args, cmd):
     """List every model declared under ``config.models.providers``.
 
@@ -769,7 +717,7 @@ async def _cmd_model(backend, renderer: SlashRenderer, state, args, cmd):
     # resolving — avoids spamming the catalog parse on a no-op.
     snap_before = await backend.runtime_get()
     try:
-        target = _resolve_model_option(backend.runtime.config, query) if hasattr(backend, "runtime") else None
+        target = resolve_model_option(backend.runtime.config, query) if hasattr(backend, "runtime") else None
     except KeyError:
         renderer.error(f"unknown model: {query}. /models to list available.")
         return

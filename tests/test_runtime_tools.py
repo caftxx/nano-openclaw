@@ -272,7 +272,7 @@ def test_set_thinking_tool_rejects_unknown_level(tmp_path):
 
 def test_switch_model_tool_unknown_ref_returns_ok_false(tmp_path):
     """When the registry has no approval gate, the tool runs but the
-    underlying ``_resolve_model_option`` flags an unknown ref —
+    underlying ``resolve_model_option`` flags an unknown ref —
     error is encoded as ``ok=False`` JSON, not a raised exception (preserves
     the dispatcher invariant)."""
     runtime = _fake_runtime(tmp_path)
