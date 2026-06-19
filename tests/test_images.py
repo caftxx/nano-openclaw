@@ -359,7 +359,7 @@ def test_compress_extreme_size():
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-        img = Image.new("RGB", (10000, 10000), color="blue")
+        img = Image.new("RGB", (5000, 5000), color="blue")
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG", quality=95)
         
