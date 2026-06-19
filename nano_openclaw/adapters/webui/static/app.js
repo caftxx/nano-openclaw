@@ -548,7 +548,7 @@ function renderHistory() {
   }
   const activitiesByIndex = groupActivitiesByInsertIndex(state.currentSession.activities || []);
   (state.currentSession.history || []).forEach((msg, index) => {
-    const text = extractText(msg).trim();
+    const text = extractDisplayText(msg).trim();
     if (text) appendMessage(msg.role, text);
     for (const activity of activitiesByIndex.get(index) || []) {
       appendHistoricalActivitySummary(activity);
@@ -1087,6 +1087,39 @@ function extractText(msg) {
     .filter((b) => b && b.type === "text")
     .map((b) => b.text || "")
     .join("\n");
+}
+
+function extractDisplayText(msg) {
+  const blocks = (msg.content || []).filter((b) => b && b.type === "text");
+  if (msg.role !== "user") return blocks.map((b) => b.text || "").join("\n");
+
+  const visible = blocks
+    .map((b) => b.text || "")
+    .filter((text) => text && !isInternalAttachmentPrompt(text));
+  if (visible.length) return visible.join("\n");
+
+  const names = blocks.map((b) => attachmentDisplayName(b.text || "")).filter(Boolean);
+  return names.length ? `Attached: ${names.join(", ")}` : "";
+}
+
+function isInternalAttachmentPrompt(text) {
+  const value = String(text || "").trim();
+  return value.startsWith("[Image:") || value.startsWith("[Attached file]");
+}
+
+function attachmentDisplayName(text) {
+  const value = String(text || "").trim();
+  if (value.startsWith("[Image:")) {
+    const inner = value.slice("[Image:".length).replace(/\]$/, "").trim();
+    if (!inner.includes(" - ")) return "image";
+    const name = inner.split(" - ", 1)[0].trim();
+    return name || "image";
+  }
+  if (value.startsWith("[Attached file]")) {
+    const match = value.match(/^name:\s*(.+)$/m);
+    return match ? match[1].trim() : "attachment";
+  }
+  return "";
 }
 
 let _programmaticScroll = false;

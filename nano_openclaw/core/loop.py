@@ -112,6 +112,19 @@ def _check_cancelled(token: "CancellationToken | None") -> None:
         raise TurnCancelled()
 
 
+def _image_unavailable_text(ref: str, mime: str, size: int | None = None, error: str | None = None) -> str:
+    details = [f"[Image: {ref}]", f"type: {mime}"]
+    if size is not None:
+        details.append(f"size: {size} bytes")
+    if error:
+        details.append(f"processing error: {error}")
+    details.append(
+        "The user sent an image, but it could not be processed by the current image pipeline. "
+        "Tell the user the image could not be inspected and ask them to retry or describe it if needed."
+    )
+    return "\n".join(details)
+
+
 @dataclass
 class ToolResult:
     tool_use_id: str
@@ -584,14 +597,22 @@ class AgentSession:
                 b64, mime = load_image(ref)
                 if self.cfg.image_model:
                     on_event(ImageDescribe(ref=ref))
-                    desc = await describe_image(
-                        b64,
-                        mime,
-                        client=self.client,
-                        model=self.cfg.image_model,
-                        api=self.cfg.api,
-                    )
-                    content.append({"type": "text", "text": f"[Image: {desc}]"})
+                    try:
+                        desc = await describe_image(
+                            b64,
+                            mime,
+                            client=self.client,
+                            model=self.cfg.image_model,
+                            api=self.cfg.api,
+                        )
+                        content.append({"type": "text", "text": f"[Image: {desc}]"})
+                    except Exception as exc:
+                        logger.warning("loop.image.describe.error", f"Failed to describe image {ref}: {exc}")
+                        on_event(ImageError(ref=ref, error=str(exc)))
+                        if self.cfg.model_has_vision:
+                            content.append(to_anthropic_image_block(b64, mime))
+                        else:
+                            content.append({"type": "text", "text": _image_unavailable_text(ref, mime, error=str(exc))})
                 elif self.cfg.model_has_vision:
                     content.append(to_anthropic_image_block(b64, mime))
                 else:
@@ -619,17 +640,36 @@ class AgentSession:
                     b64, mime = load_image_bytes(attachment.data, attachment.mime)
                     if self.cfg.image_model:
                         on_event(ImageDescribe(ref=attachment.name))
-                        desc = await describe_image(
-                            b64,
-                            mime,
-                            client=self.client,
-                            model=self.cfg.image_model,
-                            api=self.cfg.api,
-                        )
-                        content.append({
-                            "type": "text",
-                            "text": f"[Image: {attachment.name} - {desc}]",
-                        })
+                        try:
+                            desc = await describe_image(
+                                b64,
+                                mime,
+                                client=self.client,
+                                model=self.cfg.image_model,
+                                api=self.cfg.api,
+                            )
+                            content.append({
+                                "type": "text",
+                                "text": f"[Image: {attachment.name} - {desc}]",
+                            })
+                        except Exception as exc:
+                            logger.warning(
+                                "loop.attachment.image.describe.error",
+                                f"Failed to describe image attachment {attachment.name}: {exc}",
+                            )
+                            on_event(ImageError(ref=attachment.name, error=str(exc)))
+                            if self.cfg.model_has_vision:
+                                content.append(to_anthropic_image_block(b64, mime))
+                            else:
+                                content.append({
+                                    "type": "text",
+                                    "text": _image_unavailable_text(
+                                        attachment.name,
+                                        mime,
+                                        size=attachment.size,
+                                        error=str(exc),
+                                    ),
+                                })
                     elif self.cfg.model_has_vision:
                         content.append(to_anthropic_image_block(b64, mime))
                     else:
@@ -639,13 +679,7 @@ class AgentSession:
                         ))
                         content.append({
                             "type": "text",
-                            "text": (
-                                f"[Image: {attachment.name}]\n"
-                                f"type: {attachment.mime}\n"
-                                f"size: {attachment.size} bytes\n\n"
-                                "The user sent an image but the current model cannot view it. "
-                                "Let the user know you received it and ask them to describe it if needed."
-                            ),
+                            "text": _image_unavailable_text(attachment.name, attachment.mime, size=attachment.size),
                         })
                     uploaded_image_refs.append(attachment.name)
                 except Exception as exc:
