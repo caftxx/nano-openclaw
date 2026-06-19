@@ -17,11 +17,14 @@ from typing import Any
 import pytest
 
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.core.loop import LoopConfig, Message
-from nano_openclaw.core.provider import TextDelta
-from nano_openclaw.core.tools import ToolRegistry
+from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
+from nano_openclaw.core.tools import Tool, ToolRegistry
+from nano_openclaw.adapters.channels.base import ChannelAccount
+from nano_openclaw.adapters.channels.wechat import WechatChannel
 from nano_openclaw.wechat import bot as bot_module
 from nano_openclaw.wechat.bot import WechatBot
 
@@ -260,6 +263,81 @@ def test_wechat_message_routes_through_backend_service(tmp_path, monkeypatch):
     assert call["channel_account_id"] == "work"
     assert call["channel_sender_key"] == "user-1"
     assert sent == [("user-1", "backend reply", "ctx-1")]
+
+
+def test_wechat_message_uses_embedded_backend_channel_decoration(tmp_path, monkeypatch):
+    runtime = _fake_runtime(tmp_path)
+    cron_args: list[dict[str, Any]] = []
+    sent: list[str] = []
+
+    runtime.registry.register(Tool(
+        name="cron_create",
+        description="create cron",
+        input_schema={"type": "object", "properties": {"name": {"type": "string"}}},
+        run=lambda args: cron_args.append(dict(args)) or "created",
+    ))
+
+    channels = ChannelManager()
+    channels._instances[("wechat", "work")] = WechatChannel(ChannelAccount(id="work"))
+    backend = EmbeddedBackend(runtime, channel_manager=channels)
+
+    async def fake_get_typing_ticket(*_args, **_kwargs):
+        return ""
+
+    async def fake_send_text(_client, _base_url, _token, _to_user, text, ctx=None):
+        sent.append(text)
+
+    call_count = {"n": 0}
+
+    async def fake_stream_response(**_kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            yield ToolUseStart(id="tool-1", name="cron_create")
+            yield ToolUseDelta(id="tool-1", partial_json=json.dumps({"name": "daily"}))
+            yield ToolUseEnd(id="tool-1")
+            yield MessageEnd(stop_reason="tool_use", usage={})
+            return
+        yield TextDelta(text="scheduled")
+        yield MessageEnd(stop_reason="end_turn", usage={})
+
+    monkeypatch.setattr(bot_module, "get_typing_ticket", fake_get_typing_ticket)
+    monkeypatch.setattr(bot_module, "send_text", fake_send_text)
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
+
+    bot = WechatBot(
+        base_url="https://example",
+        token="t",
+        session_manager=backend.manager,
+        backend=backend,
+        uid_map_path=tmp_path / "wechat-sessions.json",
+        account_id="work",
+    )
+    msg = {
+        "from_user_id": "user-1",
+        "context_token": "ctx-1",
+        "item_list": [{"type": 1, "text_item": {"text": "schedule it"}}],
+    }
+
+    async def run():
+        try:
+            await bot._handle_message(msg)
+            sessions = await backend.sessions_list()
+            bot._ensure_uid_map_loaded()
+            return sessions, bot._uid_to_session_id["user-1"]
+        finally:
+            await backend.aclose()
+
+    sessions, session_id = asyncio.run(run())
+
+    assert cron_args == [{
+        "name": "daily",
+        "created_by": "wechat:work:user-1",
+        "notify_wechat": True,
+    }]
+    assert sent == ["scheduled"]
+    listed = [s for s in sessions.sessions if s.session_id == session_id]
+    assert listed
+    assert listed[0].message_count >= 4
 
 
 # ────────────────────────────────────────────────────────────────────────────
