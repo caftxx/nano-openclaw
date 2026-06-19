@@ -1,4 +1,4 @@
-"""JSON-RPC frame definitions for the gateway WebSocket.
+"""JSON-RPC frame definitions for the daemon WebSocket API.
 
 Three frame kinds, all newline-free JSON:
 
@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nano_openclaw.gateway._event_payload import jsonable
+from nano_openclaw.api.event_payload import jsonable
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ def make_ok_response(req_id: str, payload: Any = None) -> Response:
 # ────────────────────────────────────────────────────────────────────────────
 
 
-METHODS_V1 = frozenset({
+METHODS = frozenset({
     # Chat
     "chat.send", "chat.abort", "chat.history",
     # Sessions

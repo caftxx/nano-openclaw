@@ -27,10 +27,10 @@ from fastapi.testclient import TestClient
 from nano_openclaw.channels.registry import ChannelRegistry
 from nano_openclaw.services.backend import BusyError, NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.context import GatewayContext
-from nano_openclaw.gateway.protocol import (
+from nano_openclaw.api.context import GatewayContext
+from nano_openclaw.api.protocol import (
     ErrorCode,
-    METHODS_V1,
+    METHODS,
     PushFrame,
     Request,
     Response,
@@ -39,7 +39,7 @@ from nano_openclaw.gateway.protocol import (
     make_error_response,
     make_ok_response,
 )
-from nano_openclaw.gateway.ws_route import _dispatch_one, register_ws_route
+from nano_openclaw.api.ws_route import _dispatch_one, register_ws_route
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
 
@@ -143,12 +143,12 @@ def test_push_frame_encode():
 
 
 def test_handlers_match_methods_v1():
-    """Single source of truth: METHODS_V1 must enumerate exactly what the
+    """Single source of truth: METHODS must enumerate exactly what the
     handler registry exposes — drift here means a method is undocumented or
     a handler is missing.
     """
-    from nano_openclaw.gateway.methods import CORE_HANDLERS
-    assert set(CORE_HANDLERS.keys()) == set(METHODS_V1)
+    from nano_openclaw.api.methods import CORE_HANDLERS
+    assert set(CORE_HANDLERS.keys()) == set(METHODS)
 
 
 # ────────────────────────────────────────────────────────────────────────────

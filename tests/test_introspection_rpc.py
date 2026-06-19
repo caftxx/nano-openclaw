@@ -19,11 +19,11 @@ import pytest
 from nano_openclaw.channels.registry import ChannelRegistry
 from nano_openclaw.services.backend import Backend
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.context import GatewayContext
-from nano_openclaw.gateway.protocol import METHODS_V1
+from nano_openclaw.api.context import GatewayContext
+from nano_openclaw.api.protocol import METHODS
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
-from nano_openclaw.gateway.ws_route import _dispatch_one
+from nano_openclaw.api.ws_route import _dispatch_one
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import Tool, ToolRegistry
 
@@ -83,12 +83,12 @@ def _ctx(tmp_path: Path, *, registry: ToolRegistry | None = None) -> tuple[Gatew
 
 def test_methods_v1_includes_introspection():
     expected = {"tools.list", "skills.list", "plugins.list", "hooks.list"}
-    assert expected.issubset(METHODS_V1)
+    assert expected.issubset(METHODS)
 
 
 def test_handlers_match_methods_v1_with_introspection():
-    from nano_openclaw.gateway.methods import CORE_HANDLERS
-    assert set(CORE_HANDLERS.keys()) == set(METHODS_V1)
+    from nano_openclaw.api.methods import CORE_HANDLERS
+    assert set(CORE_HANDLERS.keys()) == set(METHODS)
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from nano_openclaw.channels.base import ChannelAccount
-from nano_openclaw.gateway.context import GatewayContext
+from nano_openclaw.api.context import GatewayContext
 
 
 def _entry_to_dict(entry) -> dict[str, Any]:

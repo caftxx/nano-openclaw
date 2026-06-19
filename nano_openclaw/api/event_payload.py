@@ -1,10 +1,4 @@
-"""Event → JSON payload conversion shared between EmbeddedBackend and webui.
-
-Lives at gateway/ level because both EmbeddedBackend (push-event emission) and
-gateway/webui/server.py (WebSocket framing) consume it. Lifted from
-gateway/webui/server.py during Phase 0 of the gateway port; webui imports
-re-routed through here.
-"""
+"""Event to JSON payload conversion shared by backend and API clients."""
 
 from __future__ import annotations
 

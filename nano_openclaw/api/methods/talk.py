@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from nano_openclaw.gateway.context import GatewayContext
+from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.tts import TalkSpeakError, build_talk_config, synthesize_talk_speech
 
 

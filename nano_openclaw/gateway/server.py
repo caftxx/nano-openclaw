@@ -32,9 +32,9 @@ from rich.console import Console
 
 from nano_openclaw.channels.registry import get_channel_registry
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.context import GatewayContext
+from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.gateway.pidfile import lan_ip, remove_pidfile, write_pidfile
-from nano_openclaw.gateway.ws_route import register_ws_route
+from nano_openclaw.api.ws_route import register_ws_route
 from nano_openclaw.logger import get_logger
 from nano_openclaw.core.runtime import build_agent_runtime
 

@@ -5,7 +5,7 @@ Three layers:
 1. ``EmbeddedBackend`` field-by-field get / set behavior.
 2. ``_dispatch_one`` round-trip for each new RPC method (uses the same
    fake-runtime fixture as the other gateway tests).
-3. METHODS_V1 ↔ CORE_HANDLERS sync still holds.
+3. METHODS ↔ CORE_HANDLERS sync still holds.
 
 Real ``dreaming.run`` integration is out of scope (it spawns an LLM call).
 We assert the wiring + the not-configured / no-workspace error paths.
@@ -24,11 +24,11 @@ import pytest
 from nano_openclaw.channels.registry import ChannelRegistry
 from nano_openclaw.services.backend import BackendError, NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.context import GatewayContext
-from nano_openclaw.gateway.protocol import ErrorCode, METHODS_V1
+from nano_openclaw.api.context import GatewayContext
+from nano_openclaw.api.protocol import ErrorCode, METHODS
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
-from nano_openclaw.gateway.ws_route import _dispatch_one
+from nano_openclaw.api.ws_route import _dispatch_one
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
 from nano_openclaw.memory.dreaming import DreamingConfig
@@ -86,12 +86,12 @@ def test_methods_v1_includes_features():
         "curator.get", "curator.set", "curator.run",
         "checkpoint.list", "checkpoint.create", "checkpoint.restore",
     }
-    assert expected.issubset(METHODS_V1)
+    assert expected.issubset(METHODS)
 
 
 def test_handlers_match_methods_v1_after_phase8():
-    from nano_openclaw.gateway.methods import CORE_HANDLERS
-    assert set(CORE_HANDLERS.keys()) == set(METHODS_V1)
+    from nano_openclaw.api.methods import CORE_HANDLERS
+    assert set(CORE_HANDLERS.keys()) == set(METHODS)
 
 
 # ────────────────────────────────────────────────────────────────────────────

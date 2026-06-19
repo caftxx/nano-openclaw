@@ -241,8 +241,8 @@ def test_rpc_chat_abort_cancels_cron_turn(tmp_path):
     """
     import json
     from nano_openclaw.channels.registry import ChannelRegistry
-    from nano_openclaw.gateway.context import GatewayContext
-    from nano_openclaw.gateway.ws_route import _dispatch_one
+    from nano_openclaw.api.context import GatewayContext
+    from nano_openclaw.api.ws_route import _dispatch_one
 
     async def run():
         runtime = _fake_runtime(tmp_path)

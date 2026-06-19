@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nano_openclaw.gateway.context import GatewayContext
+from nano_openclaw.api.context import GatewayContext
 
 
 # ────────────────────────────────────────────────────────────────────────────

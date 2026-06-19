@@ -19,8 +19,8 @@ import pytest
 from nano_openclaw.approvals.types import ApprovalPolicy
 from nano_openclaw.gateway import restart as restart_mod
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.methods import CORE_HANDLERS
-from nano_openclaw.gateway.protocol import METHODS_V1
+from nano_openclaw.api.methods import CORE_HANDLERS
+from nano_openclaw.api.protocol import METHODS
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import _HANDLERS as SLASH_HANDLERS
@@ -103,7 +103,7 @@ def test_perform_restart_exit_calls_underscore_exit(monkeypatch):
 # ─── RPC / Backend ───
 
 def test_gateway_restart_in_method_catalog():
-    assert "gateway.restart" in METHODS_V1
+    assert "gateway.restart" in METHODS
     assert "gateway.restart" in CORE_HANDLERS
 
 

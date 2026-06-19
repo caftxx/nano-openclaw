@@ -11,7 +11,7 @@ import base64
 from typing import Any
 
 from nano_openclaw.core.attachments import PromptAttachment
-from nano_openclaw.gateway.context import GatewayContext
+from nano_openclaw.api.context import GatewayContext
 
 
 async def chat_send(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:

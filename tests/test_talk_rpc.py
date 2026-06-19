@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from nano_openclaw.config.types import VoiceConfig
-from nano_openclaw.gateway.methods.talk import talk_config, talk_speak
+from nano_openclaw.api.methods.talk import talk_config, talk_speak
 from nano_openclaw.tts.talk import build_talk_config
 
 

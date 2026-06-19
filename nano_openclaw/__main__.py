@@ -374,7 +374,7 @@ async def _run_ws_tui(connect_url: str) -> bool:
     """
     from rich.console import Console
 
-    from nano_openclaw.gateway.backend_websocket import WebSocketBackend
+    from nano_openclaw.api.backend_websocket import WebSocketBackend
     from nano_openclaw.gateway.ws_repl import ws_repl
 
     console = Console()

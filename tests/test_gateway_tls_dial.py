@@ -160,7 +160,7 @@ def _patch_backend_connect(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 def test_backend_wss_passes_insecure_ssl_context(monkeypatch: pytest.MonkeyPatch):
-    from nano_openclaw.gateway.backend_websocket import WebSocketBackend
+    from nano_openclaw.api.backend_websocket import WebSocketBackend
 
     recorder = _patch_backend_connect(monkeypatch)
 
@@ -180,7 +180,7 @@ def test_backend_wss_passes_insecure_ssl_context(monkeypatch: pytest.MonkeyPatch
 
 
 def test_backend_ws_omits_ssl(monkeypatch: pytest.MonkeyPatch):
-    from nano_openclaw.gateway.backend_websocket import WebSocketBackend
+    from nano_openclaw.api.backend_websocket import WebSocketBackend
 
     recorder = _patch_backend_connect(monkeypatch)
 

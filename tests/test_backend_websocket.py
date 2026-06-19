@@ -29,9 +29,9 @@ from nano_openclaw.services.backend import (
     NotFoundError,
 )
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.backend_websocket import WebSocketBackend
-from nano_openclaw.gateway.context import GatewayContext
-from nano_openclaw.gateway.ws_route import register_ws_route
+from nano_openclaw.api.backend_websocket import WebSocketBackend
+from nano_openclaw.api.context import GatewayContext
+from nano_openclaw.api.ws_route import register_ws_route
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
 

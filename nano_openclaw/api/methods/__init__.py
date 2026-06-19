@@ -1,4 +1,4 @@
-"""RPC method registry for the gateway WebSocket.
+"""RPC method registry for the daemon WebSocket API.
 
 Each ``method`` family lives in its own file (``chat.py``, ``sessions.py``,
 ...). Each handler is ``async def(ctx: GatewayContext, params: dict) -> Any``
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
-from nano_openclaw.gateway.context import GatewayContext
-from nano_openclaw.gateway.methods import (
+from nano_openclaw.api.context import GatewayContext
+from nano_openclaw.api.methods import (
     approvals as _approvals,
     channels as _channels,
     chat as _chat,

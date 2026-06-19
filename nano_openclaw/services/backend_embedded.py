@@ -20,7 +20,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from nano_openclaw.core.attachments import PromptAttachment
-from nano_openclaw.gateway._event_payload import (
+from nano_openclaw.api.event_payload import (
     event_to_payload,
     is_replayable_activity_payload,
     jsonable,

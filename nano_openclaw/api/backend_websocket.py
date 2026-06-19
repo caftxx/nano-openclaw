@@ -1,7 +1,7 @@
 """``WebSocketBackend`` — Backend Protocol implementation that talks to a
 remote ``run_daemon`` over JSON-RPC/WebSocket.
 
-The remote daemon's ``/rpc`` endpoint (``gateway/ws_route.py``) speaks the
+The remote daemon's ``/rpc`` endpoint (``api/ws_route.py``) speaks the
 exact same Protocol vocabulary as ``EmbeddedBackend`` so the TUI's CLI
 ``repl()`` can swap the implementation without knowing.
 
@@ -53,7 +53,7 @@ from nano_openclaw.services.backend import (
     SessionUsageReport,
     SubagentInfo,
 )
-from nano_openclaw.gateway.protocol import ErrorCode
+from nano_openclaw.api.protocol import ErrorCode
 from nano_openclaw.logger import get_logger
 
 
