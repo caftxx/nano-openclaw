@@ -184,6 +184,31 @@ class ChannelManager:
             return_exceptions=True,
         )
 
+    async def restart_all(self, runtime: "AgentRuntime", gateway: Any | None = None) -> None:
+        """Restart every running instance against the current class registry.
+
+        Used after runtime hot reloads so channel adapters stop holding old
+        runtime/backend references. Restart failures are logged and leave the
+        failed instance stopped; runtime updates should not fail because a
+        chat channel cannot reconnect immediately.
+        """
+        running = [
+            (channel_id, instance.account)
+            for (channel_id, _account_id), instance in list(self._instances.items())
+        ]
+        if not running:
+            return
+        for channel_id, account in running:
+            await self.stop(channel_id, account.id)
+        for channel_id, account in running:
+            try:
+                await self.start(channel_id, account, runtime, gateway)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "channel.restart.error",
+                    f"{channel_id}/{account.id}: {type(exc).__name__}: {exc}",
+                )
+
     def get_instance(self, channel_id: str, account_id: str) -> ChannelAdapter | None:
         return self._instances.get((channel_id, account_id))
 

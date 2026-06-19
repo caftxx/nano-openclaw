@@ -175,6 +175,35 @@ def test_registry_start_stop_lifecycle():
     asyncio.run(run())
 
 
+def test_registry_restart_all_recreates_instances_with_new_runtime():
+    class _RuntimeChannel(ChannelAdapter):
+        id = "runtime"
+
+        async def start(self, runtime, gateway=None):
+            self._state = "running"
+            self.runtime = runtime
+            self.gateway = gateway
+
+        async def stop(self):
+            self._state = "stopped"
+
+    reg = ChannelManager()
+    reg.register(_RuntimeChannel)
+
+    async def run():
+        first_runtime = SimpleNamespace(name="first")
+        second_runtime = SimpleNamespace(name="second")
+        first = await reg.start("runtime", ChannelAccount(id="default"), first_runtime)
+        await reg.restart_all(second_runtime, SimpleNamespace(runtime=second_runtime))
+        second = reg.get_instance("runtime", "default")
+        assert second is not first
+        assert second.runtime is second_runtime
+        assert second.gateway.runtime is second_runtime
+        assert first.status().state == "stopped"
+
+    asyncio.run(run())
+
+
 def test_registry_unknown_channel_raises_keyerror():
     reg = ChannelManager()
 

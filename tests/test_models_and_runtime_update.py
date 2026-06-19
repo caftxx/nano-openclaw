@@ -15,6 +15,7 @@ Covers Phase 1 + Phase 2:
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -171,6 +172,7 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
     runtime = _fake_runtime(tmp_path)
     backend = EmbeddedBackend(runtime)
     captured = {}
+    cron_cancelled = False
 
     async def close_old():
         return None
@@ -194,6 +196,19 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
     monkeypatch.setattr(runtime_module, "build_agent_runtime", fake_build_agent_runtime)
 
     async def run():
+        nonlocal cron_cancelled
+
+        async def sleepy_cron():
+            nonlocal cron_cancelled
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cron_cancelled = True
+                raise
+
+        runtime.cron_stop = threading.Event()
+        runtime.cron_task = asyncio.create_task(sleepy_cron())
+        await asyncio.sleep(0)
         try:
             await backend.runtime_update(model_ref="anthropic/claude-haiku-4-5")
         finally:
@@ -204,5 +219,7 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
 
     assert captured["run_registry"] is runtime.run_registry
     assert captured["runtime_guard"] is not old_guard
+    assert runtime.cron_stop.is_set()
+    assert cron_cancelled is True
     assert backend.runtime.run_registry is runtime.run_registry
     assert backend.runtime.runtime_guard is captured["runtime_guard"]

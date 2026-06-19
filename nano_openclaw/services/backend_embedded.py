@@ -81,6 +81,19 @@ def _new_runtime_guard():
     return RuntimeUpdateGuard()
 
 
+async def _stop_runtime_cron(runtime: "AgentRuntime") -> None:
+    cron_stop = getattr(runtime, "cron_stop", None)
+    if cron_stop is not None:
+        cron_stop.set()
+    cron_task = getattr(runtime, "cron_task", None)
+    if cron_task is not None and not cron_task.done():
+        cron_task.cancel()
+        try:
+            await cron_task
+        except BaseException as exc:
+            log.debug("runtime_update.old_cron_cancelled", f"{type(exc).__name__}")
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Subscriber: per-iterator bounded queue with gap detection
 # ────────────────────────────────────────────────────────────────────────────
@@ -219,6 +232,18 @@ class EmbeddedBackend(Backend):
             return
         for channel in hook_registry.channels():
             self.channel_manager.register(channel, replace=True)
+
+    async def _restart_running_channels(self, runtime: "AgentRuntime") -> None:
+        if self.channel_manager is None:
+            return
+        await self.channel_manager.restart_all(
+            runtime,
+            SimpleNamespace(
+                backend=self,
+                runtime=runtime,
+                channel_manager=self.channel_manager,
+            ),
+        )
 
     # ─── Push event plumbing ───
 
@@ -936,6 +961,7 @@ class EmbeddedBackend(Backend):
                 target_image_ref = (
                     image_model_ref if image_model_ref is not None else old.image_model_ref
                 )
+                await _stop_runtime_cron(old)
                 new_runtime = await build_agent_runtime(
                     config_path=old.config_path,
                     agent_id=target_agent,
@@ -952,6 +978,7 @@ class EmbeddedBackend(Backend):
                 # refresh metadata new transcripts will be tagged with.
                 self.manager.model = new_runtime.model_id
                 self.manager.cwd = str(new_runtime.workspace_dir)
+                await self._restart_running_channels(new_runtime)
                 close_old = True
             else:
                 # Light path — mutate the existing runtime in place. Still
