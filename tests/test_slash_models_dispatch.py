@@ -11,15 +11,13 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.backend import ModelChoice, RuntimeSnapshot
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.services.slash import handle_slash
 from nano_openclaw.services.slash_renderer import MarkdownRenderer, PlainRenderer
 from nano_openclaw.core.loop import LoopConfig
-from nano_openclaw.core.runtime_options import resolve_model_option
 from nano_openclaw.core.tools import ToolRegistry
 
 
@@ -212,21 +210,73 @@ def test_slash_thinking_unknown_level_returns_error(tmp_path):
     assert runtime.cfg.thinking_level == "off"  # untouched (LoopConfig default)
 
 
-def test_resolve_model_option_disambiguation():
-    """Bare model id matches one provider — accepted; provider/id form
-    matches exact ref; unknown raises KeyError."""
-    config = SimpleNamespace(
-        models=SimpleNamespace(providers={
-            "anthropic": SimpleNamespace(api="x", baseUrl=None, apiKey=None, models=[
-                _model_def("claude-sonnet-4-5", name="Sonnet"),
-            ]),
-        })
-    )
-    found = resolve_model_option(config, "claude-sonnet-4-5")
-    assert found["ref"] == "anthropic/claude-sonnet-4-5"
+class _CatalogBackend:
+    def __init__(self, choices: list[ModelChoice]) -> None:
+        self.choices = choices
+        self.updated_ref: str | None = None
+        self.snapshot = RuntimeSnapshot(
+            agent_id="default",
+            model_ref=choices[0].ref,
+            model_id=choices[0].id,
+            image_model_ref=None,
+            thinking_level="off",
+            workspace_dir="",
+            state_dir="",
+        )
 
-    found2 = resolve_model_option(config, "anthropic/claude-sonnet-4-5")
-    assert found2["ref"] == "anthropic/claude-sonnet-4-5"
+    async def models_list(self) -> list[ModelChoice]:
+        return self.choices
 
-    with pytest.raises(KeyError):
-        resolve_model_option(config, "nope/none")
+    async def runtime_get(self) -> RuntimeSnapshot:
+        return self.snapshot
+
+    async def runtime_update(self, *, model_ref=None, **_kwargs) -> RuntimeSnapshot:
+        self.updated_ref = model_ref
+        selected = next(choice for choice in self.choices if choice.ref == model_ref)
+        self.snapshot = RuntimeSnapshot(
+            agent_id="default",
+            model_ref=selected.ref,
+            model_id=selected.id,
+            image_model_ref=None,
+            thinking_level="off",
+            workspace_dir="",
+            state_dir="",
+        )
+        return self.snapshot
+
+
+def test_slash_model_bare_id_resolves_through_backend_catalog():
+    backend = _CatalogBackend([
+        ModelChoice(ref="anthropic/claude-sonnet-4-5", id="claude-sonnet-4-5", provider="anthropic", name="Sonnet"),
+        ModelChoice(ref="anthropic/claude-haiku-4-5", id="claude-haiku-4-5", provider="anthropic", name="Haiku"),
+    ])
+    md = MarkdownRenderer()
+
+    async def run():
+        handled = await handle_slash("/model claude-haiku-4-5", backend, md, {"session_key": ""})
+        assert handled is True
+        return md.collect()
+
+    out = asyncio.run(run())
+    assert backend.updated_ref == "anthropic/claude-haiku-4-5"
+    assert "Haiku" in out
+    assert "anthropic/claude-haiku-4-5" in out
+
+
+def test_slash_model_ambiguous_bare_id_does_not_update_runtime():
+    backend = _CatalogBackend([
+        ModelChoice(ref="anthropic/shared-id", id="shared-id", provider="anthropic", name="Anthropic"),
+        ModelChoice(ref="openai/shared-id", id="shared-id", provider="openai", name="OpenAI"),
+    ])
+    md = MarkdownRenderer()
+
+    async def run():
+        handled = await handle_slash("/model shared-id", backend, md, {"session_key": ""})
+        assert handled is True
+        return md.collect()
+
+    out = asyncio.run(run())
+    assert backend.updated_ref is None
+    assert "ambiguous: shared-id" in out
+    assert "anthropic/shared-id" in out
+    assert "openai/shared-id" in out
