@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from nano_openclaw.plugins.builtin.review_fork_plugin import (
+from nano_openclaw.features.review_fork.plugin import (
     REVIEW_FORK_ALLOWLIST,
     ReviewForkConfig,
     ReviewForkPlugin,

@@ -1294,7 +1294,7 @@ class EmbeddedBackend(Backend):
         not in the plugin loader output). ``enabled`` reflects the live cfg
         flag — flipping it via ``review_fork_set`` takes effect immediately.
         """
-        from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
+        from nano_openclaw.features.review_fork.plugin import get_state
 
         st = get_state()
         if st is None:
@@ -1310,7 +1310,7 @@ class EmbeddedBackend(Backend):
         model_aux. Unknown keys are ignored. Returns the updated snapshot.
         ``NotFoundError`` if the plugin never registered.
         """
-        from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
+        from nano_openclaw.features.review_fork.plugin import get_state
 
         st = get_state()
         if st is None:
@@ -1337,7 +1337,7 @@ class EmbeddedBackend(Backend):
         decided not to spawn (e.g. concurrency cap, plugin disabled).
         ``NotFoundError`` if the plugin never registered.
         """
-        from nano_openclaw.plugins.builtin.review_fork_plugin import get_state
+        from nano_openclaw.features.review_fork.plugin import get_state
 
         st = get_state()
         if st is None:

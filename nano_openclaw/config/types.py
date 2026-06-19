@@ -504,7 +504,7 @@ class ReviewForkConfigInput(BaseModel):
 
     On by default; spawns a restricted review subagent every N end_turns
     (with cooldown) to distill durable lessons into MEMORY.md / existing
-    SKILL.md. Implemented by nano_openclaw.plugins.builtin.review_fork_plugin.
+    SKILL.md. Implemented by nano_openclaw.features.review_fork.plugin.
     """
     model_config = ConfigDict(populate_by_name=True)
 

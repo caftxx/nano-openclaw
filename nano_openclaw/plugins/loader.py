@@ -13,12 +13,12 @@ from nano_openclaw.plugins.api import PluginApi
 from nano_openclaw.core.tools import ToolRegistry
 
 BUILTIN_PLUGINS = {
-    "memory": "nano_openclaw.plugins.builtin.memory_plugin.MemoryPlugin",
-    "web": "nano_openclaw.plugins.builtin.web_plugin.WebPlugin",
-    "mcp": "nano_openclaw.plugins.builtin.mcp_plugin.McpPlugin",
-    "subagent": "nano_openclaw.plugins.builtin.subagent_plugin.SubagentPlugin",
-    "schedule": "nano_openclaw.plugins.builtin.schedule_plugin.SchedulePlugin",
-    "review-fork": "nano_openclaw.plugins.builtin.review_fork_plugin.ReviewForkPlugin",
+    "memory": "nano_openclaw.features.memory.plugin.MemoryPlugin",
+    "web": "nano_openclaw.features.web.plugin.WebPlugin",
+    "mcp": "nano_openclaw.features.mcp.plugin.McpPlugin",
+    "subagent": "nano_openclaw.features.subagents.plugin.SubagentPlugin",
+    "schedule": "nano_openclaw.features.schedule.plugin.SchedulePlugin",
+    "review-fork": "nano_openclaw.features.review_fork.plugin.ReviewForkPlugin",
 }
 
 

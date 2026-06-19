@@ -401,7 +401,7 @@ def test_rpc_dreaming_run_unconfigured_returns_not_found(tmp_path):
 
 @pytest.fixture
 def _reset_review_fork_state():
-    from nano_openclaw.plugins.builtin.review_fork_plugin import reset_state
+    from nano_openclaw.features.review_fork.plugin import reset_state
     reset_state()
     yield
     reset_state()
@@ -409,7 +409,7 @@ def _reset_review_fork_state():
 
 def _install_review_fork_state(enabled: bool = True):
     """Install a module-level ReviewForkState (mimic plugin.register)."""
-    from nano_openclaw.plugins.builtin.review_fork_plugin import (
+    from nano_openclaw.features.review_fork.plugin import (
         ReviewForkConfig, ReviewForkState, _set_state,
     )
     state = ReviewForkState(ReviewForkConfig(enabled=enabled, trigger_n=10))
