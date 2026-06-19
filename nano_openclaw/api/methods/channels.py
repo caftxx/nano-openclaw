@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nano_openclaw.channels.base import ChannelAccount
+from nano_openclaw.adapters.channels.base import ChannelAccount
 from nano_openclaw.api.context import GatewayContext
 
 
@@ -21,11 +21,11 @@ def _entry_to_dict(entry) -> dict[str, Any]:
 async def channels_status(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
     """Return live status for all running channel/account pairs.
 
-    Pulls directly from ``ChannelRegistry`` rather than going through
+    Pulls directly from ``ChannelManager`` rather than going through
     ``backend.channels_status`` because Phase 0 left the backend method
     as a placeholder; the registry is the source of truth in v1.
     """
-    statuses = ctx.channel_registry.list_status()
+    statuses = ctx.channel_manager.list_status()
     return {"channels": [_entry_to_dict(s) for s in statuses]}
 
 
@@ -44,14 +44,14 @@ async def channels_start(ctx: GatewayContext, params: dict[str, Any]) -> dict[st
     # Pass ``ctx`` as gateway so channels (e.g. WechatChannel) can wire
     # ``backend`` into their bot. Without this, WechatBot would fall back to
     # its hand-rolled slash handler — drift from TUI/WebUI ``/help``.
-    instance = await ctx.channel_registry.start(channel_id, account, ctx.runtime, ctx)
+    instance = await ctx.channel_manager.start(channel_id, account, ctx.runtime, ctx)
     return _entry_to_dict(instance.status())
 
 
 async def channels_stop(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
     channel_id = str(params.get("channel_id") or "")
     account_id = str(params.get("account_id") or "default")
-    await ctx.channel_registry.stop(channel_id, account_id)
+    await ctx.channel_manager.stop(channel_id, account_id)
     return {
         "channel_id": channel_id,
         "account_id": account_id,

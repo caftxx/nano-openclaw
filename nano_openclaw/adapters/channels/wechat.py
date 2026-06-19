@@ -1,11 +1,11 @@
-"""``WechatChannel`` — adapts ``WechatBot`` to the ``Channel`` Protocol.
+"""``WechatChannel`` — adapts ``WechatBot`` to the ``ChannelAdapter`` Protocol.
 
 One ``WechatChannel`` instance = one ``ChannelAccount`` = one configured iLink
 token. The daemon spawns N instances for N configured accounts. Each manages
 its own background ``WechatBot.run()`` task and its own ``NotifyQueue``.
 
 The legacy ``nano-openclaw wechat`` subcommand path still constructs a
-``WechatBot`` directly without going through this channel; that path is
+``WechatBot`` directly without going through this ChannelAdapter; that path is
 deprecated and will be removed when the daemon (Phase 3) ships.
 """
 
@@ -16,8 +16,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from nano_openclaw.channels.base import Channel, ChannelAccount
+from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount
 from nano_openclaw.logger import get_logger
+from nano_openclaw.services.channels import get_channel_manager
 from nano_openclaw.wechat.bot import WechatBot
 from nano_openclaw.wechat.login_cli import load_persisted_token
 from nano_openclaw.wechat.notify import NotifyItem, NotifyQueue
@@ -32,8 +33,8 @@ log = get_logger(__name__)
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 
 
-class WechatChannel(Channel):
-    """One iLink account hosted as a daemon-managed channel."""
+class WechatChannel(ChannelAdapter):
+    """One iLink account hosted as a daemon-managed ChannelAdapter."""
 
     id: ClassVar[str] = "wechat"
 
@@ -166,7 +167,7 @@ class WechatChannel(Channel):
 
         The bot's ``_poll_notifications`` loop drains the queue and pushes each
         item over iLink. Decoupling via the on-disk queue means a temporarily
-        offline channel doesn't lose notifications.
+        offline ChannelAdapter doesn't lose notifications.
         """
         if self._notify_queue is None:
             log.warning(
@@ -188,3 +189,6 @@ class WechatChannel(Channel):
             "wechat.channel.notify.queued",
             f"account={self.account.id} target={target_key:.16} job={job.name}",
         )
+
+
+get_channel_manager().register(WechatChannel)

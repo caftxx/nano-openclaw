@@ -5,7 +5,7 @@ Holds the daemon-process state every method handler reads/writes:
 - ``runtime``: the one ``AgentRuntime`` shared by webui + channels + RPC.
 - ``backend``: the ``EmbeddedBackend`` wrapping ``runtime``. RPC handlers
   delegate to it so embedded TUI and remote TUI share one code path.
-- ``channel_registry``: lets ``channels.*`` RPC methods inspect/mutate
+- ``channel_manager``: lets ``channels.*`` RPC methods inspect/mutate
   channels without re-importing.
 - ``state_dir``: convenience for handlers that need disk paths
   (e.g., ``health``).
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from nano_openclaw.channels.registry import ChannelRegistry
+    from nano_openclaw.services.channels import ChannelManager
     from nano_openclaw.services.backend_embedded import EmbeddedBackend
     from nano_openclaw.core.runtime import AgentRuntime
 
@@ -33,7 +33,7 @@ class GatewayContext:
 
     runtime: "AgentRuntime"
     backend: "EmbeddedBackend"
-    channel_registry: "ChannelRegistry"
+    channel_manager: "ChannelManager"
 
     @property
     def state_dir(self) -> Path:

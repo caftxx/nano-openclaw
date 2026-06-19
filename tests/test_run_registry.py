@@ -240,7 +240,7 @@ def test_rpc_chat_abort_cancels_cron_turn(tmp_path):
     method registry should cancel cron turns just like chat turns.
     """
     import json
-    from nano_openclaw.channels.registry import ChannelRegistry
+    from nano_openclaw.services.channels import ChannelManager
     from nano_openclaw.api.context import GatewayContext
     from nano_openclaw.api.ws_route import _dispatch_one
 
@@ -248,7 +248,7 @@ def test_rpc_chat_abort_cancels_cron_turn(tmp_path):
         runtime = _fake_runtime(tmp_path)
         backend = EmbeddedBackend(runtime)
         ctx = GatewayContext(
-            runtime=runtime, backend=backend, channel_registry=ChannelRegistry(),
+            runtime=runtime, backend=backend, channel_manager=ChannelManager(),
         )
         cron_token = CancellationToken()
         runtime.run_registry.register(

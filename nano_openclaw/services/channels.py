@@ -1,12 +1,12 @@
-"""ChannelRegistry — tracks channel classes + running instances.
+"""ChannelManager — tracks ChannelAdapter classes + running instances.
 
 Two roles:
 
 1. **Class registry** (process-wide): ``register(WechatChannel)`` makes the
    "wechat" name resolvable. Subclass registration happens at import time
-   (see ``channels/wechat/__init__.py``).
+   (see ``adapters/channels/wechat.py``).
 2. **Instance registry** (per gateway): ``start(channel_id, account)`` /
-   ``stop(...)`` track running ``Channel`` instances keyed by
+   ``stop(...)`` track running ``ChannelAdapter`` instances keyed by
    ``(channel_id, account_id)``. ``dispatch_notify`` routes a cron
    completion to the right instance.
 """
@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from nano_openclaw.channels.base import Channel, ChannelAccount, ChannelStatus
+from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount, ChannelStatus
 from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
@@ -27,17 +27,17 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-class ChannelRegistry:
-    """Holds Channel subclasses and their running instances."""
+class ChannelManager:
+    """Holds ChannelAdapter subclasses and their running instances."""
 
     def __init__(self) -> None:
-        self._classes: dict[str, type[Channel]] = {}
-        self._instances: dict[tuple[str, str], Channel] = {}
+        self._classes: dict[str, type[ChannelAdapter]] = {}
+        self._instances: dict[tuple[str, str], ChannelAdapter] = {}
 
     # ─── Class registration ───
 
-    def register(self, channel_class: type[Channel]) -> None:
-        """Register a Channel subclass under its ``id``. Idempotent on same class."""
+    def register(self, channel_class: type[ChannelAdapter]) -> None:
+        """Register a ChannelAdapter subclass under its ``id``. Idempotent on same class."""
         cid = channel_class.id
         if not cid:
             raise ValueError(f"{channel_class.__name__}.id must be a non-empty string")
@@ -45,10 +45,10 @@ class ChannelRegistry:
         if existing is channel_class:
             return
         if existing is not None:
-            raise ValueError(f"channel id {cid!r} already registered to {existing.__name__}")
+            raise ValueError(f"ChannelAdapter id {cid!r} already registered to {existing.__name__}")
         self._classes[cid] = channel_class
 
-    def get_class(self, channel_id: str) -> type[Channel] | None:
+    def get_class(self, channel_id: str) -> type[ChannelAdapter] | None:
         return self._classes.get(channel_id)
 
     def known_channels(self) -> list[str]:
@@ -62,11 +62,11 @@ class ChannelRegistry:
         account: ChannelAccount,
         runtime: "AgentRuntime",
         gateway: Any | None = None,
-    ) -> Channel:
-        """Instantiate and start a channel. Idempotent if already running."""
+    ) -> ChannelAdapter:
+        """Instantiate and start a ChannelAdapter. Idempotent if already running."""
         cls = self._classes.get(channel_id)
         if cls is None:
-            raise KeyError(f"channel {channel_id!r} not registered (known: {sorted(self._classes)})")
+            raise KeyError(f"ChannelAdapter {channel_id!r} not registered (known: {sorted(self._classes)})")
         key = (channel_id, account.id)
         existing = self._instances.get(key)
         if existing is not None:
@@ -82,7 +82,7 @@ class ChannelRegistry:
         return instance
 
     async def stop(self, channel_id: str, account_id: str) -> None:
-        """Stop a running channel. No-op if not running."""
+        """Stop a running ChannelAdapter. No-op if not running."""
         key = (channel_id, account_id)
         instance = self._instances.pop(key, None)
         if instance is None:
@@ -101,7 +101,7 @@ class ChannelRegistry:
             return_exceptions=True,
         )
 
-    def get_instance(self, channel_id: str, account_id: str) -> Channel | None:
+    def get_instance(self, channel_id: str, account_id: str) -> ChannelAdapter | None:
         return self._instances.get((channel_id, account_id))
 
     def list_status(self) -> list[ChannelStatus]:
@@ -135,9 +135,9 @@ class ChannelRegistry:
         job: "CronJob",
         record: "CronRunRecord",
     ) -> bool:
-        """Route a cron completion to the originating channel's notify_completion.
+        """Route a cron completion to the originating ChannelAdapter's notify_completion.
 
-        Returns True if a channel handled it, False otherwise. Never raises:
+        Returns True if a ChannelAdapter handled it, False otherwise. Never raises:
         the cron scheduler must never crash because a notification target
         went away.
         """
@@ -171,12 +171,12 @@ class ChannelRegistry:
 
 # ─── Process-wide singleton ───
 
-_GLOBAL_REGISTRY: ChannelRegistry | None = None
+_GLOBAL_REGISTRY: ChannelManager | None = None
 
 
-def get_channel_registry() -> ChannelRegistry:
+def get_channel_manager() -> ChannelManager:
     """Lazy singleton. Subclasses register themselves at import time via this."""
     global _GLOBAL_REGISTRY
     if _GLOBAL_REGISTRY is None:
-        _GLOBAL_REGISTRY = ChannelRegistry()
+        _GLOBAL_REGISTRY = ChannelManager()
     return _GLOBAL_REGISTRY

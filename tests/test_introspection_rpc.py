@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from nano_openclaw.channels.registry import ChannelRegistry
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.backend import Backend
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
@@ -73,7 +73,7 @@ def _fake_runtime(tmp_path: Path, *, registry: ToolRegistry | None = None) -> Si
 def _ctx(tmp_path: Path, *, registry: ToolRegistry | None = None) -> tuple[GatewayContext, EmbeddedBackend]:
     runtime = _fake_runtime(tmp_path, registry=registry)
     backend = EmbeddedBackend(runtime)
-    return GatewayContext(runtime=runtime, backend=backend, channel_registry=ChannelRegistry()), backend
+    return GatewayContext(runtime=runtime, backend=backend, channel_manager=ChannelManager()), backend
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ import base64
 import httpx
 
 from nano_openclaw.core.attachments import PromptAttachment
-from nano_openclaw.channels.chunking import chunk_text
+from nano_openclaw.adapters.channels.chunking import chunk_text
 from nano_openclaw.logger import get_logger
 from nano_openclaw.core.loop import AgentSession, TextDelta
 from nano_openclaw.core._stream_events import ToolUseEnd, ToolUseStart

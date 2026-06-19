@@ -6,7 +6,7 @@ pure so no fixtures or mocks are required.
 
 from __future__ import annotations
 
-from nano_openclaw.channels.chunking import (
+from nano_openclaw.adapters.channels.chunking import (
     DEFAULT_TEXT_CHUNK_LIMIT,
     chunk_text,
     parse_fence_spans,

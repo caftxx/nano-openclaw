@@ -9,7 +9,7 @@ Channel hosting (Phase 3 v1):
 
 - Discover wechat accounts from ``state_dir/wechat-tokens.{id}.json`` files
   (written by ``nano-openclaw wechat login``) and start a ``WechatChannel``
-  per account through the global ``ChannelRegistry``. Other channels (when
+  per account through the global ``ChannelManager``. Other channels (when
   added later) follow the same pattern: import for side-effect registration,
   enumerate accounts, ``await registry.start(...)``.
 - Channels share the daemon's single ``AgentRuntime`` instance — that's
@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
-from nano_openclaw.channels.registry import get_channel_registry
+from nano_openclaw.services.channels import get_channel_manager
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.daemon.pidfile import lan_ip, remove_pidfile, write_pidfile
@@ -39,13 +39,13 @@ from nano_openclaw.daemon.restart import perform_restart
 from nano_openclaw.logger import get_logger
 from nano_openclaw.core.runtime import build_agent_runtime
 
-# Side-effect import: registers WechatChannel in the global ChannelRegistry
+# Side-effect import: registers WechatChannel in the global ChannelManager
 # so the daemon can spawn it from config. Add similar lines as future
 # channels (telegram, slack, ...) come online.
-import nano_openclaw.channels.wechat  # noqa: F401
+import nano_openclaw.adapters.channels.wechat  # noqa: F401
 
 if TYPE_CHECKING:
-    from nano_openclaw.channels.base import ChannelAccount
+    from nano_openclaw.adapters.channels.base import ChannelAccount
     from nano_openclaw.core.runtime import AgentRuntime
 
 
@@ -129,18 +129,18 @@ async def run_daemon(
     # Order matters: WeChat (and any future channel) needs ``backend.manager``
     # at start time so per-uid sessions register through the same store the
     # WebUI + /rpc see — single source of truth for sessions across surfaces.
-    channel_registry = get_channel_registry()
+    channel_manager = get_channel_manager()
     started_channels: list[tuple[str, str]] = []
     backend: EmbeddedBackend = EmbeddedBackend(runtime)
     gateway_ctx = GatewayContext(
         runtime=runtime,
         backend=backend,
-        channel_registry=channel_registry,
+        channel_manager=channel_manager,
     )
 
     try:
         # Channels see ``gateway_ctx`` so they can use backend.manager.
-        await _start_configured_channels(runtime, channel_registry, started_channels, console, gateway_ctx)
+        await _start_configured_channels(runtime, channel_manager, started_channels, console, gateway_ctx)
 
         # ── WebUI ASGI app + uvicorn ────────────────────────────────────────
         # Pass ``backend`` so WebUI shares the daemon's BackendSessionManager
@@ -202,7 +202,7 @@ async def run_daemon(
     finally:
         # ── Channels stop ────────────────────────────────────────────────────
         try:
-            await channel_registry.stop_all()
+            await channel_manager.stop_all()
         except Exception as exc:  # noqa: BLE001
             log.warning("gateway.shutdown.channels", f"{type(exc).__name__}: {exc}")
 
@@ -248,7 +248,7 @@ async def _start_configured_channels(
     through ``backend.manager`` — that's how wechat sessions show up
     alongside webui/tui sessions in the unified ``/sessions`` list.
     """
-    from nano_openclaw.channels.base import ChannelAccount
+    from nano_openclaw.adapters.channels.base import ChannelAccount
     from nano_openclaw.wechat.login_cli import discover_persisted_account_ids
 
     # Wechat accounts are discovered purely from persisted login tokens —

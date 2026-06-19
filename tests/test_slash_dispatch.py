@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from nano_openclaw.channels.registry import ChannelRegistry
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.backend import NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext

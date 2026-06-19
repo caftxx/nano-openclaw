@@ -24,7 +24,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nano_openclaw.channels.registry import ChannelRegistry
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.backend import BusyError, NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
@@ -86,7 +86,7 @@ def _make_ctx(tmp_path: Path) -> tuple[GatewayContext, EmbeddedBackend]:
     ctx = GatewayContext(
         runtime=runtime,
         backend=backend,
-        channel_registry=ChannelRegistry(),
+        channel_manager=ChannelManager(),
     )
     return ctx, backend
 

@@ -329,7 +329,7 @@ async def _execute_job(
 
     # ── Directed channel notification ───────────────────────────────────────────
     #
-    # Phase 2 routes via ChannelRegistry.dispatch_notify when the originating
+    # Phase 2 routes via ChannelManager.dispatch_notify when the originating
     # channel is registered + running (the daemon/Phase 3 path). Falls back to
     # the legacy direct-write path when no channel instance owns the
     # notification — that's the case for jobs created in the standalone
@@ -342,7 +342,7 @@ async def _execute_job(
     )
 
     if should_notify:
-        from nano_openclaw.channels.registry import get_channel_registry
+        from nano_openclaw.services.channels import get_channel_manager
 
         if status == "error":
             summary = (
@@ -364,7 +364,7 @@ async def _execute_job(
             elapsed_ms=elapsed_ms,
         )
 
-        registry = get_channel_registry()
+        registry = get_channel_manager()
         delivered = await registry.dispatch_notify(
             created_by=job.created_by,
             status=status,

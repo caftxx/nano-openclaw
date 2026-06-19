@@ -1,18 +1,18 @@
-"""Channel abstract base + per-instance status / account types.
+"""ChannelAdapter abstract base + per-instance status / account types.
 
-A ``Channel`` subclass defines one **kind** of integration (wechat, telegram).
-Each ``Channel`` instance runs **one account** of that kind. The daemon
+A ``ChannelAdapter`` subclass defines one **kind** of integration (wechat, telegram).
+Each ``ChannelAdapter`` instance runs **one account** of that kind. The daemon
 spawns one instance per (channel_id, account_id) pair from config.
 
 ``decorate_tools`` and ``notify_completion`` are the two extension points
-where the channel injects its identity:
+where the ChannelAdapter injects its identity:
 
 - ``decorate_tools(base, sender_key)`` wraps cron-creation tools so the
   ``created_by`` field gets the three-segment ``{channel}:{account}:{sender}``
   marker — that's how cron's completion routing knows to ping the right
-  channel's right account on behalf of the right sender.
+  ChannelAdapter's right account on behalf of the right sender.
 - ``notify_completion(...)`` is invoked by the cron scheduler when a job
-  finishes; the channel decides what to do (push a wechat message, post to
+  finishes; the ChannelAdapter decides what to do (push a wechat message, post to
   slack, ...).
 """
 
@@ -33,10 +33,10 @@ ChannelState = Literal["stopped", "starting", "running", "error"]
 
 @dataclass
 class ChannelAccount:
-    """One configured account of a channel.
+    """One configured account of a ChannelAdapter.
 
     ``id`` is the account label ("default" / "personal" / "work"). ``config``
-    is whatever the specific channel needs (for wechat: ilink_token +
+    is whatever the specific ChannelAdapter needs (for wechat: ilink_token +
     base_url + notify_path).
     """
 
@@ -46,7 +46,7 @@ class ChannelAccount:
 
 @dataclass
 class ChannelStatus:
-    """Public-facing status of one channel instance."""
+    """Public-facing status of one ChannelAdapter instance."""
 
     channel_id: str
     account_id: str
@@ -55,8 +55,8 @@ class ChannelStatus:
     started_at: float | None = None
 
 
-class Channel(ABC):
-    """One running instance = one channel × one account.
+class ChannelAdapter(ABC):
+    """One running instance = one ChannelAdapter × one account.
 
     Subclasses set ``id`` (class attribute) and implement ``start`` / ``stop``.
     Defaults for ``decorate_tools`` and ``notify_completion`` are no-ops so
@@ -77,7 +77,7 @@ class Channel(ABC):
 
     @abstractmethod
     async def start(self, runtime: "AgentRuntime", gateway: Any | None = None) -> None:
-        """Launch the channel's background task(s).
+        """Launch the ChannelAdapter's background task(s).
 
         ``gateway`` is the ``GatewayContext`` once the daemon is wired up
         (Phase 3). For Phase 2 it's None — channels run with just the
@@ -86,7 +86,7 @@ class Channel(ABC):
 
     @abstractmethod
     async def stop(self) -> None:
-        """Tear down the channel's background tasks. Idempotent."""
+        """Tear down the ChannelAdapter's background tasks. Idempotent."""
 
     def status(self) -> ChannelStatus:
         return ChannelStatus(
@@ -109,7 +109,7 @@ class Channel(ABC):
 
         Per-turn shallow cloning of the registry is the **backend**'s job
         (see ``EmbeddedBackend._build_turn_registry``); decorate_tools is
-        only about per-channel identity.
+        only about per-ChannelAdapter identity.
         """
         return base
 
@@ -125,7 +125,7 @@ class Channel(ABC):
         record: "CronRunRecord",
     ) -> None:
         """Cron scheduler calls this when a job created by a turn from this
-        channel finishes. Default: no-op. Subclasses push a message, append
+        ChannelAdapter finishes. Default: no-op. Subclasses push a message, append
         to a queue, etc. Channels capture any runtime state they need at
         ``start()`` time, so this method does not receive ``runtime``.
         """
@@ -137,6 +137,6 @@ class Channel(ABC):
         """Three-segment marker: ``{channel_id}:{account_id}:{sender_key}``.
 
         Used by ``decorate_tools`` overrides to tag cron jobs/wakeups created
-        on behalf of a specific sender within this channel/account.
+        on behalf of a specific sender within this ChannelAdapter/account.
         """
         return f"{self.id}:{self.account.id}:{sender_key}"

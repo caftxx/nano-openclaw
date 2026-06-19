@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 
-from nano_openclaw.channels.registry import ChannelRegistry
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.backend import (
     Backend,
     BackendError,
@@ -93,7 +93,7 @@ class _RunningServer:
         self.ctx = GatewayContext(
             runtime=self.runtime,
             backend=self.backend,
-            channel_registry=ChannelRegistry(),
+            channel_manager=ChannelManager(),
         )
         self.app = FastAPI()
         register_ws_route(self.app, self.ctx)

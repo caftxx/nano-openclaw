@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from nano_openclaw.channels.registry import ChannelRegistry
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.backend import BackendError, NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
@@ -68,7 +68,7 @@ def _make_ctx(tmp_path: Path) -> tuple[GatewayContext, EmbeddedBackend]:
     runtime = _fake_runtime(tmp_path)
     backend = EmbeddedBackend(runtime)
     ctx = GatewayContext(
-        runtime=runtime, backend=backend, channel_registry=ChannelRegistry(),
+        runtime=runtime, backend=backend, channel_manager=ChannelManager(),
     )
     return ctx, backend
 

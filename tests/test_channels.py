@@ -1,4 +1,4 @@
-"""Channel abstraction tests — Channel ABC, ChannelRegistry, WechatChannel.
+"""ChannelAdapter abstraction tests — ChannelAdapter ABC, ChannelManager, WechatChannel.
 
 End-to-end iLink integration is not exercised here (needs a live server);
 these focus on the routing / registry / config-migration mechanics.
@@ -14,17 +14,17 @@ from typing import Any
 
 import pytest
 
-from nano_openclaw.channels.base import Channel, ChannelAccount, ChannelStatus
-from nano_openclaw.channels.registry import ChannelRegistry
+from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount, ChannelStatus
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.schedule.types import CronJob, CronRunRecord
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# A minimal Channel for testing routing without launching real I/O.
+# A minimal ChannelAdapter for testing routing without launching real I/O.
 # ────────────────────────────────────────────────────────────────────────────
 
 
-class _RecordingChannel(Channel):
+class _RecordingChannel(ChannelAdapter):
     id = "recording"
 
     async def start(self, runtime, gateway=None):
@@ -83,7 +83,7 @@ def _make_record() -> CronRunRecord:
 
 
 def test_channel_id_must_be_set():
-    class _BadChannel(Channel):
+    class _BadChannel(ChannelAdapter):
         id = ""
 
         async def start(self, runtime, gateway=None): ...
@@ -105,12 +105,12 @@ def test_default_decorate_tools_is_passthrough():
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# ChannelRegistry: registration + lifecycle
+# ChannelManager: registration + lifecycle
 # ────────────────────────────────────────────────────────────────────────────
 
 
 def test_registry_register_and_get():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_RecordingChannel)
     assert reg.get_class("recording") is _RecordingChannel
     # Idempotent: same class re-registers cleanly
@@ -118,32 +118,32 @@ def test_registry_register_and_get():
 
 
 def test_registry_register_blank_id_rejected():
-    class _NoId(Channel):
+    class _NoId(ChannelAdapter):
         id = ""
 
         async def start(self, runtime, gateway=None): ...
         async def stop(self): ...
 
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     with pytest.raises(ValueError):
         reg.register(_NoId)
 
 
 def test_registry_double_register_different_class_rejected():
-    class _Other(Channel):
+    class _Other(ChannelAdapter):
         id = "recording"
 
         async def start(self, runtime, gateway=None): ...
         async def stop(self): ...
 
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_RecordingChannel)
     with pytest.raises(ValueError):
         reg.register(_Other)
 
 
 def test_registry_start_stop_lifecycle():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_RecordingChannel)
 
     async def run():
@@ -162,7 +162,7 @@ def test_registry_start_stop_lifecycle():
 
 
 def test_registry_unknown_channel_raises_keyerror():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
 
     async def run():
         with pytest.raises(KeyError):
@@ -177,16 +177,16 @@ def test_registry_unknown_channel_raises_keyerror():
 
 
 def test_parse_created_by_three_segment():
-    assert ChannelRegistry.parse_created_by("wechat:work:o9cq80abc") == ("wechat", "work", "o9cq80abc")
+    assert ChannelManager.parse_created_by("wechat:work:o9cq80abc") == ("wechat", "work", "o9cq80abc")
 
 
 def test_parse_created_by_legacy_two_segment_defaults_to_default_account():
-    assert ChannelRegistry.parse_created_by("wechat:o9cq80abc") == ("wechat", "default", "o9cq80abc")
+    assert ChannelManager.parse_created_by("wechat:o9cq80abc") == ("wechat", "default", "o9cq80abc")
 
 
 def test_parse_created_by_non_routable_returns_none():
-    assert ChannelRegistry.parse_created_by("cli") is None
-    assert ChannelRegistry.parse_created_by("") is None
+    assert ChannelManager.parse_created_by("cli") is None
+    assert ChannelManager.parse_created_by("") is None
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ def test_parse_created_by_non_routable_returns_none():
 
 
 def test_dispatch_notify_routes_to_correct_account():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_RecordingChannel)
 
     async def run():
@@ -224,7 +224,7 @@ def test_dispatch_notify_routes_to_correct_account():
 
 
 def test_dispatch_notify_legacy_format_routes_to_default():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_RecordingChannel)
 
     async def run():
@@ -248,7 +248,7 @@ def test_dispatch_notify_legacy_format_routes_to_default():
 
 
 def test_dispatch_notify_no_instance_returns_false():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_RecordingChannel)
 
     async def run():
@@ -265,7 +265,7 @@ def test_dispatch_notify_no_instance_returns_false():
 
 
 def test_dispatch_notify_unparseable_created_by_returns_false():
-    reg = ChannelRegistry()
+    reg = ChannelManager()
 
     async def run():
         delivered = await reg.dispatch_notify(
@@ -281,7 +281,7 @@ def test_dispatch_notify_unparseable_created_by_returns_false():
 
 
 def test_dispatch_notify_swallows_handler_errors():
-    class _FailingChannel(Channel):
+    class _FailingChannel(ChannelAdapter):
         id = "failing"
 
         async def start(self, runtime, gateway=None):
@@ -293,7 +293,7 @@ def test_dispatch_notify_swallows_handler_errors():
         async def notify_completion(self, *, target_key, status, summary, job, record):
             raise RuntimeError("boom")
 
-    reg = ChannelRegistry()
+    reg = ChannelManager()
     reg.register(_FailingChannel)
 
     async def run():
@@ -322,7 +322,7 @@ def test_wechat_channel_decorate_tools_injects_three_segment_marker():
     """WechatChannel.decorate_tools (via _clone_registry) wraps cron_create
     so that args.created_by becomes 'wechat:{account}:{sender}'.
     """
-    from nano_openclaw.channels.wechat import WechatChannel
+    from nano_openclaw.adapters.channels.wechat import WechatChannel
     from nano_openclaw.core.tools import Tool, ToolRegistry
 
     captured: dict = {}
@@ -348,7 +348,7 @@ def test_wechat_channel_decorate_tools_injects_three_segment_marker():
 
 
 def test_wechat_channel_default_account_marker():
-    from nano_openclaw.channels.wechat import WechatChannel
+    from nano_openclaw.adapters.channels.wechat import WechatChannel
     from nano_openclaw.core.tools import Tool, ToolRegistry
 
     captured: dict = {}
