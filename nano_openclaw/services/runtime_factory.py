@@ -20,7 +20,6 @@ from nano_openclaw.config import (
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.runtime import (
     AgentRuntime,
-    _register_restart_tool,
     image_model_id_from_ref,
 )
 from nano_openclaw.core.tools import ToolRegistry, build_core_registry
@@ -36,6 +35,7 @@ from nano_openclaw.features.subagents.runtime import (
 from nano_openclaw.logger import resolve_log_level
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
+from nano_openclaw.services.restart_tool import register_restart_tool
 from nano_openclaw.session import resolve_agent_sessions_dir, resolve_session_store_path
 
 
@@ -245,7 +245,7 @@ async def build_agent_runtime(
         restart_callback=restart_callback,
     )
     if not no_tools:
-        _register_restart_tool(runtime)
+        register_restart_tool(runtime)
 
     await hook_registry.run("session_start", {
         "session_id": session_id,

@@ -17,7 +17,7 @@ Approval gating: ``switch_model`` is in ``ApprovalPolicy.dangerous_tools``
 + ``tool_configs.requires_approval=True`` (see approvals/types.py), so
 interactive turns prompt the user and cron / channel auto-turns deny by
 default unless explicitly allowlisted. The same gating applies to
-``restart`` (registered in runtime.py:_register_restart_tool — separate
+``restart`` (registered by services.restart_tool — separate
 module because it needs direct runtime mutation; semantically part of this
 LLM-facing surface).
 

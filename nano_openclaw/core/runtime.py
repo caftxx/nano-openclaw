@@ -82,67 +82,6 @@ class AgentRuntime:
         elif hasattr(self.client, "close"):
             await self.client.close()
 
-
-def _register_restart_tool(runtime: AgentRuntime) -> None:
-    """Wire the LLM-facing ``restart`` tool into the runtime's ToolRegistry.
-
-    Lives here (rather than ``tools.py``) so the tool's closure can hold
-    ``runtime`` directly — the tool needs to flip ``runtime.pending_restart``
-    and spawn a watcher task that fires the injected restart callback only after the
-    ``run_registry`` drains. Approval gating is handled by the registry's
-    dispatch path: ``ApprovalPolicy`` ships ``restart`` in ``dangerous_tools``
-    + a ``tool_configs`` entry with ``requires_approval=True``, so cron /
-    channel auto-runs go through ``NonInteractiveApprovalHandler`` and are
-    denied unless the user explicitly allowlists it.
-    """
-    import asyncio
-
-    from nano_openclaw.core.tools import Tool
-
-    async def _wait_and_restart(rt: AgentRuntime, strategy: str) -> None:
-        # Wait until the calling turn (and any other in-flight turns) finish.
-        # Polling is fine here — the loop fires once the registry drains.
-        while len(rt.run_registry) > 0:
-            await asyncio.sleep(0.2)
-        await asyncio.sleep(0.2)  # final flush window
-        if rt.restart_callback is None:
-            log.warning("runtime.restart.unavailable", "restart requested without daemon callback")
-            return
-        rt.restart_callback(strategy)
-
-    # Re-entrancy guard: multiple ``restart`` calls in one process should not
-    # stack watcher tasks. The first one wins; subsequent calls just confirm.
-    state: dict[str, Any] = {"watcher_started": False}
-
-    def _restart_tool(_args: dict[str, Any]) -> str:
-        runtime.pending_restart = True
-        if state["watcher_started"]:
-            return "restart already pending — will fire after current turn(s) complete"
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return "restart cannot be scheduled: no running event loop"
-
-        strategy = runtime.config.gateway.restart_strategy
-        loop.create_task(_wait_and_restart(runtime, strategy))
-        state["watcher_started"] = True
-        return f"restart scheduled (strategy={strategy}); will fire once the registry drains"
-
-    runtime.registry.register(Tool(
-        name="restart",
-        description=(
-            "Restart the gateway daemon process. Defers until the current "
-            "turn (and any other in-flight turns) finish — the response you "
-            "produce after calling this will be delivered before the swap. "
-            "Use sparingly: clients lose their WebSocket connection and have "
-            "to reconnect; cron / channel jobs in flight are interrupted."
-        ),
-        input_schema={"type": "object", "properties": {}},
-        run=_restart_tool,
-    ))
-
-
 def image_model_id_from_ref(image_model_ref: str | None) -> str | None:
     if not image_model_ref:
         return None

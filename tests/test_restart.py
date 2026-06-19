@@ -183,22 +183,22 @@ def test_restart_slash_calls_backend_gateway_restart():
 # ─── LLM tool ───
 
 def test_restart_tool_registered_after_runtime_build(tmp_path):
-    """``_register_restart_tool`` (invoked from build_agent_runtime) wires
+    """``register_restart_tool`` (invoked from build_agent_runtime) wires
     a ``restart`` Tool into the ToolRegistry and binds it to the runtime."""
-    from nano_openclaw.core.runtime import _register_restart_tool
+    from nano_openclaw.services.restart_tool import register_restart_tool
 
     runtime = _fake_runtime(tmp_path)
-    _register_restart_tool(runtime)
+    register_restart_tool(runtime)
     assert "restart" in runtime.registry.names()
 
 
 def test_restart_tool_sets_pending_flag_and_schedules_watcher(monkeypatch, tmp_path):
     """Calling the tool flips ``runtime.pending_restart`` and arms one
     watcher task. A second call is a no-op (no stacked watchers)."""
-    from nano_openclaw.core.runtime import _register_restart_tool
+    from nano_openclaw.services.restart_tool import register_restart_tool
 
     runtime = _fake_runtime(tmp_path, restart_strategy="exec")
-    _register_restart_tool(runtime)
+    register_restart_tool(runtime)
 
     created_tasks: list[Any] = []
 
@@ -239,10 +239,10 @@ def test_restart_watcher_only_fires_when_registry_drains(monkeypatch, tmp_path):
     """The deferred watcher must wait for the run_registry to empty before
     invoking ``perform_restart`` — otherwise it would kill the calling
     turn mid-execution."""
-    from nano_openclaw.core.runtime import _register_restart_tool
+    from nano_openclaw.services.restart_tool import register_restart_tool
 
     runtime = _fake_runtime(tmp_path)
-    _register_restart_tool(runtime)
+    register_restart_tool(runtime)
 
     fire_count = 0
 
