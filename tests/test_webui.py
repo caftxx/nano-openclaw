@@ -888,6 +888,61 @@ def test_voice_config_configured_reports_available_without_secrets():
         assert foreign not in values
 
 
+def test_webui_quit_command_emits_single_result(tmp_path):
+    from fastapi.testclient import TestClient
+    from nano_openclaw.adapters.webui.server import create_app
+
+    class BackendStub:
+        def __init__(self):
+            self.manager = BackendSessionManager(
+                session_dir=tmp_path / "sessions",
+                store_path=tmp_path / "sessions.json",
+                model="test-model",
+                cwd=str(tmp_path),
+            )
+
+        async def webui_state(self):
+            return {
+                "agent_id": "default",
+                "agent_options": [],
+                "model": "test-model",
+                "model_ref": "test/test-model",
+                "model_options": [],
+                "image_model": "",
+                "image_model_ref": "",
+                "image_model_options": [],
+                "thinking_level": "off",
+                "thinking_options": ["off"],
+                "assistant_name": "Assistant",
+                "user_name": "User",
+                "workspace_dir": str(tmp_path),
+                "tools": [],
+                "approvals": [],
+                "voice": {},
+            }
+
+        async def subscribe(self):
+            while False:
+                yield None
+
+    app = create_app(backend=BackendStub(), token=None)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # Initial state.updated + session.updated.
+            ws.receive_json()
+            ws.receive_json()
+
+            ws.send_json({"type": "command.run", "command": "/q", "session_id": None})
+            first = ws.receive_json()
+            assert first == {
+                "type": "command.result",
+                "command": "/q",
+                "text": "_(WebUI cannot quit the gateway — close the tab instead)_",
+            }
+            ws.send_json({"type": "session.refresh", "session_id": None})
+            assert ws.receive_json()["type"] == "state.updated"
+
+
 def test_voice_config_custom_endpoint_overrides_region():
     from fastapi.testclient import TestClient
     from nano_openclaw.config.types import VoiceConfig

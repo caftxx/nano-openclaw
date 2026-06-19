@@ -353,7 +353,7 @@ def create_app(
                             "command": cmd_text,
                             "text": "_(WebUI cannot quit the gateway — close the tab instead)_",
                         })
-                        handled_by_shared = True
+                        continue
 
                     if handled_by_shared:
                         text = md.collect()
