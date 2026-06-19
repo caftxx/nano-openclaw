@@ -197,7 +197,7 @@ def test_provider_signature_accepts_cache_ttl_kwarg():
     """Stream_response in both routing and Anthropic transport must accept
     cache_ttl so loop.py can plumb it through unconditionally."""
     import inspect
-    from nano_openclaw import _provider_anthropic, provider
+    from nano_openclaw.core import _provider_anthropic, provider
 
     assert "cache_ttl" in inspect.signature(provider.stream_response).parameters
     assert "cache_ttl" in inspect.signature(_provider_anthropic.stream_response).parameters
