@@ -15,17 +15,19 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 from nano_openclaw.core.tools import ToolRegistry
+from nano_openclaw.core.skill_prompt import (
+    apply_skills_prompt_limits,
+    format_skills_compact,
+    format_skills_for_prompt,
+)
 from nano_openclaw.core.workspace import (
     WorkspaceBootstrapFile,
     CONTEXT_FILE_ORDER,
     DEFAULT_SOUL_FILENAME,
 )
-
-if TYPE_CHECKING:
-    from nano_openclaw.features.skills.types import Skill
 
 
 _IDENTITY = "You are a personal assistant running inside nano-openclaw."
@@ -247,7 +249,7 @@ def build_system_prompt(
     registry: ToolRegistry,
     workspace_dir: Path | None = None,
     bootstrap_files: list[WorkspaceBootstrapFile] | None = None,
-    skills: list["Skill"] | None = None,
+    skills: list[Any] | None = None,
     max_skills_in_prompt: int = 150,
     max_skills_prompt_chars: int = 18_000,
     auto_memory_index: str | None = None,
@@ -290,11 +292,6 @@ def build_system_prompt(
     # Skills section (mirrors openclaw applySkillsPromptLimits + formatSkillsForPrompt)
     skills_block = ""
     if skills:
-        from nano_openclaw.features.skills import (
-            apply_skills_prompt_limits,
-            format_skills_compact,
-            format_skills_for_prompt,
-        )
         limited, _, use_compact = apply_skills_prompt_limits(
             skills,
             max_skills=max_skills_in_prompt,
