@@ -34,7 +34,7 @@ from typing import Any, NamedTuple
 from rich import markup
 from rich.console import Console
 
-from nano_openclaw.core.runtime_options import THINKING_LEVELS, resolve_model_option
+from nano_openclaw.core.runtime_options import THINKING_LEVELS
 from nano_openclaw.services.backend import Backend, BackendError, BusyError, NotFoundError
 from nano_openclaw.services.slash_renderer import (
     MarkdownRenderer,
@@ -680,7 +680,7 @@ async def _cmd_model(backend, renderer: SlashRenderer, state, args, cmd):
     # resolving — avoids spamming the catalog parse on a no-op.
     snap_before = await backend.runtime_get()
     try:
-        target = resolve_model_option(backend.runtime.config, query) if hasattr(backend, "runtime") else None
+        target = _resolve_model_choice(await backend.models_list(), query)
     except KeyError:
         renderer.error(f"unknown model: {query}. /models to list available.")
         return
@@ -688,11 +688,8 @@ async def _cmd_model(backend, renderer: SlashRenderer, state, args, cmd):
         renderer.error(str(exc))
         return
 
-    # WebSocketBackend lacks ``runtime`` attribute; fall back to ref-as-given
-    # (server side will validate and reject if unknown). When ``target`` is
-    # None here, treat the input as an opaque ref and let the daemon decide.
-    target_ref = target["ref"] if target else query
-    target_name = target["name"] if target else target_ref
+    target_ref = target.ref
+    target_name = target.name or target.id or target_ref
 
     if target_ref == snap_before.model_ref:
         renderer.dim(f"model already set to {target_name} ({target_ref})")
@@ -701,6 +698,27 @@ async def _cmd_model(backend, renderer: SlashRenderer, state, args, cmd):
     old_ref = snap_before.model_ref
     new_snap = await backend.runtime_update(model_ref=target_ref)
     renderer.success(f"model set to {target_name} ({new_snap.model_ref}); previous {old_ref}")
+
+
+def _resolve_model_choice(choices, query: str):
+    query = (query or "").strip()
+    if not query:
+        raise KeyError("empty model query")
+
+    for choice in choices:
+        if choice.ref == query:
+            return choice
+
+    if "/" in query:
+        raise KeyError(f"unknown model: {query}")
+
+    matches = [choice for choice in choices if choice.id == query]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        refs = ", ".join(choice.ref for choice in matches)
+        raise ValueError(f"ambiguous: {query} - try one of {refs}")
+    raise KeyError(f"unknown model: {query}")
 
 
 # ────────────────────────────────────────────────────────────────────────────
