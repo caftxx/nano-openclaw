@@ -27,12 +27,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+from nano_openclaw.core.workspace.memory_index import (
+    INDEX_FILE,
+    MAX_INDEX_BYTES,
+    MAX_INDEX_LINES,
+    truncate_index,
+)
 
 # ─── Constants (mirror claude-code memdir.ts + memoryTypes.ts) ───
 TOPIC_DIR = "topics"
-INDEX_FILE = "MEMORY.md"
-MAX_INDEX_LINES = 200
-MAX_INDEX_BYTES = 25_000
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
 
 # Match opening YAML frontmatter block. Same shape as skills/loader.py
@@ -140,72 +143,6 @@ def format_manifest(headers: list[TopicHeader]) -> str:
         else:
             lines.append(f"- {tag}{h.filename} ({ts})")
     return "\n".join(lines)
-
-
-def _format_file_size(n: int) -> str:
-    """Render bytes as ``25.0KB`` style — matches claude-code ``formatFileSize`` output shape."""
-    if n < 1024:
-        return f"{n}B"
-    kb = n / 1024.0
-    if kb < 1024:
-        return f"{kb:.1f}KB"
-    mb = kb / 1024.0
-    return f"{mb:.1f}MB"
-
-
-def truncate_index(content: str) -> tuple[str, bool, bool]:
-    """Apply the 200-line / 25 KB caps to MEMORY.md, append a warning when truncated.
-
-    Mirrors claude-code ``truncateEntrypointContent`` (memdir.ts:57). Line
-    cap fires first (natural boundary), then byte cap trims to the last
-    newline before the limit so we never cut a line in half.
-
-    Returns ``(content, was_line_truncated, was_byte_truncated)`` where the
-    booleans report which cap (if any) tripped. The warning sentence
-    distinguishes the three cases (lines-only / bytes-only / both) so the
-    operator can fix the right thing.
-    """
-    trimmed = content.strip()
-    if not trimmed:
-        return "", False, False
-
-    lines = trimmed.split("\n")
-    line_count = len(lines)
-    byte_count = len(trimmed.encode("utf-8"))
-
-    was_line_truncated = line_count > MAX_INDEX_LINES
-    # Check original byte count — long lines are the failure mode the byte
-    # cap targets, so post-line-truncation size would understate the warning.
-    was_byte_truncated = byte_count > MAX_INDEX_BYTES
-
-    if not was_line_truncated and not was_byte_truncated:
-        return trimmed, False, False
-
-    truncated = "\n".join(lines[:MAX_INDEX_LINES]) if was_line_truncated else trimmed
-    truncated_bytes = truncated.encode("utf-8")
-    if len(truncated_bytes) > MAX_INDEX_BYTES:
-        # Find the last newline at or before MAX_INDEX_BYTES (byte offset).
-        cut_at = truncated_bytes.rfind(b"\n", 0, MAX_INDEX_BYTES)
-        if cut_at > 0:
-            truncated = truncated_bytes[:cut_at].decode("utf-8", errors="ignore")
-        else:
-            truncated = truncated_bytes[:MAX_INDEX_BYTES].decode("utf-8", errors="ignore")
-
-    if was_byte_truncated and not was_line_truncated:
-        reason = (
-            f"{_format_file_size(byte_count)} (limit: {_format_file_size(MAX_INDEX_BYTES)}) "
-            "— index entries are too long"
-        )
-    elif was_line_truncated and not was_byte_truncated:
-        reason = f"{line_count} lines (limit: {MAX_INDEX_LINES})"
-    else:
-        reason = f"{line_count} lines and {_format_file_size(byte_count)}"
-
-    warning = (
-        f"\n\n> WARNING: {INDEX_FILE} is {reason}. Only part of it was loaded. "
-        "Keep index entries to one line under ~200 chars; move detail into topic files."
-    )
-    return truncated + warning, was_line_truncated, was_byte_truncated
 
 
 def is_topic_write_path(workspace: Path, rel_path: str) -> bool:

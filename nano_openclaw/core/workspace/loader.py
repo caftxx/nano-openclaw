@@ -165,7 +165,7 @@ def load_workspace_memory_index(workspace_dir: Path) -> str | None:
     if content is None:
         return None
 
-    from nano_openclaw.features.memory.topics import truncate_index
+    from nano_openclaw.core.workspace.memory_index import truncate_index
 
     truncated, _was_lines, _was_bytes = truncate_index(content)
     if not truncated:
