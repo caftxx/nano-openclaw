@@ -155,8 +155,8 @@ METHODS = frozenset({
     "channels.status", "channels.start", "channels.stop",
     # Subagents
     "subagents.list", "subagents.kill",
-    # Talk / voice
-    "talk.config", "talk.speak",
+    # WebUI / Talk / voice
+    "webui.state", "voice.token", "talk.config", "talk.speak",
     # Features (active-memory / dreaming / review-fork / curator / checkpoint)
     "active_memory.get", "active_memory.set",
     "dreaming.get", "dreaming.set", "dreaming.run",

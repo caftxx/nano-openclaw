@@ -28,6 +28,7 @@ from nano_openclaw.api.methods import (
     subagents as _subagents,
     talk as _talk,
     todos as _todos,
+    webui as _webui,
 )
 
 
@@ -44,6 +45,7 @@ CORE_HANDLERS: dict[str, Handler] = {
     **_slash.HANDLERS,
     **_channels.HANDLERS,
     **_subagents.HANDLERS,
+    **_webui.HANDLERS,
     **_talk.HANDLERS,
     **_features.HANDLERS,
     **_introspection.HANDLERS,

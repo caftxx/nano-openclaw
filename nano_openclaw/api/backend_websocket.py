@@ -53,6 +53,7 @@ from nano_openclaw.services.backend import (
     SessionUsageReport,
     SlashRunResult,
     SubagentInfo,
+    VoiceError,
 )
 from nano_openclaw.api.protocol import ErrorCode
 from nano_openclaw.logger import get_logger
@@ -305,6 +306,14 @@ class WebSocketBackend(Backend):
             )
         if code == ErrorCode.NOT_FOUND.value:
             raise NotFoundError(message)
+        details = err.get("details") or {}
+        if code == ErrorCode.UNAVAILABLE.value and details.get("voice_error"):
+            raise VoiceError(
+                message,
+                reason=str(details.get("reason") or ""),
+                fallback_eligible=bool(details.get("fallback_eligible")),
+                status_code=int(details.get("status_code") or 503),
+            )
         raise BackendError(f"[{code}] {message}")
 
     # ─── Backend Protocol implementation ───
@@ -715,6 +724,52 @@ class WebSocketBackend(Backend):
         # The daemon restarts ~0.3s after acking; the WebSocket will drop.
         # The caller is expected to print "restarting…" and (optionally) reconnect.
         return await self._call("gateway.restart") or {}
+
+    # ─── WebUI / voice service projections ───
+
+    async def webui_state(self) -> dict[str, Any]:
+        return await self._call("webui.state") or {}
+
+    async def voice_config(self) -> dict[str, Any]:
+        payload = await self._call("talk.config")
+        if isinstance(payload, dict) and isinstance(payload.get("config"), dict):
+            return payload["config"]
+        return {}
+
+    async def voice_token(self) -> dict[str, Any]:
+        return await self._call("voice.token") or {}
+
+    async def talk_speak(self, **params: Any) -> dict[str, Any]:
+        wire_params: dict[str, Any] = {
+            "text": str(params.get("text") or ""),
+        }
+        if params.get("voice_id") is not None:
+            wire_params["voiceId"] = params["voice_id"]
+        if params.get("voiceId") is not None:
+            wire_params["voiceId"] = params["voiceId"]
+        if params.get("voice") is not None:
+            wire_params["voice"] = params["voice"]
+        if params.get("sample_rate") is not None:
+            wire_params["sample_rate"] = params["sample_rate"]
+        if params.get("sampleRate") is not None:
+            wire_params["sampleRate"] = params["sampleRate"]
+        if params.get("speed") is not None:
+            wire_params["speed"] = params["speed"]
+        if params.get("rate_wpm") is not None:
+            wire_params["rate_wpm"] = params["rate_wpm"]
+        if params.get("rateWpm") is not None:
+            wire_params["rateWpm"] = params["rateWpm"]
+        payload = await self._call("talk.speak", wire_params) or {}
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            raise VoiceError(
+                str(payload.get("error") or "talk.speak failed"),
+                reason=str(payload.get("reason") or ""),
+                fallback_eligible=bool(payload.get("fallbackEligible")),
+                status_code=503 if payload.get("fallbackEligible") else 502,
+            )
+        if isinstance(payload, dict) and payload.get("ok") is True:
+            payload = {k: v for k, v in payload.items() if k != "ok"}
+        return dict(payload)
 
     # ─── Push event subscription ───
 

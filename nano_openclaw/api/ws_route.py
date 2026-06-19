@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
-from nano_openclaw.services.backend import BusyError, NotFoundError
+from nano_openclaw.services.backend import BusyError, NotFoundError, VoiceError
 from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.api.methods import CORE_HANDLERS
 from nano_openclaw.api.protocol import (
@@ -154,6 +154,18 @@ async def _dispatch_one(ctx: GatewayContext, raw: str) -> Response:
             req_id=req.id,
             code=ErrorCode.NOT_FOUND,
             message=str(exc),
+        )
+    except VoiceError as exc:
+        return make_error_response(
+            req_id=req.id,
+            code=ErrorCode.UNAVAILABLE,
+            message=str(exc),
+            details={
+                "voice_error": True,
+                "reason": exc.reason,
+                "fallback_eligible": exc.fallback_eligible,
+                "status_code": exc.status_code,
+            },
         )
     except NotImplementedError as exc:
         # Stub methods (sessions.delete / sessions.compact / runtime.update full

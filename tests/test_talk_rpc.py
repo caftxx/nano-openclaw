@@ -5,6 +5,7 @@ import asyncio
 from nano_openclaw.config.types import VoiceConfig
 from nano_openclaw.api.methods.talk import talk_config, talk_speak
 from nano_openclaw.features.voice.talk import build_talk_config
+from nano_openclaw.services.backend import VoiceError
 
 
 class _Runtime:
@@ -15,11 +16,28 @@ class _Runtime:
 class _Ctx:
     def __init__(self, config):
         self.runtime = _Runtime(config)
+        self.backend = _Backend(config)
 
 
 class _Config:
     def __init__(self, voice):
         self.voice = voice
+
+
+class _Backend:
+    def __init__(self, config):
+        self._config = config
+
+    async def voice_config(self):
+        return build_talk_config(self._config)
+
+    async def talk_speak(self, **params):
+        raise VoiceError(
+            "talk.speak unavailable: Aliyun voice is not configured",
+            reason="talk_unconfigured",
+            fallback_eligible=True,
+            status_code=503,
+        )
 
 
 def test_build_talk_config_exposes_non_secret_voice_surface():

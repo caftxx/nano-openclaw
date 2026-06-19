@@ -60,10 +60,39 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
     cfg = LoopConfig(model="test-model", workspace_dir=workspace, session_key="default")
+    runtime_config = SimpleNamespace(
+        agents=SimpleNamespace(
+            list=[
+                SimpleNamespace(
+                    id="default",
+                    name="Default",
+                    default=True,
+                )
+            ]
+        ),
+        models=SimpleNamespace(
+            providers={
+                "test": SimpleNamespace(
+                    models=[
+                        SimpleNamespace(
+                            id="test-model",
+                            name="Test Model",
+                            input=["text"],
+                            reasoning=False,
+                            contextWindow=200000,
+                            maxTokens=8192,
+                        )
+                    ]
+                )
+            }
+        ),
+        noTools=True,
+        resolve_primary_model=lambda agent_id=None: "test/test-model",
+    )
     return SimpleNamespace(
         agent_id="default",
         session_id="default",
-        config=SimpleNamespace(),
+        config=runtime_config,
         warnings=[],
         client=None,
         registry=ToolRegistry(),
@@ -186,6 +215,45 @@ def test_models_list_round_trip(tmp_path: Path):
             await client.aopen()
             models = await client.models_list()
             assert any(m.id == "test-model" for m in models)
+        finally:
+            await client.aclose()
+            await server.stop()
+
+    asyncio.run(run())
+
+
+def test_webui_state_round_trip(tmp_path: Path):
+    async def run():
+        server = _RunningServer(tmp_path)
+        await server.start()
+        client = WebSocketBackend(f"ws://127.0.0.1:{server.port}/rpc")
+        try:
+            await client.aopen()
+            state = await client.webui_state()
+            assert state["agent_id"] == "default"
+            assert state["model"] == "test-model"
+            assert state["workspace_dir"] == str(server.runtime.workspace_dir)
+        finally:
+            await client.aclose()
+            await server.stop()
+
+    asyncio.run(run())
+
+
+def test_voice_config_round_trip(tmp_path: Path):
+    from nano_openclaw.config.types import VoiceConfig
+
+    async def run():
+        server = _RunningServer(tmp_path)
+        server.runtime.config = SimpleNamespace(voice=VoiceConfig())
+        await server.start()
+        client = WebSocketBackend(f"ws://127.0.0.1:{server.port}/rpc")
+        try:
+            await client.aopen()
+            config = await client.voice_config()
+            assert config["available"] is False
+            assert config["provider"] == "aliyun"
+            assert config["tts"]["enabled"] is False
         finally:
             await client.aclose()
             await server.stop()
