@@ -48,7 +48,7 @@ from nano_openclaw.core.tools import ToolRegistry
 class _RecordingChannel(ChannelAdapter):
     id = "recording"
 
-    async def start(self, runtime, gateway=None):
+    async def start(self, ctx):
         self._state = "running"
 
     async def stop(self):

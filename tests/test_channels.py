@@ -27,7 +27,7 @@ from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
 class _RecordingChannel(ChannelAdapter):
     id = "recording"
 
-    async def start(self, runtime, gateway=None):
+    async def start(self, ctx):
         self._state = "running"
         self._started_at = time.time()
         self.notifications: list[dict] = []
@@ -86,7 +86,7 @@ def test_channel_id_must_be_set():
     class _BadChannel(ChannelAdapter):
         id = ""
 
-        async def start(self, runtime, gateway=None): ...
+        async def start(self, ctx): ...
         async def stop(self): ...
 
     with pytest.raises(TypeError):
@@ -121,7 +121,7 @@ def test_registry_register_blank_id_rejected():
     class _NoId(ChannelAdapter):
         id = ""
 
-        async def start(self, runtime, gateway=None): ...
+        async def start(self, ctx): ...
         async def stop(self): ...
 
     reg = ChannelManager()
@@ -133,7 +133,7 @@ def test_registry_double_register_different_class_rejected():
     class _Other(ChannelAdapter):
         id = "recording"
 
-        async def start(self, runtime, gateway=None): ...
+        async def start(self, ctx): ...
         async def stop(self): ...
 
     reg = ChannelManager()
@@ -146,7 +146,7 @@ def test_registry_replace_allows_plugin_reload_class_swap():
     class _Reloaded(ChannelAdapter):
         id = "recording"
 
-        async def start(self, runtime, gateway=None): ...
+        async def start(self, ctx): ...
         async def stop(self): ...
 
     reg = ChannelManager()
@@ -179,10 +179,10 @@ def test_registry_restart_all_recreates_instances_with_new_runtime():
     class _RuntimeChannel(ChannelAdapter):
         id = "runtime"
 
-        async def start(self, runtime, gateway=None):
+        async def start(self, ctx):
             self._state = "running"
-            self.runtime = runtime
-            self.gateway = gateway
+            self.runtime = ctx.runtime
+            self.gateway = ctx.gateway
 
         async def stop(self):
             self._state = "stopped"
@@ -214,7 +214,7 @@ def test_registry_restart_all_keeps_old_instance_when_stop_fails():
             self.instances.append(self)
             self.alive = False
 
-        async def start(self, runtime, gateway=None):
+        async def start(self, ctx):
             self._state = "running"
             self.alive = True
 
@@ -358,7 +358,7 @@ def test_dispatch_notify_swallows_handler_errors():
     class _FailingChannel(ChannelAdapter):
         id = "failing"
 
-        async def start(self, runtime, gateway=None):
+        async def start(self, ctx):
             self._state = "running"
 
         async def stop(self):

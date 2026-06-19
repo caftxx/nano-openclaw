@@ -7,6 +7,7 @@ import these names here for local readability.
 from nano_openclaw.services.channels import (
     ChannelAccount,
     ChannelAdapter,
+    ChannelContext,
     ChannelState,
     ChannelStatus,
 )
@@ -14,6 +15,7 @@ from nano_openclaw.services.channels import (
 __all__ = [
     "ChannelAccount",
     "ChannelAdapter",
+    "ChannelContext",
     "ChannelState",
     "ChannelStatus",
 ]

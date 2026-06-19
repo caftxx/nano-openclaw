@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
-    from nano_openclaw.core.runtime import AgentRuntime
     from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
     from nano_openclaw.core.tools import ToolRegistry
 
@@ -51,6 +50,16 @@ class ChannelStatus:
     started_at: float | None = None
 
 
+@dataclass(frozen=True)
+class ChannelContext:
+    """Service-owned context passed to channel adapters on start."""
+
+    runtime: Any
+    backend: Any | None = None
+    gateway: Any | None = None
+    channel_manager: "ChannelManager | None" = None
+
+
 class ChannelAdapter(ABC):
     """One running instance = one channel adapter x one account."""
 
@@ -65,7 +74,7 @@ class ChannelAdapter(ABC):
         self._started_at: float | None = None
 
     @abstractmethod
-    async def start(self, runtime: "AgentRuntime", gateway: Any | None = None) -> None:
+    async def start(self, ctx: ChannelContext) -> None:
         """Launch the channel adapter's background task(s)."""
 
     @abstractmethod
@@ -143,7 +152,7 @@ class ChannelManager:
         self,
         channel_id: str,
         account: ChannelAccount,
-        runtime: "AgentRuntime",
+        runtime: Any,
         gateway: Any | None = None,
     ) -> ChannelAdapter:
         """Instantiate and start a ChannelAdapter. Idempotent if already running."""
@@ -157,7 +166,14 @@ class ChannelManager:
         instance = cls(account)
         self._instances[key] = instance
         try:
-            await instance.start(runtime, gateway)
+            await instance.start(
+                ChannelContext(
+                    runtime=runtime,
+                    backend=getattr(gateway, "backend", None) if gateway is not None else None,
+                    gateway=gateway,
+                    channel_manager=self,
+                )
+            )
         except Exception:
             # Roll back the instance entry on failure so retry is possible.
             self._instances.pop(key, None)
@@ -193,7 +209,7 @@ class ChannelManager:
             return_exceptions=True,
         )
 
-    async def restart_all(self, runtime: "AgentRuntime", gateway: Any | None = None) -> None:
+    async def restart_all(self, runtime: Any, gateway: Any | None = None) -> None:
         """Restart every running instance against the current class registry.
 
         Used after runtime hot reloads so channel adapters stop holding old

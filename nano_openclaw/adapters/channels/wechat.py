@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount
+from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount, ChannelContext
 from nano_openclaw.logger import get_logger
 from nano_openclaw.services.channels import get_channel_manager
 from nano_openclaw.wechat.bot import WechatBot
@@ -24,7 +24,6 @@ from nano_openclaw.wechat.login_cli import load_persisted_token
 from nano_openclaw.wechat.notify import NotifyItem, NotifyQueue
 
 if TYPE_CHECKING:
-    from nano_openclaw.core.runtime import AgentRuntime
     from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
 
 
@@ -44,7 +43,7 @@ class WechatChannel(ChannelAdapter):
         self._task: asyncio.Task[None] | None = None
         self._notify_queue: NotifyQueue | None = None
 
-    async def start(self, runtime: "AgentRuntime", gateway: Any | None = None) -> None:
+    async def start(self, ctx: ChannelContext) -> None:
         """Build a ``WechatBot`` for this account and run it as a background task.
 
         When ``gateway`` is provided (daemon mode), wire the bot's per-uid
@@ -56,6 +55,7 @@ class WechatChannel(ChannelAdapter):
         if self._task is not None and not self._task.done():
             return  # already running
 
+        runtime = ctx.runtime
         self._state = "starting"
         self._error = None
 
@@ -99,15 +99,15 @@ class WechatChannel(ChannelAdapter):
         # available; ``None`` falls back to the bot's legacy in-memory dict.
         session_manager = None
         uid_map_path = None
-        if gateway is not None and getattr(gateway, "backend", None) is not None:
-            session_manager = gateway.backend.manager
+        if ctx.backend is not None:
+            session_manager = ctx.backend.manager
             suffix = "" if self.account.id == "default" else f".{self.account.id}"
             uid_map_path = runtime.state_dir / f"wechat-sessions{suffix}.json"
 
         # Polling / typing / notify intervals use ``WechatBot``'s built-in
         # defaults — they're not exposed via config any more (no real-world
         # demand to override and the values mirror openilink-sdk-python).
-        backend = getattr(gateway, "backend", None) if gateway is not None else None
+        backend = ctx.backend
         self._bot = WechatBot(
             runtime=runtime,
             base_url=base_url,

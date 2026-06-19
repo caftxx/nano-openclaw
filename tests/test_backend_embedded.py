@@ -34,10 +34,10 @@ from nano_openclaw.services.channels import ChannelManager
 class _RecordingChannel(ChannelAdapter):
     id = "recording"
 
-    async def start(self, runtime, gateway=None):
+    async def start(self, ctx):
         self._state = "running"
         self._started_at = time.time()
-        self.gateway = gateway
+        self.gateway = ctx.gateway
 
     async def stop(self):
         self._state = "stopped"
@@ -47,7 +47,7 @@ class _RecordingChannel(ChannelAdapter):
 class _FailingStopChannel(ChannelAdapter):
     id = "failing-stop"
 
-    async def start(self, runtime, gateway=None):
+    async def start(self, ctx):
         self._state = "running"
         self._started_at = time.time()
 

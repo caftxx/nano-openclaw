@@ -231,7 +231,7 @@ from nano_openclaw.adapters.channels.base import ChannelAdapter
 class SurfaceChannel(ChannelAdapter):
     id = "surface-channel"
 
-    async def start(self, runtime, gateway=None):
+    async def start(self, ctx):
         self._state = "running"
 
     async def stop(self):
@@ -315,9 +315,9 @@ from nano_openclaw.adapters.channels.base import ChannelAdapter
 class PluginChannel(ChannelAdapter):
     id = "plugin-channel"
 
-    async def start(self, runtime, gateway=None):
+    async def start(self, ctx):
         self._state = "running"
-        self.gateway = gateway
+        self.gateway = ctx.gateway
 
     async def stop(self):
         self._state = "stopped"
