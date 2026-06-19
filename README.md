@@ -81,21 +81,21 @@ NANO_OPENCLAW_CONFIG_PATH=./my-config.json5 uv run nano-openclaw
 **架构一览：**
 
 ```
-┌────────────────────────────────────────────────────┐
-│  daemon（gateway run）                              │
-│  ├─ AgentRuntime（单实例，跨前端共享）              │
-│  ├─ WebUI HTTP 路由（FastAPI）→  浏览器              │
-│  ├─ /rpc WebSocket          →  TUI --connect 远程   │
-│  ├─ Channels：wechat × N 账号、cron、subagent       │
-│  └─ Backend Protocol 单一管理器（Sessions, Runs）    │
-└────────────────────────────────────────────────────┘
-
-  TUI 进程（独立）
-  ├─ embedded 模式：无 daemon 时自建 runtime
-  └─ remote 模式：tui --connect 走 WebSocket
+daemon / adapters / api
+          │
+          ▼
+       services
+          │
+          ▼
+        core
+          │
+          ▼
+ config / session primitives / provider SDKs / filesystem
 ```
 
-**接入方式**：daemon 起来后可被 tui / wechat / web_chat / web_voice 四种前端共享接入，详见下文 [接入方式](#接入方式) 章节。
+`gateway run/start` 只负责进程生命周期和组装：WebUI/TUI/WeChat adapters、`/rpc` API、BackendService、runtime、scheduler。业务逻辑集中在 `services/` 和 `features/`，模型循环、provider、工具执行等纯 agent 内核在 `core/`。
+
+**接入方式**：daemon 起来后可被 TUI remote、WebUI/voice、WeChat channel 共享接入，详见下文 [接入方式](#接入方式) 章节。WebUI/TUI 是 frontend adapters，不算 `channels`；`/channels` 只列 WeChat 这类外部消息通道。
 
 ---
 
@@ -135,24 +135,24 @@ GATEWAY_PORT=9000 docker compose --profile gateway up -d
 | --- | --- | --- |
 | `./.nano-openclaw/` | `/data/.nano-openclaw/` | 会话、配置、记忆、PID/log 等 |
 
-第一次启动前先拷模板：`cp -r .nano-openclaw-dev .nano-openclaw`，然后编辑 `.nano-openclaw/nano-openclaw.json5` 即可自动加载。容器中 agent 的工作目录由配置文件中的 `workspaceDir` 决定，默认为 `~/.nano-openclaw/workspace/`。WebUI 支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮色/暗色/跟随系统主题，移动端自适应。
+第一次启动前先拷模板：`cp -r .nano-openclaw-dev .nano-openclaw`，然后编辑 `.nano-openclaw/nano-openclaw.json5` 即可自动加载。容器中 agent 的工作目录由配置文件中的 `workspaceDir` 决定，默认为 `~/.nano-openclaw/workspace/`。WebUI 支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、session 删除、亮色/暗色/跟随系统主题，移动端自适应。
 
 配置详解见 [CONFIG_EXAMPLE.md](docs/CONFIG_EXAMPLE.md)。
 
 ## 接入方式
 
-daemon 起来后，同一个 `AgentRuntime` 和同一份 session 列表可被四种前端共享接入。四端共享 daemon 内**单一** `BackendSessionManager`，`/sessions` 在任何一端看到的都是同一份列表。
+daemon 起来后，同一个 backend service 和同一份 session 列表可被多个 adapter 共享接入。所有入口共享 daemon 内**单一** `BackendSessionManager`，`/sessions` 在任何一端看到的都是同一份列表。
 
 | 方式 | 入口 | 说明 |
 | --- | --- | --- |
 | **tui** | `nano-openclaw tui [--connect ws://host:5000/rpc]` | 终端 REPL；本机自动探测 daemon，或 `--connect` 接远程 |
 | **wechat** | `nano-openclaw wechat login` + `gateway start` | 微信扫码，每个 uid 一个持久 session |
-| **web_chat** | 浏览器 `http://host:5000/` | WebUI 聊天页：斜杠命令、thinking、附件、活动回放、主题 |
-| **web_voice** | 浏览器 `https://host:5000/voice` | 开车免提语音页（**需 HTTPS**） |
+| **web_chat** | 浏览器 `http://host:5000/` | WebUI 聊天页：斜杠命令、thinking、附件、活动回放、主题、session 删除 |
+| **web_voice** | 浏览器 `https://host:5000/voice` | 聊天页内的开车免提语音模式（**手机需 HTTPS**） |
 
 ### tui（终端）
 
-`nano-openclaw tui` 进入终端 REPL：本机有 daemon 时自动接管，没有则走单进程 embedded 模式自建 runtime。`--connect ws://host:5000/rpc` 接远程 daemon。命令示例见上文 [Development setup](#development-setup)。
+`nano-openclaw tui` 进入终端 REPL：本机有 daemon 时自动接管，没有则走单进程 embedded 模式自建 runtime。`--connect ws://host:5000/rpc` 接远程 daemon。remote TUI 默认每次打开新建 session；需要接回 daemon 的 last session 时显式加 `--resume`。命令示例见上文 [Development setup](#development-setup)。
 
 ### wechat（微信扫码）
 
@@ -168,18 +168,20 @@ uv run nano-openclaw wechat login --account=personal
 
 # 2. 启动 daemon — 自动发现 state_dir/wechat-tokens.*.json，每个文件 = 一个账号
 uv run nano-openclaw gateway start
-uv run nano-openclaw gateway status         # channels: 应列出所有登录账号
+uv run nano-openclaw gateway status         # channels: 应列出所有登录的 WeChat channel
 ```
 
 登录流程：终端打印 ASCII 二维码 → 微信扫码 → 手机端确认。登录成功后 token 写入 `state_dir/wechat-tokens.{account}.json`（`default` 账号无后缀），daemon 启动时自动加载。
 
 会话过期（iLink `errcode=-14`）时 daemon 不会疯狂重试，而是 long-poll 退避 5 分钟并在日志里高优先级提示重新运行 `wechat login`。再登录后 daemon 会自动捡起新 token，不需要重启。
 
-WeChat 作为 daemon 内的 Channel 运行；每个 uid 自动绑定一个真实的持久化 session（与 tui / web_chat 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。
+WeChat 作为 daemon 内的外部 ChannelAdapter 运行；每个 uid 自动绑定一个真实的持久化 session（与 tui / web_chat 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。WebUI/TUI 不属于 channel，所以只打开浏览器页面时 `/channels` 仍会显示 `(no channels running)`。
 
 ### web_chat（WebUI 聊天页）
 
 `gateway start` 后浏览器打开 `http://127.0.0.1:5000`（端口默认 5000，可在 [Gateway 配置](#gateway-配置) 改）。支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮/暗/跟随系统主题，移动端自适应。
+
+输入框行为：`Enter` 发送，`Shift+Enter` 换行。带附件发送时，用户气泡只显示原始 prompt / 附件名，不会把内部图片描述文本回写到 UI。session 列表中鼠标悬停或键盘聚焦某条 session 会出现 `×` 删除按钮，删除后自动切到剩余 session。
 
 ### web_voice（语音页 /voice，需 HTTPS）
 
@@ -319,42 +321,30 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
 ## 60 秒架构图
 
 ```
-                      ┌──────────────────────┐
-    user types  ───▶ │   cli.repl()         │  rich-rendered REPL
-                      └─────────┬────────────┘
-                                │ Backend Protocol
-                                ▼
-                      ┌──────────────────────┐
-                      │   EmbeddedBackend     │  embedded 模式
-                      │   or                  │
-                      │   WebSocketBackend    │  --connect 模式
-                      └─────────┬────────────┘
-                                │
-                                ▼
-                      ┌──────────────────────┐
-    image refs ─────▶ │ AgentSession.run_turn│  parse_image_refs → load_image
-    (@file.png)       │  plugin hooks        │  before_prompt_build / on_loop_event
-                       └──┬──────────────┬────┘
-           compact check │              │ tool_use blocks
-                         ▼              ▼
-                ┌──────────────┐  ┌──────────────────────┐
-                │  compact.py  │  │  tools.dispatch()    │
-                │  token est.  │  │  read/write/list/bash│
-                │  summarize   │  │  plugin tools        │
-                │              │  │  before/after hooks  │
-                └──────┬───────┘  │                      │
-        history shrunk │          └────────┬─────────────┘
-                       ▼                   ▼
-                     ┌──────────────────────┐
-                     │     provider.py      │
-                     │  路由层 switch(api)   │
-                     └────┬─────────────────┘
-           ┌─────────────┴──────────────┐
-           ▼                            ▼
-  ┌──────────────────────┐   ┌──────────────────────┐
-  │ _provider_anthropic  │   │  _provider_openai    │
-  │  Anthropic Messages  │   │  OpenAI Completions  │
-  └──────────────────────┘   └──────────────────────┘
+ adapters/daemon/api
+  ├─ adapters/cli       TUI embedded / remote
+  ├─ adapters/webui     FastAPI WebUI + voice static/API
+  ├─ adapters/channels  WeChat and future external channels
+  ├─ daemon             pidfile, start/stop/status/run, TLS, composition
+  └─ api                /rpc WebSocket protocol + method handlers
+                 │
+                 ▼
+ services
+  ├─ BackendService / EmbeddedBackend
+  ├─ sessions, runs, approvals, runtime_update
+  ├─ ChannelManager
+  └─ slash registry / renderer / dispatcher
+                 │
+                 ▼
+ core
+  ├─ AgentSession.run_turn
+  ├─ provider streaming
+  ├─ tools/runtime tools
+  ├─ prompt, compaction, attachments, images
+  └─ workspace bootstrap
+                 │
+                 ▼
+ config / session store / provider SDKs / filesystem
 ```
 
 ## 三条不变量
@@ -369,11 +359,11 @@ Backend / RPC 不变量：
 
 4. `EmbeddedBackend` 和 `WebSocketBackend` 满足同一个 `Backend` Protocol，TUI 切换 backend 不感知差异。
 5. `chat.abort(turn_id)` 是统一的取消接口：chat / cron / channel 任何 origin 的 in-flight turn 都能从这里中断（依靠 `RunRegistry`）。
-6. daemon 内**单一** `BackendSessionManager` 实例同时被 WebUI、`/rpc`、Channels 共享 —— `/sessions` 在三个前端永远看到同一份 list。
+6. daemon 内**单一** `BackendSessionManager` 实例同时被 WebUI、`/rpc`、外部 Channels 共享 —— `/sessions` 在所有入口永远看到同一份 list。
 
 Subagent 编排：模型可调用 `sessions_spawn` 启动 isolated 后台子 agent，适合复杂、慢、可并行的任务。子 agent 继承 workspace、模型和 thinking 默认值，可通过顶层 `subagents` 配置限制并发、超时和默认模型；它不会继承 `sessions_spawn` 等会话管理工具，避免递归派生。完成、失败或超时后，结果会自动作为一条 user message 注入父 session。后台子 agent 不能弹出前台审批 UI：触发 approval 的工具调用走 `NonInteractiveApprovalHandler`——allowlist 命中即放行，否则拒绝。
 
-图片处理遵循**双路径架构**：未配置 `image_model` 时走 Native Vision（图片直接发给主模型）；配置后走 Media Understanding（图片模型先描述，文字注入 prompt）。若主模型无视觉能力且未配置 `image_model`，图片会被跳过并显示警告。`parse_image_refs` 在循环入口处统一处理用户输入中的 `@file.png`、Markdown `![]()` 和 URL 引用。
+图片处理遵循**双路径架构**：未配置 `image_model` 时走 Native Vision（图片直接发给主模型）；配置后走 Media Understanding（图片模型先描述，文字注入 prompt）。若图片模型描述失败，会优先回退到主模型 Native Vision；主模型也无视觉能力时，会把“图片处理失败”的文本上下文注入给模型，避免模型误以为用户没有发送图片。`parse_image_refs` 在循环入口处统一处理用户输入中的 `@file.png`、Markdown `![]()` 和 URL 引用。
 
 MCP 工具集成：通过 `config.mcp.servers` 配置外部 MCP 服务器，启动时建立持久连接（支持 stdio/SSE/streamable-http 三种传输），工具自动注册到 ToolRegistry。服务器连接在后台 asyncio 线程中运行，daemon 退出时自动清理。
 

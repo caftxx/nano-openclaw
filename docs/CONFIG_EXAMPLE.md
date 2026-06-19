@@ -69,6 +69,8 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 | `model` | string \| null | `null` | 覆盖默认 model |
 | `imageModel` | string \| null | `null` | 覆盖默认 imageModel |
 
+`imageModel` 行为：未配置时，图片会作为 Native Vision block 直接交给主模型（要求主模型 `input` 含 `image`）；配置后，图片先交给 image model 生成简短描述，再把描述注入主 prompt。若 image model 调用失败，运行时会优先回退到主模型 Native Vision；主模型也不支持图片时，会注入显式的图片处理失败文本，避免模型误判为用户没有发送图片。
+
 ### models — 模型/Provider 配置
 
 #### models.mode
@@ -118,7 +120,7 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 
 ### gateway — Gateway daemon 配置
 
-`gateway` 子命令（`gateway start/status/stop/run`）启动一个 daemon 进程，内部跑 WebUI、WeChat channels、cron、subagent runner，并暴露 `/rpc` WebSocket 给远程 TUI（`tui --connect`）。
+`gateway` 子命令（`gateway start/status/stop/run`）启动一个 daemon 进程，内部组合 WebUI、`/rpc` WebSocket、外部 channels（如 WeChat）、cron scheduler、subagent runner。远程 TUI 通过 `/rpc`（`tui --connect`）接入；WebUI/TUI 是 frontend adapters，不计入 `channels.status`。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -155,11 +157,11 @@ uv run nano-openclaw wechat login --account=work   # 多账号:换标签即可
 
 登录写入 `state_dir/wechat-tokens.{account}.json`(`default` 无后缀,其余 `wechat-tokens.{id}.json`),内容包括 token + iLink 服务器返回的 base_url + bot_id + login_at 时间戳。
 
-daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个文件一个 `WechatChannel`。运行时调优参数(long-poll 超时、typing 续命间隔等)使用代码内默认值,与 openilink-sdk-python 对齐,不再可配置。
+daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个文件一个 WeChat `ChannelAdapter`。运行时调优参数(long-poll 超时、typing 续命间隔等)使用代码内默认值,与 openilink-sdk-python 对齐,不再可配置。
 
 **uid → session 映射**:每个 wechat uid 第一次发消息时通过 `BackendSessionManager.create()` 拿到真实 session,映射持久化到 `state_dir/wechat-sessions.{account}.json`。
 
-**cron 通知路由**:cron 任务的 `created_by` 三段格式 `wechat:{account}:{uid}`,完成后通过 ChannelRegistry 路由到对应账号的通知队列,由 WechatBot 读取并推送给原 uid。
+**cron 通知路由**:cron 任务的 `created_by` 三段格式 `wechat:{account}:{uid}`,完成后通过 `ChannelManager` 路由到对应账号的通知队列,由 WechatBot 读取并推送给原 uid。cron 本身不是 channel；它是 scheduler feature，可选择 channel 作为投递目标。
 
 **Token 失效时重新登录**:服务器返 `errcode=-14` 时 daemon 长退避 5 分钟并日志高优先级提示;直接重新跑 `wechat login` 写新 token 即可,daemon 下一轮长轮询自动捡起。
 
@@ -241,6 +243,14 @@ daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个
 ### plugins — Plugin / Hook 系统
 
 内置插件 `memory`、`web`、`subagent`、`mcp`、`schedule`、`review-fork` **始终加载**，无法通过配置禁用。`plugins.load` 仅用于加载额外的外部插件。
+
+插件只拿到窄 `PluginApi` 注册面，不直接访问或修改 `AgentRuntime` 内部状态。可注册内容包括：
+
+- `register_tool`
+- `register_hook`
+- `register_slash`
+- `register_channel`
+- `register_feature`
 
 内置插件（始终加载）：
 

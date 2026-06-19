@@ -13,4 +13,4 @@ read_when:
 
 ## Related
 
-- [Heartbeat config](/gateway/config-agents)
+- [Schedule config](../../CONFIG_EXAMPLE.md#schedule--cron-scheduler-配置)
