@@ -1473,13 +1473,15 @@ class EmbeddedBackend(Backend):
         process is swapped (or exits).
         """
         import asyncio
-        from nano_openclaw.gateway.restart import perform_restart
 
         strategy = self.runtime.config.gateway.restart_strategy
         pid = os.getpid()
+        restart_callback = getattr(self.runtime, "restart_callback", None)
+        if restart_callback is None:
+            raise RuntimeError("daemon restart callback is not configured")
 
         loop = asyncio.get_running_loop()
-        loop.call_later(0.3, perform_restart, strategy)
+        loop.call_later(0.3, restart_callback, strategy)
 
         self._emit(
             PushEvent(

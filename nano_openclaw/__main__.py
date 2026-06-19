@@ -40,7 +40,7 @@ from pathlib import Path
 from nano_openclaw.bootstrap import ensure_state_dir_initialized
 from nano_openclaw.cli import repl
 from nano_openclaw.config import resolve_state_dir_with_source
-from nano_openclaw.gateway.cli import add_gateway_subparser, run_gateway_cli
+from nano_openclaw.daemon.cli import add_gateway_subparser, run_gateway_cli
 from nano_openclaw.logger import setup_logging
 from nano_openclaw.core.runtime import build_agent_runtime
 from nano_openclaw.session import (
@@ -204,7 +204,7 @@ def main() -> None:
             connect_url = (_os_for_env.environ.get("NANO_OPENCLAW_GATEWAY_URL") or "").strip() or None
 
         if not connect_url:
-            from nano_openclaw.gateway.pidfile import gateway_status as _gw_status
+            from nano_openclaw.daemon.pidfile import gateway_status as _gw_status
             status = _gw_status(state_dir)
             if status.running and status.entry is not None:
                 connect_url = _daemon_connect_url(status.entry)

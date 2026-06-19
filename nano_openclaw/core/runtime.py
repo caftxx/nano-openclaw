@@ -6,7 +6,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from rich.console import Console
 
@@ -79,9 +79,12 @@ class AgentRuntime:
     dreaming_task: Any | None = None
     cron_stop: threading.Event | None = None
     cron_task: Any | None = None
-    # Flipped to True by the ``restart`` tool. The daemon's restart watcher
-    # task picks it up, waits for ``run_registry`` to drain, then triggers
-    # ``perform_restart``. The slash ``/restart`` path bypasses this (immediate).
+    # Process restart is supplied by the outer daemon layer. Core can schedule
+    # the intent, but it must not import daemon process-control modules.
+    restart_callback: Callable[[str], Any] | None = None
+    # Flipped to True by the ``restart`` tool. The restart watcher waits for
+    # ``run_registry`` to drain, then invokes ``restart_callback``. The slash
+    # ``/restart`` path bypasses this with an immediate backend call.
     pending_restart: bool = False
 
     async def close(self) -> None:
@@ -121,6 +124,7 @@ async def build_agent_runtime(
     model_ref_override: str | None = None,
     image_model_ref_override: str | None = None,
     console: Console | None = None,
+    restart_callback: Callable[[str], Any] | None = None,
 ) -> AgentRuntime:
     config, warnings = load_config(config_path)
     # Apply log level from config (env var NANO_LOG_LEVEL takes precedence)
@@ -319,6 +323,7 @@ async def build_agent_runtime(
         cron_stop=cron_stop,
         cron_task=cron_task,
         config_path=config_path,
+        restart_callback=restart_callback,
     )
     if not no_tools:
         _register_restart_tool(runtime)
@@ -336,7 +341,7 @@ def _register_restart_tool(runtime: AgentRuntime) -> None:
 
     Lives here (rather than ``tools.py``) so the tool's closure can hold
     ``runtime`` directly — the tool needs to flip ``runtime.pending_restart``
-    and spawn a watcher task that fires ``perform_restart`` only after the
+    and spawn a watcher task that fires the injected restart callback only after the
     ``run_registry`` drains. Approval gating is handled by the registry's
     dispatch path: ``ApprovalPolicy`` ships ``restart`` in ``dangerous_tools``
     + a ``tool_configs`` entry with ``requires_approval=True``, so cron /
@@ -350,12 +355,13 @@ def _register_restart_tool(runtime: AgentRuntime) -> None:
     async def _wait_and_restart(rt: AgentRuntime, strategy: str) -> None:
         # Wait until the calling turn (and any other in-flight turns) finish.
         # Polling is fine here — the loop fires once the registry drains.
-        from nano_openclaw.gateway.restart import perform_restart
-
         while len(rt.run_registry) > 0:
             await asyncio.sleep(0.2)
         await asyncio.sleep(0.2)  # final flush window
-        perform_restart(strategy)  # type: ignore[arg-type]
+        if rt.restart_callback is None:
+            log.warning("runtime.restart.unavailable", "restart requested without daemon callback")
+            return
+        rt.restart_callback(strategy)
 
     # Re-entrancy guard: multiple ``restart`` calls in one process should not
     # stack watcher tasks. The first one wins; subsequent calls just confirm.

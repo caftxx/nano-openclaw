@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from nano_openclaw.approvals.types import ApprovalPolicy
-from nano_openclaw.gateway import restart as restart_mod
+from nano_openclaw.daemon import restart as restart_mod
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.methods import CORE_HANDLERS
 from nano_openclaw.api.protocol import METHODS
@@ -59,6 +59,7 @@ def _fake_runtime(tmp_path: Path, *, restart_strategy: str = "exec") -> SimpleNa
         image_model_ref=None,
         run_registry=RunRegistry(),
         runtime_guard=RuntimeUpdateGuard(),
+        restart_callback=restart_mod.perform_restart,
         pending_restart=False,
     )
 
@@ -136,7 +137,7 @@ def test_embedded_backend_gateway_restart_schedules_call_later(monkeypatch, tmp_
     assert len(scheduled) == 1
     delay, fn, args = scheduled[0]
     assert 0.0 < delay <= 1.0
-    assert fn is restart_mod.perform_restart
+    assert fn is runtime.restart_callback
     assert args == ("exit",)
 
 
@@ -249,7 +250,7 @@ def test_restart_watcher_only_fires_when_registry_drains(monkeypatch, tmp_path):
         nonlocal fire_count
         fire_count += 1
 
-    monkeypatch.setattr(restart_mod, "perform_restart", fake_perform_restart)
+    runtime.restart_callback = fake_perform_restart
 
     # Pre-register a fake in-flight run so the watcher initially blocks.
     runtime.run_registry.register(

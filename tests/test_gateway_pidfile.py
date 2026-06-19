@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.gateway.pidfile import (
+from nano_openclaw.daemon.pidfile import (
     DaemonStatus,
     PidfileEntry,
     gateway_status,

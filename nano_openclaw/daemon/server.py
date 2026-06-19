@@ -1,4 +1,4 @@
-"""Gateway daemon entry — single process owning the AgentRuntime.
+"""Daemon entry point: one process owning the AgentRuntime and frontends.
 
 ``run_daemon`` is the foreground async main: build runtime, mount the
 WebUI ASGI app on uvicorn, start every configured channel as an asyncio
@@ -15,8 +15,8 @@ Channel hosting (Phase 3 v1):
 - Channels share the daemon's single ``AgentRuntime`` instance — that's
   what makes cron / dreaming / subagent runner singletons safe.
 
-Phase 4 (later) will add a ``/rpc`` WebSocket route to the same FastAPI app
-for remote TUI clients.
+The daemon mounts the WebUI plus the ``/rpc`` WebSocket API used by remote
+frontends.
 """
 
 from __future__ import annotations
@@ -33,8 +33,9 @@ from rich.console import Console
 from nano_openclaw.channels.registry import get_channel_registry
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
-from nano_openclaw.gateway.pidfile import lan_ip, remove_pidfile, write_pidfile
+from nano_openclaw.daemon.pidfile import lan_ip, remove_pidfile, write_pidfile
 from nano_openclaw.api.ws_route import register_ws_route
+from nano_openclaw.daemon.restart import perform_restart
 from nano_openclaw.logger import get_logger
 from nano_openclaw.core.runtime import build_agent_runtime
 
@@ -80,7 +81,11 @@ async def run_daemon(
     console = Console()
 
     # ── Build the runtime — single instance shared by webui + channels ───────
-    runtime = await build_agent_runtime(config_path=config_path, agent_id=agent_id)
+    runtime = await build_agent_runtime(
+        config_path=config_path,
+        agent_id=agent_id,
+        restart_callback=perform_restart,
+    )
 
     for var_name, cfg_path in runtime.warnings:
         console.print(f"[yellow]warning:[/yellow] missing env var \"{var_name}\" at {cfg_path}")

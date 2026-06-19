@@ -28,7 +28,7 @@ from rich.console import Console
 
 from nano_openclaw.config import resolve_state_dir
 from nano_openclaw.config.io import load_config
-from nano_openclaw.gateway.pidfile import (
+from nano_openclaw.daemon.pidfile import (
     DaemonStatus,
     gateway_status,
     is_alive,
@@ -253,7 +253,7 @@ def _uptime_from_pidfile(state_dir: Path) -> str | None:
     Not perfectly accurate (pidfile re-write or clock skew), but plenty
     accurate enough for ``status`` output and avoids a psutil dependency.
     """
-    from nano_openclaw.gateway.pidfile import pidfile_path
+    from nano_openclaw.daemon.pidfile import pidfile_path
     try:
         mtime = pidfile_path(state_dir).stat().st_mtime
     except OSError:
@@ -465,7 +465,7 @@ def _verb_stop(state_dir: Path) -> int:
 
 def _verb_run(*, args: argparse.Namespace) -> int:
     """Foreground run. ``run_daemon`` returns the exit code."""
-    from nano_openclaw.gateway.server import run_daemon
+    from nano_openclaw.daemon.server import run_daemon
 
     return asyncio.run(
         run_daemon(

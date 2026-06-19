@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from nano_openclaw.__main__ import _daemon_connect_url
-from nano_openclaw.gateway.pidfile import PidfileEntry
+from nano_openclaw.daemon.pidfile import PidfileEntry
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ def _patch_probe_connect(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 def test_probe_https_dials_wss_with_ssl(monkeypatch: pytest.MonkeyPatch):
-    from nano_openclaw.gateway.cli import _probe_gateway_rpc
+    from nano_openclaw.daemon.cli import _probe_gateway_rpc
 
     recorder = _patch_probe_connect(monkeypatch)
     result = _probe_gateway_rpc("0.0.0.0", 5000, scheme="https", timeout=1.0)
@@ -113,7 +113,7 @@ def test_probe_https_dials_wss_with_ssl(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_probe_http_dials_ws_without_ssl(monkeypatch: pytest.MonkeyPatch):
-    from nano_openclaw.gateway.cli import _probe_gateway_rpc
+    from nano_openclaw.daemon.cli import _probe_gateway_rpc
 
     recorder = _patch_probe_connect(monkeypatch)
     result = _probe_gateway_rpc("127.0.0.1", 5000, scheme="http", timeout=1.0)
@@ -203,8 +203,8 @@ def test_backend_ws_omits_ssl(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_server_imports_lan_ip():
-    import nano_openclaw.gateway.server as server
-    from nano_openclaw.gateway.pidfile import lan_ip
+    import nano_openclaw.daemon.server as server
+    from nano_openclaw.daemon.pidfile import lan_ip
 
     # The wildcard-bind LAN URL advert calls lan_ip(); a missing import made
     # `gateway run` crash with NameError before binding.
