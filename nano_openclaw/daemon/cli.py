@@ -24,21 +24,6 @@ import sys
 import time
 from pathlib import Path
 
-from rich.console import Console
-
-from nano_openclaw.config import resolve_state_dir
-from nano_openclaw.config.io import load_config
-from nano_openclaw.daemon.pidfile import (
-    DaemonStatus,
-    gateway_status,
-    is_alive,
-    lan_ip,
-    pidfile_path,
-    port_responds,
-    read_pidfile,
-    remove_pidfile,
-)
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # Argparse wiring
@@ -75,6 +60,9 @@ def add_gateway_subparser(subparsers) -> argparse.ArgumentParser:
 
 def run_gateway_cli(args: argparse.Namespace) -> int:
     """Return process exit code (0 success, non-zero failure)."""
+    from nano_openclaw.config import resolve_state_dir
+    from nano_openclaw.config.io import load_config
+
     state_dir = resolve_state_dir()
     # Config path resolution falls through to ``$NANO_OPENCLAW_CONFIG_PATH``
     # / state_dir / cwd / home; the explicit --config CLI flag was removed.
@@ -112,6 +100,10 @@ def _verb_status(state_dir: Path) -> int:
     Single-line back-compat: ``running on host:port (pid X)`` substring is
     preserved for tests/scripts that grep stdout.
     """
+    from rich.console import Console
+
+    from nano_openclaw.daemon.pidfile import gateway_status, lan_ip, pidfile_path
+
     status = gateway_status(state_dir)
     console = Console()
 
@@ -347,6 +339,14 @@ def _verb_start(
     host: str,
     port: int,
 ) -> int:
+    from rich.console import Console
+
+    from nano_openclaw.daemon.pidfile import (
+        gateway_status,
+        port_responds,
+        remove_pidfile,
+    )
+
     console = Console()
     status = gateway_status(state_dir)
     if status.running:
@@ -421,6 +421,10 @@ def _verb_start(
 
 
 def _verb_stop(state_dir: Path) -> int:
+    from rich.console import Console
+
+    from nano_openclaw.daemon.pidfile import is_alive, port_responds, read_pidfile, remove_pidfile
+
     console = Console()
     entry = read_pidfile(state_dir)
     if entry is None:

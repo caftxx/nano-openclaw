@@ -37,26 +37,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-from nano_openclaw.bootstrap import ensure_state_dir_initialized
-from nano_openclaw.adapters.cli.repl import repl
-from nano_openclaw.config import resolve_state_dir_with_source
-from nano_openclaw.daemon.cli import add_gateway_subparser, run_gateway_cli
-from nano_openclaw.logger import setup_logging
-from nano_openclaw.services.runtime_factory import build_agent_runtime
-from nano_openclaw.session import (
-    TranscriptReader,
-    TranscriptWriter,
-    get_last_session,
-    list_sessions,
-    load_session_store,
-    new_session_id,
-    resolve_agent_sessions_dir,
-    resolve_session_store_path,
-    save_session_store,
-    update_session,
-)
-from rich.console import Console
-
 
 def _resolve_version() -> str:
     """Read the installed package version from metadata (single source of
@@ -114,6 +94,8 @@ def main() -> None:
         help="List saved sessions and exit",
     )
 
+    from nano_openclaw.daemon.cli import add_gateway_subparser
+
     add_gateway_subparser(subparsers)
 
     # WeChat (iLink) management subcommand. Currently exposes ``login`` for
@@ -137,6 +119,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    from nano_openclaw.bootstrap import ensure_state_dir_initialized
+    from nano_openclaw.config import resolve_state_dir_with_source
+    from nano_openclaw.logger import setup_logging
+    from nano_openclaw.session import resolve_agent_sessions_dir, resolve_session_store_path
+
     state_dir, state_source = resolve_state_dir_with_source()
     if ensure_state_dir_initialized(state_dir, source=state_source):
         print(
@@ -157,6 +144,8 @@ def main() -> None:
     # ── Subcommand dispatch ─────────────────────────────────────────────────
 
     if args.command == "gateway":
+        from nano_openclaw.daemon.cli import run_gateway_cli
+
         sys.exit(run_gateway_cli(args))
 
     if args.command == "wechat":
@@ -249,6 +238,13 @@ async def _async_main(
     session_dir: Path,
     store_path: Path,
 ) -> None:
+    from nano_openclaw.session import (
+        TranscriptWriter,
+        get_last_session,
+        load_session_store,
+        new_session_id,
+    )
+
     # Resolve session before building runtime so we have the real session_id
     transcript_writer: TranscriptWriter | None = None
     session_id = ""
@@ -271,9 +267,12 @@ async def _async_main(
         else:
             print("no previous session to resume — starting fresh", file=sys.stderr)
 
+    from rich.console import Console
+
     console = Console()
     from nano_openclaw.services.runs import RunRegistry
     from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
+    from nano_openclaw.services.runtime_factory import build_agent_runtime
 
     runtime = await build_agent_runtime(
         config_path=config,
@@ -294,6 +293,7 @@ async def _async_main(
     # BackendSessionManager owns transcript_writer + history. Don't pre-create
     # either here; repl() asks the manager for the session entity.
     from nano_openclaw.services.backend_embedded import EmbeddedBackend
+    from nano_openclaw.adapters.cli.repl import repl
     backend = EmbeddedBackend(runtime)
 
     try:
@@ -360,6 +360,8 @@ async def _run_ws_tui(connect_url: str, *, resume: bool = False) -> bool:
 
 def _print_sessions_list(store_path: Path) -> None:
     """Print saved sessions to stdout."""
+    from nano_openclaw.session import load_session_store, list_sessions
+
     store = load_session_store(store_path)
     sessions = list_sessions(store)
     if not sessions:
