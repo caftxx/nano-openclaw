@@ -1053,7 +1053,18 @@ class EmbeddedBackend(Backend):
         if self.channel_manager is None:
             raise NotImplementedError("channels_stop: channel manager not configured")
         resolved_account_id = account_id or "default"
-        await self.channel_manager.stop(channel_id, resolved_account_id)
+        stopped = await self.channel_manager.stop(channel_id, resolved_account_id)
+        if not stopped:
+            instance = self.channel_manager.get_instance(channel_id, resolved_account_id)
+            if instance is not None:
+                entry = instance.status()
+                return ChannelStatusEntry(
+                    channel_id=entry.channel_id,
+                    account_id=entry.account_id,
+                    state=entry.state,
+                    error=entry.error or "stop failed",
+                    started_at=entry.started_at,
+                )
         return ChannelStatusEntry(
             channel_id=channel_id,
             account_id=resolved_account_id,

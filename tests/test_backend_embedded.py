@@ -44,6 +44,17 @@ class _RecordingChannel(ChannelAdapter):
         self._started_at = None
 
 
+class _FailingStopChannel(ChannelAdapter):
+    id = "failing-stop"
+
+    async def start(self, runtime, gateway=None):
+        self._state = "running"
+        self._started_at = time.time()
+
+    async def stop(self):
+        raise RuntimeError("stop failed")
+
+
 def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
     """Minimal AgentRuntime stand-in. Only the fields EmbeddedBackend reads at
     construction + for sessions_get / health / models_list / runtime_get.
@@ -294,3 +305,23 @@ def test_channels_use_injected_manager(tmp_path):
     assert [(s.channel_id, s.account_id, s.state) for s in statuses] == [("recording", "work", "running")]
     assert health.channels_running == 1
     assert stopped_statuses == []
+
+
+def test_channels_stop_reports_actual_state_when_adapter_stop_fails(tmp_path):
+    async def run():
+        manager = ChannelManager()
+        manager.register(_FailingStopChannel)
+        backend = EmbeddedBackend(_fake_runtime(tmp_path), channel_manager=manager)
+
+        await backend.channels_start("failing-stop")
+        stopped = await backend.channels_stop("failing-stop")
+        statuses = await backend.channels_status()
+        await backend.aclose()
+
+        return stopped, statuses
+
+    stopped, statuses = asyncio.run(run())
+    assert stopped.channel_id == "failing-stop"
+    assert stopped.state == "running"
+    assert stopped.error == "stop failed"
+    assert [(s.channel_id, s.state) for s in statuses] == [("failing-stop", "running")]
