@@ -869,6 +869,7 @@ function renderActivitySummaryFor(activity) {
   if (!node) return;
   const count = (activity?.items || state.activityItems).length;
   node.classList.toggle("is-empty", count === 0);
+  node.hidden = count === 0;
   const seconds = Math.max(0, Math.round(((activity?.durationMs ?? state.activityDurationMs) || 0) / 1000));
   const label = node.querySelector(".activity-pill-label");
   const meta = node.querySelector(".activity-pill-meta");

@@ -24,7 +24,9 @@ Stop reason mapping:
   finish_reason "length"     -> stop_reason "max_tokens"
 
 Extended thinking (OpenAI-compatible providers):
-  thinking_budget_tokens is passed via extra_body={"thinking": {...}}.
+  positive thinking_budget_tokens is passed via
+  extra_body={"thinking": {"type": "enabled", ...}}; 0 is passed as
+  {"type": "disabled"}.
   Streaming thinking text arrives in delta.reasoning_content (non-standard
   field used by many compatible providers); yielded as ThinkingDelta events.
 """
@@ -71,10 +73,13 @@ async def stream_response(
     if tools:
         kwargs["tools"] = _to_openai_tools(tools)
 
-    if thinking_budget_tokens is not None:
+    thinking_disabled = thinking_budget_tokens == 0
+    if thinking_budget_tokens is not None and thinking_budget_tokens > 0:
         kwargs["extra_body"] = {
             "thinking": {"type": "enabled", "budget_tokens": thinking_budget_tokens}
         }
+    elif thinking_disabled:
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
     pending_stop_reason = "end_turn"
     pending_usage: dict[str, Any] = {}
@@ -101,7 +106,7 @@ async def stream_response(
         # reasoning_content is a non-standard field used by many OpenAI-compatible
         # providers to stream thinking/reasoning text.
         rc = getattr(delta, "reasoning_content", None)
-        if rc:
+        if rc and not thinking_disabled:
             thinking_buf += rc
             yield ThinkingDelta(text=rc)
 

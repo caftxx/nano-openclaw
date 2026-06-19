@@ -14,7 +14,7 @@ import pytest
 
 from nano_openclaw.core._provider_openai import _to_openai_messages, _to_openai_tools
 from nano_openclaw.core.loop import LoopConfig
-from nano_openclaw.core.provider import MessageEnd, ToolUseEnd, ToolUseStart, stream_response
+from nano_openclaw.core.provider import MessageEnd, ThinkingDelta, ToolUseEnd, ToolUseStart, stream_response
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +266,63 @@ def test_openai_stream_generates_distinct_ids_for_idless_parallel_tools():
 
     assert [event.id for event in starts] == ["tool-call-0", "tool-call-1"]
     assert [event.id for event in ends] == ["tool-call-0", "tool-call-1"]
+    assert isinstance(events[-1], MessageEnd)
+
+
+def test_openai_thinking_off_sends_disabled_and_suppresses_reasoning_content():
+    captured_kwargs = {}
+
+    class AsyncChunks:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def __aiter__(self):
+            self._iter = iter(self._chunks)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._iter)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    async def create(**kwargs):
+        captured_kwargs.update(kwargs)
+        return AsyncChunks([
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="answer",
+                            reasoning_content="hidden reasoning",
+                            tool_calls=[],
+                        ),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+        ])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    async def collect():
+        return [
+            event
+            async for event in stream_response(
+                api="openai",
+                client=client,
+                model="test",
+                system="system",
+                messages=[],
+                tools=[],
+                thinking_budget_tokens=0,
+            )
+        ]
+
+    events = asyncio.run(collect())
+
+    assert captured_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert not any(isinstance(event, ThinkingDelta) for event in events)
     assert isinstance(events[-1], MessageEnd)
 
 
