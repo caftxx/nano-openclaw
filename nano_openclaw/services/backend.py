@@ -219,6 +219,14 @@ class ChannelStatusEntry:
 
 
 @dataclass(frozen=True)
+class SlashRunResult:
+    handled: bool
+    text: str = ""
+    session_key: str = ""
+    session_changed: bool = False
+
+
+@dataclass(frozen=True)
 class SubagentInfo:
     run_id: str
     label: str | None
@@ -356,6 +364,9 @@ class Backend(Protocol):
         channel_id: str,
         account_id: str | None = None,
     ) -> ChannelStatusEntry: ...
+
+    # ─── Slash commands ───
+    async def slash_run(self, command: str, session_key: str = "") -> SlashRunResult: ...
 
     # ─── Subagents ───
     async def subagents_list(self) -> list[SubagentInfo]: ...

@@ -396,8 +396,7 @@ def create_app(
 
                     if handled_by_shared:
                         text = md.collect()
-                        if text:
-                            await emit({"type": "command.result", "command": cmd_text, "text": text})
+                        await emit({"type": "command.result", "command": cmd_text, "text": text})
                         # The shared dispatcher may have swapped backend.runtime
                         # (via /model) or mutated session bindings (via /new
                         # /clear /session). Re-sync local references so this

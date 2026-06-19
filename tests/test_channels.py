@@ -142,6 +142,20 @@ def test_registry_double_register_different_class_rejected():
         reg.register(_Other)
 
 
+def test_registry_replace_allows_plugin_reload_class_swap():
+    class _Reloaded(ChannelAdapter):
+        id = "recording"
+
+        async def start(self, runtime, gateway=None): ...
+        async def stop(self): ...
+
+    reg = ChannelManager()
+    reg.register(_RecordingChannel)
+    reg.register(_Reloaded, replace=True)
+
+    assert reg.get_class("recording") is _Reloaded
+
+
 def test_registry_start_stop_lifecycle():
     reg = ChannelManager()
     reg.register(_RecordingChannel)

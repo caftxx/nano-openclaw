@@ -192,6 +192,13 @@ async def repl(
             slash_state = {"session_key": session_id, "session_changed": False}
             try:
                 handled = await handle_slash(user_input, backend, console, slash_state)
+                if not handled:
+                    result = await backend.slash_run(user_input, session_key=session_id)
+                    handled = result.handled
+                    if result.text:
+                        console.print(result.text)
+                    slash_state["session_key"] = result.session_key or session_id
+                    slash_state["session_changed"] = result.session_changed
             except QuitREPL:
                 console.print("[dim]bye.[/]")
                 return

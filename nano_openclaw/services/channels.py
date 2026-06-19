@@ -111,13 +111,21 @@ class ChannelManager:
 
     # ─── Class registration ───
 
-    def register(self, channel_class: type[ChannelAdapter]) -> None:
-        """Register a ChannelAdapter subclass under its ``id``. Idempotent on same class."""
+    def register(self, channel_class: type[ChannelAdapter], *, replace: bool = False) -> None:
+        """Register a ChannelAdapter subclass under its ``id``.
+
+        Idempotent on the same class. ``replace=True`` is reserved for
+        runtime-scoped plugin reloads where the same channel id is backed by a
+        fresh class object after a config/model rebuild.
+        """
         cid = channel_class.id
         if not cid:
             raise ValueError(f"{channel_class.__name__}.id must be a non-empty string")
         existing = self._classes.get(cid)
         if existing is channel_class:
+            return
+        if existing is not None and replace:
+            self._classes[cid] = channel_class
             return
         if existing is not None:
             raise ValueError(f"ChannelAdapter id {cid!r} already registered to {existing.__name__}")

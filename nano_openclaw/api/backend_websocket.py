@@ -51,6 +51,7 @@ from nano_openclaw.services.backend import (
     SessionInfo,
     SessionList,
     SessionUsageReport,
+    SlashRunResult,
     SubagentInfo,
 )
 from nano_openclaw.api.protocol import ErrorCode
@@ -669,6 +670,15 @@ class WebSocketBackend(Backend):
 
     async def checkpoint_restore(self, checkpoint_id: str) -> dict[str, Any]:
         return await self._call("checkpoint.restore", {"checkpoint_id": checkpoint_id}) or {}
+
+    async def slash_run(self, command: str, session_key: str = "") -> SlashRunResult:
+        payload = await self._call("slash.run", {"command": command, "session_key": session_key})
+        return SlashRunResult(
+            handled=bool(payload.get("handled")),
+            text=str(payload.get("text") or ""),
+            session_key=str(payload.get("session_key") or session_key),
+            session_changed=bool(payload.get("session_changed")),
+        )
 
     # ─── Introspection (tools / skills / plugins / hooks) ───
 

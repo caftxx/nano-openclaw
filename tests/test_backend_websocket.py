@@ -34,6 +34,7 @@ from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.api.ws_route import register_ws_route
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
+from nano_openclaw.plugins.registry import HookRegistry
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -185,6 +186,30 @@ def test_models_list_round_trip(tmp_path: Path):
             await client.aopen()
             models = await client.models_list()
             assert any(m.id == "test-model" for m in models)
+        finally:
+            await client.aclose()
+            await server.stop()
+
+    asyncio.run(run())
+
+
+def test_plugin_slash_runs_on_daemon_over_websocket(tmp_path: Path):
+    async def plugin_slash(_backend, renderer, _state, _args, _cmd):
+        renderer.text("daemon plugin slash ok")
+
+    async def run():
+        server = _RunningServer(tmp_path)
+        hooks = HookRegistry()
+        hooks.register_slash("/plugin-remote", plugin_slash, "Remote plugin")
+        server.runtime.hook_registry = hooks
+        await server.start()
+        client = WebSocketBackend(f"ws://127.0.0.1:{server.port}/rpc")
+        try:
+            await client.aopen()
+            result = await client.slash_run("/plugin-remote", session_key="s1")
+            assert result.handled is True
+            assert result.session_key == "s1"
+            assert "daemon plugin slash ok" in result.text
         finally:
             await client.aclose()
             await server.stop()

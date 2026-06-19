@@ -51,6 +51,7 @@ from nano_openclaw.services.backend import (
     SessionInfo,
     SessionList,
     SessionUsageReport,
+    SlashRunResult,
     SubagentInfo,
 )
 from nano_openclaw.logger import get_logger
@@ -72,6 +73,12 @@ log = get_logger(__name__)
 
 SUBSCRIBER_QUEUE_MAX = 256
 SUBSCRIBER_GAP_DROP = 5
+
+
+def _new_runtime_guard():
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
+
+    return RuntimeUpdateGuard()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -197,21 +204,21 @@ class EmbeddedBackend(Backend):
                 register_runtime_tools(runtime.registry, self)
             except Exception as exc:  # noqa: BLE001 — tool wiring is non-fatal
                 log.warning("backend.runtime_tools.register_failed", f"{type(exc).__name__}: {exc}")
-        self._register_plugin_channels()
+        self._register_plugin_channels(runtime)
 
     @property
     def _run_registry(self):
         """Convenience proxy — every Backend instance shares the runtime's registry."""
         return self.runtime.run_registry
 
-    def _register_plugin_channels(self) -> None:
+    def _register_plugin_channels(self, runtime: "AgentRuntime") -> None:
         if self.channel_manager is None:
             return
-        hook_registry = getattr(self.runtime, "hook_registry", None)
+        hook_registry = getattr(runtime, "hook_registry", None)
         if hook_registry is None or not hasattr(hook_registry, "channels"):
             return
         for channel in hook_registry.channels():
-            self.channel_manager.register(channel)
+            self.channel_manager.register(channel, replace=True)
 
     # ─── Push event plumbing ───
 
@@ -935,12 +942,12 @@ class EmbeddedBackend(Backend):
                     model_ref_override=model_ref or old.model_ref,
                     image_model_ref_override=target_image_ref,
                     run_registry=old.run_registry,
-                    runtime_guard=old.runtime_guard,
+                    runtime_guard=_new_runtime_guard(),
                 )
                 if thinking_level is not None:
                     new_runtime.cfg.thinking_level = thinking_level
+                self._register_plugin_channels(new_runtime)
                 self.runtime = new_runtime
-                self._register_plugin_channels()
                 # Keep the manager instance (callers hold its sessions); just
                 # refresh metadata new transcripts will be tagged with.
                 self.manager.model = new_runtime.model_id
@@ -1037,6 +1044,26 @@ class EmbeddedBackend(Backend):
             state="stopped",
             error=None,
             started_at=None,
+        )
+
+    # ─── Slash commands ───
+
+    async def slash_run(self, command: str, session_key: str = "") -> SlashRunResult:
+        from nano_openclaw.services.slash import QuitREPL, handle_slash
+        from nano_openclaw.services.slash_renderer import MarkdownRenderer
+
+        renderer = MarkdownRenderer()
+        state = {"session_key": session_key, "session_changed": False}
+        try:
+            handled = await handle_slash(command, self, renderer, state)
+        except QuitREPL:
+            handled = True
+            renderer.text("_(This frontend cannot quit the daemon.)_")
+        return SlashRunResult(
+            handled=handled,
+            text=renderer.collect(),
+            session_key=str(state.get("session_key") or session_key),
+            session_changed=bool(state.get("session_changed")),
         )
 
     # ─── Subagents ───

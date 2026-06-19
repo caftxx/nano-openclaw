@@ -165,3 +165,44 @@ def test_runtime_update_busy_when_reader_holds(tmp_path):
             await backend.aclose()
 
     asyncio.run(run())
+
+
+def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeypatch):
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+    captured = {}
+
+    async def close_old():
+        return None
+
+    runtime.close = close_old
+
+    async def fake_build_agent_runtime(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            **{
+                **runtime.__dict__,
+                "model_ref": kwargs["model_ref_override"],
+                "runtime_guard": kwargs["runtime_guard"],
+                "run_registry": kwargs["run_registry"],
+                "close": close_old,
+            }
+        )
+
+    import nano_openclaw.core.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "build_agent_runtime", fake_build_agent_runtime)
+
+    async def run():
+        try:
+            await backend.runtime_update(model_ref="anthropic/claude-haiku-4-5")
+        finally:
+            await backend.aclose()
+
+    old_guard = runtime.runtime_guard
+    asyncio.run(run())
+
+    assert captured["run_registry"] is runtime.run_registry
+    assert captured["runtime_guard"] is not old_guard
+    assert backend.runtime.run_registry is runtime.run_registry
+    assert backend.runtime.runtime_guard is captured["runtime_guard"]

@@ -149,6 +149,8 @@ METHODS = frozenset({
     "models.list",
     # Runtime
     "runtime.get", "runtime.update",
+    # Slash commands
+    "slash.run",
     # Channels
     "channels.status", "channels.start", "channels.stop",
     # Subagents

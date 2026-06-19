@@ -506,6 +506,13 @@ async def ws_repl(
                 except QuitREPL:
                     console.print("[dim]bye.[/]")
                     return
+                if not handled:
+                    result = await backend.slash_run(user_input, session_key=state.get("session_key") or "")
+                    handled = result.handled
+                    if result.text:
+                        console.print(result.text)
+                    state["session_key"] = result.session_key or state.get("session_key") or ""
+                    state["session_changed"] = result.session_changed
                 if handled:
                     # Pull the (possibly updated) session_key back so the
                     # next chat.send routes to the right session.
