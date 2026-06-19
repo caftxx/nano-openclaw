@@ -122,7 +122,7 @@ def main() -> None:
     from nano_openclaw.bootstrap import ensure_state_dir_initialized
     from nano_openclaw.config import resolve_state_dir_with_source
     from nano_openclaw.logger import setup_logging
-    from nano_openclaw.session import resolve_agent_sessions_dir, resolve_session_store_path
+    from nano_openclaw.session.paths import resolve_agent_sessions_dir, resolve_session_store_path
 
     state_dir, state_source = resolve_state_dir_with_source()
     if ensure_state_dir_initialized(state_dir, source=state_source):
@@ -238,15 +238,11 @@ async def _async_main(
     session_dir: Path,
     store_path: Path,
 ) -> None:
-    from nano_openclaw.session import (
-        TranscriptWriter,
-        get_last_session,
-        load_session_store,
-        new_session_id,
-    )
+    from nano_openclaw.session.store import get_last_session, load_session_store
+    from nano_openclaw.session.types import new_session_id
 
     # Resolve session before building runtime so we have the real session_id
-    transcript_writer: TranscriptWriter | None = None
+    transcript_writer = None
     session_id = ""
     history = []
 
@@ -360,7 +356,7 @@ async def _run_ws_tui(connect_url: str, *, resume: bool = False) -> bool:
 
 def _print_sessions_list(store_path: Path) -> None:
     """Print saved sessions to stdout."""
-    from nano_openclaw.session import load_session_store, list_sessions
+    from nano_openclaw.session.store import list_sessions, load_session_store
 
     store = load_session_store(store_path)
     sessions = list_sessions(store)

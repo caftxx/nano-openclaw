@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from anthropic import AsyncAnthropic
-
 from ._stream_events import (
     MessageEnd,
     StreamEvent,
@@ -37,7 +35,7 @@ from ._stream_events import (
 
 async def stream_response(
     *,
-    client: AsyncAnthropic,
+    client: Any,
     model: str,
     system: str,
     messages: list[dict[str, Any]],

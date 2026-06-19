@@ -27,7 +27,6 @@ from ._stream_events import (  # noqa: F401
     ToolUseEnd,
     ToolUseStart,
 )
-from . import _provider_anthropic, _provider_openai
 
 SUPPORTED_APIS = ("anthropic", "openai")
 
@@ -51,6 +50,8 @@ async def stream_response(
     OpenAI transport.
     """
     if api == "anthropic":
+        from . import _provider_anthropic
+
         async for event in _provider_anthropic.stream_response(
             client=client,
             model=model,
@@ -64,6 +65,8 @@ async def stream_response(
             yield event
         return
     if api == "openai":
+        from . import _provider_openai
+
         async for event in _provider_openai.stream_response(
             client=client,
             model=model,

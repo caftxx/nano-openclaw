@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -36,7 +37,7 @@ from nano_openclaw.logger import resolve_log_level
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
 from nano_openclaw.services.restart_tool import register_restart_tool
-from nano_openclaw.session import resolve_agent_sessions_dir, resolve_session_store_path
+from nano_openclaw.session.paths import resolve_agent_sessions_dir, resolve_session_store_path
 
 
 async def build_agent_runtime(
@@ -272,6 +273,50 @@ def build_approval_manager(state_dir: Path, agent_id: str) -> ApprovalManager | 
 
 
 def _build_client(api: str, api_key: str, base_url: str | None) -> Any:
+    return _LazyLLMClient(api=api, api_key=api_key, base_url=base_url)
+
+
+class _LazyLLMClient:
+    """Create the provider SDK client only when the first request needs it."""
+
+    def __init__(self, *, api: str, api_key: str, base_url: str | None) -> None:
+        self._api = api
+        self._api_key = api_key
+        self._base_url = base_url
+        self._client: Any | None = None
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            self._client = _create_client(self._api, self._api_key, self._base_url)
+        return self._client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get_client(), name)
+
+    async def aclose(self) -> None:
+        if self._client is None:
+            return
+        close = getattr(self._client, "aclose", None)
+        if close is not None:
+            await close()
+            return
+        close = getattr(self._client, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+    def close(self) -> None:
+        if self._client is None:
+            return
+        close = getattr(self._client, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result) and hasattr(result, "close"):
+                result.close()
+
+
+def _create_client(api: str, api_key: str, base_url: str | None) -> Any:
     if api == "anthropic":
         from anthropic import AsyncAnthropic
         return AsyncAnthropic(api_key=api_key, base_url=base_url)
