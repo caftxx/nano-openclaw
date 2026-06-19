@@ -921,7 +921,8 @@ class EmbeddedBackend(Backend):
         # working transparently. We update ``self.manager.model`` (not the
         # manager instance) so any AgentBackendSession that callers already
         # hold remains connected to the same per-session transcripts.
-        from nano_openclaw.core.runtime import build_agent_runtime, image_model_id_from_ref
+        from nano_openclaw.core.runtime import image_model_id_from_ref
+        from nano_openclaw.services.runtime_factory import build_agent_runtime
 
         async with self.runtime.runtime_guard.writer():
             old = self.runtime

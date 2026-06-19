@@ -191,7 +191,7 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
             }
         )
 
-    import nano_openclaw.core.runtime as runtime_module
+    import nano_openclaw.services.runtime_factory as runtime_module
 
     monkeypatch.setattr(runtime_module, "build_agent_runtime", fake_build_agent_runtime)
 
@@ -217,7 +217,7 @@ def test_runtime_update_failed_rebuild_keeps_old_cron_running(tmp_path, monkeypa
     async def failing_build_agent_runtime(**_kwargs):
         raise RuntimeError("rebuild failed")
 
-    import nano_openclaw.core.runtime as runtime_module
+    import nano_openclaw.services.runtime_factory as runtime_module
 
     monkeypatch.setattr(runtime_module, "build_agent_runtime", failing_build_agent_runtime)
 
@@ -269,7 +269,7 @@ def test_runtime_update_closes_new_runtime_when_channel_registration_fails(tmp_p
             }
         )
 
-    import nano_openclaw.core.runtime as runtime_module
+    import nano_openclaw.services.runtime_factory as runtime_module
 
     monkeypatch.setattr(runtime_module, "build_agent_runtime", fake_build_agent_runtime)
 

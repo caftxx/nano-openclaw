@@ -37,7 +37,7 @@ from nano_openclaw.daemon.pidfile import lan_ip, remove_pidfile, write_pidfile
 from nano_openclaw.api.ws_route import register_ws_route
 from nano_openclaw.daemon.restart import perform_restart
 from nano_openclaw.logger import get_logger
-from nano_openclaw.core.runtime import build_agent_runtime
+from nano_openclaw.services.runtime_factory import build_agent_runtime
 
 # Side-effect import: registers WechatChannel in the global ChannelManager
 # so the daemon can spawn it from config. Add similar lines as future

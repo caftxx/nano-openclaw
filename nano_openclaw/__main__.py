@@ -42,7 +42,7 @@ from nano_openclaw.adapters.cli.repl import repl
 from nano_openclaw.config import resolve_state_dir_with_source
 from nano_openclaw.daemon.cli import add_gateway_subparser, run_gateway_cli
 from nano_openclaw.logger import setup_logging
-from nano_openclaw.core.runtime import build_agent_runtime
+from nano_openclaw.services.runtime_factory import build_agent_runtime
 from nano_openclaw.session import (
     TranscriptReader,
     TranscriptWriter,
