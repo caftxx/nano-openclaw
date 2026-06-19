@@ -1,8 +1,8 @@
-"""Plugin protocol and hook types."""
+"""Narrow plugin API and hook types."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -30,6 +30,12 @@ class PluginApi:
     plugin_config: dict[str, Any]
     _tool_registry: "ToolRegistry"
     _hook_registry: "HookRegistry"
+    _slash_registrations: list[tuple[Any, ...]] = field(default_factory=list)
+    _channel_registrations: list[Any] = field(default_factory=list)
+    _feature_registrations: list[Any] = field(default_factory=list)
+
+    def config_snapshot(self) -> "NanoOpenClawConfig":
+        return self.config
 
     def register_tool(self, tool: "Tool") -> None:
         self._tool_registry.register(tool)
@@ -41,6 +47,15 @@ class PluginApi:
         priority: int = 0,
     ) -> None:
         self._hook_registry.register(event, handler, priority)
+
+    def register_slash(self, *registration: Any) -> None:
+        self._slash_registrations.append(tuple(registration))
+
+    def register_channel(self, channel: Any) -> None:
+        self._channel_registrations.append(channel)
+
+    def register_feature(self, feature: Any) -> None:
+        self._feature_registrations.append(feature)
 
     def tool_names(self) -> list[str]:
         return self._tool_registry.names()

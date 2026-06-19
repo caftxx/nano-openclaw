@@ -1,6 +1,6 @@
 """Built-in subagent tools plugin."""
 
-from nano_openclaw.plugins.types import PluginApi
+from nano_openclaw.plugins.api import PluginApi
 
 
 class SubagentPlugin:

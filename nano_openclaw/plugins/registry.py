@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nano_openclaw.logger import get_logger
-from nano_openclaw.plugins.types import HookHandler
+from nano_openclaw.plugins.api import HookHandler
 
 logger = get_logger(__name__)
 

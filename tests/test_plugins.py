@@ -185,6 +185,38 @@ class Plugin:
     assert "read_file" in result["append"]
 
 
+def test_plugin_api_exposes_narrow_registration_surface(tmp_path):
+    plugin_file = tmp_path / "surface_plugin.py"
+    plugin_file.write_text(
+        """
+class Plugin:
+    id = "surface"
+    name = "Surface"
+
+    def register(self, api):
+        assert api.config_snapshot() is api.config
+        assert not hasattr(api, "runtime")
+        api.register_slash("/surface", lambda *_args: None, "Surface command")
+        api.register_channel(object())
+        api.register_feature({"id": "surface"})
+        api.register_hook("before_prompt_build", lambda _payload: {
+            "append": f"{len(api._slash_registrations)}:{len(api._channel_registrations)}:{len(api._feature_registrations)}"
+        })
+""",
+        encoding="utf-8",
+    )
+    registry = build_core_registry()
+    hooks = load_plugins(
+        PluginsConfig(load=[PluginEntryConfig(path=str(plugin_file))]),
+        registry,
+        NanoOpenClawConfig(),
+    )
+
+    result = asyncio.run(hooks.run("before_prompt_build", {"system": "base"}))
+
+    assert result["append"] == "1:1:1"
+
+
 def test_path_plugin_can_register_tool(tmp_path):
     plugin_file = tmp_path / "custom_plugin.py"
     plugin_file.write_text(

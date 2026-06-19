@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nano_openclaw.plugins.types import PluginApi
+from nano_openclaw.plugins.api import PluginApi
 
 
 class SchedulePlugin:

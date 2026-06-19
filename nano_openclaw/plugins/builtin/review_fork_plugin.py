@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from nano_openclaw.logger import get_logger
 from nano_openclaw.plugins.builtin.review_fork_prompt import REVIEW_PROMPT
-from nano_openclaw.plugins.types import PluginApi
+from nano_openclaw.plugins.api import PluginApi
 from nano_openclaw.core.tools import ToolRegistry
 
 logger = get_logger(__name__)
