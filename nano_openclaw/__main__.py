@@ -184,6 +184,9 @@ def main() -> None:
             _print_sessions_list(store_path)
             return
 
+        # Top-level --resume or `tui --resume` both surface the same flag here.
+        resume_flag = getattr(args, "resume", False)
+
         explicit_connect = bool(args.command == "tui" and getattr(args, "connect", None))
         connect_url = getattr(args, "connect", None) if args.command == "tui" else None
 
@@ -210,7 +213,7 @@ def main() -> None:
                 connect_url = _daemon_connect_url(status.entry)
 
         if connect_url:
-            connected = asyncio.run(_run_ws_tui(connect_url))
+            connected = asyncio.run(_run_ws_tui(connect_url, resume=resume_flag))
             if connected:
                 return
             # Connect failed. Honor explicit user intent by exiting; for
@@ -220,9 +223,6 @@ def main() -> None:
                 sys.exit(1)
             from rich.console import Console as _Console
             _Console().print("[dim]falling back to embedded mode[/]")
-
-        # Top-level --resume or `tui --resume` both surface the same flag here.
-        resume_flag = getattr(args, "resume", False)
 
         # tui (default + explicit) goes through EmbeddedBackend so the Backend
         # path is exercised end-to-end.
@@ -328,7 +328,7 @@ def _daemon_connect_url(entry: "PidfileEntry") -> str:
     return f"{ws_scheme}://{ws_host}:{entry.port}/rpc"
 
 
-async def _run_ws_tui(connect_url: str) -> bool:
+async def _run_ws_tui(connect_url: str, *, resume: bool = False) -> bool:
     """Connect to a remote gateway and run the thin remote REPL.
 
     Returns ``True`` once the REPL completes normally; ``False`` if the
@@ -352,7 +352,7 @@ async def _run_ws_tui(connect_url: str) -> bool:
         return False
 
     try:
-        await ws_repl(backend, console=console)
+        await ws_repl(backend, console=console, resume=resume)
     finally:
         await backend.aclose()
     return True

@@ -466,12 +466,14 @@ async def ws_repl(
     backend: Backend,
     *,
     session_key: str = "",
+    resume: bool = False,
     console: Console | None = None,
 ) -> None:
     """Thin remote-mode REPL.
 
-    ``session_key`` empty → adopt the daemon's most-recent session. The
-    daemon picks a fresh one if nothing's saved yet.
+    By default an empty ``session_key`` creates a fresh TUI session so a new
+    terminal does not attach to the WebUI's most-recent conversation. Pass
+    ``resume=True`` to adopt the daemon's most-recent session instead.
     """
     console = console or Console()
 
@@ -481,10 +483,14 @@ async def ws_repl(
         f"type /help for commands"
     )
 
-    if not session_key:
+    if not session_key and resume:
         sessions = await backend.sessions_list()
         if sessions.last_session_id:
             session_key = sessions.last_session_id
+
+    if not session_key:
+        session = await backend.sessions_reset("", reason="new")
+        session_key = session.session_id
 
     state: dict[str, Any] = {"session_key": session_key, "session_changed": False}
 
