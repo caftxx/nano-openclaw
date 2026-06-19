@@ -1422,7 +1422,7 @@ $("composer").onsubmit = async (event) => {
 };
 
 $("prompt").onkeydown = (event) => {
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing || isTouchViewport()) return;
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   $("composer").requestSubmit();
 };
