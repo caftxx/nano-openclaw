@@ -314,7 +314,6 @@ def test_webui_push_adapter_maps_backend_turn_started_to_chat_accepted():
                 seq=1,
             ),
             manager,
-            runtime=object(),
             turn_sessions=turn_sessions,
         )
 
@@ -347,7 +346,6 @@ def test_webui_push_adapter_enriches_turn_done_with_session_payload():
                 seq=1,
             ),
             manager,
-            runtime=object(),
             turn_sessions={"turn-1": session.session_id},
         )
 
@@ -374,7 +372,6 @@ def test_webui_push_adapter_routes_approval_to_turn_session():
                 seq=1,
             ),
             manager,
-            runtime=object(),
             turn_sessions={"turn-1": session.session_id},
         )
 
@@ -405,7 +402,6 @@ def test_webui_push_adapter_maps_session_changed_to_session_updated():
                 seq=1,
             ),
             manager,
-            runtime=object(),
             turn_sessions={},
         )
 
@@ -808,17 +804,17 @@ def test_webui_reads_user_name_from_following_line():
 
 # ── /api/voice/config 端点：阿里云语音识别配置可用性（不泄露 AK/SK）────────────
 def _make_voice_app(voice_cfg):
-    """构造仅承载 /api/voice/config 所需 app.state 的最小 FastAPI 应用。
-
-    端点只读 app.state.backend.runtime.config.voice，故用 SimpleNamespace 搭一条
-    backend.runtime.config.voice 链路即可，无需真实 Backend/Runtime。
-    """
     from types import SimpleNamespace
     from nano_openclaw.adapters.webui.server import create_app
+    from nano_openclaw.features.voice import build_talk_config
 
     config = SimpleNamespace(voice=voice_cfg)
-    runtime = SimpleNamespace(config=config)
-    backend = SimpleNamespace(runtime=runtime)
+
+    class BackendStub:
+        async def voice_config(self):
+            return build_talk_config(config)
+
+    backend = BackendStub()
     return create_app(backend=backend, token=None)
 
 

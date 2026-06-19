@@ -30,6 +30,23 @@ class BackendError(Exception):
     """Base for all Backend errors."""
 
 
+class VoiceError(BackendError):
+    """Voice feature request failed with structured fallback metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "",
+        fallback_eligible: bool = False,
+        status_code: int = 503,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.fallback_eligible = fallback_eligible
+        self.status_code = status_code
+
+
 class BusyError(BackendError):
     """Operation cannot proceed because conflicting work is in flight.
 
@@ -416,6 +433,12 @@ class Backend(Protocol):
         sets ``runtime.pending_restart`` instead — see daemon/server.py.
         """
         ...
+
+    # ─── WebUI/voice service projections ───
+    async def webui_state(self) -> dict[str, Any]: ...
+    async def voice_config(self) -> dict[str, Any]: ...
+    async def voice_token(self) -> dict[str, Any]: ...
+    async def talk_speak(self, **params: Any) -> dict[str, Any]: ...
 
     # ─── Push event subscription ───
     def subscribe(

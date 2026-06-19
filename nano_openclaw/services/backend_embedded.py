@@ -12,6 +12,7 @@ WebSocket backend, no remote IPC.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import time
 import uuid
@@ -53,6 +54,7 @@ from nano_openclaw.services.backend import (
     SessionUsageReport,
     SlashRunResult,
     SubagentInfo,
+    VoiceError,
 )
 from nano_openclaw.logger import get_logger
 from nano_openclaw.core.loop import (
@@ -79,6 +81,29 @@ def _new_runtime_guard():
     from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 
     return RuntimeUpdateGuard()
+
+
+def _optional_str(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -188,6 +213,7 @@ class EmbeddedBackend(Backend):
         # releases — matching ``/thinking``'s semantics (global runtime.cfg
         # change, effective from the next turn).
         self._pending_thinking_level: str | None = None
+        self._voice_token_provider: Any | None = None
         # Wire LLM-facing runtime introspection tools (list_models /
         # switch_model / get_runtime / …). These need a live ``Backend``
         # reference, which only exists once we've built ``self`` — that's why
@@ -1608,6 +1634,85 @@ class EmbeddedBackend(Backend):
             )
         )
         return {"strategy": strategy, "pid": pid}
+
+    # ─── WebUI / voice projections ───
+
+    async def webui_state(self) -> dict[str, Any]:
+        from nano_openclaw.services.webui_state import state_payload
+
+        return state_payload(self.runtime)
+
+    async def voice_config(self) -> dict[str, Any]:
+        from nano_openclaw.features.voice import build_talk_config
+
+        return build_talk_config(self.runtime.config)
+
+    def _ensure_voice_token_provider(self, cfg: Any) -> Any:
+        from nano_openclaw.features.voice import AliyunTokenProvider
+
+        provider = self._voice_token_provider
+        if provider is None or not provider.matches(
+            access_key_id=cfg.accessKeyId,
+            access_key_secret=cfg.accessKeySecret,
+            region_id=cfg.region,
+        ):
+            provider = AliyunTokenProvider(
+                access_key_id=cfg.accessKeyId,
+                access_key_secret=cfg.accessKeySecret,
+                region_id=cfg.region,
+            )
+            self._voice_token_provider = provider
+        return provider
+
+    async def voice_token(self) -> dict[str, Any]:
+        from nano_openclaw.features.voice import TokenError
+
+        cfg = self.runtime.config.voice
+        if not cfg.available:
+            raise VoiceError("阿里云语音识别未配置", status_code=503)
+        provider = self._ensure_voice_token_provider(cfg)
+        try:
+            token_id, expire_time = await asyncio.to_thread(provider.get_token)
+        except TokenError as exc:
+            raise VoiceError(f"签发阿里云 Token 失败: {exc}", status_code=503) from exc
+        return {
+            "token": token_id,
+            "expire_time": expire_time,
+            "appkey": cfg.appkey,
+            "endpoint": cfg.resolved_endpoint(),
+        }
+
+    async def talk_speak(self, **params: Any) -> dict[str, Any]:
+        from nano_openclaw.features.voice import TalkSpeakError, synthesize_talk_speech
+
+        cfg = self.runtime.config.voice
+        provider = self._ensure_voice_token_provider(cfg) if cfg.available else None
+        try:
+            result = await asyncio.to_thread(
+                synthesize_talk_speech,
+                self.runtime.config,
+                text=str(params.get("text") or ""),
+                voice_id=_optional_str(params.get("voice_id") or params.get("voiceId") or params.get("voice")),
+                sample_rate=_optional_int(params.get("sample_rate") or params.get("sampleRate")),
+                speed=_optional_float(params.get("speed")),
+                rate_wpm=_optional_int(params.get("rate_wpm") or params.get("rateWpm")),
+                token_provider=provider,
+            )
+        except TalkSpeakError as exc:
+            raise VoiceError(
+                str(exc),
+                reason=exc.reason,
+                fallback_eligible=exc.fallback_eligible,
+                status_code=503 if exc.fallback_eligible else 502,
+            ) from exc
+        return {
+            "audioBase64": base64.b64encode(result.audio).decode("ascii"),
+            "provider": result.provider,
+            "outputFormat": result.output_format,
+            "voiceCompatible": result.voice_compatible,
+            "mimeType": result.mime_type,
+            "fileExtension": result.file_extension,
+        }
 
     # ─── Push event subscription ───
 

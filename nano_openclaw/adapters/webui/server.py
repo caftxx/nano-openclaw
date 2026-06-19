@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import secrets
 from pathlib import Path
@@ -20,10 +19,16 @@ from nano_openclaw.services.event_payload import (
     is_replayable_activity_payload as _is_replayable_activity_payload,
     jsonable as _jsonable,
 )
-from nano_openclaw.services.backend import BackendError, BusyError, NotFoundError, PushEvent
-from nano_openclaw.features.voice.aliyun_token import AliyunTokenProvider, TokenError
-from nano_openclaw.features.voice import TalkSpeakError, build_talk_config, synthesize_talk_speech
-from nano_openclaw.core.runtime import AgentRuntime
+from nano_openclaw.services.backend import BackendError, BusyError, NotFoundError, PushEvent, VoiceError
+from nano_openclaw.services.webui_state import (
+    agent_options as _agent_options,
+    has_active_turn as _has_active_turn,
+    image_model_options as _image_model_options,
+    model_options as _model_options,
+    read_assistant_name as _read_assistant_name,
+    read_user_name as _read_user_name,
+    thinking_levels as _thinking_levels,
+)
 from nano_openclaw.services.agent_session import BackendSessionManager, display_history, message_text
 
 
@@ -71,27 +76,6 @@ class VoiceTtsRequest(BaseModel):
     rateWpm: int | None = None
 
 
-def _ensure_voice_token_provider(app: Any, cfg: Any) -> AliyunTokenProvider:
-    """按当前 config 的 AK/SK/region 复用或重建缓存 Token provider。
-
-    支持 config 热重载后凭据变化能及时反映（旧 provider 凭据不匹配则丢弃重建）。
-    供 /api/voice/token 与 /api/talk/speak 共用。
-    """
-    provider: AliyunTokenProvider | None = app.state.voice_token_provider
-    if provider is None or not provider.matches(
-        access_key_id=cfg.accessKeyId,
-        access_key_secret=cfg.accessKeySecret,
-        region_id=cfg.region,
-    ):
-        provider = AliyunTokenProvider(
-            access_key_id=cfg.accessKeyId,
-            access_key_secret=cfg.accessKeySecret,
-            region_id=cfg.region,
-        )
-        app.state.voice_token_provider = provider
-    return provider
-
-
 def create_app(
     *,
     backend: Any,
@@ -107,8 +91,6 @@ def create_app(
     app = FastAPI(title="nano-openclaw WebUI")
     app.state.backend = backend
     app.state.token = token
-    # 阿里云临时 Token 的缓存 provider；按当前 config 的 AK/SK/region 惰性构造/重建（见 /api/voice/token）。
-    app.state.voice_token_provider = None
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     async def require_http_token(authorization: str | None = Header(default=None)) -> None:
@@ -136,66 +118,42 @@ def create_app(
 
     @app.get("/api/state", dependencies=[Depends(require_http_token)])
     async def state() -> dict[str, Any]:
-        return _state_payload(app.state.backend.runtime)
+        return await app.state.backend.webui_state()
 
     @app.get("/api/voice/config", dependencies=[Depends(require_http_token)])
     async def voice_config() -> dict[str, Any]:
-        return build_talk_config(app.state.backend.runtime.config)
+        return await app.state.backend.voice_config()
 
     @app.get("/api/talk/config", dependencies=[Depends(require_http_token)])
     async def talk_config() -> dict[str, Any]:
-        return {"config": build_talk_config(app.state.backend.runtime.config)}
+        return {"config": await app.state.backend.voice_config()}
 
     @app.get("/api/voice/token", dependencies=[Depends(require_http_token)])
     async def voice_token() -> dict[str, Any]:
-        cfg = app.state.backend.runtime.config.voice
-        if not cfg.available:
-            raise HTTPException(status_code=503, detail="阿里云语音识别未配置")
-        provider = _ensure_voice_token_provider(app, cfg)
         try:
-            # 签发是同步 httpx 调用（外部固定域名）；放到线程池避免阻塞事件循环。
-            token_id, expire_time = await asyncio.to_thread(provider.get_token)
-        except TokenError as exc:
-            raise HTTPException(status_code=503, detail=f"签发阿里云 Token 失败: {exc}") from exc
-        return {
-            "token": token_id,
-            "expire_time": expire_time,
-            "appkey": cfg.appkey,
-            "endpoint": cfg.resolved_endpoint(),
-        }
+            return await app.state.backend.voice_token()
+        except VoiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @app.post("/api/talk/speak", dependencies=[Depends(require_http_token)])
     async def talk_speak(req: VoiceTtsRequest) -> dict[str, Any]:
-        cfg = app.state.backend.runtime.config.voice
-        provider = _ensure_voice_token_provider(app, cfg) if cfg.available else None
         try:
-            result = await asyncio.to_thread(
-                synthesize_talk_speech,
-                app.state.backend.runtime.config,
+            return await app.state.backend.talk_speak(
                 text=req.text,
                 voice_id=req.voiceId or req.voice or None,
                 sample_rate=req.sampleRate or req.sample_rate or None,
                 speed=req.speed,
                 rate_wpm=req.rateWpm,
-                token_provider=provider,
             )
-        except TalkSpeakError as exc:
+        except VoiceError as exc:
             raise HTTPException(
-                status_code=503 if exc.fallback_eligible else 502,
+                status_code=exc.status_code,
                 detail={
                     "message": str(exc),
                     "reason": exc.reason,
                     "fallbackEligible": exc.fallback_eligible,
                 },
             ) from exc
-        return {
-            "audioBase64": base64.b64encode(result.audio).decode("ascii"),
-            "provider": result.provider,
-            "outputFormat": result.output_format,
-            "voiceCompatible": result.voice_compatible,
-            "mimeType": result.mime_type,
-            "fileExtension": result.file_extension,
-        }
 
     @app.get("/api/sessions", dependencies=[Depends(require_http_token)])
     async def sessions() -> dict[str, Any]:
@@ -265,13 +223,16 @@ def create_app(
 
         async def push_pump() -> None:
             async for event in backend.subscribe():
-                for payload in _webui_payloads_from_push(event, manager, backend.runtime, turn_sessions):
+                if event.event == "runtime.changed":
+                    await send({"type": "state.updated", **await backend.webui_state()})
+                    continue
+                for payload in _webui_payloads_from_push(event, manager, turn_sessions):
                     await send(payload)
 
         push_task = asyncio.create_task(push_pump(), name="webui.backend.push")
 
         try:
-            await emit({"type": "state.updated", **_state_payload(backend.runtime)})
+            await emit({"type": "state.updated", **await backend.webui_state()})
             current = manager.create()
             await emit({"type": "session.updated", "session": _session_payload(manager, current), "sessions": manager.list()})
             while True:
@@ -337,13 +298,13 @@ def create_app(
                         await emit({"type": "turn.error", "message": str(exc)})
                 elif msg_type == "runtime.set":
                     req = RuntimeSetRequest(**message)
-                    runtime: AgentRuntime = backend.runtime
                     if req.thinking_level is not None and req.thinking_level not in _thinking_levels():
                         await emit({"type": "turn.error", "message": f"invalid thinking level: {req.thinking_level}"})
                         continue
-                    agent_ids = {item["id"] for item in _agent_options(runtime.config)}
-                    model_refs = {item["ref"] for item in _model_options(runtime.config)}
-                    image_model_refs = {item["ref"] for item in _image_model_options(runtime.config)}
+                    state_payload = await backend.webui_state()
+                    agent_ids = {item["id"] for item in state_payload.get("agent_options", [])}
+                    model_refs = {item["ref"] for item in state_payload.get("model_options", [])}
+                    image_model_refs = {item["ref"] for item in state_payload.get("image_model_options", [])}
                     if req.agent_id is not None and req.agent_id not in agent_ids:
                         await emit({"type": "turn.error", "message": f"invalid agent: {req.agent_id}"})
                         continue
@@ -369,7 +330,7 @@ def create_app(
                 elif msg_type == "command.run":
                     cmd_text = message.get("command", "")
                     session_id_cmd = message.get("session_id")
-                    runtime_before_command = backend.runtime
+                    state_before_command = await backend.webui_state()
 
                     # Try the shared dispatcher first (services/slash.py). It
                     # handles all 19 core commands — including /models /model
@@ -397,14 +358,13 @@ def create_app(
                     if handled_by_shared:
                         text = md.collect()
                         await emit({"type": "command.result", "command": cmd_text, "text": text})
-                        # The shared dispatcher may have swapped backend.runtime
+                        # The shared dispatcher may have swapped runtime state
                         # (via /model) or mutated session bindings (via /new
                         # /clear /session). Re-sync local references so this
-                        # ws handler keeps using the current runtime + session
-                        # set, and broadcast state.updated for the front-end.
-                        new_runtime = backend.runtime
-                        if new_runtime is not runtime_before_command:
-                            await emit({"type": "state.updated", **_state_payload(new_runtime)})
+                        # ws handler keeps using the current service state.
+                        state_after_command = await backend.webui_state()
+                        if state_after_command != state_before_command:
+                            await emit({"type": "state.updated", **state_after_command})
                         if slash_state.get("session_changed"):
                             target_id = slash_state.get("session_key") or session_id_cmd
                             try:
@@ -434,7 +394,7 @@ def create_app(
                         session = manager.get_or_load(message.get("session_id"))
                     except KeyError:
                         session = manager.get_or_load(None)
-                    await emit({"type": "state.updated", **_state_payload(backend.runtime)})
+                    await emit({"type": "state.updated", **await backend.webui_state()})
                     await emit({"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()})
                 else:
                     await emit({"type": "turn.error", "message": f"unknown message type: {msg_type}"})
@@ -453,7 +413,6 @@ def create_app(
 def _webui_payloads_from_push(
     event: PushEvent,
     manager: BackendSessionManager,
-    runtime: AgentRuntime,
     turn_sessions: dict[str, str],
 ) -> list[dict[str, Any]]:
     if event.event == "agent.event":
@@ -493,9 +452,6 @@ def _webui_payloads_from_push(
         else:
             session = manager.get_or_load(None)
         return [{"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()}]
-
-    if event.event == "runtime.changed":
-        return [{"type": "state.updated", **_state_payload(runtime)}]
 
     if event.event == "gap":
         return [{"type": "session.error", "message": "event stream lagged; refreshing session", "sessions": manager.list()}]
@@ -542,177 +498,3 @@ def _recent_activity_json(manager: BackendSessionManager, session: Any, history_
             item["insert_after_index"] = -1
         recent.append(item)
     return recent
-
-
-def _state_payload(runtime: AgentRuntime) -> dict[str, Any]:
-    hook_registry = runtime.registry.hook_registry()
-    return {
-        "agent_id": runtime.agent_id,
-        "agent_options": _agent_options(runtime.config),
-        "model": runtime.model_id,
-        "model_ref": runtime.model_ref,
-        "model_options": _model_options(runtime.config),
-        "image_model": runtime.cfg.image_model,
-        "image_model_ref": runtime.image_model_ref or "",
-        "image_model_options": _image_model_options(runtime.config),
-        "thinking_level": runtime.cfg.thinking_level,
-        "thinking_options": list(_thinking_levels()),
-        "assistant_name": _read_assistant_name(runtime.workspace_dir),
-        "user_name": _read_user_name(runtime.workspace_dir),
-        "workspace_dir": str(runtime.workspace_dir),
-        "tools": runtime.registry.names(),
-        "plugins": [_jsonable(plugin) for plugin in getattr(hook_registry, "plugins", lambda: [])()],
-        "hooks": getattr(hook_registry, "handler_counts", lambda: {})(),
-        "skills": {
-            "filter": runtime.cfg.skill_filter,
-            "extra_dirs": runtime.cfg.extra_skill_dirs,
-        },
-        "warnings": runtime.warnings,
-    }
-
-
-def _thinking_levels() -> tuple[str, ...]:
-    return ("off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max")
-
-
-def _agent_options(config: Any) -> list[dict[str, Any]]:
-    agents = list(config.agents.list or [])
-    default_id = None
-    for agent in agents:
-        if agent.default:
-            default_id = agent.id
-            break
-    if default_id is None:
-        default_id = agents[0].id if agents else "default"
-
-    if not agents:
-        return [{"id": "default", "name": "Default Agent", "default": True}]
-
-    return [
-        {
-            "id": agent.id,
-            "name": agent.name or agent.id,
-            "default": agent.id == default_id,
-        }
-        for agent in agents
-    ]
-
-
-def _model_options(config: Any) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-
-    def add(ref: str | None, name: str | None = None, input: list[str] | None = None) -> None:
-        if not ref or "/" not in ref:
-            return
-        if ref in seen:
-            if name or input:
-                for item in result:
-                    if item["ref"] != ref:
-                        continue
-                    if name and item["name"] == ref:
-                        item["name"] = name
-                    if input and not item.get("input"):
-                        item["input"] = input
-                        break
-            return
-        seen.add(ref)
-        result.append({"ref": ref, "name": name or ref, "input": input or []})
-
-    add(config.resolve_primary_model())
-    for agent in config.agents.list:
-        add(config.resolve_primary_model(agent.id))
-    for provider_id, provider in config.models.providers.items():
-        for model in provider.models:
-            add(f"{provider_id}/{model.id}", model.name or model.id, list(model.input or []))
-
-    return result
-
-
-def _image_model_options(config: Any) -> list[dict[str, Any]]:
-    seen: set[str] = {""}
-    result: list[dict[str, Any]] = [{"ref": "", "name": "Native Vision", "input": ["image"]}]
-
-    def add(ref: str | None, name: str | None = None, input: list[str] | None = None) -> None:
-        if not ref or "/" not in ref:
-            return
-        if "image" not in (input or []):
-            return
-        if ref in seen:
-            if name or input:
-                for item in result:
-                    if item["ref"] != ref:
-                        continue
-                    if name and item["name"] == ref:
-                        item["name"] = name
-                    if input and not item.get("input"):
-                        item["input"] = input
-                        break
-            return
-        seen.add(ref)
-        result.append({"ref": ref, "name": name or ref, "input": input or []})
-
-    for provider_id, provider in config.models.providers.items():
-        for model in provider.models:
-            add(f"{provider_id}/{model.id}", model.name or model.id, list(model.input or []))
-
-    return result
-
-
-def _has_active_turn(manager: BackendSessionManager) -> bool:
-    return any(session.active_turn_id for session in manager._loaded.values())
-
-
-def _read_assistant_name(workspace_dir: Path) -> str:
-    return _read_profile_field(workspace_dir / "IDENTITY.md", "Name", "Assistant")
-
-
-def _read_user_name(workspace_dir: Path) -> str:
-    return _read_profile_field(workspace_dir / "USER.md", "What to call them", "User")
-
-
-def _read_profile_field(path: Path, field_name: str, fallback: str) -> str:
-    if not path.exists() or not path.is_file():
-        return fallback
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return fallback
-
-    for index, line in enumerate(lines):
-        parsed = _parse_profile_field_line(line, field_name)
-        if parsed:
-            return parsed
-        if _profile_line_label(line).lower() == field_name.lower():
-            for follow in lines[index + 1:index + 4]:
-                candidate = _clean_profile_value(follow)
-                if candidate:
-                    return candidate
-    return fallback
-
-
-def _parse_profile_field_line(line: str, field_name: str) -> str:
-    normalized = line.strip().lstrip("-").strip()
-    normalized = normalized.replace("**", "")
-    if not normalized.lower().startswith(field_name.lower()):
-        return ""
-    _label, sep, value = normalized.partition(":")
-    if not sep:
-        return ""
-    if _label.strip().lower() != field_name.lower():
-        return ""
-    return _clean_profile_value(value)
-
-
-def _profile_line_label(line: str) -> str:
-    normalized = line.strip().lstrip("-").strip().replace("**", "")
-    label, sep, _value = normalized.partition(":")
-    return label.strip() if sep else ""
-
-
-def _clean_profile_value(value: str) -> str:
-    cleaned = value.strip().lstrip("-").strip()
-    cleaned = cleaned.replace("**", "").strip()
-    if not cleaned or cleaned.startswith("_(") or cleaned.startswith("("):
-        return ""
-    return cleaned[:80]
