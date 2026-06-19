@@ -50,7 +50,6 @@ from nano_openclaw.core.loop import (
     SubagentProgress,
     ToolResult,
     TurnCancelled,
-    AgentSession,
     run_pre_compaction_memory_flush,
 )
 from nano_openclaw.core._stream_events import MemoryExtracted
@@ -101,40 +100,25 @@ async def repl(
 ) -> None:
     """Interactive read-eval-print loop. Runs until /quit or Ctrl-D.
 
-    ``backend`` (Phase 1 of the gateway port) routes chat dispatch through
-    an ``EmbeddedBackend`` when supplied. Slash commands and history
-    bookkeeping continue to operate on the same in-memory ``history`` and
-    ``transcript_writer`` — when ``backend`` is provided, those are bound to
-    the backend's session entity so the data is shared, not duplicated.
-
-    When ``backend`` is None, the legacy direct-AgentSession path runs
-    unchanged. This keeps existing tests + ``__main__.py`` working until the
-    CLI entry is migrated.
+    Chat dispatch, slash commands, and session state are all routed through
+    ``BackendService``. The REPL keeps local references only for rendering
+    and input-history replay.
     """
+    if backend is None:
+        raise ValueError("repl requires a BackendService")
     console = Console()
 
-    # If a backend is supplied, bind history + transcript_writer + session_id to
-    # the backend's session entity. Slash commands keep working unchanged because
-    # they mutate `history` (a list reference) and call methods on
-    # `transcript_writer`; both come straight from the backend's session, so
-    # mutations are visible through the backend too.
-    if backend is not None:
-        try:
-            backend_session = backend.manager.get_or_load(session_id or None)
-        except KeyError:
-            # session_id pointed at a transcript that doesn't exist (or was
-            # mid-creation by a legacy path) — fall through to a fresh session.
-            backend_session = backend.manager.create()
-        session_id = backend_session.session_id
-        history = backend_session.history
-        transcript_writer = backend_session.writer
-        if cfg.session_key != session_id:
-            cfg.session_key = session_id
-    else:
-        history = list(initial_history) if initial_history else []
-    from nano_openclaw.todo import TodoStore
-    todo_store = backend_session.todo_store if backend is not None else TodoStore()
-
+    try:
+        backend_session = backend.manager.get_or_load(session_id or None)
+    except KeyError:
+        # session_id pointed at a transcript that doesn't exist (or was
+        # mid-creation by an older binary) — fall through to a fresh session.
+        backend_session = backend.manager.create()
+    session_id = backend_session.session_id
+    history = backend_session.history
+    transcript_writer = backend_session.writer
+    if cfg.session_key != session_id:
+        cfg.session_key = session_id
     _load_input_history(history)
 
     # Wire spawn context so sessions_spawn / subagents tools are callable and
@@ -183,11 +167,7 @@ async def repl(
                 console.print(f"[dim]({n} subagent result{'s' if n > 1 else ''} added to context)[/]")
 
         # ── Slash command dispatch ────────────────────────────────────────
-        # When ``backend`` is wired (the default tui invocation), delegate to
-        # ``services.slash.handle_slash`` so embedded + remote modes share one
-        # surface and one set of Rich renderers. When backend is None (legacy
-        # direct invocation paths), fall through to the inline branches below.
-        if backend is not None and user_input.startswith("/"):
+        if user_input.startswith("/"):
             from nano_openclaw.services.slash import QuitREPL, handle_slash
             slash_state = {"session_key": session_id, "session_changed": False}
             try:
@@ -205,9 +185,8 @@ async def repl(
             if handled:
                 if slash_state.get("session_changed"):
                     # Slash mutated which session future turns should target.
-                    # Re-bind local references to the new session entity so
-                    # legacy variables (history, transcript_writer, session_id)
-                    # all point to the same place the backend now uses.
+                    # Re-bind local rendering references to the new session
+                    # entity owned by the backend.
                     new_key = slash_state.get("session_key") or session_id
                     if new_key:
                         try:
@@ -227,177 +206,23 @@ async def repl(
             # loop parse /skill-name instead of stopping at the builtin slash
             # dispatcher.
 
-        # ── Legacy inline slash dispatch (backend=None path) ──────────────
-        if user_input in {"/quit", "/exit", "/q"}:
-            console.print("[dim]bye.[/]")
-            return
-        if user_input == "/clear":
-            history.clear()
-            todo_store = TodoStore()
-            if transcript_writer:
-                transcript_writer.clear()
-            if transcript_writer and store_path and session_id:
-                _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-            console.print("[dim](history cleared)[/]")
-            continue
-        if user_input == "/new":
-            if transcript_writer and store_path and session_id:
-                _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-            history.clear()
-            todo_store = TodoStore()
-            if store_path and session_dir:
-                session_id = new_session_id()
-                new_path = session_dir / f"{session_id}.jsonl"
-                transcript_writer = TranscriptWriter(new_path)
-                transcript_writer.start(model=cfg.model)
-                cfg.session_key = session_id
-                transcript_writer._on_first_write = (
-                    lambda _sp=store_path, _sid=session_id, _tw=transcript_writer, _model=cfg.model:
-                    _update_session_metadata(_sp, _sid, _tw, _model)
-                )
-                if _spawn_ctx is not None:
-                    _spawn_ctx.requester_session_key = session_id
-                console.print(f"[dim]new session: {session_id[:8]}…[/]")
-            else:
-                console.print("[dim](history cleared)[/]")
-            continue
-        if user_input == "/help":
-            console.print(
-                f"[dim]commands: {slash.HELP_TEXT} — anything else is sent to the model[/]"
-            )
-            continue
-        if user_input == "/context":
-            _show_context(console, history, cfg)
-            continue
-        if user_input == "/compact":
-            await _manual_compact(console, history, cfg, client, registry, todo_store=todo_store)
-            continue
-        if user_input == "/skills":
-            _list_skills(console, cfg)
-            continue
-        if user_input == "/plugins":
-            _list_plugins(console, registry)
-            continue
-        if user_input == "/hooks":
-            _list_hooks(console, registry)
-            continue
-        if user_input == "/tools":
-            _list_tools(console, registry)
-            continue
-        if user_input.startswith("/sessions"):
-            if store_path:
-                if user_input.strip() == "/sessions all":
-                    _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir, show_all=True)
-                elif session_dir:
-                    target_id = _interactive_session_picker(console, store_path, session_dir, session_id)
-                    if target_id and target_id != session_id:
-                        transcript_path = session_dir / f"{target_id}.jsonl"
-                        reader = TranscriptReader(transcript_path)
-                        new_history, _, msg_count, comp_count, last_msg_id = reader.load_history()
-                        new_writer = TranscriptWriter.resume(transcript_path, target_id, msg_count, comp_count, last_msg_id)
-                        if transcript_writer and session_id:
-                            _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-                        history.clear()
-                        history.extend(new_history)
-                        transcript_writer = new_writer
-                        session_id = target_id
-                        cfg.session_key = session_id
-                        if _spawn_ctx is not None:
-                            _spawn_ctx.requester_session_key = session_id
-                        _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-                        _load_input_history(history)
-                        _replay_history(console, history, session_id)
-                else:
-                    _list_sessions_cli(console, store_path, session_id, cfg.model, transcript_writer, session_dir)
-            else:
-                console.print("[dim](no session store configured)[/]")
-            continue
-        if user_input.startswith("/session"):
-            parts = user_input.split(None, 1)
-            if len(parts) == 1:
-                if session_id:
-                    console.print(f"[dim]current session: {session_id}[/]")
-                else:
-                    console.print("[dim](no active session)[/]")
-            else:
-                key = parts[1].strip()
-                if store_path and session_dir:
-                    if key.isdigit():
-                        result = _load_session_by_index(console, store_path, session_dir, int(key))
-                    else:
-                        result = _load_session_by_prefix(console, store_path, session_dir, key)
-                    if result:
-                        new_history, new_writer, new_sid = result
-                        if new_sid == session_id:
-                            console.print(f"[dim]already on session {new_sid[:8]}…[/]")
-                        else:
-                            if transcript_writer and store_path and session_id:
-                                _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-                            history.clear()
-                            history.extend(new_history)
-                            transcript_writer = new_writer
-                            session_id = new_sid
-                            cfg.session_key = session_id
-                            if _spawn_ctx is not None:
-                                _spawn_ctx.requester_session_key = session_id
-                            _update_session_metadata(store_path, session_id, transcript_writer, cfg.model)
-                            _load_input_history(history)
-                            _replay_history(console, history, session_id)
-                else:
-                    console.print("[dim](no session store configured)[/]")
-            continue
-        if user_input.startswith("/active-memory"):
-            if not _memory_commands_available(registry):
-                console.print("[dim](/active-memory unavailable; load the memory plugin)[/]")
-                continue
-            _handle_active_memory_command(console, user_input, cfg)
-            continue
-        if user_input.startswith("/dreaming"):
-            if not _memory_commands_available(registry):
-                console.print("[dim](/dreaming unavailable; load the memory plugin)[/]")
-                continue
-            await _handle_dreaming_command(console, user_input, cfg, client)
-            continue
-        if user_input.startswith("/subagents"):
-            if not _subagents_command_available(registry):
-                console.print("[dim](/subagents unavailable; load the subagent plugin)[/]")
-                continue
-            await _handle_subagents_command(console, user_input, cfg, client)
-            continue
-
         on_event = _make_event_handler(console, registry=registry)
         try:
             with _escape_cancellation_token() as cancellation_token:
-                if backend is not None:
-                    # Phase 1: route turn through Backend. Identical observable
-                    # behavior — events still fire synchronously into on_event,
-                    # cancellation token is honored, history mutates in place.
-                    try:
-                        turn_id = await backend.chat_send(
-                            session_key=session_id,
-                            text=user_input,
-                            on_local_event=on_event,
-                            cancellation_token=cancellation_token,
-                        )
-                    except Exception as exc:  # BusyError or worse
-                        from nano_openclaw.services.backend import BusyError
-                        if isinstance(exc, BusyError):
-                            console.print(f"\n[yellow]busy:[/] {exc} (retry in {exc.retry_after_ms}ms)")
-                            continue
-                        raise
-                    await backend.await_turn(turn_id)
-                else:
-                    session = AgentSession(
-                        history=history,
-                        registry=registry,
-                        on_event=on_event,
-                        client=client,
-                        cfg=cfg,
-                        transcript_writer=transcript_writer,
+                try:
+                    turn_id = await backend.chat_send(
+                        session_key=session_id,
+                        text=user_input,
+                        on_local_event=on_event,
                         cancellation_token=cancellation_token,
-                        todo_store=todo_store,
                     )
-                    await session.run_turn(user_input)
+                except Exception as exc:  # BusyError or worse
+                    from nano_openclaw.services.backend import BusyError
+                    if isinstance(exc, BusyError):
+                        console.print(f"\n[yellow]busy:[/] {exc} (retry in {exc.retry_after_ms}ms)")
+                        continue
+                    raise
+                await backend.await_turn(turn_id)
         except (TurnCancelled, KeyboardInterrupt):
             # SIGINT can still slip through the watcher on Windows (no raw mode)
             # and during POSIX setup/teardown windows where ISIG is briefly on,

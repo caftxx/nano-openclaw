@@ -289,6 +289,9 @@ class Backend(Protocol):
         attachments: list[PromptAttachment] | None = None,
         turn_source: str = "tui",
         response_style: str = "",
+        channel_id: str = "",
+        channel_account_id: str = "",
+        channel_sender_key: str = "",
     ) -> str:
         """Start a turn. Returns ``turn_id``.
 
@@ -302,6 +305,11 @@ class Backend(Protocol):
         directive (concise, no markdown/emoji) for the web voice mode. Empty =
         normal. Kept separate from ``turn_source`` so memory/analytics are
         unaffected.
+
+        ``channel_*`` identifies a channel-originated turn so the services
+        layer can apply channel-owned tool decoration (for example WeChat
+        schedule notification routing) without the adapter touching runtime
+        internals.
 
         Raises ``BusyError`` if the session already has a turn in flight.
         Events for this turn arrive on ``subscribe`` streams.

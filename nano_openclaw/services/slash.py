@@ -116,9 +116,11 @@ class SlashRegistry:
 
 
 def _as_renderer(target: SlashRenderer | Console) -> SlashRenderer:
-    """Allow callers to pass either a Rich Console (legacy TUI path) or a
-    SlashRenderer directly. Console is wrapped on the fly so cli.py /
-    ws_repl.py keep working unchanged."""
+    """Allow callers to pass either the TUI's Rich Console or a SlashRenderer.
+
+    Console is wrapped on the fly so local CLI, WebUI, and channel renderers
+    share the same command handlers.
+    """
     if isinstance(target, Console):
         return RichRenderer(target)
     return target
@@ -135,8 +137,7 @@ async def handle_slash(
     target: SlashRenderer | Console,
     state: dict[str, Any],
 ) -> bool:
-    """Dispatch a single slash command. ``target`` is either a Rich Console
-    (legacy TUI path) or a ``SlashRenderer`` (WebUI / WeChat / LLM tool)."""
+    """Dispatch a single slash command through the shared registry."""
     cmd = cmd.strip()
     if not cmd.startswith("/"):
         return False
@@ -1023,9 +1024,9 @@ def _render_sessions_table(
 ) -> None:
     """Render the sessions list with a single ``← current`` marker.
 
-    ``target`` may be either a Rich ``Console`` (legacy callers, e.g. cli.py
-    banner) or a ``SlashRenderer``. Both paths emit the same marker logic,
-    so the existing snapshot tests remain valid.
+    ``target`` may be either a Rich ``Console`` (CLI adapters) or a
+    ``SlashRenderer``. Both paths emit the same marker logic, so the existing
+    snapshot tests remain valid.
     """
     renderer = _as_renderer(target)
     sessions = list(result.sessions)

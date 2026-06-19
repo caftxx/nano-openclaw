@@ -40,7 +40,7 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
 
 
 def test_typing_ticket_cache_hit_skips_getconfig(tmp_path, monkeypatch):
-    bot = WechatBot(runtime=_fake_runtime(tmp_path), base_url="http://x", token="tok")
+    bot = WechatBot(base_url="http://x", token="tok")
 
     calls: list[str] = []
 
@@ -65,7 +65,6 @@ def test_typing_ticket_cache_hit_skips_getconfig(tmp_path, monkeypatch):
 
 def test_typing_ticket_expiry_triggers_refetch(tmp_path, monkeypatch):
     bot = WechatBot(
-        runtime=_fake_runtime(tmp_path),
         base_url="http://x",
         token="tok",
         typing_ticket_ttl=10.0,
@@ -108,7 +107,7 @@ def test_empty_ticket_not_cached(tmp_path, monkeypatch):
 
     Otherwise the next caller would hit a stale empty entry until TTL.
     """
-    bot = WechatBot(runtime=_fake_runtime(tmp_path), base_url="http://x", token="tok")
+    bot = WechatBot(base_url="http://x", token="tok")
 
     responses = iter(["", "real-ticket"])
 

@@ -225,9 +225,7 @@ def main() -> None:
         resume_flag = getattr(args, "resume", False)
 
         # tui (default + explicit) goes through EmbeddedBackend so the Backend
-        # path is exercised end-to-end. The legacy direct-AgentSession path is
-        # gone in Phase 3 — tests still cover it via the `backend=None` branch
-        # of `cli.repl()`, but the user-facing default is Backend-mediated.
+        # path is exercised end-to-end.
         asyncio.run(
             _async_main(
                 config=config_path,
@@ -235,7 +233,6 @@ def main() -> None:
                 resume=resume_flag,
                 session_dir=session_dir,
                 store_path=store_path,
-                use_backend=True,
             )
         )
         return
@@ -251,7 +248,6 @@ async def _async_main(
     resume: bool,
     session_dir: Path,
     store_path: Path,
-    use_backend: bool = False,
 ) -> None:
     # Resolve session before building runtime so we have the real session_id
     transcript_writer: TranscriptWriter | None = None
@@ -265,14 +261,6 @@ async def _async_main(
             session_id = last.session_id
             transcript_path = session_dir / f"{session_id}.jsonl"
             if transcript_path.exists():
-                if not use_backend:
-                    # Legacy path reads history into a list; backend path lets
-                    # the BackendSessionManager load it on demand.
-                    reader = TranscriptReader(transcript_path)
-                    history, _, msg_count, comp_count, last_msg_id = reader.load_history()
-                    transcript_writer = TranscriptWriter.resume(
-                        transcript_path, session_id, msg_count, comp_count, last_msg_id
-                    )
                 print(
                     f"resumed session {session_id[:8]}…",
                     file=sys.stderr,
@@ -303,38 +291,10 @@ async def _async_main(
             file=sys.stderr,
         )
 
-    backend = None
-    if use_backend:
-        # Backend mode: BackendSessionManager owns transcript_writer + history.
-        # Don't pre-create either here — repl() asks the manager for the session
-        # entity, and the manager either loads ``session_id`` from disk or
-        # creates a fresh one.
-        from nano_openclaw.services.backend_embedded import EmbeddedBackend
-        backend = EmbeddedBackend(runtime)
-    else:
-        from nano_openclaw.services.tool_hooks import install_checkpoint_write_hook
-        install_checkpoint_write_hook(runtime.registry)
-        # Legacy mode: pre-create writer so repl() inherits it.
-        if not session_id:
-            session_id = new_session_id()
-        if not transcript_writer:
-            transcript_path = runtime.session_dir / f"{session_id}.jsonl"
-            transcript_writer = TranscriptWriter(transcript_path)
-            transcript_writer.start(model=runtime.model_id, cwd=str(runtime.workspace_dir))
-            # Defer sessions.json entry to first actual message so empty sessions leave
-            # neither a file nor a store entry behind.
-            _sid, _mid, _sp, _tw = session_id, runtime.model_id, runtime.store_path, transcript_writer
-            def _persist_new_session() -> None:
-                _store = load_session_store(_sp)
-                update_session(
-                    _store,
-                    _sid,
-                    model=_mid,
-                    message_count=_tw.message_count,
-                    compaction_count=_tw.compaction_count,
-                )
-                save_session_store(_sp, _store)
-            transcript_writer._on_first_write = _persist_new_session
+    # BackendSessionManager owns transcript_writer + history. Don't pre-create
+    # either here; repl() asks the manager for the session entity.
+    from nano_openclaw.services.backend_embedded import EmbeddedBackend
+    backend = EmbeddedBackend(runtime)
 
     try:
         await repl(
@@ -349,8 +309,7 @@ async def _async_main(
             backend=backend,
         )
     finally:
-        if backend is not None:
-            await backend.aclose()
+        await backend.aclose()
         await runtime.close()
 
 

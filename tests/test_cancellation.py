@@ -357,6 +357,30 @@ def _fixed_datetime():
     return FixedDatetime
 
 
+class _ReplBackend:
+    def __init__(self, *, session_id: str = "s1", await_side_effect: BaseException | None = None):
+        self.session = SimpleNamespace(
+            session_id=session_id,
+            history=[],
+            writer=None,
+            todo_store=SimpleNamespace(),
+        )
+        self.manager = SimpleNamespace(get_or_load=lambda _key=None: self.session)
+        self.await_side_effect = await_side_effect
+        self.chat_calls: list[dict[str, object]] = []
+
+    async def chat_send(self, **kwargs):
+        self.chat_calls.append(kwargs)
+        return "turn-1"
+
+    async def await_turn(self, turn_id: str):
+        if self.await_side_effect is not None:
+            raise self.await_side_effect
+
+    async def slash_run(self, *_args, **_kwargs):
+        return SimpleNamespace(handled=False, text="", session_key=self.session.session_id, session_changed=False)
+
+
 def test_repl_swallow_turn_cancelled(monkeypatch):
     registry = ToolRegistry()
     cfg = LoopConfig()
@@ -372,16 +396,14 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
     monkeypatch.setattr("nano_openclaw.adapters.cli.repl.Console", lambda: console)
     monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
     monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "nano_openclaw.adapters.cli.repl.AgentSession.run_turn",
-        AsyncMock(side_effect=TurnCancelled()),
-    )
+    backend = _ReplBackend(await_side_effect=TurnCancelled())
 
-    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg))
+    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg, backend=backend))
 
     output = console.export_text()
     assert "turn cancelled" in output.lower()
     assert "error:" not in output.lower()
+    assert backend.chat_calls[0]["text"] == "hello"
 
 
 def test_ws_repl_escape_aborts_turn(monkeypatch):
@@ -576,12 +598,9 @@ def test_repl_keyboard_interrupt_during_turn_soft_cancels(monkeypatch):
     monkeypatch.setattr("nano_openclaw.adapters.cli.repl.Console", lambda: console)
     monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
     monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "nano_openclaw.adapters.cli.repl.AgentSession.run_turn",
-        AsyncMock(side_effect=KeyboardInterrupt()),
-    )
+    backend = _ReplBackend(await_side_effect=KeyboardInterrupt())
 
-    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg))
+    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg, backend=backend))
 
     output = console.export_text()
     assert "turn cancelled" in output.lower()
@@ -696,13 +715,45 @@ def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
         monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
         monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
-        asyncio.run(repl(
-            registry,
+        from nano_openclaw.services.backend_embedded import EmbeddedBackend
+        from nano_openclaw.services.runs import RunRegistry
+        from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
+
+        workspace = tmp_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        state_dir = tmp_dir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        runtime = SimpleNamespace(
+            agent_id="default",
+            session_id="default",
+            config=SimpleNamespace(),
+            warnings=[],
             client=MagicMock(),
+            registry=registry,
             cfg=cfg,
+            hook_registry=None,
+            state_dir=state_dir,
             session_dir=session_dir,
             store_path=store_path,
-        ))
+            workspace_dir=workspace,
+            model_ref="test/test-model",
+            model_id="test-model",
+            image_model_ref=None,
+            run_registry=RunRegistry(),
+            runtime_guard=RuntimeUpdateGuard(),
+        )
+        backend = EmbeddedBackend(runtime)
+        try:
+            asyncio.run(repl(
+                registry,
+                client=runtime.client,
+                cfg=cfg,
+                session_dir=session_dir,
+                store_path=store_path,
+                backend=backend,
+            ))
+        finally:
+            asyncio.run(backend.aclose())
 
         store = load_session_store(store_path)
         assert len(store["sessions"]) == 1

@@ -331,8 +331,22 @@ class WebSocketBackend(Backend):
         cancellation_token: Any = None,
         turn_source: str = "tui",
         response_style: str = "",
+        channel_id: str = "",
+        channel_account_id: str = "",
+        channel_sender_key: str = "",
     ) -> str:
-        params: dict[str, Any] = {"session_key": session_key, "text": text, "turn_source": turn_source, "response_style": response_style}
+        params: dict[str, Any] = {
+            "session_key": session_key,
+            "text": text,
+            "turn_source": turn_source,
+            "response_style": response_style,
+        }
+        if channel_id:
+            params["channel_id"] = channel_id
+        if channel_account_id:
+            params["channel_account_id"] = channel_account_id
+        if channel_sender_key:
+            params["channel_sender_key"] = channel_sender_key
         if attachments:
             import base64
             params["attachments"] = [

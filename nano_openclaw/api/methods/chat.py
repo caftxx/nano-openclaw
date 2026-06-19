@@ -19,6 +19,9 @@ async def chat_send(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, An
     text = str(params.get("text") or "")
     turn_source = str(params.get("turn_source") or "tui")
     response_style = str(params.get("response_style") or "")
+    channel_id = str(params.get("channel_id") or "")
+    channel_account_id = str(params.get("channel_account_id") or "")
+    channel_sender_key = str(params.get("channel_sender_key") or "")
     raw_attachments = params.get("attachments") or []
 
     attachments: list[PromptAttachment] = []
@@ -43,6 +46,9 @@ async def chat_send(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, An
         attachments=attachments or None,
         turn_source=turn_source,
         response_style=response_style,
+        channel_id=channel_id,
+        channel_account_id=channel_account_id,
+        channel_sender_key=channel_sender_key,
     )
     return {"turn_id": turn_id}
 

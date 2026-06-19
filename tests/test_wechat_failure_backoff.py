@@ -65,7 +65,7 @@ def _patch_run_loop(monkeypatch, bot: WechatBot, response_seq, sleep_record, max
 
 
 def test_first_two_failures_use_short_delay(tmp_path, monkeypatch):
-    bot = WechatBot(runtime=_fake_runtime(tmp_path), base_url="http://x", token="t")
+    bot = WechatBot(base_url="http://x", token="t")
     sleeps: list[float] = []
     _patch_run_loop(
         monkeypatch, bot,
@@ -88,7 +88,7 @@ def test_success_resets_failure_counter(tmp_path, monkeypatch):
     If success didn't reset the counter, the third overall failure would
     trip the long backoff. With the reset, it should still be RETRY_DELAY.
     """
-    bot = WechatBot(runtime=_fake_runtime(tmp_path), base_url="http://x", token="t")
+    bot = WechatBot(base_url="http://x", token="t")
     sleeps: list[float] = []
     _patch_run_loop(
         monkeypatch, bot,

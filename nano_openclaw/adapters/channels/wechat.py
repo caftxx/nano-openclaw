@@ -4,9 +4,8 @@ One ``WechatChannel`` instance = one ``ChannelAccount`` = one configured iLink
 token. The daemon spawns N instances for N configured accounts. Each manages
 its own background ``WechatBot.run()`` task and its own ``NotifyQueue``.
 
-The legacy ``nano-openclaw wechat`` subcommand path still constructs a
-``WechatBot`` directly without going through this ChannelAdapter; that path is
-deprecated and will be removed when the daemon (Phase 3) ships.
+The bot receives only service-layer dependencies; runtime details stay in the
+adapter and channel manager.
 """
 
 from __future__ import annotations
@@ -109,7 +108,6 @@ class WechatChannel(ChannelAdapter):
         # demand to override and the values mirror openilink-sdk-python).
         backend = ctx.backend
         self._bot = WechatBot(
-            runtime=runtime,
             base_url=base_url,
             token=token,
             notify_queue=self._notify_queue,

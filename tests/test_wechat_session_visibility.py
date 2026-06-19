@@ -20,7 +20,9 @@ from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.core.loop import LoopConfig, Message
+from nano_openclaw.core.provider import TextDelta
 from nano_openclaw.core.tools import ToolRegistry
+from nano_openclaw.wechat import bot as bot_module
 from nano_openclaw.wechat.bot import WechatBot
 
 
@@ -57,10 +59,10 @@ def _bot_with_manager(tmp_path: Path, uid_map_path: Path | None = None) -> tuple
     runtime = _fake_runtime(tmp_path)
     backend = EmbeddedBackend(runtime)
     bot = WechatBot(
-        runtime=runtime,
         base_url="https://example",
         token="t",
         session_manager=backend.manager,
+        backend=backend,
         uid_map_path=uid_map_path or (tmp_path / "wechat-sessions.json"),
         account_id="default",
     )
@@ -135,10 +137,10 @@ def test_mapping_survives_bot_restart(tmp_path):
     runtime2.store_path = tmp_path / "sessions.json"
     backend2 = EmbeddedBackend(runtime2)
     bot2 = WechatBot(
-        runtime=runtime2,
         base_url="https://example",
         token="t",
         session_manager=backend2.manager,
+        backend=backend2,
         uid_map_path=map_path,
         account_id="default",
     )
@@ -200,47 +202,105 @@ def test_wechat_session_appears_in_sessions_list(tmp_path):
     )
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Legacy fallback when session_manager is None
-# ────────────────────────────────────────────────────────────────────────────
-
-
-def test_resolve_session_returns_none_when_no_manager(tmp_path):
-    """Bot without ``session_manager`` falls back to legacy in-memory dict —
-    _resolve_session returns None, and _get_or_create_history still works.
-    """
+def test_wechat_message_routes_through_backend_service(tmp_path, monkeypatch):
     runtime = _fake_runtime(tmp_path)
+    embedded = EmbeddedBackend(runtime)
+    sent: list[tuple[str, str, str | None]] = []
+
+    async def fake_get_typing_ticket(*_args, **_kwargs):
+        return ""
+
+    async def fake_send_text(_client, _base_url, _token, to_user, text, ctx=None):
+        sent.append((to_user, text, ctx))
+
+    monkeypatch.setattr(bot_module, "get_typing_ticket", fake_get_typing_ticket)
+    monkeypatch.setattr(bot_module, "send_text", fake_send_text)
+
+    class RecordingBackend:
+        def __init__(self):
+            self.manager = embedded.manager
+            self.calls: list[dict[str, Any]] = []
+
+        async def chat_send(self, **kwargs):
+            self.calls.append(kwargs)
+            kwargs["on_local_event"](TextDelta(text="backend reply"))
+            return "turn-1"
+
+        async def await_turn(self, turn_id: str) -> None:
+            assert turn_id == "turn-1"
+
+    backend = RecordingBackend()
     bot = WechatBot(
-        runtime=runtime,
         base_url="https://example",
         token="t",
-        # no session_manager / uid_map_path → legacy
+        session_manager=embedded.manager,
+        backend=backend,
+        uid_map_path=tmp_path / "wechat-sessions.json",
+        account_id="work",
+    )
+    msg = {
+        "from_user_id": "user-1",
+        "context_token": "ctx-1",
+        "item_list": [{"type": 1, "text_item": {"text": "hello"}}],
+    }
+
+    async def run():
+        try:
+            await bot._handle_message(msg)
+        finally:
+            await embedded.aclose()
+
+    asyncio.run(run())
+
+    assert len(backend.calls) == 1
+    call = backend.calls[0]
+    assert call["text"] == "hello"
+    assert call["turn_source"] == "wechat"
+    assert call["channel_id"] == "wechat"
+    assert call["channel_account_id"] == "work"
+    assert call["channel_sender_key"] == "user-1"
+    assert sent == [("user-1", "backend reply", "ctx-1")]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Missing service wiring
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_resolve_session_returns_none_when_no_manager():
+    """Low-level bot tests may omit the manager; production channel startup wires it."""
+    bot = WechatBot(
+        base_url="https://example",
+        token="t",
     )
     assert bot._resolve_session("anyone") is None
-    history = bot._get_or_create_history("anyone")
-    assert history == []
+    with pytest.raises(RuntimeError, match="BackendSessionManager"):
+        bot._get_or_create_history("anyone")
 
 
-def test_slash_without_backend_is_rejected_instead_of_using_legacy_history(tmp_path):
-    runtime = _fake_runtime(tmp_path)
+def test_slash_without_backend_is_rejected_without_mutating_session(tmp_path):
+    backend_runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(backend_runtime)
     bot = WechatBot(
-        runtime=runtime,
         base_url="https://example",
         token="t",
+        session_manager=backend.manager,
     )
-    history = bot._get_or_create_history("anyone")
-    history.append(Message("user", [{"type": "text", "text": "hello"}]))
+    try:
+        sess = bot._resolve_session("anyone")
+        assert sess is not None
+        sess.history.append(Message("user", [{"type": "text", "text": "hello"}]))
 
-    reply = asyncio.run(bot._handle_slash_command("anyone", "/clear"))
+        reply = asyncio.run(bot._handle_slash_command("anyone", "/clear"))
 
-    assert "daemon backend" in (reply or "")
-    assert len(history) == 1
+        assert "daemon backend" in (reply or "")
+        assert len(sess.history) == 1
+    finally:
+        asyncio.run(backend.aclose())
 
 
 def test_slash_without_backend_does_not_raise_attribute_error(tmp_path):
-    runtime = _fake_runtime(tmp_path)
     bot = WechatBot(
-        runtime=runtime,
         base_url="https://example",
         token="t",
     )

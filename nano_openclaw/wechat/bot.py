@@ -1,7 +1,7 @@
 """WeChat bot main loop for nano-openclaw.
 
 Connects to iLink WeChat API via long-polling and routes each message through
-AgentSession.run_turn(), sending the reply back via iLink.
+BackendService, sending the reply back via iLink.
 
 Each WeChat user gets an isolated history list (per-user session).
 
@@ -24,10 +24,10 @@ import httpx
 from nano_openclaw.core.attachments import PromptAttachment
 from nano_openclaw.adapters.channels.chunking import chunk_text
 from nano_openclaw.logger import get_logger
-from nano_openclaw.core.loop import AgentSession, TextDelta
+from nano_openclaw.core.provider import TextDelta
 from nano_openclaw.core._stream_events import ToolUseEnd, ToolUseStart
-from nano_openclaw.core.runtime import AgentRuntime
 from nano_openclaw.core.tools import ToolRegistry, Tool
+from nano_openclaw.services.backend import BusyError
 from nano_openclaw.wechat.ilink import (
     download_wechat_file,
     download_wechat_image,
@@ -106,7 +106,6 @@ def _clone_registry(registry: ToolRegistry, uid: str, account_id: str = "default
 
 @dataclass
 class WechatBot:
-    runtime: AgentRuntime
     base_url: str
     token: str
     poll_timeout: int = 35
@@ -118,14 +117,13 @@ class WechatBot:
     # users. Multi-account daemons spawn one WechatBot per account, each with a
     # distinct ``account_id`` so cron notifications route correctly.
     account_id: str = "default"
-    # ``session_manager`` (set in daemon mode) routes per-uid conversations
-    # through ``BackendSessionManager`` — same store the WebUI/TUI ``/sessions``
-    # surface reads. ``None`` falls back to the legacy in-memory dict (only
-    # the deprecated standalone path which Phase 3 already removed).
+    # ``session_manager`` routes per-uid conversations through
+    # ``BackendSessionManager`` — same store the WebUI/TUI ``/sessions``
+    # surface reads.
     session_manager: Any | None = None
-    # ``backend`` is the daemon's shared EmbeddedBackend; slash commands
-    # require it so WeChat uses the same dispatcher as TUI/WebUI. ``None`` is
-    # only tolerated by low-level tests that don't exercise slash handling.
+    # ``backend`` is the daemon's shared BackendService; all WeChat turns and
+    # slash commands go through it so channel delivery cannot bypass service
+    # orchestration.
     backend: Any | None = None
     # Persistence path for the uid → session_id mapping; without it, restarts
     # forget which uid maps to which session and the next message creates a
@@ -135,8 +133,6 @@ class WechatBot:
     # default to 30 min to avoid a getconfig RTT on every reply while still
     # rotating well before any plausible server-side expiry.
     typing_ticket_ttl: float = 1800.0
-    # uid -> history list (legacy fallback when session_manager is None)
-    _sessions: dict[str, list[Any]] = field(default_factory=dict)
     # uid -> session_id (loaded from uid_map_path on first use)
     _uid_to_session_id: dict[str, str] = field(default_factory=dict)
     _uid_map_loaded: bool = False
@@ -187,7 +183,7 @@ class WechatBot:
         Subsequent → manager.get_or_load(stored_id); if the file vanished
         somehow (manual deletion etc.) → fall through to a fresh session.
 
-        ``None`` only when ``session_manager`` isn't wired (legacy path).
+        ``None`` only when ``session_manager`` isn't wired by a low-level test.
         """
         if self.session_manager is None:
             return None
@@ -207,10 +203,7 @@ class WechatBot:
         return new_session
 
     def _get_or_create_history(self, uid: str) -> list[Any]:
-        # Legacy fallback only — daemon path uses _resolve_session(uid) directly.
-        if uid not in self._sessions:
-            self._sessions[uid] = []
-        return self._sessions[uid]
+        raise RuntimeError("WeChat history is owned by BackendSessionManager")
 
     async def _poll_notifications(self) -> None:
         """Poll notify-queue and send directed notifications to creators."""
@@ -496,21 +489,23 @@ class WechatBot:
         if not text.strip() and not attachments:
             return
 
-        # Prefer the daemon's BackendSessionManager when wired (Phase 9): each
-        # uid gets a real persisted session that shows up in /sessions / WebUI.
-        # The legacy in-memory dict is only used by the deprecated standalone
-        # path which Phase 3 already removed from the CLI.
         backend_session = self._resolve_session(uid)
-        if backend_session is not None:
-            history = backend_session.history
-            transcript_writer = backend_session.writer
-            session_id_for_cfg = backend_session.session_id
-            session_lock = backend_session.lock
-        else:
-            history = self._get_or_create_history(uid)
-            transcript_writer = None
-            session_id_for_cfg = None
-            session_lock = None
+        if backend_session is None or self.backend is None:
+            log.error(
+                "wechat.backend.missing",
+                f"message from {uid:.16} received without backend/session manager",
+            )
+            async with httpx.AsyncClient() as send_client:
+                await _send_chunked_text(
+                    send_client,
+                    self.base_url,
+                    self.token,
+                    uid,
+                    "⚠️ WeChat channel requires the daemon backend. Start it through `gateway run`.",
+                    ctx,
+                )
+            return
+        session_id_for_cfg = backend_session.session_id
         # Buffer of TextDeltas that have not yet been flushed as a wechat message.
         # On every ToolUseStart we cut here and ship the buffered text as one
         # standalone message — that gives the user incremental visibility into the
@@ -602,61 +597,36 @@ class WechatBot:
             heartbeat_task = asyncio.create_task(heartbeat())
 
             try:
-                # Build the session config — when daemon-mode, point cfg at
-                # the resolved session_id so any code reading cfg.session_key
-                # (cron, subagent context, etc.) sees the real id.
-                from dataclasses import replace as _dc_replace
-                turn_cfg = _dc_replace(self.runtime.cfg, turn_source="wechat")
-                if session_id_for_cfg is not None:
-                    turn_cfg = _dc_replace(turn_cfg, session_key=session_id_for_cfg)
-
-                # Hold the session lock so two concurrent messages from the
-                # same wechat user serialize on the same backend session
-                # (otherwise they'd race on history mutation). Skip when no
-                # backend (legacy path).
-                if session_lock is not None:
-                    if session_lock.locked():
+                while True:
+                    try:
+                        turn_id = await self.backend.chat_send(
+                            session_key=session_id_for_cfg,
+                            text=text or "(no text, maybe just attachments)",
+                            attachments=attachments or None,
+                            on_local_event=on_event,
+                            turn_source="wechat",
+                            channel_id="wechat",
+                            channel_account_id=self.account_id,
+                            channel_sender_key=uid,
+                        )
+                        break
+                    except BusyError as exc:
                         log.info(
                             "wechat.session.busy",
                             f"uid={uid:.16}: previous turn still running, will queue",
                         )
-                    await session_lock.acquire()
+                        await asyncio.sleep(max(0.05, (exc.retry_after_ms or 500) / 1000))
+                await self.backend.await_turn(turn_id)
                 try:
-                    # Share long-lived per-conversation state by reference so
-                    # cumulative tokens, last_prompt_tokens, and previous_summary
-                    # survive across WeChat turns — otherwise /usage from
-                    # WebUI/TUI sees zeros and Stage 3 iterative summary
-                    # updates never fire for WeChat sessions.
-                    shared_kwargs: dict[str, Any] = {}
-                    if backend_session is not None:
-                        shared_kwargs["usage_stats"] = backend_session.usage_stats
-                        shared_kwargs["compaction_state"] = backend_session.compaction_state
-                        shared_kwargs["todo_store"] = backend_session.todo_store
-                    agent_session = AgentSession(
-                        history=history,
-                        registry=_clone_registry(self.runtime.registry, uid, self.account_id),
-                        on_event=on_event,
-                        client=self.runtime.client,
-                        cfg=turn_cfg,
-                        transcript_writer=transcript_writer,
-                        **shared_kwargs,
+                    refreshed = self.session_manager.get_or_load(session_id_for_cfg)
+                    self.session_manager.save_metadata(refreshed)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "wechat.save_metadata.error",
+                        f"{type(exc).__name__}: {exc}",
                     )
-                    await agent_session.run_turn(
-                        text or "(no text, maybe just attachments)",
-                        attachments=attachments or None,
-                    )
-                    # Persist sessions.json metadata so /sessions sees the
-                    # updated message count after each turn.
-                    if backend_session is not None and self.session_manager is not None:
-                        try:
-                            self.session_manager.save_metadata(backend_session)
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("wechat.save_metadata.error", f"{type(exc).__name__}: {exc}")
-                finally:
-                    if session_lock is not None:
-                        session_lock.release()
             except Exception as exc:
-                log.error("wechat.turn.failed", f"run_turn failed for {uid:.16}: {exc}")
+                log.error("wechat.turn.failed", f"backend turn failed for {uid:.16}: {exc}")
             finally:
                 stop_typing.set()
                 heartbeat_stop.set()

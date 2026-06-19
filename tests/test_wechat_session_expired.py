@@ -68,7 +68,7 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
 
 
 def test_session_expired_triggers_long_backoff(tmp_path, monkeypatch):
-    bot = WechatBot(runtime=_fake_runtime(tmp_path), base_url="http://x", token="bad")
+    bot = WechatBot(base_url="http://x", token="bad")
     bot.POLL_SESSION_EXPIRED_BACKOFF = 0.01  # speed up; semantic is 'long', value irrelevant for test
 
     sleep_durations: list[float] = []

@@ -26,8 +26,8 @@ from nano_openclaw.services.backend_embedded import (
     SUBSCRIBER_QUEUE_MAX,
 )
 from nano_openclaw.core.loop import LoopConfig
-from nano_openclaw.core.tools import ToolRegistry
-from nano_openclaw.adapters.channels.base import ChannelAdapter
+from nano_openclaw.core.tools import Tool, ToolRegistry
+from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount
 from nano_openclaw.services.channels import ChannelManager
 
 
@@ -42,6 +42,20 @@ class _RecordingChannel(ChannelAdapter):
     async def stop(self):
         self._state = "stopped"
         self._started_at = None
+
+
+class _DecoratingChannel(_RecordingChannel):
+    id = "decorating"
+
+    def decorate_tools(self, base, sender_key: str):
+        clone = base.clone()
+        clone.register(Tool(
+            name="sender_key",
+            description="sender",
+            input_schema={"type": "object", "properties": {}},
+            run=lambda _args: sender_key,
+        ))
+        return clone
 
 
 class _FailingStopChannel(ChannelAdapter):
@@ -116,6 +130,31 @@ def test_turn_registry_preserves_workspace_write_hook(tmp_path):
     clone.before_workspace_write("apply_patch", ctx)
 
     assert calls == [("apply_patch", str(runtime.workspace_dir))]
+
+
+def test_turn_registry_applies_channel_tool_decoration(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    channels = ChannelManager()
+    channels.register(_DecoratingChannel)
+
+    async def run():
+        inst = await channels.start("decorating", ChannelAccount(id="work"), runtime)
+        backend = EmbeddedBackend(runtime, channel_manager=channels)
+        try:
+            clone = backend._build_turn_registry(
+                "session-1",
+                channel_id="decorating",
+                channel_account_id="work",
+                channel_sender_key="user-123",
+            )
+            tool = clone.get("sender_key")
+            assert tool is not None
+            assert tool.run({}) == "user-123"
+            assert inst.status().state == "running"
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
 
 
 def test_subscribe_yields_emitted_events(tmp_path):

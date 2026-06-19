@@ -295,6 +295,9 @@ class EmbeddedBackend(Backend):
         cancellation_token: CancellationToken | None = None,
         turn_source: str = "tui",
         response_style: str = "",
+        channel_id: str = "",
+        channel_account_id: str = "",
+        channel_sender_key: str = "",
     ) -> str:
         """Start a turn. ``on_local_event`` and ``cancellation_token`` are
         EmbeddedBackend-only extensions (not part of the Backend Protocol):
@@ -332,6 +335,9 @@ class EmbeddedBackend(Backend):
                 on_local_event=on_local_event,
                 turn_source=turn_source,
                 response_style=response_style,
+                channel_id=channel_id,
+                channel_account_id=channel_account_id,
+                channel_sender_key=channel_sender_key,
             ),
             name=f"backend.chat_send:{turn_id}",
         )
@@ -394,9 +400,21 @@ class EmbeddedBackend(Backend):
         except KeyError:
             return self.manager.create()
 
-    def _build_turn_registry(self, session_id: str) -> ToolRegistry:
+    def _build_turn_registry(
+        self,
+        session_id: str,
+        *,
+        channel_id: str = "",
+        channel_account_id: str = "",
+        channel_sender_key: str = "",
+    ) -> ToolRegistry:
         """Per-turn shallow clone with spawn context wired."""
         base = self.runtime.registry
+        if self.channel_manager is not None and channel_id and channel_sender_key:
+            account_id = channel_account_id or "default"
+            adapter = self.channel_manager.get_instance(channel_id, account_id)
+            if adapter is not None:
+                return adapter.decorate_tools(base, channel_sender_key)
         return base.clone()
 
     def _wire_spawn_context(
@@ -429,12 +447,20 @@ class EmbeddedBackend(Backend):
         on_local_event: Any = None,
         turn_source: str = "tui",
         response_style: str = "",
+        channel_id: str = "",
+        channel_account_id: str = "",
+        channel_sender_key: str = "",
     ) -> None:
         history_len_before = len(session.history)
         activity_started_at = time.time()
         activity_payloads: list[dict[str, Any]] = []
 
-        turn_registry = self._build_turn_registry(session.session_id)
+        turn_registry = self._build_turn_registry(
+            session.session_id,
+            channel_id=channel_id,
+            channel_account_id=channel_account_id,
+            channel_sender_key=channel_sender_key,
+        )
 
         async def _request_approval(request: Any, cancellation_token: Any | None = None) -> Any:
             return await self._approval_broker.request_decision(
