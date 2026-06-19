@@ -415,7 +415,7 @@ def test_wechat_channel_decorate_tools_injects_three_segment_marker():
 
     ch = WechatChannel(ChannelAccount(id="work"))
     decorated = ch.decorate_tools(base, sender_key="o9cq80abc")
-    decorated._tools["cron_create"].run({"prompt": "hi"})
+    asyncio.run(decorated._tools["cron_create"].run({"prompt": "hi"}))
 
     assert captured["args"]["created_by"] == "wechat:work:o9cq80abc"
     assert captured["args"]["notify_wechat"] is True
@@ -436,5 +436,5 @@ def test_wechat_channel_default_account_marker():
 
     ch = WechatChannel(ChannelAccount(id="default"))
     decorated = ch.decorate_tools(base, sender_key="uid42")
-    decorated._tools["cron_create"].run({})
+    asyncio.run(decorated._tools["cron_create"].run({}))
     assert captured["args"]["created_by"] == "wechat:default:uid42"

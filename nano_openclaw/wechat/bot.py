@@ -74,10 +74,11 @@ def _clone_registry(registry: ToolRegistry, uid: str, account_id: str = "default
     # Wrap cron_create to auto-bind created_by and enable notification
     if "cron_create" in clone._tools:
         cron_create = clone._tools["cron_create"]
-        def wrapped_run(args: dict[str, Any]) -> str:
+        async def wrapped_run(args: dict[str, Any]) -> str:
             args["created_by"] = created_by
             args.setdefault("notify_wechat", True)  # 微信创建默认开启通知
-            return cron_create.run(args)
+            result = cron_create.run(args)
+            return await result if asyncio.iscoroutine(result) else result
 
         clone._tools["cron_create"] = Tool(
             name="cron_create",
@@ -89,10 +90,11 @@ def _clone_registry(registry: ToolRegistry, uid: str, account_id: str = "default
     # Wrap schedule_wakeup similarly
     if "schedule_wakeup" in clone._tools:
         schedule_wakeup = clone._tools["schedule_wakeup"]
-        def wrapped_wakeup(args: dict[str, Any]) -> str:
+        async def wrapped_wakeup(args: dict[str, Any]) -> str:
             args["created_by"] = created_by
             args.setdefault("notify_wechat", True)
-            return schedule_wakeup.run(args)
+            result = schedule_wakeup.run(args)
+            return await result if asyncio.iscoroutine(result) else result
 
         clone._tools["schedule_wakeup"] = Tool(
             name="schedule_wakeup",
