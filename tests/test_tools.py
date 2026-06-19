@@ -12,6 +12,7 @@ from nano_openclaw.approvals import ApprovalDecision, ApprovalPolicy
 from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig, ToolsConfig
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.core.tools import ToolRegistry, build_core_registry
+from nano_openclaw.features.skills.registry import bind_skill_runtime
 
 # Patch ToolRegistry.dispatch to be synchronous for tests — avoids changing
 # every call site while still exercising the full dispatch logic.
@@ -32,6 +33,7 @@ def registry():
 
 def _registry_with_plugins(*plugins: str, tools_config: ToolsConfig | None = None) -> ToolRegistry:
     registry = build_core_registry()
+    bind_skill_runtime(registry)
     config = NanoOpenClawConfig(tools=tools_config) if tools_config else NanoOpenClawConfig()
     load_plugins(PluginsConfig(load=list(plugins)), registry, config)
     return registry

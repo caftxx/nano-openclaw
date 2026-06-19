@@ -28,12 +28,12 @@ from nano_openclaw.logger import get_logger
 log = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from nano_openclaw.plugins.registry import HookRegistry
-    from nano_openclaw.features.skills.types import Skill
     from nano_openclaw.todo import TodoStore
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
 WorkspaceWriteHook = Callable[[str, "ToolExecutionContext"], None]
+SkillUsageRecorder = Callable[[str, Any, "ToolExecutionContext"], None]
+SkillInstaller = Callable[..., Awaitable[str]]
 
 
 @dataclass
@@ -49,7 +49,7 @@ class ToolExecutionContext:
     """Per-dispatch runtime state that should not live on the registry."""
 
     session_status_context: dict[str, Any] = field(default_factory=dict)
-    eligible_skills: dict[str, "Skill"] = field(default_factory=dict)
+    eligible_skills: dict[str, Any] = field(default_factory=dict)
     workspace_dir: str | None = None
     state_dir: str | None = None
     allow_global_pip: bool = False
@@ -61,19 +61,21 @@ class ToolExecutionContext:
 class ToolRegistry:
     _tools: dict[str, Tool] = field(default_factory=dict)
     _session_status_context: dict[str, Any] = field(default_factory=dict)
-    _eligible_skills: dict[str, "Skill"] = field(default_factory=dict)
+    _eligible_skills: dict[str, Any] = field(default_factory=dict)
     approval_manager: Optional[ApprovalManager] = field(default=None)
     console: Optional[Console] = field(default=None)
     _workspace_dir: str | None = field(default=None)
     _state_dir: str | None = field(default=None)
     _allow_global_pip: bool = field(default=False)
     _spawn_tool_context: Optional[Any] = field(default=None)  # SpawnToolContext
-    _hook_registry: Optional["HookRegistry"] = field(default=None)
+    _hook_registry: Optional[Any] = field(default=None)
     approval_live_stopper: Optional[Callable[[], None]] = field(default=None)
     approval_handler: Optional[
         Callable[[Any, Any | None], "ApprovalDecision | Awaitable[ApprovalDecision]"]
     ] = field(default=None)
     before_workspace_write: Optional[WorkspaceWriteHook] = field(default=None)
+    skill_usage_recorder: Optional[SkillUsageRecorder] = field(default=None)
+    skill_installer: Optional[SkillInstaller] = field(default=None)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -81,7 +83,7 @@ class ToolRegistry:
     def set_session_status_context(self, **kwargs: Any) -> None:
         self._session_status_context = kwargs
 
-    def set_eligible_skills(self, skills: dict[str, "Skill"]) -> None:
+    def set_eligible_skills(self, skills: dict[str, Any]) -> None:
         """Set eligible skills for Skill tool invocation."""
         self._eligible_skills = skills
 
@@ -97,13 +99,19 @@ class ToolRegistry:
     def set_spawn_tool_context(self, context: Any) -> None:
         self._spawn_tool_context = context
 
-    def set_hook_registry(self, hook_registry: "HookRegistry") -> None:
+    def set_hook_registry(self, hook_registry: Any) -> None:
         self._hook_registry = hook_registry
 
     def set_before_workspace_write(self, hook: WorkspaceWriteHook | None) -> None:
         self.before_workspace_write = hook
 
-    def hook_registry(self) -> "HookRegistry | None":
+    def set_skill_usage_recorder(self, recorder: SkillUsageRecorder | None) -> None:
+        self.skill_usage_recorder = recorder
+
+    def set_skill_installer(self, installer: SkillInstaller | None) -> None:
+        self.skill_installer = installer
+
+    def hook_registry(self) -> Any | None:
         return self._hook_registry
 
     def clone(
@@ -126,6 +134,8 @@ class ToolRegistry:
             approval_live_stopper=self.approval_live_stopper,
             approval_handler=self.approval_handler if approval_handler is ... else approval_handler,
             before_workspace_write=self.before_workspace_write,
+            skill_usage_recorder=self.skill_usage_recorder,
+            skill_installer=self.skill_installer,
         )
         cloned.set_session_status_context(**self._session_status_context)
         cloned.set_eligible_skills(dict(self._eligible_skills))
@@ -259,16 +269,9 @@ class ToolRegistry:
             if name == "skill":
                 skill_name = str(args.get("skill") or "")
                 skill = ctx.eligible_skills.get(skill_name) if ctx.eligible_skills else None
-                if skill is not None:
+                if skill is not None and self.skill_usage_recorder is not None:
                     try:
-                        from nano_openclaw.features.skills.usage import record_event
-                        record_event(
-                            ctx.state_dir,
-                            skill_name,
-                            "use",
-                            source=skill.source,
-                            path=skill.filePath,
-                        )
+                        self.skill_usage_recorder(skill_name, skill, ctx)
                     except Exception:
                         pass
                 raw = tool.run(args, eligible_skills=ctx.eligible_skills)
@@ -293,6 +296,7 @@ class ToolRegistry:
                     args,
                     workspace_dir=ctx.workspace_dir,
                     state_dir=ctx.state_dir,
+                    installer=self.skill_installer,
                 )
             elif name in ("memory_get", "memory_search"):
                 raw = tool.run(args, workspace_dir=ctx.workspace_dir)
@@ -582,7 +586,7 @@ def _session_status(
 
 def _invoke_skill(
     args: dict[str, Any],
-    eligible_skills: dict[str, "Skill"] | None = None,
+    eligible_skills: dict[str, Any] | None = None,
 ) -> "str | list[dict[str, Any]]":
     """Invoke a skill by name, returning its content.
 
@@ -626,6 +630,7 @@ async def _skill_install(
     args: dict[str, Any],
     workspace_dir: str | None = None,
     state_dir: str | None = None,
+    installer: SkillInstaller | None = None,
 ) -> str:
     skill_name = str(args.get("skill") or "").strip()
     install_id = str(args.get("installId") or args.get("install_id") or "").strip()
@@ -639,29 +644,16 @@ async def _skill_install(
     if not state_dir:
         from nano_openclaw.config import resolve_state_dir
         state_dir = str(resolve_state_dir())
+    if installer is None:
+        raise RuntimeError("skill installer not configured")
 
-    from nano_openclaw.features.skills.install import install_skill
-
-    result = await install_skill(
-        workspace_dir=workspace_dir,
-        state_dir=state_dir,
+    return await installer(
+        workspace_dir=str(workspace_dir),
+        state_dir=str(state_dir),
         skill_name=skill_name,
         install_id=install_id,
         timeout=timeout,
     )
-    parts = [f"ok={str(result.ok).lower()}", f"message={result.message}"]
-    if result.ok:
-        from nano_openclaw.features.skills.install import resolve_skill_python_env
-        env_info = resolve_skill_python_env(state_dir, skill_name)
-        parts.append(f"python={env_info.python_executable}")
-        parts.append(f"venv={env_info.venv_dir}")
-    if result.code is not None:
-        parts.append(f"code={result.code}")
-    if result.stdout:
-        parts.append(f"--- stdout ---\n{result.stdout}")
-    if result.stderr:
-        parts.append(f"--- stderr ---\n{result.stderr}")
-    return "\n".join(parts)
 
 
 def _todo_handler(

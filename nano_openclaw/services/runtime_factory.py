@@ -26,6 +26,7 @@ from nano_openclaw.core.runtime import (
 from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 from nano_openclaw.features.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
 from nano_openclaw.features.memory.dreaming import DreamingConfig, start_dreaming_scheduler
+from nano_openclaw.features.skills.registry import bind_skill_runtime
 from nano_openclaw.logger import resolve_log_level
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
@@ -78,6 +79,7 @@ async def build_agent_runtime(
     registry.set_workspace_dir(workspace_dir)
     registry.set_state_dir(state_dir)
     registry.set_allow_global_pip(config.skills.install.allowGlobalPip)
+    bind_skill_runtime(registry)
     config.state_dir = str(state_dir)
     hook_registry = (
         load_plugins(config.plugins, registry, config, base_dir=workspace_dir)
