@@ -140,9 +140,13 @@ class SubagentRunner:
             max_skills_in_prompt=base_cfg.max_skills_in_prompt,
             max_skills_prompt_chars=base_cfg.max_skills_prompt_chars,
             active_memory_config=None,
+            active_memory_recall=base_cfg.active_memory_recall,
             dreaming_config=None,
             turn_source=base_cfg.turn_source,
             system_prompt_override=self._build_subagent_system_prompt(params.task, subagent_registry),
+            skill_runtime=base_cfg.skill_runtime,
+            subagent_announcement_waiter=base_cfg.subagent_announcement_waiter,
+            agent_id_from_session_key=base_cfg.agent_id_from_session_key,
         )
 
         transcript_path = session_dir / f"{record.session_id}.jsonl"

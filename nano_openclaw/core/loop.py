@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Optional
 
 from nano_openclaw.core.compact import (
     CompactionState,
@@ -47,8 +47,6 @@ from nano_openclaw.core.images import (
     parse_image_refs,
     to_anthropic_image_block,
 )
-from nano_openclaw.features.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
-from nano_openclaw.features.memory.dreaming import DreamingConfig
 from nano_openclaw.core.prompt import VOICE_STYLE_PROMPT, build_system_prompt
 from nano_openclaw.core.provider import (
     MessageEnd,
@@ -61,17 +59,6 @@ from nano_openclaw.core.provider import (
     ToolUseStart,
     stream_response,
 )
-from nano_openclaw.features.skills import (
-    Skill,
-    SkillEntry,
-    build_skill_registry_from_entries,
-    build_slash_command_context,
-    filter_eligible_skills,
-    filter_visible_skills,
-    get_or_load_skills,
-    parse_slash_command,
-    SlashCommand,
-)
 from nano_openclaw.todo import TodoStore
 from nano_openclaw.core.tools import ToolRegistry
 from nano_openclaw.core.workspace import (
@@ -81,10 +68,11 @@ from nano_openclaw.core.workspace import (
 )
 
 if TYPE_CHECKING:
-    from nano_openclaw.plugins.registry import HookRegistry
     from nano_openclaw.session import TranscriptWriter
 
 EventCallback = Callable[[Any], None]
+ActiveMemoryRecallHook = Callable[..., Awaitable[Any]]
+SubagentAnnouncementWaiter = Callable[[ToolRegistry, "LoopConfig", Any | None], Awaitable[list["Message"]]]
 MEMORY_FLUSH_ALLOWED_TOOLS = frozenset({"read_file", "write_file"})
 
 logger = get_logger(__name__)
@@ -139,7 +127,7 @@ class Compaction:
 
 @dataclass
 class ActiveMemoryRecall:
-    result: ActiveMemoryResult
+    result: Any
 
 
 def append_active_todo_reminder(
@@ -322,11 +310,12 @@ class LoopConfig:
     max_skills_in_prompt: int = 150  # Max skills in prompt
     max_skills_prompt_chars: int = 18_000  # Max chars for skills section
     # Active Memory configuration (mirrors openclaw active-memory plugin)
-    active_memory_config: ActiveMemoryConfig | None = None  # None = disabled
+    active_memory_config: Any | None = None  # None = disabled
+    active_memory_recall: ActiveMemoryRecallHook | None = None
     # Pre-compaction memory flush configuration
     memory_flush_config: MemoryFlushConfig = field(default_factory=MemoryFlushConfig)
     # Dreaming configuration (mirrors openclaw memory-core dreaming)
-    dreaming_config: DreamingConfig | None = None  # None = disabled
+    dreaming_config: Any | None = None  # None = disabled
     # Stop-hook memory extractor configuration (mirrors claude-code
     # extractMemories.ts). None = disabled. Hook reads this on after_turn.
     extract_memories_config: "ExtractMemoriesConfig | None" = None
@@ -341,7 +330,10 @@ class LoopConfig:
     # If set, bypasses build_system_prompt() entirely (used by subagent runner)
     system_prompt_override: str | None = None
     # Lightweight plugin hooks, installed by the plugin loader.
-    hook_registry: "HookRegistry | None" = None
+    hook_registry: Any | None = None
+    skill_runtime: Any | None = None
+    subagent_announcement_waiter: SubagentAnnouncementWaiter | None = None
+    agent_id_from_session_key: Callable[[str], str] | None = None
 
     @property
     def model_has_vision(self) -> bool:
@@ -542,68 +534,30 @@ class AgentSession:
             kept = kept[1:]
         self.transcript_writer.rotate(latest_summary or "", kept)
 
-    def _load_turn_skills(self) -> tuple[list[SkillEntry], list[Skill] | None]:
-        eligible_entries: list[SkillEntry] = []
-        visible_skills: list[Skill] | None = None
-        if not self.cfg.workspace_dir:
-            return eligible_entries, visible_skills
-
-        skill_entries = get_or_load_skills(
-            self.cfg.workspace_dir,
-            self.cfg.session_key,
-            extra_dirs=self.cfg.extra_skill_dirs,
-            max_bytes=self.cfg.max_skill_file_bytes,
-        )
-        if skill_entries:
-            eligible_entries = filter_eligible_skills(
-                skill_entries,
-                skill_filter=self.cfg.skill_filter,
-            )
-            visible_skills = filter_visible_skills(eligible_entries)
-        return eligible_entries, visible_skills
+    def _load_turn_skills(self) -> tuple[list[Any], list[Any] | None]:
+        if self.cfg.skill_runtime is None:
+            return [], None
+        return self.cfg.skill_runtime.load_turn_skills(self.cfg)
 
     def _prepare_skill_command(
         self,
         user_input: str,
-        eligible_entries: list[SkillEntry],
-    ) -> tuple[SlashCommand | None, str, dict[str, Skill]]:
-        command: SlashCommand | None = None
-        remaining_text = user_input
-        skill_registry: dict[str, Skill] = {}
-        if not eligible_entries:
-            return command, remaining_text, skill_registry
-
-        # Slash commands: user-invocable skills only.
-        runtime_registry = build_skill_registry_from_entries(eligible_entries)
-        if runtime_registry:
-            skill_registry = runtime_registry
-        command, remaining_text = parse_slash_command(user_input, skill_registry)
-
-        # Model Skill tool: all eligible skills, not just user-invocable ones.
-        model_registry = build_skill_registry_from_entries(
+        eligible_entries: list[Any],
+    ) -> tuple[Any | None, str, dict[str, Any]]:
+        if self.cfg.skill_runtime is None:
+            return None, user_input, {}
+        return self.cfg.skill_runtime.prepare_skill_command(
+            user_input,
             eligible_entries,
-            user_invocable_only=False,
+            self.cfg,
+            self.registry,
         )
-        try:
-            from nano_openclaw.features.skills.usage import record_event
-            for skill_name, skill in model_registry.items():
-                record_event(
-                    self.cfg.state_dir,
-                    skill_name,
-                    "load",
-                    source=skill.source,
-                    path=skill.filePath,
-                )
-        except Exception:
-            pass
-        self.registry.set_eligible_skills(model_registry)
-        return command, remaining_text, skill_registry
 
     async def _build_user_content(
         self,
         user_input: str,
         remaining_text: str,
-        command: SlashCommand | None,
+        command: Any | None,
         on_event: EventCallback,
         *,
         attachments: list[PromptAttachment] | None = None,
@@ -612,20 +566,16 @@ class AgentSession:
         content: list[dict[str, Any]] = []
 
         if command:
-            skill_context = build_slash_command_context(command)
+            skill_context = self.cfg.skill_runtime.build_slash_command_context(command)
             content.append({"type": "text", "text": skill_context})
             try:
-                from nano_openclaw.features.skills.usage import record_event
-                record_event(
-                    self.cfg.state_dir,
-                    command.name,
-                    "use",
-                    source=command.skill.source,
-                    path=command.skill.filePath,
-                )
+                self.cfg.skill_runtime.record_command_use(command, self.cfg.state_dir)
             except Exception:
                 pass
-            on_event(SkillInvoked(skill_name=command.name, skill_path=command.skill.filePath))
+            on_event(SkillInvoked(
+                skill_name=getattr(command, "name", ""),
+                skill_path=getattr(getattr(command, "skill", None), "filePath", ""),
+            ))
 
         cleaned_text, image_refs = parse_image_refs(remaining_text, workspace_dir=self.cfg.workspace_dir)
         loaded_refs: list[str] = []
@@ -741,20 +691,16 @@ class AgentSession:
         which returns `prependContext` — appended to the current user prompt, NOT
         the system prompt, so the cacheable system prefix stays stable.
         """
-        if not (
-            self.cfg.workspace_dir
-            and self.cfg.active_memory_config
-            and self.cfg.active_memory_config.enabled
-        ):
+        if not (self.cfg.workspace_dir and self.cfg.active_memory_recall):
             return None
-        manager = ActiveMemoryManager(
+        wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
+        recall_result = await self.cfg.active_memory_recall(
             client=self.client,
             model=self.cfg.model,
             workspace_dir=str(self.cfg.workspace_dir),
             config=self.cfg.active_memory_config,
+            messages=wire_messages,
         )
-        wire_messages = [{"role": m.role, "content": m.content} for m in scratch_history]
-        recall_result = await manager.run(wire_messages)
         if not recall_result:
             return None
         on_event(ActiveMemoryRecall(result=recall_result))
@@ -763,7 +709,7 @@ class AgentSession:
     async def _build_system_for_turn(
         self,
         user_input: str,
-        visible_skills: list[Skill] | None,
+        visible_skills: list[Any] | None,
         on_event: EventCallback,
     ) -> str:
         bootstrap_files: list[WorkspaceBootstrapFile] | None = None
@@ -815,7 +761,7 @@ class AgentSession:
         self,
         scratch_history: list[Message],
         tool_use_blocks: list[dict[str, Any]],
-        skill_registry: dict[str, Skill],
+        skill_registry: dict[str, Any],
         on_event: EventCallback,
         cancellation_token: "CancellationToken | None",
     ) -> tuple[list[dict[str, Any]], bool]:
@@ -840,7 +786,10 @@ class AgentSession:
                 skill_name = tool_args["skill"]
                 if skill_registry and skill_name in skill_registry:
                     skill = skill_registry[skill_name]
-                    on_event(SkillInvoked(skill_name=skill_name, skill_path=skill.filePath))
+                    on_event(SkillInvoked(
+                        skill_name=skill_name,
+                        skill_path=getattr(skill, "filePath", ""),
+                    ))
 
         batch_requires_approval = False
         if self.registry.approval_manager:
@@ -1032,9 +981,8 @@ async def _run_agent_session_turn(
             )
             agent_id = "default"
             try:
-                from nano_openclaw.features.subagents.types import parse_session_key
-                parsed = parse_session_key(cfg.session_key)
-                agent_id = parsed.get("agentId", "default")
+                if cfg.agent_id_from_session_key is not None:
+                    agent_id = cfg.agent_id_from_session_key(cfg.session_key)
             except Exception:
                 pass
             payload = {
@@ -1395,7 +1343,7 @@ async def run_pre_compaction_memory_flush(
 
 def _build_memory_flush_system(registry: ToolRegistry, cfg: LoopConfig) -> str:
     bootstrap_files: list[WorkspaceBootstrapFile] | None = None
-    visible_skills: list[Skill] | None = None
+    visible_skills: list[Any] | None = None
     if cfg.workspace_dir:
         bootstrap_files = get_or_load_bootstrap_files(
             cfg.workspace_dir,
@@ -1403,15 +1351,8 @@ def _build_memory_flush_system(registry: ToolRegistry, cfg: LoopConfig) -> str:
             cfg.bootstrap_max_chars,
             cfg.bootstrap_total_max_chars,
         )
-        skill_entries = get_or_load_skills(
-            cfg.workspace_dir,
-            cfg.session_key,
-            extra_dirs=cfg.extra_skill_dirs,
-            max_bytes=cfg.max_skill_file_bytes,
-        )
-        if skill_entries:
-            eligible_entries = filter_eligible_skills(skill_entries, skill_filter=cfg.skill_filter)
-            visible_skills = filter_visible_skills(eligible_entries)
+        if cfg.skill_runtime is not None:
+            _eligible_entries, visible_skills = cfg.skill_runtime.load_turn_skills(cfg)
 
     if cfg.system_prompt_override is not None:
         return cfg.system_prompt_override
@@ -1519,21 +1460,12 @@ async def _wait_for_subagent_announcements(
     cancellation_token: "CancellationToken | None" = None,
 ) -> list[Message]:
     """Wait for spawned subagents from this session and return their messages."""
-    spawn_context = getattr(registry, "_spawn_tool_context", None)
-    requester_session_key = getattr(spawn_context, "requester_session_key", None) or cfg.session_key
-    if not requester_session_key:
+    if cfg.subagent_announcement_waiter is None:
         return []
-
-    from nano_openclaw.features.subagents.runner import get_runner
-
-    runner = get_runner()
     try:
-        await runner.wait_for_requester(requester_session_key, cancellation_token=cancellation_token)
+        return await cfg.subagent_announcement_waiter(registry, cfg, cancellation_token)
     except asyncio.CancelledError as exc:
         raise TurnCancelled() from exc
-
-    _check_cancelled(cancellation_token)
-    return runner.drain_announcements(requester_session_key)
 
 
 def _skipped_after_denial_result(tool_use_id: str, denied_tool_name: str) -> dict[str, Any]:

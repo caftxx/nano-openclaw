@@ -26,7 +26,13 @@ from nano_openclaw.core.runtime import (
 from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 from nano_openclaw.features.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
 from nano_openclaw.features.memory.dreaming import DreamingConfig, start_dreaming_scheduler
+from nano_openclaw.features.memory.runtime import recall_active_memory
 from nano_openclaw.features.skills.registry import bind_skill_runtime
+from nano_openclaw.features.skills.runtime import SkillRuntime
+from nano_openclaw.features.subagents.runtime import (
+    agent_id_from_session_key,
+    wait_for_subagent_announcements,
+)
 from nano_openclaw.logger import resolve_log_level
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
@@ -166,10 +172,14 @@ async def build_agent_runtime(
         max_skills_in_prompt=config.skills.load.maxSkillsInPrompt,
         max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
         active_memory_config=active_mem_cfg,
+        active_memory_recall=recall_active_memory,
         memory_flush_config=config.memoryFlush,
         dreaming_config=dreaming_cfg,
         extract_memories_config=config.extractMemories,
         hook_registry=hook_registry,
+        skill_runtime=SkillRuntime(),
+        subagent_announcement_waiter=wait_for_subagent_announcements,
+        agent_id_from_session_key=agent_id_from_session_key,
     )
 
     if not no_tools:

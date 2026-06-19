@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from nano_openclaw.core.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress, ToolResult
 from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.features.subagents.registry import reset_registry
+from nano_openclaw.features.subagents.runtime import wait_for_subagent_announcements
 from nano_openclaw.features.subagents.runner import SubagentRunner, get_runner, reset_runner
 from nano_openclaw.features.subagents.types import SpawnParams
 from nano_openclaw.core.tools import Tool, ToolRegistry
@@ -83,7 +84,10 @@ def test_agent_session_waits_for_spawned_subagent_before_next_model_turn(monkeyp
         registry=registry,
         on_event=lambda _event: None,
         client=object(),
-        cfg=LoopConfig(session_key=requester_session_key),
+        cfg=LoopConfig(
+            session_key=requester_session_key,
+            subagent_announcement_waiter=wait_for_subagent_announcements,
+        ),
     )
     asyncio.run(session.run_turn("spawn child"))
 
