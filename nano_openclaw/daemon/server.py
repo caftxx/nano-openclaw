@@ -131,7 +131,7 @@ async def run_daemon(
     # WebUI + /rpc see — single source of truth for sessions across surfaces.
     channel_manager = get_channel_manager()
     started_channels: list[tuple[str, str]] = []
-    backend: EmbeddedBackend = EmbeddedBackend(runtime)
+    backend: EmbeddedBackend = EmbeddedBackend(runtime, channel_manager=channel_manager)
     gateway_ctx = GatewayContext(
         runtime=runtime,
         backend=backend,

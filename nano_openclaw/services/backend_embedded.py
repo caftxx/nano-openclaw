@@ -17,6 +17,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from nano_openclaw.core.attachments import PromptAttachment
@@ -63,6 +64,7 @@ from nano_openclaw.core.tools import ToolRegistry
 
 if TYPE_CHECKING:
     from nano_openclaw.core.runtime import AgentRuntime
+    from nano_openclaw.services.channels import ChannelManager
 
 
 log = get_logger(__name__)
@@ -156,8 +158,10 @@ class EmbeddedBackend(Backend):
         runtime: "AgentRuntime",
         *,
         manager: BackendSessionManager | None = None,
+        channel_manager: "ChannelManager | None" = None,
     ) -> None:
         self.runtime = runtime
+        self.channel_manager = channel_manager
         self.manager = manager or BackendSessionManager(
             session_dir=runtime.session_dir,
             store_path=runtime.store_path,
@@ -964,22 +968,59 @@ class EmbeddedBackend(Backend):
     # ─── Channels ───
 
     async def channels_status(self) -> list[ChannelStatusEntry]:
-        # Channel registry plumbed in Phase 2; v1 returns empty.
-        return []
+        if self.channel_manager is None:
+            return []
+        return [
+            ChannelStatusEntry(
+                channel_id=entry.channel_id,
+                account_id=entry.account_id,
+                state=entry.state,
+                error=entry.error,
+                started_at=entry.started_at,
+            )
+            for entry in self.channel_manager.list_status()
+        ]
 
     async def channels_start(
         self,
         channel_id: str,
         account_id: str | None = None,
     ) -> ChannelStatusEntry:
-        raise NotImplementedError("channels_start: pending Phase 2")
+        if self.channel_manager is None:
+            raise NotImplementedError("channels_start: channel manager not configured")
+        from nano_openclaw.adapters.channels.base import ChannelAccount
+
+        instance = await self.channel_manager.start(
+            channel_id,
+            ChannelAccount(id=account_id or "default", config={}),
+            self.runtime,
+            SimpleNamespace(backend=self),
+        )
+        entry = instance.status()
+        return ChannelStatusEntry(
+            channel_id=entry.channel_id,
+            account_id=entry.account_id,
+            state=entry.state,
+            error=entry.error,
+            started_at=entry.started_at,
+        )
 
     async def channels_stop(
         self,
         channel_id: str,
         account_id: str | None = None,
     ) -> ChannelStatusEntry:
-        raise NotImplementedError("channels_stop: pending Phase 2")
+        if self.channel_manager is None:
+            raise NotImplementedError("channels_stop: channel manager not configured")
+        resolved_account_id = account_id or "default"
+        await self.channel_manager.stop(channel_id, resolved_account_id)
+        return ChannelStatusEntry(
+            channel_id=channel_id,
+            account_id=resolved_account_id,
+            state="stopped",
+            error=None,
+            started_at=None,
+        )
 
     # ─── Subagents ───
 
@@ -1457,7 +1498,7 @@ class EmbeddedBackend(Backend):
     async def health(self) -> HealthSummary:
         return HealthSummary(
             runtime_ready=True,
-            channels_running=0,
+            channels_running=len(self.channel_manager.list_status()) if self.channel_manager is not None else 0,
             sessions_loaded=len(self.manager._loaded),
             in_flight_turns=len(self._run_registry),
         )

@@ -56,7 +56,7 @@ artifacts in play — each has a distinct writer and purpose:
 
 Every `memory/topics/*.md` file starts with YAML frontmatter so the
 extractor can render a typed manifest and the index stays scan-friendly. The
-canonical shape (see `nano_openclaw/memory/extractor_prompts.py`
+canonical shape (see `nano_openclaw/features/memory/extractor_prompts.py`
 `MEMORY_FRONTMATTER_EXAMPLE`) is:
 
 ```markdown

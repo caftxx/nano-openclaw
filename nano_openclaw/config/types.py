@@ -457,7 +457,7 @@ class ExtractMemoriesConfig(BaseModel):
     Triggers a forked subagent after every eligible turn to distill durable
     memories into ``memory/topics/*.md`` and update ``memory/MEMORY.md``.
     Subject to per-source enable list, cooldown, and mutual-exclusion with
-    main-agent topic writes — see ``nano_openclaw/memory/extractor.py``.
+    main-agent topic writes — see ``nano_openclaw/features/memory/extractor.py``.
     """
     model_config = ConfigDict(populate_by_name=True)
 
@@ -486,7 +486,7 @@ class ExtractMemoriesConfig(BaseModel):
     )
     prompt: str = Field(
         default_factory=_default_extract_prompt,
-        description="Extractor prompt template (see memory/extractor_prompts.py)",
+        description="Extractor prompt template (see features/memory/extractor_prompts.py)",
     )
 
 

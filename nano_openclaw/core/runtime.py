@@ -69,12 +69,12 @@ class AgentRuntime:
     # with the same source. ``None`` means "use default discovery".
     config_path: str | None = None
     # ``run_registry`` is the single source of truth for in-flight turn_ids
-    # across chat, cron, channels — see gateway/run_registry.py. Created
+    # across chat, cron, channels — see services/runs.py. Created
     # eagerly in ``build_agent_runtime`` so cron can register against it
     # before any Backend exists.
     run_registry: "RunRegistry" = field(default_factory=lambda: _build_run_registry())
     # ``runtime_guard`` coordinates ``runtime.update`` against in-flight turns
-    # — see gateway/runtime_lock.py. Same lifetime as ``run_registry``.
+    # — see services/runtime_update.py. Same lifetime as ``run_registry``.
     runtime_guard: "RuntimeUpdateGuard" = field(default_factory=lambda: _build_runtime_guard())
     dreaming_task: Any | None = None
     cron_stop: threading.Event | None = None
@@ -276,7 +276,7 @@ async def build_agent_runtime(
 
     # Build the RunRegistry + RuntimeUpdateGuard up front so the scheduler
     # (started below) shares the same instances the EmbeddedBackend will use
-    # — see gateway/run_registry.py + gateway/runtime_lock.py.
+    # — see services/runs.py + services/runtime_update.py.
     run_registry = _build_run_registry()
     runtime_guard = _build_runtime_guard()
 

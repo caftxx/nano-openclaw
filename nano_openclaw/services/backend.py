@@ -402,7 +402,7 @@ class Backend(Protocol):
         connection drops; clients should reconnect on the same port.
 
         For deferred (turn-end) restart, the LLM-facing ``restart`` tool
-        sets ``runtime.pending_restart`` instead — see gateway/server.py.
+        sets ``runtime.pending_restart`` instead — see daemon/server.py.
         """
         ...
 

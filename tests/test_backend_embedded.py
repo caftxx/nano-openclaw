@@ -9,6 +9,7 @@ of pytest-asyncio.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,21 @@ from nano_openclaw.services.backend_embedded import (
 )
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
+from nano_openclaw.adapters.channels.base import ChannelAdapter
+from nano_openclaw.services.channels import ChannelManager
+
+
+class _RecordingChannel(ChannelAdapter):
+    id = "recording"
+
+    async def start(self, runtime, gateway=None):
+        self._state = "running"
+        self._started_at = time.time()
+        self.gateway = gateway
+
+    async def stop(self):
+        self._state = "stopped"
+        self._started_at = None
 
 
 def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
@@ -236,3 +252,27 @@ def test_health_returns_summary(tmp_path):
     h = asyncio.run(run())
     assert h.runtime_ready is True
     assert h.in_flight_turns == 0
+
+
+def test_channels_use_injected_manager(tmp_path):
+    async def run():
+        manager = ChannelManager()
+        manager.register(_RecordingChannel)
+        backend = EmbeddedBackend(_fake_runtime(tmp_path), channel_manager=manager)
+
+        started = await backend.channels_start("recording", "work")
+        statuses = await backend.channels_status()
+        health = await backend.health()
+        await backend.channels_stop("recording", "work")
+        stopped_statuses = await backend.channels_status()
+        await backend.aclose()
+
+        return started, statuses, health, stopped_statuses
+
+    started, statuses, health, stopped_statuses = asyncio.run(run())
+    assert started.channel_id == "recording"
+    assert started.account_id == "work"
+    assert started.state == "running"
+    assert [(s.channel_id, s.account_id, s.state) for s in statuses] == [("recording", "work", "running")]
+    assert health.channels_running == 1
+    assert stopped_statuses == []

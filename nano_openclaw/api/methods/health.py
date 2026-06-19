@@ -14,7 +14,7 @@ async def health(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "version": resolve_version(),
         "runtime_ready": summary.runtime_ready,
-        "channels_running": len(ctx.channel_manager.list_status()),
+        "channels_running": summary.channels_running,
         "sessions_loaded": summary.sessions_loaded,
         "in_flight_turns": summary.in_flight_turns,
     }
