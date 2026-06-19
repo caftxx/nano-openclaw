@@ -74,7 +74,7 @@ from nano_openclaw.features.skills import (
 )
 from nano_openclaw.todo import TodoStore
 from nano_openclaw.core.tools import ToolRegistry
-from nano_openclaw.features.workspace import (
+from nano_openclaw.core.workspace import (
     WorkspaceBootstrapFile,
     get_or_load_bootstrap_files,
     load_workspace_memory_index,

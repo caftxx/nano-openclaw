@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import re
 
-from nano_openclaw.features.workspace.constants import (
+from nano_openclaw.core.workspace.constants import (
     DEFAULT_DAILY_MEMORY_DAYS,
     MAX_DAILY_MEMORY_DAYS,
     DAILY_MEMORY_FILE_MAX_CHARS,

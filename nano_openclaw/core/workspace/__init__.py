@@ -13,7 +13,7 @@ Public API:
 
 from __future__ import annotations
 
-from nano_openclaw.features.workspace.constants import (
+from nano_openclaw.core.workspace.constants import (
     BOOTSTRAP_FILES,
     CONTEXT_FILE_ORDER,
     DEFAULT_AGENTS_FILENAME,
@@ -26,14 +26,14 @@ from nano_openclaw.features.workspace.constants import (
     DEFAULT_USER_FILENAME,
     MINIMAL_BOOTSTRAP_ALLOWLIST,
 )
-from nano_openclaw.features.workspace.loader import (
+from nano_openclaw.core.workspace.loader import (
     WorkspaceBootstrapFile,
     build_bootstrap_context,
     load_workspace_bootstrap_files,
     load_workspace_memory_index,
     trim_bootstrap_content,
 )
-from nano_openclaw.features.workspace.cache import (
+from nano_openclaw.core.workspace.cache import (
     clear_all_cache,
     clear_session_cache,
     get_or_load_bootstrap_files,

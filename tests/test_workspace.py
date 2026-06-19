@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.features.workspace import (
+from nano_openclaw.core.workspace import (
     BOOTSTRAP_FILES,
     CONTEXT_FILE_ORDER,
     DEFAULT_AGENTS_FILENAME,

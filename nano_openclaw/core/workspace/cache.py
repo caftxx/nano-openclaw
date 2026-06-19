@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nano_openclaw.features.workspace.loader import (
+from nano_openclaw.core.workspace.loader import (
     WorkspaceBootstrapFile,
     build_bootstrap_context,
     load_workspace_bootstrap_files,

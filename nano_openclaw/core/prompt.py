@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nano_openclaw.core.tools import ToolRegistry
-from nano_openclaw.features.workspace import (
+from nano_openclaw.core.workspace import (
     WorkspaceBootstrapFile,
     CONTEXT_FILE_ORDER,
     DEFAULT_SOUL_FILENAME,

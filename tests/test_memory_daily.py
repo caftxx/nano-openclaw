@@ -21,7 +21,7 @@ from nano_openclaw.features.memory.daily import (
     format_daily_memory_block,
     build_daily_memory_prelude,
 )
-from nano_openclaw.features.workspace.constants import (
+from nano_openclaw.core.workspace.constants import (
     DEFAULT_DAILY_MEMORY_DAYS,
     MAX_DAILY_MEMORY_DAYS,
     DAILY_MEMORY_FILE_MAX_CHARS,

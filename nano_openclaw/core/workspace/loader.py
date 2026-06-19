@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from nano_openclaw.logger import get_logger
-from nano_openclaw.features.workspace.constants import (
+from nano_openclaw.core.workspace.constants import (
     BOOTSTRAP_FILES,
     CONTEXT_FILE_ORDER,
     DEFAULT_MEMORY_DIR,
