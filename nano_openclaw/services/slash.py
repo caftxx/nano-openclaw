@@ -211,6 +211,8 @@ async def handle_slash(
 
     handler = _HANDLERS.get(verb)
     if handler is None:
+        handler = _plugin_slash_handlers(backend).get(verb)
+    if handler is None:
         return False
     try:
         await handler(backend, renderer, state, args, cmd)
@@ -223,6 +225,14 @@ async def handle_slash(
     except Exception as exc:  # noqa: BLE001
         renderer.error(f"{verb}: {type(exc).__name__}: {exc}")
     return True
+
+
+def _plugin_slash_handlers(backend: Backend) -> dict[str, SlashHandler]:
+    runtime = getattr(backend, "runtime", None)
+    hook_registry = getattr(runtime, "hook_registry", None)
+    if hook_registry is None or not hasattr(hook_registry, "slash_handlers"):
+        return {}
+    return hook_registry.slash_handlers()
 
 
 # ────────────────────────────────────────────────────────────────────────────

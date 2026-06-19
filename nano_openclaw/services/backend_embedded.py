@@ -197,11 +197,21 @@ class EmbeddedBackend(Backend):
                 register_runtime_tools(runtime.registry, self)
             except Exception as exc:  # noqa: BLE001 — tool wiring is non-fatal
                 log.warning("backend.runtime_tools.register_failed", f"{type(exc).__name__}: {exc}")
+        self._register_plugin_channels()
 
     @property
     def _run_registry(self):
         """Convenience proxy — every Backend instance shares the runtime's registry."""
         return self.runtime.run_registry
+
+    def _register_plugin_channels(self) -> None:
+        if self.channel_manager is None:
+            return
+        hook_registry = getattr(self.runtime, "hook_registry", None)
+        if hook_registry is None or not hasattr(hook_registry, "channels"):
+            return
+        for channel in hook_registry.channels():
+            self.channel_manager.register(channel)
 
     # ─── Push event plumbing ───
 
@@ -928,6 +938,7 @@ class EmbeddedBackend(Backend):
                 if thinking_level is not None:
                     new_runtime.cfg.thinking_level = thinking_level
                 self.runtime = new_runtime
+                self._register_plugin_channels()
                 # Keep the manager instance (callers hold its sessions); just
                 # refresh metadata new transcripts will be tagged with.
                 self.manager.model = new_runtime.model_id

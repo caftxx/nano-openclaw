@@ -50,18 +50,15 @@ class PluginApi:
 
     def register_slash(self, *registration: Any) -> None:
         self._slash_registrations.append(tuple(registration))
-        from nano_openclaw.services.slash import register_slash_command
-
-        register_slash_command(*registration)
+        self._hook_registry.register_slash(*registration)
 
     def register_channel(self, channel: Any) -> None:
         self._channel_registrations.append(channel)
-        from nano_openclaw.services.channels import get_channel_manager
-
-        get_channel_manager().register(channel)
+        self._hook_registry.register_channel(channel)
 
     def register_feature(self, feature: Any) -> None:
         self._feature_registrations.append(feature)
+        self._hook_registry.register_feature(feature)
 
     def tool_names(self) -> list[str]:
         return self._tool_registry.names()

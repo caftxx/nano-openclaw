@@ -332,7 +332,11 @@ function handleEvent(event) {
       const pending = document.querySelector(".message.command.pending");
       if (pending && pending.dataset.command === event.command) {
         pending.classList.remove("pending");
-        pending.querySelector(".bubble").innerHTML = renderMarkdown(event.text || "");
+        if (!event.text) {
+          pending.remove();
+        } else {
+          pending.querySelector(".bubble").innerHTML = renderMarkdown(event.text);
+        }
         scrollMessages(true);
       } else {
         appendSlashResult(event.command, event.text || "");
@@ -1388,19 +1392,15 @@ $("composer").onsubmit = async (event) => {
   }
 
   if (text.startsWith("/") && !state.attachments.length) {
-    const verb = text.slice(1).split(/\s+/)[0].toLowerCase();
-    if (BUILTIN_COMMANDS.has(verb)) {
-      const msgEl = appendSlashResult(text, "…");
-      msgEl.classList.add("pending");
-      send("command.run", {
-        command: text,
-        session_id: state.currentSession?.session_id ?? null,
-      });
-      $("prompt").value = "";
-      resizePrompt();
-      return;
-    }
-    // Unknown slash command (skills etc.) → fall through to agent loop, same as CLI
+    const msgEl = appendSlashResult(text, "…");
+    msgEl.classList.add("pending");
+    send("command.run", {
+      command: text,
+      session_id: state.currentSession?.session_id ?? null,
+    });
+    $("prompt").value = "";
+    resizePrompt();
+    return;
   }
 
   if (!state.currentSession) return;

@@ -425,6 +425,7 @@ def create_app(
                     # model can decide what to do with it (matches CLI fall-
                     # through semantics).
                     session = manager.get_or_load(session_id_cmd)
+                    await emit({"type": "command.result", "command": cmd_text, "text": ""})
                     try:
                         await backend.chat_send(session_key=session.session_id, text=cmd_text, attachments=[], turn_source="webui")
                     except BackendError as exc:

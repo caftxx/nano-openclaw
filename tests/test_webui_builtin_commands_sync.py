@@ -1,12 +1,9 @@
-"""Drift detection: WebUI's BUILTIN_COMMANDS must cover every server-side
-slash handler.
+"""Drift detection: WebUI's built-in slash catalogue matches core handlers.
 
 The WebUI front-end (``nano_openclaw/adapters/webui/static/app.js``) maintains a
-hand-written set of slash verbs it routes through ``command.run``. Verbs
-not in this set fall through to ``chat.send`` and the agent receives the
-slash as a plain user message — at best it gets ignored, at worst the LLM
-fires a tool with the same semantics (e.g. ``/model`` triggering
-``switch_model``).
+hand-written slash catalogue for UX affordances. All slash text is routed
+through ``command.run``; this test keeps the static catalogue aligned with
+the core server-side handlers while ignoring dynamic/plugin commands.
 
 This test parses ``BUILTIN_COMMANDS`` straight out of app.js and asserts
 that every verb in ``services/slash.py::_HANDLERS`` is present. New slash
