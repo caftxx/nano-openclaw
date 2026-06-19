@@ -89,6 +89,24 @@ def test_embedded_backend_satisfies_protocol(tmp_path):
     assert isinstance(backend, Backend)
 
 
+def test_turn_registry_preserves_workspace_write_hook(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+    calls = []
+
+    def hook(tool_name, ctx):
+        calls.append((tool_name, ctx.workspace_dir))
+
+    runtime.registry.set_workspace_dir(runtime.workspace_dir)
+    runtime.registry.set_before_workspace_write(hook)
+
+    clone = backend._build_turn_registry("session-1")
+    ctx = clone.execution_context()
+    clone.before_workspace_write("apply_patch", ctx)
+
+    assert calls == [("apply_patch", str(runtime.workspace_dir))]
+
+
 def test_subscribe_yields_emitted_events(tmp_path):
     async def run():
         backend = EmbeddedBackend(_fake_runtime(tmp_path))

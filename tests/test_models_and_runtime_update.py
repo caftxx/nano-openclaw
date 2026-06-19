@@ -23,6 +23,7 @@ import pytest
 
 from nano_openclaw.services.backend import BusyError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.core.loop import LoopConfig
@@ -242,3 +243,44 @@ def test_runtime_update_failed_rebuild_keeps_old_cron_running(tmp_path, monkeypa
             await backend.aclose()
 
     asyncio.run(run())
+
+
+def test_runtime_update_closes_new_runtime_when_channel_registration_fails(tmp_path, monkeypatch):
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime, channel_manager=ChannelManager())
+    closed = False
+
+    class BadChannel:
+        id = ""
+
+    async def close_new():
+        nonlocal closed
+        closed = True
+
+    async def fake_build_agent_runtime(**kwargs):
+        return SimpleNamespace(
+            **{
+                **runtime.__dict__,
+                "model_ref": kwargs["model_ref_override"],
+                "runtime_guard": kwargs["runtime_guard"],
+                "run_registry": kwargs["run_registry"],
+                "hook_registry": SimpleNamespace(channels=lambda: (BadChannel,)),
+                "close": close_new,
+            }
+        )
+
+    import nano_openclaw.core.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "build_agent_runtime", fake_build_agent_runtime)
+
+    async def run():
+        try:
+            with pytest.raises(ValueError):
+                await backend.runtime_update(model_ref="anthropic/claude-haiku-4-5")
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+    assert backend.runtime is runtime
+    assert closed is True

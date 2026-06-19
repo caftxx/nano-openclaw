@@ -67,19 +67,7 @@ def _clone_registry(registry: ToolRegistry, uid: str, account_id: str = "default
     The cron scheduler accepts both formats (legacy two-segment is mapped to
     account ``"default"``).
     """
-    clone = ToolRegistry(
-        _tools=dict(registry._tools),
-        approval_manager=registry.approval_manager,
-        console=registry.console,
-        _workspace_dir=registry._workspace_dir,
-        _state_dir=registry._state_dir,
-        _allow_global_pip=registry._allow_global_pip,
-    )
-    clone.set_session_status_context(**registry._session_status_context)
-    clone.set_eligible_skills(dict(registry._eligible_skills))
-    hook_reg = registry.hook_registry()
-    if hook_reg is not None:
-        clone.set_hook_registry(hook_reg)
+    clone = registry.clone()
 
     created_by = f"wechat:{account_id}:{uid}"
 

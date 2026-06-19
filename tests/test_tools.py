@@ -524,3 +524,22 @@ def test_web_plugin_uses_web_tool_defaults_from_config(monkeypatch):
         "max_redirects": 2,
         "timeout_seconds": 9,
     }
+
+
+def test_tool_registry_clone_preserves_workspace_write_hook():
+    registry = ToolRegistry()
+    calls = []
+
+    def hook(tool_name, ctx):
+        calls.append((tool_name, ctx.workspace_dir))
+
+    registry.set_workspace_dir("workspace")
+    registry.set_before_workspace_write(hook)
+
+    clone = registry.clone()
+    ctx = clone.execution_context()
+    assert clone.before_workspace_write is hook
+
+    clone.before_workspace_write("write_file", ctx)
+
+    assert calls == [("write_file", "workspace")]

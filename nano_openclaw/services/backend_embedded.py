@@ -371,19 +371,7 @@ class EmbeddedBackend(Backend):
     def _build_turn_registry(self, session_id: str) -> ToolRegistry:
         """Per-turn shallow clone with spawn context wired."""
         base = self.runtime.registry
-        clone = ToolRegistry(
-            _tools=dict(base._tools),
-            approval_manager=base.approval_manager,
-            console=base.console,
-            _workspace_dir=base._workspace_dir,
-            _state_dir=base._state_dir,
-            _allow_global_pip=base._allow_global_pip,
-        )
-        clone.set_session_status_context(**base._session_status_context)
-        clone.set_eligible_skills(dict(base._eligible_skills))
-        if base.hook_registry() is not None:
-            clone.set_hook_registry(base.hook_registry())
-        return clone
+        return base.clone()
 
     def _wire_spawn_context(
         self,
@@ -963,7 +951,17 @@ class EmbeddedBackend(Backend):
                 )
                 if thinking_level is not None:
                     new_runtime.cfg.thinking_level = thinking_level
-                self._register_plugin_channels(new_runtime)
+                try:
+                    self._register_plugin_channels(new_runtime)
+                except Exception:
+                    try:
+                        await new_runtime.close()
+                    except Exception as close_exc:  # noqa: BLE001
+                        log.warning(
+                            "runtime_update.new_close",
+                            f"{type(close_exc).__name__}: {close_exc}",
+                        )
+                    raise
                 self.runtime = new_runtime
                 # Keep the manager instance (callers hold its sessions); just
                 # refresh metadata new transcripts will be tagged with.

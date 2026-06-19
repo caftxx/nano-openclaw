@@ -379,24 +379,10 @@ class SubagentRunner:
                 registry._tools.pop(name, None)
             return registry
 
-        registry = ToolRegistry()
-        for name, tool in parent_registry._tools.items():
-            if name not in SUBAGENT_TOOL_BLACKLIST:
-                registry.register(tool)
-
         # Inherit environment from parent so file tools resolve paths correctly
-        # and MCP tools are available in the subagent.
-        registry.approval_manager = parent_registry.approval_manager
-        # Background subagents cannot safely prompt on the foreground TUI.
-        registry.console = None
-        registry._eligible_skills = dict(parent_registry._eligible_skills)
-        if parent_registry._workspace_dir:
-            registry.set_workspace_dir(parent_registry._workspace_dir)
-        if parent_registry._state_dir:
-            registry.set_state_dir(parent_registry._state_dir)
-        registry.set_allow_global_pip(parent_registry._allow_global_pip)
-
-        return registry
+        # and MCP/tools hooks are available, but do not let background
+        # subagents prompt on the foreground TUI.
+        return parent_registry.clone(exclude=set(SUBAGENT_TOOL_BLACKLIST), console=None)
     
     def _build_subagent_system_prompt(self, task: str, registry: "ToolRegistry | None" = None) -> str:
         """Build system prompt for a subagent.

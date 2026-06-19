@@ -106,6 +106,25 @@ class ToolRegistry:
     def hook_registry(self) -> "HookRegistry | None":
         return self._hook_registry
 
+    def clone(self, *, exclude: set[str] | None = None, console: Console | None | object = ...) -> "ToolRegistry":
+        exclude = exclude or set()
+        cloned = ToolRegistry(
+            _tools={name: tool for name, tool in self._tools.items() if name not in exclude},
+            approval_manager=self.approval_manager,
+            console=self.console if console is ... else console,
+            _workspace_dir=self._workspace_dir,
+            _state_dir=self._state_dir,
+            _allow_global_pip=self._allow_global_pip,
+            _spawn_tool_context=self._spawn_tool_context,
+            _hook_registry=self._hook_registry,
+            approval_live_stopper=self.approval_live_stopper,
+            approval_handler=self.approval_handler,
+            before_workspace_write=self.before_workspace_write,
+        )
+        cloned.set_session_status_context(**self._session_status_context)
+        cloned.set_eligible_skills(dict(self._eligible_skills))
+        return cloned
+
     def execution_context(self, **overrides: Any) -> ToolExecutionContext:
         """Build a per-dispatch context from registry-level defaults."""
         values = {
