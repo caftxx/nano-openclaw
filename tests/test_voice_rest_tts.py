@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from nano_openclaw.config.types import VoiceConfig
-from nano_openclaw.gateway.webui.aliyun_tts import TtsError, synthesize_tts
+from nano_openclaw.adapters.webui.aliyun_tts import TtsError, synthesize_tts
 
 
 # ── resolved_rest_tts_url 派生 ────────────────────────────────────────────────

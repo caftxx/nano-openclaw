@@ -76,7 +76,7 @@ async def run_daemon(
     """
     import uvicorn  # local import to keep cold-start cheap for non-daemon paths
 
-    from nano_openclaw.gateway.webui.server import create_app
+    from nano_openclaw.adapters.webui.server import create_app
 
     console = Console()
 

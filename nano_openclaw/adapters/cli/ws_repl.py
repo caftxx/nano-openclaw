@@ -30,7 +30,7 @@ from nano_openclaw.gateway.slash import HELP_TEXT, QuitREPL, handle_slash
 
 # Reuse the embedded mode's pure renderer helpers verbatim — both modes
 # render identical Rich widgets, only the event source differs.
-from nano_openclaw.cli import (
+from nano_openclaw.adapters.cli.repl import (
     _build_status_tree,
     _build_subagent_tree,
     _build_tool_tree,
@@ -46,7 +46,7 @@ from nano_openclaw.cli import (
 # and translates the flip into a ``chat.abort`` RPC — see
 # ``_abort_on_escape``. Ctrl+C on Windows falls through to the
 # KeyboardInterrupt fallback (no raw mode there).
-from nano_openclaw.cli import _escape_cancellation_token
+from nano_openclaw.adapters.cli.repl import _escape_cancellation_token
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -490,7 +490,7 @@ async def ws_repl(
 
     try:
         while True:
-            from nano_openclaw.cli import _get_pt_session  # reuse prompt_toolkit input
+            from nano_openclaw.adapters.cli.repl import _get_pt_session  # reuse prompt_toolkit input
             try:
                 user_input = (await _get_pt_session().prompt_async()).strip()
             except (EOFError, KeyboardInterrupt):

@@ -18,7 +18,7 @@ from nano_openclaw.session.store import save_session_store, update_session
 from nano_openclaw.core.tools import Tool, ToolRegistry
 from nano_openclaw.services.approval_broker import ApprovalBroker
 from nano_openclaw.config.types import AgentDefaultsConfig, AgentsConfig, ModelDefinition, ModelProvider, ModelsConfig, NanoOpenClawConfig
-from nano_openclaw.gateway.webui.server import (
+from nano_openclaw.adapters.webui.server import (
     _event_to_payload,
     _image_model_options,
     _model_options,
@@ -814,7 +814,7 @@ def _make_voice_app(voice_cfg):
     backend.runtime.config.voice 链路即可，无需真实 Backend/Runtime。
     """
     from types import SimpleNamespace
-    from nano_openclaw.gateway.webui.server import create_app
+    from nano_openclaw.adapters.webui.server import create_app
 
     config = SimpleNamespace(voice=voice_cfg)
     runtime = SimpleNamespace(config=config)

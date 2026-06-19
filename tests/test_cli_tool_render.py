@@ -2,7 +2,7 @@ import asyncio
 
 from rich.console import Console
 
-from nano_openclaw.cli import _build_tool_tree, _make_event_handler
+from nano_openclaw.adapters.cli.repl import _build_tool_tree, _make_event_handler
 from nano_openclaw.core.loop import (
     Compaction,
     ImageAttached,

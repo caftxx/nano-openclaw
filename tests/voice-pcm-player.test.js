@@ -6,7 +6,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createVoicePcmPlayer = require("../nano_openclaw/gateway/webui/static/voice-pcm-player.js");
+const createVoicePcmPlayer = require("../nano_openclaw/adapters/webui/static/voice-pcm-player.js");
 const { pcm16ToFloat32 } = createVoicePcmPlayer;
 
 // ── Fake Web Audio ──────────────────────────────────────────────────────────

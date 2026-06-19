@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.console import Console
 
-from nano_openclaw.cli import _list_skills
+from nano_openclaw.adapters.cli.repl import _list_skills
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.skills import Skill, SkillEntry
 
@@ -101,7 +101,7 @@ def test_list_skills_shows_blocked(tmp_path: Path):
     cfg = LoopConfig(workspace_dir=tmp_path, session_key="test")
     
     # Mock to return our blocked skill
-    with patch("nano_openclaw.cli.get_or_load_skills") as mock_load:
+    with patch("nano_openclaw.adapters.cli.repl.get_or_load_skills") as mock_load:
         mock_load.return_value = [entry]
         with console.capture() as capture:
             _list_skills(console, cfg)
@@ -149,7 +149,7 @@ def test_list_skills_empty(tmp_path: Path):
     cfg = LoopConfig(workspace_dir=tmp_path, session_key="test")
     
     # Mock to avoid loading ~/.agents/skills
-    with patch("nano_openclaw.cli.get_or_load_skills") as mock_load:
+    with patch("nano_openclaw.adapters.cli.repl.get_or_load_skills") as mock_load:
         mock_load.return_value = []
         with console.capture() as capture:
             _list_skills(console, cfg)

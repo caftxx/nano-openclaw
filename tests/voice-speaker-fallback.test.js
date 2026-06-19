@@ -7,9 +7,9 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createFallbackSpeaker = require("../nano_openclaw/gateway/webui/static/voice-speaker-fallback.js");
-const createLocalSpeaker = require("../nano_openclaw/gateway/webui/static/voice-speaker-local.js");
-const createVoicePcmPlayer = require("../nano_openclaw/gateway/webui/static/voice-pcm-player.js");
+const createFallbackSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-fallback.js");
+const createLocalSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-local.js");
+const createVoicePcmPlayer = require("../nano_openclaw/adapters/webui/static/voice-pcm-player.js");
 
 // 可控的假引擎：记录调用，错误/音频/完成由测试触发
 function makeFakeEngine(name) {
@@ -256,7 +256,7 @@ test("契约：speaker provider 的播放器工厂必须整体展开 cb（防逐
   const fs = require("node:fs");
   const path = require("node:path");
   const src = fs.readFileSync(
-    path.join(__dirname, "../nano_openclaw/gateway/webui/static/voice-speaker-provider.js"), "utf8");
+    path.join(__dirname, "../nano_openclaw/adapters/webui/static/voice-speaker-provider.js"), "utf8");
   assert.match(src, /createPlayer:\s*function\s*\(cb\)\s*\{[\s\S]*createVoicePcmPlayer\(Object\.assign\([^;]*\}\s*,\s*cb\)\)/,
     "speaker provider 的 createPlayer 必须 Object.assign({...}, cb) 整体展开转发");
 });
@@ -265,7 +265,7 @@ test("车机场景回归：Chrome 只暴露蓝牙 HFP 麦时，本轮阿里云 A
   const fs = require("node:fs");
   const path = require("node:path");
   const src = fs.readFileSync(
-    path.join(__dirname, "../nano_openclaw/gateway/webui/static/voice-shell.js"), "utf8");
+    path.join(__dirname, "../nano_openclaw/adapters/webui/static/voice-shell.js"), "utf8");
   assert.match(src, /aliyunAsrBlockedByBluetooth/,
     "shell 需要记录阿里云 ASR 被蓝牙 HFP 输入阻断的状态");
   assert.match(src, /kind === ["']bluetooth-hfp["'][\s\S]*aliyunAsrBlockedByBluetooth = true/,

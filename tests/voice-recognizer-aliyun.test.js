@@ -6,7 +6,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createAliyunRecognizer = require("../nano_openclaw/gateway/webui/static/voice-recognizer-aliyun.js");
+const createAliyunRecognizer = require("../nano_openclaw/adapters/webui/static/voice-recognizer-aliyun.js");
 const {
   parseAliyunEvent, makeId, buildStartCommand, buildStopCommand, choosePreferredInputDevice,
 } = createAliyunRecognizer;

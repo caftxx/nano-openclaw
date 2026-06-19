@@ -4,7 +4,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createFlowingSpeaker = require("../nano_openclaw/gateway/webui/static/voice-speaker-flowing.js");
+const createFlowingSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-flowing.js");
 const { parseTtsEvent, buildStartSynthesis, buildRunSynthesis, buildStopSynthesis } = createFlowingSpeaker;
 
 function makeFakeWS() {

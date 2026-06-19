@@ -8,7 +8,7 @@ import hmac
 
 import pytest
 
-from nano_openclaw.gateway.webui.aliyun_token import (
+from nano_openclaw.adapters.webui.aliyun_token import (
     AliyunTokenProvider,
     TokenError,
     build_canonicalized_query,

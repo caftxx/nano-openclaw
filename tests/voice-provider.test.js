@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const createVoiceRecognizerProvider = require("../nano_openclaw/gateway/webui/static/voice-recognizer-provider.js");
-const createVoiceSpeakerProvider = require("../nano_openclaw/gateway/webui/static/voice-speaker-provider.js");
+const createVoiceRecognizerProvider = require("../nano_openclaw/adapters/webui/static/voice-recognizer-provider.js");
+const createVoiceSpeakerProvider = require("../nano_openclaw/adapters/webui/static/voice-speaker-provider.js");
 
 test("recognizer provider creates aliyun and standby webspeech adapters", () => {
   const calls = [];

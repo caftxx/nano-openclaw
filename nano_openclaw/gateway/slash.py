@@ -1,6 +1,6 @@
 """Shared slash-command dispatcher used by every frontend.
 
-TUI (cli.py / ws_repl.py), WebUI (gateway/webui/server.py) and WeChat
+TUI (adapters/cli/repl.py / adapters/cli/ws_repl.py), WebUI (adapters/webui/server.py) and WeChat
 (channels/wechat) all delegate to ``handle_slash`` here, so users see
 identical command behavior regardless of which frontend is talking to the
 Backend. Each handler talks to the ``Backend`` Protocol — never to
@@ -34,7 +34,7 @@ from rich import markup
 from rich.console import Console
 
 from nano_openclaw.services.backend import Backend, BackendError, BusyError, NotFoundError
-from nano_openclaw.gateway.slash_renderer import (
+from nano_openclaw.services.slash_renderer import (
     MarkdownRenderer,
     PlainRenderer,
     RichRenderer,

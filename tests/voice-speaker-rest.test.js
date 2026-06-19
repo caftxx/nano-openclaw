@@ -4,7 +4,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createRestSpeaker = require("../nano_openclaw/gateway/webui/static/voice-speaker-rest.js");
+const createRestSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-rest.js");
 const { splitForTts, base64ToArrayBuffer } = createRestSpeaker;
 
 function okResponse(bytes) {

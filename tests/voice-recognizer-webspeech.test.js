@@ -5,7 +5,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createWebspeechRecognizer = require("../nano_openclaw/gateway/webui/static/voice-recognizer-webspeech.js");
+const createWebspeechRecognizer = require("../nano_openclaw/adapters/webui/static/voice-recognizer-webspeech.js");
 
 // ── Fakes ───────────────────────────────────────────────────────────────────
 function fakeClock() {

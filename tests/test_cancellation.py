@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from rich.console import Console
 
-from nano_openclaw.cli import _manual_compact, repl
+from nano_openclaw.adapters.cli.repl import _manual_compact, repl
 from nano_openclaw.config.types import MemoryFlushConfig
 from nano_openclaw.core.loop import (
     AgentSession,
@@ -313,7 +313,7 @@ def test_manual_compact_runs_silent_memory_flush(monkeypatch):
 
     monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
     monkeypatch.setattr("nano_openclaw.core.loop.datetime", _fixed_datetime())
-    monkeypatch.setattr("nano_openclaw.cli.compact_if_needed", fake_compact_if_needed)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl.compact_if_needed", fake_compact_if_needed)
 
     try:
         console = Console(record=True)
@@ -369,11 +369,11 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
 
     fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
 
-    monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
-    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
-    monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl.Console", lambda: console)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "nano_openclaw.cli.AgentSession.run_turn",
+        "nano_openclaw.adapters.cli.repl.AgentSession.run_turn",
         AsyncMock(side_effect=TurnCancelled()),
     )
 
@@ -396,7 +396,7 @@ def test_ws_repl_escape_aborts_turn(monkeypatch):
     from contextlib import contextmanager
 
     from nano_openclaw.services.backend import PushEvent
-    from nano_openclaw.gateway.ws_repl import ws_repl
+    from nano_openclaw.adapters.cli.ws_repl import ws_repl
 
     console = Console(record=True)
     inputs = iter(["hello", "/quit"])
@@ -405,7 +405,7 @@ def test_ws_repl_escape_aborts_turn(monkeypatch):
         return next(inputs)
 
     fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
-    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
 
     # Real token, fake key source — the watcher thread reads the tty, which
     # doesn't exist under pytest. The fake backend flips the token instead.
@@ -416,7 +416,7 @@ def test_ws_repl_escape_aborts_turn(monkeypatch):
         yield token
 
     monkeypatch.setattr(
-        "nano_openclaw.gateway.ws_repl._escape_cancellation_token", fake_escape_token,
+        "nano_openclaw.adapters.cli.ws_repl._escape_cancellation_token", fake_escape_token,
     )
 
     class FakeBackend:
@@ -479,7 +479,7 @@ def test_escape_token_posix_watcher_exits_on_external_cancel(monkeypatch):
     window — proves the prior per-iteration ISIG-toggle anti-pattern (and
     its accompanying CPU spin) is gone.
     """
-    from nano_openclaw.cli import _escape_cancellation_token
+    from nano_openclaw.adapters.cli.repl import _escape_cancellation_token
 
     class _FakeInput:
         def __init__(self) -> None:
@@ -527,7 +527,7 @@ def test_escape_token_posix_watcher_catches_ctrl_c_key(monkeypatch):
     """
     from prompt_toolkit.keys import Keys
 
-    from nano_openclaw.cli import _escape_cancellation_token
+    from nano_openclaw.adapters.cli.repl import _escape_cancellation_token
 
     class _CtrlCInput:
         def __init__(self) -> None:
@@ -573,11 +573,11 @@ def test_repl_keyboard_interrupt_during_turn_soft_cancels(monkeypatch):
         return next(inputs)
 
     fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
-    monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
-    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
-    monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl.Console", lambda: console)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "nano_openclaw.cli.AgentSession.run_turn",
+        "nano_openclaw.adapters.cli.repl.AgentSession.run_turn",
         AsyncMock(side_effect=KeyboardInterrupt()),
     )
 
@@ -596,7 +596,7 @@ def test_ws_repl_abort_failure_surfaces_feedback(monkeypatch):
     ``except Exception: pass`` produced.
     """
     from nano_openclaw.services.backend import PushEvent
-    from nano_openclaw.gateway.ws_repl import ws_repl
+    from nano_openclaw.adapters.cli.ws_repl import ws_repl
 
     console = Console(record=True)
     inputs = iter(["hello", "/quit"])
@@ -605,7 +605,7 @@ def test_ws_repl_abort_failure_surfaces_feedback(monkeypatch):
         return next(inputs)
 
     fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
-    monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
 
     token = CancellationToken()
 
@@ -614,7 +614,7 @@ def test_ws_repl_abort_failure_surfaces_feedback(monkeypatch):
         yield token
 
     monkeypatch.setattr(
-        "nano_openclaw.gateway.ws_repl._escape_cancellation_token", fake_escape_token,
+        "nano_openclaw.adapters.cli.ws_repl._escape_cancellation_token", fake_escape_token,
     )
 
     class FailingBackend:
@@ -691,9 +691,9 @@ def test_repl_new_session_first_cancelled_input_is_persisted(monkeypatch):
         raise TurnCancelled()
 
     try:
-        monkeypatch.setattr("nano_openclaw.cli.Console", lambda: console)
-        monkeypatch.setattr("nano_openclaw.cli._get_pt_session", lambda: fake_session)
-        monkeypatch.setattr("nano_openclaw.cli._print_banner", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("nano_openclaw.adapters.cli.repl.Console", lambda: console)
+        monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
+        monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
         monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
         asyncio.run(repl(

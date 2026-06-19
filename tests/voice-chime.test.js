@@ -2,7 +2,7 @@
  * play 非手势调度 / dispose 关闭 ctx。注入 FakeAudioContext，纯本地可测。 */
 const test = require("node:test");
 const assert = require("node:assert");
-const createVoiceChime = require("../nano_openclaw/gateway/webui/static/voice-chime.js");
+const createVoiceChime = require("../nano_openclaw/adapters/webui/static/voice-chime.js");
 
 function makeFakeCtx(events) {
   function FakeCtx() {

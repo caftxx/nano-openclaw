@@ -14,7 +14,7 @@ import io
 
 from rich.console import Console
 
-from nano_openclaw.gateway.slash_renderer import (
+from nano_openclaw.services.slash_renderer import (
     MarkdownRenderer,
     PlainRenderer,
     RichRenderer,

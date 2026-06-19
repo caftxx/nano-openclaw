@@ -382,7 +382,7 @@ class TestActiveMemoryIntegration:
 
     def test_cli_imports_active_memory_types(self):
         """CLI should import Active Memory types."""
-        from nano_openclaw.cli import ActiveMemoryConfig, QueryMode, PromptStyle
+        from nano_openclaw.adapters.cli.repl import ActiveMemoryConfig, QueryMode, PromptStyle
 
         assert ActiveMemoryConfig is not None
         assert QueryMode is not None

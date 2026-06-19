@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 
 from nano_openclaw.bootstrap import ensure_state_dir_initialized
-from nano_openclaw.cli import repl
+from nano_openclaw.adapters.cli.repl import repl
 from nano_openclaw.config import resolve_state_dir_with_source
 from nano_openclaw.daemon.cli import add_gateway_subparser, run_gateway_cli
 from nano_openclaw.logger import setup_logging
@@ -375,7 +375,7 @@ async def _run_ws_tui(connect_url: str) -> bool:
     from rich.console import Console
 
     from nano_openclaw.api.backend_websocket import WebSocketBackend
-    from nano_openclaw.gateway.ws_repl import ws_repl
+    from nano_openclaw.adapters.cli.ws_repl import ws_repl
 
     console = Console()
     backend = WebSocketBackend(connect_url)

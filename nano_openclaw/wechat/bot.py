@@ -277,7 +277,7 @@ class WechatBot:
             return "⚠️ Slash commands require the daemon backend. Start WeChat through `gateway run`."
 
         from nano_openclaw.gateway.slash import handle_slash, QuitREPL
-        from nano_openclaw.gateway.slash_renderer import PlainRenderer
+        from nano_openclaw.services.slash_renderer import PlainRenderer
 
         # Bind a session for this uid so /clear / /context / etc. operate on
         # it; pre-resolve so handle_slash sees a non-empty session_key.

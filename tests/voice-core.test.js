@@ -7,7 +7,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const VoiceCore = require("../nano_openclaw/gateway/webui/static/voice-core.js");
+const VoiceCore = require("../nano_openclaw/adapters/webui/static/voice-core.js");
 const { createInitialModel, transition, focusMode, matchWake } = VoiceCore;
 
 // ── 回放工具 ────────────────────────────────────────────────────────────────

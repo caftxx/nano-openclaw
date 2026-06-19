@@ -5,7 +5,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const createVoiceAudioFocusGuard = require("../nano_openclaw/gateway/webui/static/voice-audio-focus.js");
+const createVoiceAudioFocusGuard = require("../nano_openclaw/adapters/webui/static/voice-audio-focus.js");
 const { makeSilentWavBlob } = createVoiceAudioFocusGuard;
 
 // ── Fakes ───────────────────────────────────────────────────────────────────

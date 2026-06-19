@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const createFallbackSpeaker = require("../nano_openclaw/gateway/webui/static/voice-speaker-fallback.js");
+const createFallbackSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-fallback.js");
 
 test("parseTalkDirective strips first-line JSON and normalizes known keys", () => {
   const parsed = createFallbackSpeaker.parseTalkDirective(
