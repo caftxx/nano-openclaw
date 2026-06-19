@@ -19,6 +19,7 @@ from nano_openclaw.logger import get_logger
 from nano_openclaw.features.memory.dreaming import _last_cron_occurrence, _next_cron_occurrence
 from nano_openclaw.features.schedule.store import CronStore
 from nano_openclaw.features.schedule.types import CronJob, CronJobState, CronRunRecord
+from nano_openclaw.services.backend import BusyError
 
 log = get_logger(__name__)
 
@@ -223,6 +224,7 @@ async def _execute_job(
     status = "ok"
     error: str | None = None
     history: list[Message] = []
+    deferred = False
 
     cancellation_token = CancellationToken()
     if run_registry is not None:
@@ -280,12 +282,27 @@ async def _execute_job(
     except TurnCancelled:
         status = "interrupted"
         error = "cancelled via chat.abort"
+    except BusyError as exc:
+        if exc.details.get("reason") == "writer-held":
+            deferred = True
+            error = str(exc)
+        else:
+            status = "error"
+            error = f"{type(exc).__name__}: {exc}"
     except Exception as exc:
         status = "error"
         error = f"{type(exc).__name__}: {exc}"
     finally:
         if run_registry is not None:
             run_registry.unregister(turn_id)
+
+    if deferred:
+        states = store.load_state()
+        state = states.setdefault(job.id, CronJobState(job_id=job.id))
+        state.running_at_ms = None
+        store.save_state(states)
+        log.info("cron.job.deferred", f"Cron job '{job.name}' ({job.id[:8]}) deferred during runtime update: {error}")
+        return
 
     ended_at = datetime.now()
     elapsed_ms = int((ended_at - started_at).total_seconds() * 1000)

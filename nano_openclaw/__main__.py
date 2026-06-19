@@ -312,6 +312,8 @@ async def _async_main(
         from nano_openclaw.services.backend_embedded import EmbeddedBackend
         backend = EmbeddedBackend(runtime)
     else:
+        from nano_openclaw.services.tool_hooks import install_checkpoint_write_hook
+        install_checkpoint_write_hook(runtime.registry)
         # Legacy mode: pre-create writer so repl() inherits it.
         if not session_id:
             session_id = new_session_id()

@@ -28,12 +28,12 @@ from nano_openclaw.logger import get_logger
 log = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from nano_openclaw.config.types import ToolsConfig
     from nano_openclaw.plugins.registry import HookRegistry
     from nano_openclaw.features.skills.types import Skill
     from nano_openclaw.todo import TodoStore
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
+WorkspaceWriteHook = Callable[[str, "ToolExecutionContext"], None]
 
 
 @dataclass
@@ -73,6 +73,7 @@ class ToolRegistry:
     approval_handler: Optional[
         Callable[[Any, Any | None], "ApprovalDecision | Awaitable[ApprovalDecision]"]
     ] = field(default=None)
+    before_workspace_write: Optional[WorkspaceWriteHook] = field(default=None)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -98,6 +99,9 @@ class ToolRegistry:
 
     def set_hook_registry(self, hook_registry: "HookRegistry") -> None:
         self._hook_registry = hook_registry
+
+    def set_before_workspace_write(self, hook: WorkspaceWriteHook | None) -> None:
+        self.before_workspace_write = hook
 
     def hook_registry(self) -> "HookRegistry | None":
         return self._hook_registry
@@ -246,14 +250,9 @@ class ToolRegistry:
             elif name == "session_status":
                 raw = tool.run(args, **ctx.session_status_context)
             elif name in ("read_file", "write_file", "list_dir", "apply_patch"):
-                if name in ("write_file", "apply_patch"):
+                if name in ("write_file", "apply_patch") and self.before_workspace_write is not None:
                     try:
-                        from nano_openclaw.features.checkpoint.service import create_checkpoint
-                        create_checkpoint(
-                            ctx.state_dir,
-                            ctx.workspace_dir,
-                            reason=f"auto-before-{name}",
-                        )
+                        self.before_workspace_write(name, ctx)
                     except Exception:
                         pass
                 raw = tool.run(args, workspace_dir=ctx.workspace_dir)
@@ -640,18 +639,6 @@ async def _skill_install(
     return "\n".join(parts)
 
 
-def web_search(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    from nano_openclaw.features.web.search import web_search as _web_search
-
-    return _web_search(*args, **kwargs)
-
-
-async def web_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    from nano_openclaw.features.web.fetch import web_fetch as _web_fetch
-
-    return await _web_fetch(*args, **kwargs)
-
-
 def _todo_handler(
     args: dict[str, Any],
     todo_store: "TodoStore | None" = None,
@@ -996,89 +983,6 @@ def build_memory_tools(memory_search_config: Any | None = None) -> list[Tool]:
             ),
         ),
     ]
-
-
-def build_web_tools(tools_config: "ToolsConfig | None" = None) -> list[Tool]:
-    web_config = tools_config.web if tools_config else None
-    search_config = web_config.search if web_config else None
-    fetch_config = web_config.fetch if web_config else None
-    tools: list[Tool] = []
-
-    if search_config is None or search_config.enabled:
-        default_max_results = search_config.maxResults if search_config else 10
-        default_region = search_config.region if search_config else "wt-wt"
-        tools.append(
-            Tool(
-                name="web_search",
-                description="Search the web using DuckDuckGo. Returns titles, URLs, and snippets. Use before web_fetch to find relevant pages.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query"},
-                        "maxResults": {
-                            "type": "integer",
-                            "description": f"Max results (default {default_max_results})",
-                            "default": default_max_results,
-                        },
-                    },
-                    "required": ["query"],
-                },
-                run=lambda args: web_search(
-                    args["query"],
-                    max_results=args.get("maxResults", default_max_results),
-                    region=default_region,
-                ).get("text", "[no results]"),
-            )
-        )
-
-    if fetch_config is None or fetch_config.enabled:
-        default_extract_mode = fetch_config.extractMode if fetch_config else "markdown"
-        default_max_chars = fetch_config.maxChars if fetch_config else 20_000
-        default_max_redirects = fetch_config.maxRedirects if fetch_config else 3
-        default_timeout_seconds = fetch_config.timeoutSeconds if fetch_config else 30
-
-        async def _run_web_fetch(
-            args: dict[str, Any],
-            _em: str = default_extract_mode,
-            _mc: int = default_max_chars,
-            _mr: int = default_max_redirects,
-            _ts: int = default_timeout_seconds,
-        ) -> str:
-            result = await web_fetch(
-                args["url"],
-                extract_mode=args.get("extractMode", _em),
-                max_chars=args.get("maxChars", _mc),
-                max_redirects=_mr,
-                timeout_seconds=_ts,
-            )
-            return result.get("text", "[fetch failed]")
-
-        tools.append(
-            Tool(
-                name="web_fetch",
-                description="Fetch and extract readable content from a URL (HTML→markdown/text). Use after web_search to read specific pages.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "HTTP/HTTPS URL"},
-                        "extractMode": {
-                            "type": "string",
-                            "enum": ["markdown", "text"],
-                            "default": default_extract_mode,
-                        },
-                        "maxChars": {
-                            "type": "integer",
-                            "description": f"Max chars to return (default {default_max_chars})",
-                            "default": default_max_chars,
-                        },
-                    },
-                    "required": ["url"],
-                },
-                run=_run_web_fetch,
-            )
-        )
-
-    return tools
 
 
 def build_core_registry() -> ToolRegistry:

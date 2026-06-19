@@ -81,19 +81,6 @@ def _new_runtime_guard():
     return RuntimeUpdateGuard()
 
 
-async def _stop_runtime_cron(runtime: "AgentRuntime") -> None:
-    cron_stop = getattr(runtime, "cron_stop", None)
-    if cron_stop is not None:
-        cron_stop.set()
-    cron_task = getattr(runtime, "cron_task", None)
-    if cron_task is not None and not cron_task.done():
-        cron_task.cancel()
-        try:
-            await cron_task
-        except BaseException as exc:
-            log.debug("runtime_update.old_cron_cancelled", f"{type(exc).__name__}")
-
-
 # ────────────────────────────────────────────────────────────────────────────
 # Subscriber: per-iterator bounded queue with gap detection
 # ────────────────────────────────────────────────────────────────────────────
@@ -212,6 +199,11 @@ class EmbeddedBackend(Backend):
             getattr(getattr(cfg, "tools", None), "noTools", False)
         )
         if not no_tools:
+            try:
+                from nano_openclaw.services.tool_hooks import install_checkpoint_write_hook
+                install_checkpoint_write_hook(runtime.registry)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("backend.tool_hooks.register_failed", f"{type(exc).__name__}: {exc}")
             try:
                 from nano_openclaw.core.tools_runtime import register_runtime_tools
                 register_runtime_tools(runtime.registry, self)
@@ -961,7 +953,6 @@ class EmbeddedBackend(Backend):
                 target_image_ref = (
                     image_model_ref if image_model_ref is not None else old.image_model_ref
                 )
-                await _stop_runtime_cron(old)
                 new_runtime = await build_agent_runtime(
                     config_path=old.config_path,
                     agent_id=target_agent,

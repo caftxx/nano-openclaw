@@ -13,12 +13,16 @@ vs missed-by-down-time scenarios.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
 
-from nano_openclaw.features.schedule.scheduler import _set_next_run_recovery
+from nano_openclaw.core.loop import LoopConfig
+from nano_openclaw.features.schedule.scheduler import _execute_job, _set_next_run_recovery
+from nano_openclaw.features.schedule.store import CronStore
 from nano_openclaw.features.schedule.types import CronJob, CronJobState
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 
 
 def _periodic_job(expression: str = "0 9 * * *") -> CronJob:
@@ -173,3 +177,31 @@ def test_one_shot_already_fired_clears_next_run():
     state = CronJobState(job_id=job.id, last_run_at_ms=_ms(datetime.now() - timedelta(minutes=30)))
     _set_next_run_recovery(job, state, datetime.now())
     assert state.next_run_at_ms is None
+
+
+def test_execute_job_defers_during_runtime_update(tmp_path):
+    async def run():
+        store = CronStore(tmp_path / "cron")
+        job = _periodic_job("* * * * *")
+        store.save_jobs({job.id: job})
+        guard = RuntimeUpdateGuard()
+        async with guard.writer():
+            await _execute_job(
+                job,
+                store,
+                tmp_path / "state",
+                tmp_path / "sessions",
+                tmp_path / "workspace",
+                client=object(),
+                base_cfg=LoopConfig(model="test-model"),
+                run_registry=None,
+                approval_manager=None,
+                runtime_guard=guard,
+            )
+        state = store.load_state()[job.id]
+        assert state.running_at_ms is None
+        assert state.last_status is None
+        assert state.last_error is None
+        assert state.last_run_at_ms is None
+
+    asyncio.run(run())

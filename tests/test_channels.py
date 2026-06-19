@@ -204,6 +204,37 @@ def test_registry_restart_all_recreates_instances_with_new_runtime():
     asyncio.run(run())
 
 
+def test_registry_restart_all_keeps_old_instance_when_stop_fails():
+    class _FailingStopChannel(ChannelAdapter):
+        id = "failing-stop"
+        instances: list["_FailingStopChannel"] = []
+
+        def __init__(self, account):
+            super().__init__(account)
+            self.instances.append(self)
+            self.alive = False
+
+        async def start(self, runtime, gateway=None):
+            self._state = "running"
+            self.alive = True
+
+        async def stop(self):
+            raise RuntimeError("still alive")
+
+    _FailingStopChannel.instances = []
+    reg = ChannelManager()
+    reg.register(_FailingStopChannel)
+
+    async def run():
+        first = await reg.start("failing-stop", ChannelAccount(id="default"), _fake_runtime())
+        await reg.restart_all(_fake_runtime(), SimpleNamespace())
+        assert reg.get_instance("failing-stop", "default") is first
+        assert first.alive is True
+        assert len(_FailingStopChannel.instances) == 1
+
+    asyncio.run(run())
+
+
 def test_registry_unknown_channel_raises_keyerror():
     reg = ChannelManager()
 

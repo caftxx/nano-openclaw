@@ -172,7 +172,6 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
     runtime = _fake_runtime(tmp_path)
     backend = EmbeddedBackend(runtime)
     captured = {}
-    cron_cancelled = False
 
     async def close_old():
         return None
@@ -196,19 +195,6 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
     monkeypatch.setattr(runtime_module, "build_agent_runtime", fake_build_agent_runtime)
 
     async def run():
-        nonlocal cron_cancelled
-
-        async def sleepy_cron():
-            nonlocal cron_cancelled
-            try:
-                await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                cron_cancelled = True
-                raise
-
-        runtime.cron_stop = threading.Event()
-        runtime.cron_task = asyncio.create_task(sleepy_cron())
-        await asyncio.sleep(0)
         try:
             await backend.runtime_update(model_ref="anthropic/claude-haiku-4-5")
         finally:
@@ -219,7 +205,40 @@ def test_runtime_update_reuses_run_registry_but_replaces_guard(tmp_path, monkeyp
 
     assert captured["run_registry"] is runtime.run_registry
     assert captured["runtime_guard"] is not old_guard
-    assert runtime.cron_stop.is_set()
-    assert cron_cancelled is True
     assert backend.runtime.run_registry is runtime.run_registry
     assert backend.runtime.runtime_guard is captured["runtime_guard"]
+
+
+def test_runtime_update_failed_rebuild_keeps_old_cron_running(tmp_path, monkeypatch):
+    runtime = _fake_runtime(tmp_path)
+    backend = EmbeddedBackend(runtime)
+
+    async def failing_build_agent_runtime(**_kwargs):
+        raise RuntimeError("rebuild failed")
+
+    import nano_openclaw.core.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "build_agent_runtime", failing_build_agent_runtime)
+
+    async def run():
+        async def sleepy_cron():
+            await asyncio.sleep(3600)
+
+        runtime.cron_stop = threading.Event()
+        runtime.cron_task = asyncio.create_task(sleepy_cron())
+        await asyncio.sleep(0)
+        try:
+            with pytest.raises(RuntimeError, match="rebuild failed"):
+                await backend.runtime_update(model_ref="anthropic/claude-haiku-4-5")
+            assert backend.runtime is runtime
+            assert not runtime.cron_stop.is_set()
+            assert not runtime.cron_task.done()
+        finally:
+            runtime.cron_task.cancel()
+            try:
+                await runtime.cron_task
+            except asyncio.CancelledError:
+                pass
+            await backend.aclose()
+
+    asyncio.run(run())

@@ -493,7 +493,7 @@ def test_web_plugin_uses_web_tool_defaults_from_config(monkeypatch):
         }
         return {"text": "ok"}
 
-    def fake_fetch(url, extract_mode="markdown", max_chars=20_000, max_redirects=3, timeout_seconds=30):
+    async def fake_fetch(url, extract_mode="markdown", max_chars=20_000, max_redirects=3, timeout_seconds=30):
         captured["fetch"] = {
             "url": url,
             "extract_mode": extract_mode,
@@ -503,8 +503,8 @@ def test_web_plugin_uses_web_tool_defaults_from_config(monkeypatch):
         }
         return {"text": "ok"}
 
-    monkeypatch.setattr("nano_openclaw.core.tools.web_search", fake_search)
-    monkeypatch.setattr("nano_openclaw.core.tools.web_fetch", fake_fetch)
+    monkeypatch.setattr("nano_openclaw.features.web.service.web_search", fake_search)
+    monkeypatch.setattr("nano_openclaw.features.web.service.web_fetch", fake_fetch)
 
     assert registry.get("web_search") is not None
     assert registry.get("web_fetch") is not None

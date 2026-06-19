@@ -164,16 +164,23 @@ class ChannelManager:
             raise
         return instance
 
-    async def stop(self, channel_id: str, account_id: str) -> None:
-        """Stop a running ChannelAdapter. No-op if not running."""
+    async def stop(self, channel_id: str, account_id: str) -> bool:
+        """Stop a running ChannelAdapter. No-op if not running.
+
+        Returns False when the adapter's ``stop`` failed and the old instance
+        is still retained.
+        """
         key = (channel_id, account_id)
-        instance = self._instances.pop(key, None)
+        instance = self._instances.get(key)
         if instance is None:
-            return
+            return True
         try:
             await instance.stop()
         except Exception as exc:  # noqa: BLE001
             log.warning("channel.stop.error", f"{channel_id}/{account_id}: {type(exc).__name__}: {exc}")
+            return False
+        self._instances.pop(key, None)
+        return True
 
     async def stop_all(self) -> None:
         keys = list(self._instances.keys())
@@ -198,9 +205,11 @@ class ChannelManager:
         ]
         if not running:
             return
+        stopped: list[tuple[str, ChannelAccount]] = []
         for channel_id, account in running:
-            await self.stop(channel_id, account.id)
-        for channel_id, account in running:
+            if await self.stop(channel_id, account.id):
+                stopped.append((channel_id, account))
+        for channel_id, account in stopped:
             try:
                 await self.start(channel_id, account, runtime, gateway)
             except Exception as exc:  # noqa: BLE001
