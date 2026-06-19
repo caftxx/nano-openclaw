@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 from nano_openclaw.channels.registry import get_channel_registry
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.context import GatewayContext
 from nano_openclaw.gateway.pidfile import lan_ip, remove_pidfile, write_pidfile
 from nano_openclaw.gateway.ws_route import register_ws_route

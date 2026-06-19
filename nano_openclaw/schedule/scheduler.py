@@ -203,8 +203,8 @@ async def _execute_job(
     blocking forever.
     """
     from dataclasses import replace as dc_replace
-    from nano_openclaw.gateway.approval_broker import NonInteractiveApprovalHandler
-    from nano_openclaw.gateway.run_registry import cron_turn_id
+    from nano_openclaw.services.approval_broker import NonInteractiveApprovalHandler
+    from nano_openclaw.services.runs import cron_turn_id
     from nano_openclaw.core.loop import AgentSession, CancellationToken, Message, TurnCancelled
     from nano_openclaw.core.tools import build_core_registry
 

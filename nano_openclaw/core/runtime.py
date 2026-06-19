@@ -11,19 +11,19 @@ from typing import Any, TYPE_CHECKING
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from nano_openclaw.gateway.run_registry import RunRegistry
-    from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+    from nano_openclaw.services.runs import RunRegistry
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 
 
 def _build_run_registry() -> "RunRegistry":
     """Lazy import to avoid a circular dependency between runtime and gateway."""
-    from nano_openclaw.gateway.run_registry import RunRegistry
+    from nano_openclaw.services.runs import RunRegistry
     return RunRegistry()
 
 
 def _build_runtime_guard() -> "RuntimeUpdateGuard":
     """Lazy import — keeps runtime.py free of gateway imports at module load."""
-    from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
     return RuntimeUpdateGuard()
 
 from nano_openclaw.approvals.exec_approvals import load_exec_approvals

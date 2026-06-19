@@ -24,8 +24,8 @@ from nano_openclaw.approvals.types import (
     ApprovalPolicy,
     ApprovalRequest,
 )
-from nano_openclaw.gateway.backend import BusyError
-from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+from nano_openclaw.services.backend import BusyError
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 
 
 # ────────────────────────────────────────────────────────────────────────────

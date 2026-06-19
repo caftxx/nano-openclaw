@@ -14,13 +14,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from nano_openclaw.gateway.backend import (
+from nano_openclaw.services.backend import (
     Backend,
     BusyError,
     NotFoundError,
     PushEvent,
 )
-from nano_openclaw.gateway.backend_embedded import (
+from nano_openclaw.services.backend_embedded import (
     EmbeddedBackend,
     SUBSCRIBER_QUEUE_MAX,
 )
@@ -32,8 +32,8 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
     """Minimal AgentRuntime stand-in. Only the fields EmbeddedBackend reads at
     construction + for sessions_get / health / models_list / runtime_get.
     """
-    from nano_openclaw.gateway.run_registry import RunRegistry
-    from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+    from nano_openclaw.services.runs import RunRegistry
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 
     session_dir = tmp_path / "sessions"
     session_dir.mkdir(parents=True, exist_ok=True)

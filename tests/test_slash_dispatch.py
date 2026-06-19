@@ -24,11 +24,11 @@ import pytest
 from rich.console import Console
 
 from nano_openclaw.channels.registry import ChannelRegistry
-from nano_openclaw.gateway.backend import NotFoundError
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.backend import NotFoundError
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.context import GatewayContext
-from nano_openclaw.gateway.run_registry import RunRegistry
-from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+from nano_openclaw.services.runs import RunRegistry
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import HELP_TEXT, QuitREPL, handle_slash
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import Tool, ToolRegistry

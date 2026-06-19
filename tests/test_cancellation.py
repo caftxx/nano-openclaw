@@ -395,7 +395,7 @@ def test_ws_repl_escape_aborts_turn(monkeypatch):
     """
     from contextlib import contextmanager
 
-    from nano_openclaw.gateway.backend import PushEvent
+    from nano_openclaw.services.backend import PushEvent
     from nano_openclaw.gateway.ws_repl import ws_repl
 
     console = Console(record=True)
@@ -595,7 +595,7 @@ def test_ws_repl_abort_failure_surfaces_feedback(monkeypatch):
     stream — that silence was the exact failure mode the previous bare
     ``except Exception: pass`` produced.
     """
-    from nano_openclaw.gateway.backend import PushEvent
+    from nano_openclaw.services.backend import PushEvent
     from nano_openclaw.gateway.ws_repl import ws_repl
 
     console = Console(record=True)

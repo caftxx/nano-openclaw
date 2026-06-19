@@ -10,13 +10,13 @@ import pytest
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from nano_openclaw.core.attachments import AttachmentAttached, AttachmentError
-from nano_openclaw.gateway.backend import PushEvent
+from nano_openclaw.services.backend import PushEvent
 from nano_openclaw.core.loop import CancellationToken, SubagentAnnounced, SubagentEvent, ToolResult
 from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
 from nano_openclaw.session import TranscriptWriter, load_session_store
 from nano_openclaw.session.store import save_session_store, update_session
 from nano_openclaw.core.tools import Tool, ToolRegistry
-from nano_openclaw.gateway.approval_broker import ApprovalBroker
+from nano_openclaw.services.approval_broker import ApprovalBroker
 from nano_openclaw.config.types import AgentDefaultsConfig, AgentsConfig, ModelDefinition, ModelProvider, ModelsConfig, NanoOpenClawConfig
 from nano_openclaw.gateway.webui.server import (
     _event_to_payload,
@@ -28,7 +28,7 @@ from nano_openclaw.gateway.webui.server import (
     _is_replayable_activity_payload,
     _webui_payloads_from_push,
 )
-from nano_openclaw.gateway.agent_backend_session import BackendSessionManager
+from nano_openclaw.services.agent_session import BackendSessionManager
 
 
 def test_webui_event_serializer_core_stream_events():

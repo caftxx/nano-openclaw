@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 from nano_openclaw.core.tools import Tool, ToolRegistry
 
 if TYPE_CHECKING:
-    from nano_openclaw.gateway.backend import Backend
+    from nano_openclaw.services.backend import Backend
 
 
 def _ok(payload: dict[str, Any]) -> str:

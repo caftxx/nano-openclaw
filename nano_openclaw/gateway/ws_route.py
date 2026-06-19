@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
-from nano_openclaw.gateway.backend import BusyError, NotFoundError
+from nano_openclaw.services.backend import BusyError, NotFoundError
 from nano_openclaw.gateway.context import GatewayContext
 from nano_openclaw.gateway.methods import CORE_HANDLERS
 from nano_openclaw.gateway.protocol import (

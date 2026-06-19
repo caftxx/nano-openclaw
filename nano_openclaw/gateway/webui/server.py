@@ -20,11 +20,11 @@ from nano_openclaw.gateway._event_payload import (
     is_replayable_activity_payload as _is_replayable_activity_payload,
     jsonable as _jsonable,
 )
-from nano_openclaw.gateway.backend import BackendError, BusyError, NotFoundError, PushEvent
+from nano_openclaw.services.backend import BackendError, BusyError, NotFoundError, PushEvent
 from nano_openclaw.gateway.webui.aliyun_token import AliyunTokenProvider, TokenError
 from nano_openclaw.tts import TalkSpeakError, build_talk_config, synthesize_talk_speech
 from nano_openclaw.core.runtime import AgentRuntime
-from nano_openclaw.gateway.agent_backend_session import BackendSessionManager, display_history, message_text
+from nano_openclaw.services.agent_session import BackendSessionManager, display_history, message_text
 
 
 SESSION_PAYLOAD_HISTORY_LIMIT = 80

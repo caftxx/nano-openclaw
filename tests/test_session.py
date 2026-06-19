@@ -331,7 +331,7 @@ def test_legacy_midstream_compaction_is_not_materialized():
 def test_commit_turn_rotates_when_compaction_pending(tmp_path):
     """End-to-end: feed _commit_turn pending ops with a compaction and verify
     the on-disk file is rewritten to the post-compaction shape."""
-    from nano_openclaw.gateway.agent_backend_session import AgentBackendSession
+    from nano_openclaw.services.agent_session import AgentBackendSession
     from nano_openclaw.core.loop import AgentSession, LoopConfig
     from nano_openclaw.session.transcript import _build_synthetic_summary_message
     from nano_openclaw.core.tools import ToolRegistry
@@ -394,7 +394,7 @@ def test_commit_turn_rotates_when_compaction_pending(tmp_path):
 
 
 def test_commit_turn_skips_rotation_when_disabled(tmp_path):
-    from nano_openclaw.gateway.agent_backend_session import AgentBackendSession
+    from nano_openclaw.services.agent_session import AgentBackendSession
     from nano_openclaw.core.loop import AgentSession, LoopConfig
     from nano_openclaw.session.transcript import _build_synthetic_summary_message
     from nano_openclaw.core.tools import ToolRegistry

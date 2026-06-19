@@ -25,8 +25,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nano_openclaw.channels.registry import ChannelRegistry
-from nano_openclaw.gateway.backend import BusyError, NotFoundError
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.backend import BusyError, NotFoundError
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.context import GatewayContext
 from nano_openclaw.gateway.protocol import (
     ErrorCode,
@@ -50,8 +50,8 @@ from nano_openclaw.core.tools import ToolRegistry
 
 
 def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
-    from nano_openclaw.gateway.run_registry import RunRegistry
-    from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+    from nano_openclaw.services.runs import RunRegistry
+    from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
     sd = tmp_path / "sessions"
     sd.mkdir(parents=True, exist_ok=True)
     workspace = tmp_path / "workspace"

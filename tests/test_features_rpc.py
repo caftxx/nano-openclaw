@@ -22,12 +22,12 @@ from typing import Any
 import pytest
 
 from nano_openclaw.channels.registry import ChannelRegistry
-from nano_openclaw.gateway.backend import BackendError, NotFoundError
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.backend import BackendError, NotFoundError
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.context import GatewayContext
 from nano_openclaw.gateway.protocol import ErrorCode, METHODS_V1
-from nano_openclaw.gateway.run_registry import RunRegistry
-from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+from nano_openclaw.services.runs import RunRegistry
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.gateway.ws_route import _dispatch_one
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode

@@ -20,10 +20,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from nano_openclaw.gateway.backend import BusyError
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.run_registry import RunRegistry
-from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+from nano_openclaw.services.backend import BusyError
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.runs import RunRegistry
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
 

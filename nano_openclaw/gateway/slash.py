@@ -33,7 +33,7 @@ from typing import Any, NamedTuple
 from rich import markup
 from rich.console import Console
 
-from nano_openclaw.gateway.backend import Backend, BackendError, BusyError, NotFoundError
+from nano_openclaw.services.backend import Backend, BackendError, BusyError, NotFoundError
 from nano_openclaw.gateway.slash_renderer import (
     MarkdownRenderer,
     PlainRenderer,

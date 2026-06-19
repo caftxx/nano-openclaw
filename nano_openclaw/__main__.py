@@ -304,7 +304,7 @@ async def _async_main(
         # Don't pre-create either here — repl() asks the manager for the session
         # entity, and the manager either loads ``session_id`` from disk or
         # creates a fresh one.
-        from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+        from nano_openclaw.services.backend_embedded import EmbeddedBackend
         backend = EmbeddedBackend(runtime)
     else:
         # Legacy mode: pre-create writer so repl() inherits it.

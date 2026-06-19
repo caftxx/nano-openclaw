@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
-from nano_openclaw.gateway.run_registry import RunRegistry
-from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.runs import RunRegistry
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import _resolve_model_option, handle_slash
 from nano_openclaw.gateway.slash_renderer import MarkdownRenderer, PlainRenderer
 from nano_openclaw.core.loop import LoopConfig

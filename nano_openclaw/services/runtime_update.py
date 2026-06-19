@@ -29,7 +29,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from nano_openclaw.gateway.backend import BusyError
+from nano_openclaw.services.backend import BusyError
 
 
 class RuntimeUpdateGuard:

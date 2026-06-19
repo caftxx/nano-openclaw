@@ -13,7 +13,7 @@ import io
 import pytest
 from rich.console import Console
 
-from nano_openclaw.gateway.backend import SessionInfo, SessionList
+from nano_openclaw.services.backend import SessionInfo, SessionList
 from nano_openclaw.gateway.slash import _render_sessions_table
 
 

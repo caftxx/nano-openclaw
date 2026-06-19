@@ -25,14 +25,14 @@ from nano_openclaw.gateway._event_payload import (
     is_replayable_activity_payload,
     jsonable,
 )
-from nano_openclaw.gateway.agent_backend_session import (
+from nano_openclaw.services.agent_session import (
     AgentBackendSession,
     BackendSessionManager,
     display_history,
     message_text,
 )
-from nano_openclaw.gateway.approval_broker import ApprovalBroker
-from nano_openclaw.gateway.backend import (
+from nano_openclaw.services.approval_broker import ApprovalBroker
+from nano_openclaw.services.backend import (
     Backend,
     BackendError,
     BusyError,

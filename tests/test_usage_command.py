@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nano_openclaw.gateway.agent_backend_session import AgentBackendSession
-from nano_openclaw.gateway.backend import SessionUsageReport
+from nano_openclaw.services.agent_session import AgentBackendSession
+from nano_openclaw.services.backend import SessionUsageReport
 from nano_openclaw.gateway.slash import _HANDLERS, _cmd_usage
 from nano_openclaw.core.loop import SessionUsageStats
 

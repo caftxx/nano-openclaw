@@ -33,7 +33,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from nano_openclaw.core.attachments import PromptAttachment
-from nano_openclaw.gateway.backend import (
+from nano_openclaw.services.backend import (
     Backend,
     BackendError,
     BusyError,

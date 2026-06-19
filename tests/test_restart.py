@@ -18,11 +18,11 @@ import pytest
 
 from nano_openclaw.approvals.types import ApprovalPolicy
 from nano_openclaw.gateway import restart as restart_mod
-from nano_openclaw.gateway.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.gateway.methods import CORE_HANDLERS
 from nano_openclaw.gateway.protocol import METHODS_V1
-from nano_openclaw.gateway.run_registry import RunRegistry
-from nano_openclaw.gateway.runtime_lock import RuntimeUpdateGuard
+from nano_openclaw.services.runs import RunRegistry
+from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.gateway.slash import _HANDLERS as SLASH_HANDLERS
 from nano_openclaw.core.loop import CancellationToken, LoopConfig
 from nano_openclaw.core.tools import ToolRegistry

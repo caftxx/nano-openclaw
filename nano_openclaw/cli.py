@@ -373,7 +373,7 @@ async def repl(
                             cancellation_token=cancellation_token,
                         )
                     except Exception as exc:  # BusyError or worse
-                        from nano_openclaw.gateway.backend import BusyError
+                        from nano_openclaw.services.backend import BusyError
                         if isinstance(exc, BusyError):
                             console.print(f"\n[yellow]busy:[/] {exc} (retry in {exc.retry_after_ms}ms)")
                             continue
