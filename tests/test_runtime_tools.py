@@ -25,10 +25,22 @@ import pytest
 from nano_openclaw.approvals.manager import ApprovalManager
 from nano_openclaw.approvals.types import ApprovalPolicy
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
+from nano_openclaw.adapters.channels.base import ChannelAdapter
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
+
+
+class _RecordingChannel(ChannelAdapter):
+    id = "recording"
+
+    async def start(self, runtime, gateway=None):
+        self._state = "running"
+
+    async def stop(self):
+        self._state = "stopped"
 
 
 def _model(model_id, *, name=None):
@@ -129,6 +141,29 @@ def test_list_models_tool_returns_json_catalog(tmp_path):
     assert "anthropic/claude-haiku-4-5" in refs
     sonnet = next(m for m in payload["models"] if m["ref"] == "anthropic/claude-sonnet-4-5")
     assert sonnet["is_default"] is True
+
+
+def test_list_channels_tool_returns_backend_manager_status(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    channel_manager = ChannelManager()
+    channel_manager.register(_RecordingChannel)
+    backend = EmbeddedBackend(runtime, channel_manager=channel_manager)
+
+    async def run():
+        try:
+            await backend.channels_start("recording", "work")
+            tool = runtime.registry._tools["list_channels"]
+            raw = tool.run({})
+            return await raw if asyncio.iscoroutine(raw) else raw
+        finally:
+            await backend.aclose()
+
+    out = asyncio.run(run())
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["channels"][0]["channel_id"] == "recording"
+    assert payload["channels"][0]["account_id"] == "work"
+    assert payload["channels"][0]["state"] == "running"
 
 
 def test_switch_model_in_dangerous_tools_and_requires_approval(tmp_path):

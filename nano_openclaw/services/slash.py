@@ -133,6 +133,7 @@ class SlashRegistry:
 
     def __init__(self) -> None:
         self._handlers: dict[str, SlashHandler] = {}
+        self._entries: dict[str, HelpEntry] = {}
 
     def register(
         self,
@@ -144,9 +145,13 @@ class SlashRegistry:
         if not command.startswith("/"):
             raise ValueError("slash command must start with '/'")
         self._handlers[command] = handler
+        self._entries[command] = HelpEntry(command, args, description)
 
     def handlers(self) -> dict[str, SlashHandler]:
         return dict(self._handlers)
+
+    def entries(self) -> tuple[HelpEntry, ...]:
+        return tuple(self._entries[command] for command in sorted(self._entries))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -527,6 +532,9 @@ async def _cmd_plugins(backend, renderer: SlashRenderer, state, args, cmd):
     for p in sorted(plugins, key=lambda x: x.get("id", "") or x.get("name", "")):
         tools = ", ".join(p.get("tools") or []) or "—"
         hooks = ", ".join(p.get("hooks") or []) or "—"
+        slash = ", ".join(p.get("slash") or []) or "—"
+        channels = ", ".join(p.get("channels") or []) or "—"
+        features = ", ".join(p.get("features") or []) or "—"
         rows.append([
             p.get("id", ""),
             p.get("name", ""),
@@ -535,9 +543,12 @@ async def _cmd_plugins(backend, renderer: SlashRenderer, state, args, cmd):
             "loaded",
             tools,
             hooks,
+            slash,
+            channels,
+            features,
         ])
     renderer.table(
-        ["ID", "Name", "Source", "Entry", "Status", "Tools", "Hooks"],
+        ["ID", "Name", "Source", "Entry", "Status", "Tools", "Hooks", "Slash", "Channels", "Features"],
         rows,
         title="Plugins",
     )
@@ -1188,3 +1199,14 @@ def _build_registry() -> SlashRegistry:
 
 _REGISTRY = _build_registry()
 _HANDLERS = _REGISTRY.handlers()
+
+
+def register_slash_command(
+    command: str,
+    handler: SlashHandler,
+    description: str = "",
+    args: str = "",
+) -> None:
+    """Register a slash command from a feature or plugin."""
+    _REGISTRY.register(command, handler, description, args)
+    _HANDLERS[command] = handler

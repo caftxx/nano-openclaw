@@ -76,6 +76,19 @@ def load_plugins(
                     for event in sorted(after_hooks)
                     if after_hooks[event] > before_hooks.get(event, 0)
                 ),
+                slash=tuple(
+                    str(registration[0])
+                    for registration in api._slash_registrations
+                    if registration
+                ),
+                channels=tuple(
+                    str(getattr(channel, "id", channel))
+                    for channel in api._channel_registrations
+                ),
+                features=tuple(
+                    str(feature.get("id") if isinstance(feature, dict) else getattr(feature, "id", feature))
+                    for feature in api._feature_registrations
+                ),
             )
         )
         hook_registry.record_plugin_hooks(registered_hooks)

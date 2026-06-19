@@ -189,6 +189,20 @@ def test_plugin_api_exposes_narrow_registration_surface(tmp_path):
     plugin_file = tmp_path / "surface_plugin.py"
     plugin_file.write_text(
         """
+from nano_openclaw.adapters.channels.base import ChannelAdapter
+
+class SurfaceChannel(ChannelAdapter):
+    id = "surface-channel"
+
+    async def start(self, runtime, gateway=None):
+        self._state = "running"
+
+    async def stop(self):
+        self._state = "stopped"
+
+async def surface_slash(backend, renderer, state, args, cmd):
+    renderer.text("surface slash handled")
+
 class Plugin:
     id = "surface"
     name = "Surface"
@@ -196,8 +210,8 @@ class Plugin:
     def register(self, api):
         assert api.config_snapshot() is api.config
         assert not hasattr(api, "runtime")
-        api.register_slash("/surface", lambda *_args: None, "Surface command")
-        api.register_channel(object())
+        api.register_slash("/surface", surface_slash, "Surface command")
+        api.register_channel(SurfaceChannel)
         api.register_feature({"id": "surface"})
         api.register_hook("before_prompt_build", lambda _payload: {
             "append": f"{len(api._slash_registrations)}:{len(api._channel_registrations)}:{len(api._feature_registrations)}"
@@ -215,6 +229,43 @@ class Plugin:
     result = asyncio.run(hooks.run("before_prompt_build", {"system": "base"}))
 
     assert result["append"] == "1:1:1"
+    plugin = next(plugin for plugin in hooks.plugins() if plugin.id == "surface")
+    assert plugin.slash == ("/surface",)
+    assert plugin.channels == ("surface-channel",)
+    assert plugin.features == ("surface",)
+
+
+def test_plugin_registered_slash_command_dispatches(tmp_path):
+    plugin_file = tmp_path / "slash_plugin.py"
+    plugin_file.write_text(
+        """
+async def slash_cmd(backend, renderer, state, args, cmd):
+    renderer.text("plugin slash ok")
+
+class Plugin:
+    id = "slash"
+    name = "Slash"
+
+    def register(self, api):
+        api.register_slash("/plugin-surface", slash_cmd, "Plugin slash")
+""",
+        encoding="utf-8",
+    )
+    registry = build_core_registry()
+    load_plugins(
+        PluginsConfig(load=[PluginEntryConfig(path=str(plugin_file))]),
+        registry,
+        NanoOpenClawConfig(),
+    )
+
+    from nano_openclaw.services.slash import handle_slash
+    from nano_openclaw.services.slash_renderer import PlainRenderer
+
+    renderer = PlainRenderer()
+    handled = asyncio.run(handle_slash("/plugin-surface", object(), renderer, {"session_key": ""}))
+
+    assert handled is True
+    assert "plugin slash ok" in renderer.collect()
 
 
 def test_path_plugin_can_register_tool(tmp_path):

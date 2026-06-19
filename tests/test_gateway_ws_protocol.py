@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from nano_openclaw.services.channels import ChannelManager
 from nano_openclaw.services.backend import BusyError, NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
+from nano_openclaw.adapters.channels.base import ChannelAdapter
 from nano_openclaw.api.context import GatewayContext
 from nano_openclaw.api.protocol import (
     ErrorCode,
@@ -42,6 +43,16 @@ from nano_openclaw.api.protocol import (
 from nano_openclaw.api.ws_route import _dispatch_one, register_ws_route
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import ToolRegistry
+
+
+class _RecordingChannel(ChannelAdapter):
+    id = "recording"
+
+    async def start(self, runtime, gateway=None):
+        self._state = "running"
+
+    async def stop(self):
+        self._state = "stopped"
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -82,11 +93,12 @@ def _fake_runtime(tmp_path: Path) -> SimpleNamespace:
 
 def _make_ctx(tmp_path: Path) -> tuple[GatewayContext, EmbeddedBackend]:
     runtime = _fake_runtime(tmp_path)
-    backend = EmbeddedBackend(runtime)
+    channel_manager = ChannelManager()
+    backend = EmbeddedBackend(runtime, channel_manager=channel_manager)
     ctx = GatewayContext(
         runtime=runtime,
         backend=backend,
-        channel_manager=ChannelManager(),
+        channel_manager=channel_manager,
     )
     return ctx, backend
 
@@ -285,6 +297,31 @@ def test_dispatch_health_succeeds(tmp_path: Path):
     from nano_openclaw import resolve_version
 
     assert resp.payload["version"] == resolve_version()
+
+
+def test_dispatch_channels_status_reports_backend_manager(tmp_path: Path):
+    ctx, backend = _make_ctx(tmp_path)
+    raw = json.dumps({"id": "rid", "method": "channels.status", "params": {}})
+
+    async def run():
+        try:
+            backend.channel_manager.register(_RecordingChannel)
+            await backend.channels_start("recording", "work")
+            return await _dispatch_one(ctx, raw)
+        finally:
+            await backend.aclose()
+
+    resp = asyncio.run(run())
+    assert resp.ok is True
+    assert resp.payload["channels"] == [
+        {
+            "channel_id": "recording",
+            "account_id": "work",
+            "state": "running",
+            "error": None,
+            "started_at": resp.payload["channels"][0]["started_at"],
+        }
+    ]
 
 
 def test_dispatch_runtime_get_succeeds(tmp_path: Path):

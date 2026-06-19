@@ -24,6 +24,7 @@ import pytest
 from rich.console import Console
 
 from nano_openclaw.services.channels import ChannelManager
+from nano_openclaw.adapters.channels.base import ChannelAdapter
 from nano_openclaw.services.backend import NotFoundError
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 from nano_openclaw.api.context import GatewayContext
@@ -32,6 +33,16 @@ from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.services.slash import HELP_TEXT, QuitREPL, handle_slash
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import Tool, ToolRegistry
+
+
+class _RecordingChannel(ChannelAdapter):
+    id = "recording"
+
+    async def start(self, runtime, gateway=None):
+        self._state = "running"
+
+    async def stop(self):
+        self._state = "stopped"
 
 
 def _registry_with_tool() -> ToolRegistry:
@@ -69,9 +80,14 @@ def _fake_runtime(tmp_path: Path, *, registry: ToolRegistry | None = None) -> Si
     )
 
 
-def _backend_and_console(tmp_path: Path, *, registry: ToolRegistry | None = None) -> tuple[EmbeddedBackend, Console, io.StringIO]:
+def _backend_and_console(
+    tmp_path: Path,
+    *,
+    registry: ToolRegistry | None = None,
+    channel_manager: ChannelManager | None = None,
+) -> tuple[EmbeddedBackend, Console, io.StringIO]:
     runtime = _fake_runtime(tmp_path, registry=registry)
-    backend = EmbeddedBackend(runtime)
+    backend = EmbeddedBackend(runtime, channel_manager=channel_manager)
     buf = io.StringIO()
     console = Console(file=buf, force_terminal=False, width=200, no_color=True)
     return backend, console, buf
@@ -238,6 +254,24 @@ def test_new_creates_session_and_updates_session_key(tmp_path):
     assert state["session_changed"] is True
     assert state["session_key"] != "old"
     assert state["session_key"]  # non-empty
+
+
+def test_channels_renders_running_channel(tmp_path):
+    channel_manager = ChannelManager()
+    channel_manager.register(_RecordingChannel)
+    backend, console, buf = _backend_and_console(tmp_path, channel_manager=channel_manager)
+
+    async def run():
+        try:
+            await backend.channels_start("recording", "work")
+            await handle_slash("/channels", backend, console, {"session_key": ""})
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+    out = buf.getvalue()
+    assert "recording/work" in out
+    assert "running" in out
 
 
 def test_session_switch_by_index_updates_state(tmp_path):

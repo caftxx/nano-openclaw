@@ -20,6 +20,9 @@ class LoadedPlugin:
     entry: str
     tools: tuple[str, ...] = ()
     hooks: tuple[str, ...] = ()
+    slash: tuple[str, ...] = ()
+    channels: tuple[str, ...] = ()
+    features: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

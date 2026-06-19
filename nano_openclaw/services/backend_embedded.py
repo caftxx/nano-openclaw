@@ -994,7 +994,11 @@ class EmbeddedBackend(Backend):
             channel_id,
             ChannelAccount(id=account_id or "default", config={}),
             self.runtime,
-            SimpleNamespace(backend=self),
+            SimpleNamespace(
+                backend=self,
+                runtime=self.runtime,
+                channel_manager=self.channel_manager,
+            ),
         )
         entry = instance.status()
         return ChannelStatusEntry(
@@ -1443,7 +1447,8 @@ class EmbeddedBackend(Backend):
     async def plugins_list(self) -> list[dict[str, Any]]:
         """Loaded plugin records with full metadata for the slash Table.
 
-        Phase 9 enrichment: id, name, source, entry, tools[], hooks[] —
+        Phase 9 enrichment: id, name, source, entry, tools[], hooks[],
+        slash[], channels[], features[] —
         matches what cli.py's _list_plugins renders so remote mode produces
         an identical Table.
         """
@@ -1462,6 +1467,9 @@ class EmbeddedBackend(Backend):
                 "entry": getattr(plugin, "entry", ""),
                 "tools": list(getattr(plugin, "tools", ()) or ()),
                 "hooks": list(getattr(plugin, "hooks", ()) or ()),
+                "slash": list(getattr(plugin, "slash", ()) or ()),
+                "channels": list(getattr(plugin, "channels", ()) or ()),
+                "features": list(getattr(plugin, "features", ()) or ()),
             })
         return result
 
