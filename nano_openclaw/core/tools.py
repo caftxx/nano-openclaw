@@ -106,7 +106,13 @@ class ToolRegistry:
     def hook_registry(self) -> "HookRegistry | None":
         return self._hook_registry
 
-    def clone(self, *, exclude: set[str] | None = None, console: Console | None | object = ...) -> "ToolRegistry":
+    def clone(
+        self,
+        *,
+        exclude: set[str] | None = None,
+        console: Console | None | object = ...,
+        approval_handler: Callable[[Any, Any | None], "ApprovalDecision | Awaitable[ApprovalDecision]"] | None | object = ...,
+    ) -> "ToolRegistry":
         exclude = exclude or set()
         cloned = ToolRegistry(
             _tools={name: tool for name, tool in self._tools.items() if name not in exclude},
@@ -118,7 +124,7 @@ class ToolRegistry:
             _spawn_tool_context=self._spawn_tool_context,
             _hook_registry=self._hook_registry,
             approval_live_stopper=self.approval_live_stopper,
-            approval_handler=self.approval_handler,
+            approval_handler=self.approval_handler if approval_handler is ... else approval_handler,
             before_workspace_write=self.before_workspace_write,
         )
         cloned.set_session_status_context(**self._session_status_context)

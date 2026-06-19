@@ -11,8 +11,10 @@ def test_subagent_registry_does_not_inherit_interactive_approval_console():
     parent.approval_manager = ApprovalManager(
         ApprovalPolicy(ask_mode="always", dangerous_tools=["write_file"], allowlist=[])
     )
+    parent.approval_handler = lambda _request, _context=None: None
 
     child = SubagentRunner()._build_filtered_registry(parent)
 
     assert child.approval_manager is parent.approval_manager
     assert child.console is None
+    assert child.approval_handler is None

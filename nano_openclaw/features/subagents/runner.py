@@ -382,7 +382,11 @@ class SubagentRunner:
         # Inherit environment from parent so file tools resolve paths correctly
         # and MCP/tools hooks are available, but do not let background
         # subagents prompt on the foreground TUI.
-        return parent_registry.clone(exclude=set(SUBAGENT_TOOL_BLACKLIST), console=None)
+        return parent_registry.clone(
+            exclude=set(SUBAGENT_TOOL_BLACKLIST),
+            console=None,
+            approval_handler=None,
+        )
     
     def _build_subagent_system_prompt(self, task: str, registry: "ToolRegistry | None" = None) -> str:
         """Build system prompt for a subagent.
