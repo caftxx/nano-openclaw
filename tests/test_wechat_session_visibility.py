@@ -304,6 +304,19 @@ def test_wechat_message_uses_embedded_backend_channel_decoration(tmp_path, monke
     monkeypatch.setattr(bot_module, "send_text", fake_send_text)
     monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
 
+    async def async_dispatch(self, tool_use_id, name, args, cancellation_token=None, context=None):
+        tool = self.get(name)
+        assert tool is not None
+        result = tool.run(args)
+        output = await result if asyncio.iscoroutine(result) else result
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": [{"type": "text", "text": str(output)}],
+        }
+
+    monkeypatch.setattr(ToolRegistry, "dispatch", async_dispatch)
+
     bot = WechatBot(
         base_url="https://example",
         token="t",
