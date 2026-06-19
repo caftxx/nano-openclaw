@@ -248,7 +248,7 @@ class ToolRegistry:
             elif name in ("read_file", "write_file", "list_dir", "apply_patch"):
                 if name in ("write_file", "apply_patch"):
                     try:
-                        from nano_openclaw.checkpoint import create_checkpoint
+                        from nano_openclaw.features.checkpoint.service import create_checkpoint
                         create_checkpoint(
                             ctx.state_dir,
                             ctx.workspace_dir,
@@ -641,13 +641,13 @@ async def _skill_install(
 
 
 def web_search(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    from nano_openclaw.web_search import web_search as _web_search
+    from nano_openclaw.features.web.search import web_search as _web_search
 
     return _web_search(*args, **kwargs)
 
 
 async def web_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    from nano_openclaw.web_fetch import web_fetch as _web_fetch
+    from nano_openclaw.features.web.fetch import web_fetch as _web_fetch
 
     return await _web_fetch(*args, **kwargs)
 

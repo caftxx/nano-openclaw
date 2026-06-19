@@ -1396,14 +1396,14 @@ class EmbeddedBackend(Backend):
     # ─── Checkpoints ───
 
     async def checkpoint_list(self) -> dict[str, Any]:
-        from nano_openclaw.checkpoint import list_checkpoints
+        from nano_openclaw.features.checkpoint.service import list_checkpoints
 
         state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
         checkpoints = [cp.__dict__ for cp in list_checkpoints(state_dir)]
         return {"checkpoints": checkpoints}
 
     async def checkpoint_create(self, reason: str = "manual") -> dict[str, Any]:
-        from nano_openclaw.checkpoint import create_checkpoint
+        from nano_openclaw.features.checkpoint.service import create_checkpoint
 
         state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
         workspace_dir = str(self.runtime.workspace_dir) if self.runtime.workspace_dir else ""
@@ -1413,7 +1413,7 @@ class EmbeddedBackend(Backend):
         return {"checkpoint": cp.__dict__}
 
     async def checkpoint_restore(self, checkpoint_id: str) -> dict[str, Any]:
-        from nano_openclaw.checkpoint import restore_checkpoint
+        from nano_openclaw.features.checkpoint.service import restore_checkpoint
 
         state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
         workspace_dir = str(self.runtime.workspace_dir) if self.runtime.workspace_dir else ""

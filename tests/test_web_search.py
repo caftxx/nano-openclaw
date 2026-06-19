@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from nano_openclaw.web_search import web_search, _SEARCH_CACHE
+from nano_openclaw.features.web.search import web_search, _SEARCH_CACHE
 
 _FAKE_RESULTS = [
     {"title": "Result 1", "href": "https://example.com/1", "body": "First result snippet"},
@@ -26,7 +26,7 @@ def test_web_search_empty_query():
     assert "Empty query" in result["error"]
 
 
-@patch("nano_openclaw.web_search.DDGS")
+@patch("nano_openclaw.features.web.search.DDGS")
 def test_web_search_cache(MockDDGS):
     """Repeated query uses cache."""
     MockDDGS.return_value = _mock_ddgs()
@@ -39,7 +39,7 @@ def test_web_search_cache(MockDDGS):
     assert r2.get("cached") is True
 
 
-@patch("nano_openclaw.web_search.DDGS")
+@patch("nano_openclaw.features.web.search.DDGS")
 def test_web_search_returns_expected_fields(MockDDGS):
     MockDDGS.return_value = _mock_ddgs()
     _SEARCH_CACHE.clear()

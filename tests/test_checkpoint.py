@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nano_openclaw.checkpoint import create_checkpoint, list_checkpoints, restore_checkpoint
+from nano_openclaw.features.checkpoint.service import create_checkpoint, list_checkpoints, restore_checkpoint
 
 
 def test_checkpoint_create_and_restore(tmp_path: Path):

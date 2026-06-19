@@ -2,7 +2,7 @@
 
 import asyncio
 
-from nano_openclaw.web_fetch import web_fetch, _FETCH_CACHE, _truncate, _normalize_whitespace
+from nano_openclaw.features.web.fetch import web_fetch, _FETCH_CACHE, _truncate, _normalize_whitespace
 
 
 def test_web_fetch_ssrf_blocked():
@@ -47,7 +47,7 @@ def test_web_fetch_normalize_whitespace():
 
 def test_web_fetch_cache():
     """Cache key logic works for valid URLs."""
-    from nano_openclaw.web_fetch import _write_cache, _read_cache, _cache_key
+    from nano_openclaw.features.web.fetch import _write_cache, _read_cache, _cache_key
 
     _FETCH_CACHE.clear()
 
