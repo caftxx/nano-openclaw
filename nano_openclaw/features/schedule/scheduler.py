@@ -34,9 +34,9 @@ def start_cron_scheduler(
     max_concurrent: int,
     missed_jobs_limit: int,
     stop_event: threading.Event,
-    run_registry: Any | None = None,  # gateway.run_registry.RunRegistry; None → no abort plumbing
+    run_registry: Any | None = None,  # services.runs.RunRegistry; None -> no abort plumbing
     approval_manager: Any | None = None,  # consulted by NonInteractiveApprovalHandler
-    runtime_guard: Any | None = None,  # gateway.runtime_lock.RuntimeUpdateGuard
+    runtime_guard: Any | None = None,  # services.runtime_update.RuntimeUpdateGuard
 ) -> asyncio.Task:
     """Start the cron scheduler as a background asyncio task.
 

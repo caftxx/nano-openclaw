@@ -6,7 +6,7 @@ job is: take user input, fire ``chat.send``, render incoming PushFrame
 payloads as they arrive, and translate Esc / Ctrl+C into ``chat.abort``
 while a turn is streaming.
 
-Slash commands are delegated to :mod:`gateway.slash` so the surface +
+Slash commands are delegated to :mod:`services.slash` so the surface +
 rendering match embedded mode exactly. The streaming-event renderer
 mirrors ``cli._make_event_handler`` — same Rich Live tree for tool calls
 and subagents, same status-line widgets for skills / images / memory.

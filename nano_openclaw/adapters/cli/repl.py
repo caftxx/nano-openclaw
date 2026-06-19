@@ -184,7 +184,7 @@ async def repl(
 
         # ── Slash command dispatch ────────────────────────────────────────
         # When ``backend`` is wired (the default tui invocation), delegate to
-        # ``gateway.slash.handle_slash`` so embedded + remote modes share one
+        # ``services.slash.handle_slash`` so embedded + remote modes share one
         # surface and one set of Rich renderers. When backend is None (legacy
         # direct invocation paths), fall through to the inline branches below.
         if backend is not None and user_input.startswith("/"):
@@ -1417,7 +1417,7 @@ if _initial_termios is not None:
 def _slash_completer() -> WordCompleter:
     """Build a slash completer from the real ``HELP_ENTRIES`` catalogue.
 
-    Imported lazily to avoid a top-of-file cycle through ``gateway.slash``.
+    Imported lazily to avoid a top-of-file cycle through ``services.slash``.
     """
     from nano_openclaw.services.slash import HELP_ENTRIES
     words: list[str] = []
