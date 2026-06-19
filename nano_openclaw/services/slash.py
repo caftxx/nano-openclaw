@@ -63,40 +63,6 @@ class HelpEntry(NamedTuple):
     aliases: tuple[str, ...] = ()
 
 
-# Sorted A→Z by ``command``. Adding a new entry: keep the file sorted so the
-# rendered help in every frontend (TUI banner, TUI ``/help``, WebUI ``/help``,
-# WeChat ``/help``) stays consistent.
-HELP_ENTRIES: tuple[HelpEntry, ...] = (
-    HelpEntry("/active-memory", "status|on|off|mode|style", "Active memory config"),
-    HelpEntry("/channels", "", "Running channels"),
-    HelpEntry("/clear", "", "Clear current session history"),
-    HelpEntry("/compact", "", "Summarize / compact history"),
-    HelpEntry("/context", "", "Context-window budget snapshot"),
-    HelpEntry("/checkpoint", "list|create|restore <id>", "Workspace checkpoints"),
-    HelpEntry("/curator", "status|on|off|pause|resume|run|dry-run", "Skill lifecycle curator"),
-    HelpEntry("/dreaming", "status|on|off|run", "Dreaming config"),
-    HelpEntry("/health", "", "Daemon health snapshot"),
-    HelpEntry("/help", "", "Show this list"),
-    HelpEntry("/hooks", "", "Registered hook handlers"),
-    HelpEntry("/model", "<provider/model-id>", "Show / switch active model"),
-    HelpEntry("/models", "", "List configured models"),
-    HelpEntry("/new", "", "Start a new session"),
-    HelpEntry("/plugins", "", "Loaded plugins"),
-    HelpEntry("/quit", "", "Quit (TUI only)", aliases=("/exit", "/q")),
-    HelpEntry("/restart", "", "Restart the gateway"),
-    HelpEntry("/review-fork", "status|on|off|run", "Background review fork"),
-    HelpEntry("/runtime", "", "Active runtime summary"),
-    HelpEntry("/session", "prefix|#", "Show or switch active session"),
-    HelpEntry("/sessions", "all|delete <id>", "List or delete saved sessions"),
-    HelpEntry("/skills", "", "Available skills"),
-    HelpEntry("/subagents", "list|kill <id>|all", "Active subagent runs"),
-    HelpEntry("/thinking", "off|minimal|low|medium|high|xhigh|adaptive|max", "Show / set thinking level"),
-    HelpEntry("/todos", "", "Show current TODO list for this session"),
-    HelpEntry("/tools", "", "Registered tools"),
-    HelpEntry("/usage", "", "Per-session token + cache + compaction stats"),
-)
-
-
 def _rich_token(entry: HelpEntry) -> str:
     """One token of the Rich one-liner: ``/cmd`` or ``/cmd \\[args]``."""
     return f"{entry.command} \\[{entry.args}]" if entry.args else entry.command
@@ -108,10 +74,6 @@ def _table_row(entry: HelpEntry) -> list[str]:
     if entry.args:
         name = f"{name} ({entry.args})"
     return [name, entry.description]
-
-
-HELP_TEXT = "  ".join(_rich_token(e) for e in HELP_ENTRIES)
-HELP_TABLE_ROWS: list[list[str]] = [_table_row(e) for e in HELP_ENTRIES]
 
 
 class QuitREPL(Exception):
@@ -134,11 +96,12 @@ class SlashRegistry:
         handler: SlashHandler,
         description: str = "",
         args: str = "",
+        aliases: tuple[str, ...] = (),
     ) -> None:
         if not command.startswith("/"):
             raise ValueError("slash command must start with '/'")
         self._handlers[command] = handler
-        self._entries[command] = HelpEntry(command, args, description)
+        self._entries[command] = HelpEntry(command, args, description, aliases)
 
     def handlers(self) -> dict[str, SlashHandler]:
         return dict(self._handlers)
@@ -1116,47 +1079,59 @@ def renderer_for(mode: str, *, console: Console | None = None, **kwargs) -> Slas
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Dispatch table
+# Built-in registration
 # ────────────────────────────────────────────────────────────────────────────
+
+
+async def _cmd_quit(_backend, _renderer: SlashRenderer, _state, _args, _cmd):
+    raise QuitREPL()
+
+
+async def _cmd_help(_backend, _renderer: SlashRenderer, _state, _args, _cmd):
+    return None
+
+
+def _register_service_slash(registry: SlashRegistry) -> None:
+    registry.register("/channels", _cmd_channels, "Running channels")
+    registry.register("/clear", _cmd_clear, "Clear current session history")
+    registry.register("/compact", _cmd_compact, "Summarize / compact history")
+    registry.register("/context", _cmd_context, "Context-window budget snapshot")
+    registry.register("/health", _cmd_health, "Daemon health snapshot")
+    registry.register("/help", _cmd_help, "Show this list")
+    registry.register("/hooks", _cmd_hooks, "Registered hook handlers")
+    registry.register("/new", _cmd_new, "Start a new session")
+    registry.register("/plugins", _cmd_plugins, "Loaded plugins")
+    registry.register("/quit", _cmd_quit, "Quit (TUI only)", aliases=("/exit", "/q"))
+    registry.register("/session", _cmd_session, "Show or switch active session", "prefix|#")
+    registry.register("/sessions", _cmd_sessions, "List or delete saved sessions", "all|delete <id>")
+    registry.register("/todos", _cmd_todos, "Show current TODO list for this session")
+    registry.register("/tools", _cmd_tools, "Registered tools")
+    registry.register("/usage", _cmd_usage, "Per-session token + cache + compaction stats")
 
 
 def _build_registry() -> SlashRegistry:
     registry = SlashRegistry()
-    for entry in HELP_ENTRIES:
-        handler = {
-            "/active-memory": _cmd_active_memory,
-            "/channels": _cmd_channels,
-            "/clear": _cmd_clear,
-            "/compact": _cmd_compact,
-            "/context": _cmd_context,
-            "/checkpoint": _cmd_checkpoint,
-            "/curator": _cmd_curator,
-            "/dreaming": _cmd_dreaming,
-            "/health": _cmd_health,
-            "/hooks": _cmd_hooks,
-            "/model": _cmd_model,
-            "/models": _cmd_models,
-            "/new": _cmd_new,
-            "/plugins": _cmd_plugins,
-            "/restart": _cmd_restart,
-            "/review-fork": _cmd_review_fork,
-            "/runtime": _cmd_runtime,
-            "/session": _cmd_session,
-            "/sessions": _cmd_sessions,
-            "/skills": _cmd_skills,
-            "/subagents": _cmd_subagents,
-            "/thinking": _cmd_thinking,
-            "/todos": _cmd_todos,
-            "/tools": _cmd_tools,
-            "/usage": _cmd_usage,
-        }.get(entry.command)
-        if handler is not None:
-            registry.register(entry.command, handler, entry.description, entry.args)
+    _register_service_slash(registry)
+
+    from nano_openclaw.features.checkpoint.slash import register_slash as register_checkpoint_slash
+    from nano_openclaw.features.memory.slash import register_slash as register_memory_slash
+    from nano_openclaw.features.runtime.slash import register_slash as register_runtime_slash
+    from nano_openclaw.features.skills.slash import register_slash as register_skills_slash
+    from nano_openclaw.features.subagents.slash import register_slash as register_subagents_slash
+
+    register_memory_slash(registry)
+    register_skills_slash(registry)
+    register_subagents_slash(registry)
+    register_checkpoint_slash(registry)
+    register_runtime_slash(registry)
     return registry
 
 
 _REGISTRY = _build_registry()
 _HANDLERS = _REGISTRY.handlers()
+HELP_ENTRIES = _REGISTRY.entries()
+HELP_TEXT = "  ".join(_rich_token(e) for e in HELP_ENTRIES)
+HELP_TABLE_ROWS: list[list[str]] = [_table_row(e) for e in HELP_ENTRIES]
 
 
 def register_slash_command(
