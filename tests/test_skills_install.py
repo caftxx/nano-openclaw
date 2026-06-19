@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from nano_openclaw.skills.install import (
+from nano_openclaw.features.skills.install import (
     SkillInstallResult,
     install_skill,
     resolve_skill_python_env,
@@ -50,7 +50,7 @@ def test_uv_install_uses_isolated_venv_python_without_global_pip(
 
     calls: list[list[str]] = []
 
-    monkeypatch.setattr("nano_openclaw.skills.install.shutil.which", lambda _name: None)
+    monkeypatch.setattr("nano_openclaw.features.skills.install.shutil.which", lambda _name: None)
 
     async def fake_run(argv: list[str], *, timeout: int, env=None) -> SkillInstallResult:
         calls.append(argv)
@@ -58,7 +58,7 @@ def test_uv_install_uses_isolated_venv_python_without_global_pip(
             Path(argv[3]).mkdir(parents=True, exist_ok=True)
         return SkillInstallResult(ok=True, message="Installed", code=0)
 
-    monkeypatch.setattr("nano_openclaw.skills.install._run_command", fake_run)
+    monkeypatch.setattr("nano_openclaw.features.skills.install._run_command", fake_run)
 
     result = asyncio.run(
         install_skill(
@@ -85,13 +85,13 @@ def test_uv_binary_install_targets_venv_python(tmp_path: Path, monkeypatch) -> N
     _write_skill(workspace, "http", '{"id":"deps","kind":"uv","package":"httpx"}')
     calls: list[list[str]] = []
 
-    monkeypatch.setattr("nano_openclaw.skills.install.shutil.which", lambda _name: "uv")
+    monkeypatch.setattr("nano_openclaw.features.skills.install.shutil.which", lambda _name: "uv")
 
     async def fake_run(argv: list[str], *, timeout: int, env=None) -> SkillInstallResult:
         calls.append(argv)
         return SkillInstallResult(ok=True, message="Installed", code=0)
 
-    monkeypatch.setattr("nano_openclaw.skills.install._run_command", fake_run)
+    monkeypatch.setattr("nano_openclaw.features.skills.install._run_command", fake_run)
 
     result = asyncio.run(
         install_skill(workspace_dir=workspace, state_dir=state, skill_name="http", install_id="deps")

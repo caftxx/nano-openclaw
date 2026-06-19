@@ -355,7 +355,7 @@ class EmbeddedBackend(Backend):
     ) -> None:
         if registry.get("sessions_spawn") is None:
             return
-        from nano_openclaw.subagent.tools import SpawnToolContext
+        from nano_openclaw.features.subagents.tools import SpawnToolContext
         registry.set_spawn_tool_context(SpawnToolContext(
             requester_session_key=session_id,
             session_dir=self.runtime.session_dir,
@@ -984,7 +984,7 @@ class EmbeddedBackend(Backend):
     # ─── Subagents ───
 
     async def subagents_list(self) -> list[SubagentInfo]:
-        from nano_openclaw.subagent.runner import get_runner
+        from nano_openclaw.features.subagents.runner import get_runner
         runner = get_runner(None)  # type: ignore[arg-type]  # accepts None per existing convention
         if runner is None:
             return []
@@ -1002,7 +1002,7 @@ class EmbeddedBackend(Backend):
         return out
 
     async def subagents_kill(self, run_id: str) -> None:
-        from nano_openclaw.subagent.runner import get_runner
+        from nano_openclaw.features.subagents.runner import get_runner
         runner = get_runner(None)  # type: ignore[arg-type]
         if runner is None:
             raise NotFoundError(f"no subagent runner")
@@ -1041,7 +1041,7 @@ class EmbeddedBackend(Backend):
         was started without one, so toggling on works for agents that
         merely declined to enable it at boot.
         """
-        from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
+        from nano_openclaw.features.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
 
         if self.runtime.cfg.active_memory_config is None:
             self.runtime.cfg.active_memory_config = ActiveMemoryConfig(enabled=False)
@@ -1100,7 +1100,7 @@ class EmbeddedBackend(Backend):
 
         workspace_dir = str(self.runtime.workspace_dir) if self.runtime.workspace_dir else None
         if workspace_dir:
-            from nano_openclaw.memory.dreaming import get_dreaming_status
+            from nano_openclaw.features.memory.dreaming import get_dreaming_status
             try:
                 payload["status"] = get_dreaming_status(workspace_dir, cfg)
             except Exception as exc:  # noqa: BLE001 — surface but don't crash
@@ -1111,7 +1111,7 @@ class EmbeddedBackend(Backend):
 
     async def dreaming_set(self, **fields: Any) -> dict[str, Any]:
         """Mutate dreaming config in place. Lazy-init the same as active_memory_set."""
-        from nano_openclaw.memory.dreaming import DreamingConfig
+        from nano_openclaw.features.memory.dreaming import DreamingConfig
 
         if self.runtime.cfg.dreaming_config is None:
             self.runtime.cfg.dreaming_config = DreamingConfig(enabled=True)
@@ -1143,7 +1143,7 @@ class EmbeddedBackend(Backend):
         response. ``NotFoundError`` if dreaming was never configured;
         ``BackendError`` if there's no workspace to scan.
         """
-        from nano_openclaw.memory.dreaming import run_dreaming
+        from nano_openclaw.features.memory.dreaming import run_dreaming
 
         cfg = self.runtime.cfg.dreaming_config
         if cfg is None:
@@ -1248,7 +1248,7 @@ class EmbeddedBackend(Backend):
             raise BackendError("no workspace_dir on this runtime; review_fork.run unavailable")
         agent_id = "default"
         try:
-            from nano_openclaw.subagent.types import parse_session_key
+            from nano_openclaw.features.subagents.types import parse_session_key
             parsed = parse_session_key(target_session_key)
             agent_id = parsed.get("agentId", "default")
         except Exception:
@@ -1281,7 +1281,7 @@ class EmbeddedBackend(Backend):
     # ─── Curator Lite ───
 
     async def curator_get(self) -> dict[str, Any]:
-        from nano_openclaw.skills.curator import status
+        from nano_openclaw.features.skills.curator import status
 
         state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
         if not state_dir:
@@ -1289,7 +1289,7 @@ class EmbeddedBackend(Backend):
         return status(state_dir)
 
     async def curator_set(self, **fields: Any) -> dict[str, Any]:
-        from nano_openclaw.skills.curator import set_enabled, set_paused
+        from nano_openclaw.features.skills.curator import set_enabled, set_paused
 
         state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
         if not state_dir:
@@ -1301,7 +1301,7 @@ class EmbeddedBackend(Backend):
         return await self.curator_get()
 
     async def curator_run(self, dry_run: bool = False) -> dict[str, Any]:
-        from nano_openclaw.skills.curator import run
+        from nano_openclaw.features.skills.curator import run
 
         state_dir = str(self.runtime.state_dir) if self.runtime.state_dir else ""
         if not state_dir:
@@ -1361,7 +1361,7 @@ class EmbeddedBackend(Backend):
         ``in_prompt`` and ``reason`` so the remote-mode TUI can render the
         same Table cli.py renders.
         """
-        from nano_openclaw.skills import (
+        from nano_openclaw.features.skills import (
             filter_eligible_skills,
             filter_visible_skills,
             get_or_load_skills,

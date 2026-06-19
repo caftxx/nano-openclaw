@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from nano_openclaw.skills import curator, usage
+from nano_openclaw.features.skills import curator, usage
 
 
 def test_usage_records_events(tmp_path: Path):

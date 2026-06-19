@@ -4,7 +4,7 @@ import platform
 
 import pytest
 
-from nano_openclaw.skills import (
+from nano_openclaw.features.skills import (
     Skill,
     SkillEntry,
     SkillExposure,
@@ -12,7 +12,7 @@ from nano_openclaw.skills import (
     SkillMetadata,
     SkillRequires,
 )
-from nano_openclaw.skills.gating import (
+from nano_openclaw.features.skills.gating import (
     check_bin_exists,
     check_config_path_truthy,
     check_env_exists,

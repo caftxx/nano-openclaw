@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.memory.dreaming import (
+from nano_openclaw.features.memory.dreaming import (
     DreamingConfig,
     DreamingState,
     ShortTermRecallEntry,
@@ -274,7 +274,7 @@ class TestRunLightPhase:
         state = load_dreaming_state(ws)
         for entry in state.entries.values():
             entry.promoted_at = datetime.now().isoformat()
-        from nano_openclaw.memory.dreaming import _save_dreaming_state
+        from nano_openclaw.features.memory.dreaming import _save_dreaming_state
         _save_dreaming_state(ws, state)
         candidates = run_light_phase(ws)
         assert candidates == []

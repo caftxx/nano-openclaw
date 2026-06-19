@@ -1,7 +1,7 @@
 from rich.console import Console
 
 from nano_openclaw.approvals import ApprovalManager, ApprovalPolicy
-from nano_openclaw.subagent.runner import SubagentRunner
+from nano_openclaw.features.subagents.runner import SubagentRunner
 from nano_openclaw.core.tools import build_core_registry
 
 

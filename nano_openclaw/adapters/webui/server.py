@@ -22,7 +22,7 @@ from nano_openclaw.api.event_payload import (
 )
 from nano_openclaw.services.backend import BackendError, BusyError, NotFoundError, PushEvent
 from nano_openclaw.adapters.webui.aliyun_token import AliyunTokenProvider, TokenError
-from nano_openclaw.tts import TalkSpeakError, build_talk_config, synthesize_talk_speech
+from nano_openclaw.features.voice import TalkSpeakError, build_talk_config, synthesize_talk_speech
 from nano_openclaw.core.runtime import AgentRuntime
 from nano_openclaw.services.agent_session import BackendSessionManager, display_history, message_text
 

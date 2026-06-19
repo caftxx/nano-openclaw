@@ -1,6 +1,6 @@
 """Tests for skills slash commands module."""
 
-from nano_openclaw.skills import (
+from nano_openclaw.features.skills import (
     Skill,
     SkillEntry,
     SlashCommand,
@@ -8,7 +8,7 @@ from nano_openclaw.skills import (
     build_slash_command_context,
     parse_slash_command,
 )
-from nano_openclaw.skills.slash_commands import BUILTIN_COMMANDS, is_skill_user_invocable
+from nano_openclaw.features.skills.slash_commands import BUILTIN_COMMANDS, is_skill_user_invocable
 
 
 def test_parse_slash_command_not_a_command():
@@ -166,7 +166,7 @@ def test_build_skill_registry_from_entries():
 
 def test_build_skill_registry_excludes_non_user_invocable_by_default():
     """user-invocable: false skills are excluded from the slash command registry by default."""
-    from nano_openclaw.skills import SkillInvocationPolicy
+    from nano_openclaw.features.skills import SkillInvocationPolicy
 
     skill_model_only = Skill(
         name="mockup",
@@ -204,7 +204,7 @@ def test_build_skill_registry_excludes_non_user_invocable_by_default():
 
 def test_build_skill_registry_includes_non_user_invocable_when_unrestricted():
     """user-invocable: false skills ARE included when user_invocable_only=False (model Skill tool registry)."""
-    from nano_openclaw.skills import SkillInvocationPolicy
+    from nano_openclaw.features.skills import SkillInvocationPolicy
 
     skill_model_only = Skill(
         name="mockup",
@@ -236,7 +236,7 @@ def test_is_skill_user_invocable_default():
 
 def test_is_skill_user_invocable_from_entry():
     """Check from entry exposure/invocation."""
-    from nano_openclaw.skills import SkillExposure, SkillInvocationPolicy
+    from nano_openclaw.features.skills import SkillExposure, SkillInvocationPolicy
     
     skill = Skill(name="test", description="Test", filePath="/p", baseDir="/p", source="bundled")
     

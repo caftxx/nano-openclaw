@@ -177,8 +177,8 @@ class ReviewForkState:
         return await self._do_fork(payload)
 
     async def _do_fork(self, payload: dict[str, Any]) -> Optional[str]:
-        from nano_openclaw.subagent.runner import get_runner
-        from nano_openclaw.subagent.types import SpawnParams, SubagentCleanupMode
+        from nano_openclaw.features.subagents.runner import get_runner
+        from nano_openclaw.features.subagents.types import SpawnParams, SubagentCleanupMode
 
         parent_registry = payload.get("tool_registry")
         client = payload.get("client")

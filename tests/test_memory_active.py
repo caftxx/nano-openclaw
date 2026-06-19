@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from nano_openclaw.memory.active import (
+from nano_openclaw.features.memory.active import (
     QueryMode,
     PromptStyle,
     ActiveMemoryConfig,
@@ -392,7 +392,7 @@ class TestActiveMemoryIntegration:
 class TestRunRecallSubagent:
     """Tests for run_recall_subagent function (mocked)."""
 
-    @patch("nano_openclaw.memory.active.run_recall_subagent")
+    @patch("nano_openclaw.features.memory.active.run_recall_subagent")
     def test_returns_result_with_context_on_success(self, mock_run):
         """Successful recall should return result with context."""
         mock_run.return_value = ActiveMemoryResult(
@@ -411,7 +411,7 @@ class TestRunRecallSubagent:
 
         # This test uses mock, so the actual run_recall_subagent is patched
         # We just verify the manager can call it
-        from nano_openclaw.memory.active import run_recall_subagent
+        from nano_openclaw.features.memory.active import run_recall_subagent
         result = asyncio.run(run_recall_subagent(
             mock_client,
             "claude-3-5-sonnet-20241022",
@@ -428,7 +428,7 @@ class TestRunRecallSubagent:
         mock_client = mock_anthropic.return_value
         mock_client.messages.create = AsyncMock(side_effect=Exception("API error"))
 
-        from nano_openclaw.memory.active import run_recall_subagent
+        from nano_openclaw.features.memory.active import run_recall_subagent
         result = asyncio.run(run_recall_subagent(
             mock_client,
             "claude-3-5-sonnet-20241022",

@@ -38,8 +38,8 @@ from nano_openclaw.logger import get_logger, resolve_log_level
 from nano_openclaw.core.loop import LoopConfig
 
 log = get_logger(__name__)
-from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
-from nano_openclaw.memory.dreaming import DreamingConfig, start_dreaming_scheduler
+from nano_openclaw.features.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
+from nano_openclaw.features.memory.dreaming import DreamingConfig, start_dreaming_scheduler
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.plugins.registry import HookRegistry
 from nano_openclaw.session import resolve_agent_sessions_dir, resolve_session_store_path
@@ -258,8 +258,8 @@ async def build_agent_runtime(
     )
 
     if not no_tools:
-        from nano_openclaw.subagent.runner import get_runner
-        from nano_openclaw.subagent.types import SubagentConfig as _SubagentConfig
+        from nano_openclaw.features.subagents.runner import get_runner
+        from nano_openclaw.features.subagents.types import SubagentConfig as _SubagentConfig
         get_runner(_SubagentConfig(
             max_concurrent=config.subagents.maxConcurrent,
             max_spawn_depth=config.subagents.maxSpawnDepth,
@@ -283,7 +283,7 @@ async def build_agent_runtime(
     cron_stop = threading.Event()
     cron_task = None
     if config.schedule.enabled and not no_tools:
-        from nano_openclaw.schedule.scheduler import start_cron_scheduler
+        from nano_openclaw.features.schedule.scheduler import start_cron_scheduler
         cron_dir = state_dir / "cron"
         cron_task = start_cron_scheduler(
             cron_dir=cron_dir,

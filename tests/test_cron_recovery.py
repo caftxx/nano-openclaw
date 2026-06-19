@@ -17,8 +17,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from nano_openclaw.schedule.scheduler import _set_next_run_recovery
-from nano_openclaw.schedule.types import CronJob, CronJobState
+from nano_openclaw.features.schedule.scheduler import _set_next_run_recovery
+from nano_openclaw.features.schedule.types import CronJob, CronJobState
 
 
 def _periodic_job(expression: str = "0 9 * * *") -> CronJob:

@@ -276,7 +276,7 @@ def test_skill_tool_returns_error_for_unknown_skill(registry):
 
 def test_skill_tool_returns_content_for_known_skill(registry, tmp_path):
     """Skill tool returns skill content when skill is eligible."""
-    from nano_openclaw.skills import Skill
+    from nano_openclaw.features.skills import Skill
 
     # Create a skill file
     skill_dir = tmp_path / "skills" / "test-skill"
@@ -311,7 +311,7 @@ def test_skill_tool_invokable_when_not_user_invocable(registry, tmp_path):
     the model Skill tool when the loop passes user_invocable_only=False to
     build_skill_registry_from_entries.
     """
-    from nano_openclaw.skills import Skill
+    from nano_openclaw.features.skills import Skill
 
     skill_dir = tmp_path / "skills" / "mockup"
     skill_dir.mkdir(parents=True)
@@ -337,7 +337,7 @@ def test_skill_tool_invokable_when_not_user_invocable(registry, tmp_path):
 
 def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
     """Skill tool loads content from file when skill.content is None."""
-    from nano_openclaw.skills import Skill
+    from nano_openclaw.features.skills import Skill
 
     # Create a skill file
     skill_dir = tmp_path / "skills" / "load-skill"
@@ -365,7 +365,7 @@ def test_skill_tool_loads_from_file_if_content_missing(registry, tmp_path):
 
 
 def test_skill_install_tool_returns_install_result(registry, tmp_path, monkeypatch):
-    from nano_openclaw.skills.install import SkillInstallResult
+    from nano_openclaw.features.skills.install import SkillInstallResult
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -380,7 +380,7 @@ def test_skill_install_tool_returns_install_result(registry, tmp_path, monkeypat
         assert kwargs["install_id"] == "deps"
         return SkillInstallResult(ok=True, message="Installed", stdout="ok", stderr="", code=0)
 
-    monkeypatch.setattr("nano_openclaw.skills.install.install_skill", fake_install_skill)
+    monkeypatch.setattr("nano_openclaw.features.skills.install.install_skill", fake_install_skill)
 
     out = registry.dispatch("id-i", "skill_install", {"skill": "demo", "installId": "deps"})
 

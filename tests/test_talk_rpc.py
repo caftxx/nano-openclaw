@@ -4,7 +4,7 @@ import asyncio
 
 from nano_openclaw.config.types import VoiceConfig
 from nano_openclaw.api.methods.talk import talk_config, talk_speak
-from nano_openclaw.tts.talk import build_talk_config
+from nano_openclaw.features.voice.talk import build_talk_config
 
 
 class _Runtime:

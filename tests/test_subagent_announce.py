@@ -2,15 +2,15 @@
 
 import pytest
 
-from nano_openclaw.subagent.announce import (
+from nano_openclaw.features.subagents.announce import (
     AnnounceEvent,
     build_announce_content,
     format_announce_for_display,
     should_announce,
     create_announce_event,
 )
-from nano_openclaw.subagent.runner import SubagentRunnerResult
-from nano_openclaw.subagent.types import (
+from nano_openclaw.features.subagents.runner import SubagentRunnerResult
+from nano_openclaw.features.subagents.types import (
     SubagentRunRecord,
     SubagentStatus,
     SubagentCleanupMode,

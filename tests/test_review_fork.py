@@ -18,7 +18,7 @@ from nano_openclaw.plugins.builtin.review_fork_plugin import (
     get_state,
     reset_state,
 )
-from nano_openclaw.subagent.types import SubagentRunRecord, SubagentStatus
+from nano_openclaw.features.subagents.types import SubagentRunRecord, SubagentStatus
 from nano_openclaw.core.tools import ToolRegistry, build_core_registry
 
 
@@ -95,7 +95,7 @@ def fake_runner(monkeypatch) -> _FakeRunner:
         return runner
 
     monkeypatch.setattr(
-        "nano_openclaw.subagent.runner.get_runner",
+        "nano_openclaw.features.subagents.runner.get_runner",
         _get_runner,
     )
     return runner

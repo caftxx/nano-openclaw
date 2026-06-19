@@ -29,7 +29,7 @@ from rich.text import Text
 from nano_openclaw.core.compact import compact_if_needed, estimate_tokens
 from nano_openclaw.services import slash
 from nano_openclaw.logger import get_logger
-from nano_openclaw.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
+from nano_openclaw.features.memory.active import ActiveMemoryConfig, QueryMode, PromptStyle
 from nano_openclaw.core.loop import (
     ActiveMemoryRecall,
     Compaction,
@@ -74,7 +74,7 @@ from nano_openclaw.session import (
     list_sessions,
     new_session_id,
 )
-from nano_openclaw.skills import (
+from nano_openclaw.features.skills import (
     filter_eligible_skills,
     filter_visible_skills,
     get_or_load_skills,
@@ -144,7 +144,7 @@ async def repl(
     # _spawn_ctx is kept in scope so session switches can update requester_session_key.
     _spawn_ctx: Any = None
     if registry.get("sessions_spawn") is not None:
-        from nano_openclaw.subagent.tools import SpawnToolContext
+        from nano_openclaw.features.subagents.tools import SpawnToolContext
         _spawn_ctx = SpawnToolContext(
             requester_session_key=session_id or cfg.session_key or "main",
             session_dir=session_dir or Path("."),
@@ -172,7 +172,7 @@ async def repl(
         # slash command handling — so results are persisted even when the user
         # runs /new, /session, /quit, etc. instead of normal input.
         if _spawn_ctx is not None:
-            from nano_openclaw.subagent.runner import get_runner
+            from nano_openclaw.features.subagents.runner import get_runner
             _pending = get_runner().drain_announcements(_spawn_ctx.requester_session_key)
             if _pending:
                 history.extend(_pending)
@@ -1845,7 +1845,7 @@ async def _handle_dreaming_command(
         /dreaming run        - Run a dreaming sweep now (blocking)
         /dreaming status     - Show detailed candidate list
     """
-    from nano_openclaw.memory.dreaming import (
+    from nano_openclaw.features.memory.dreaming import (
         DreamingConfig,
         get_dreaming_status,
         run_dreaming,
@@ -1943,7 +1943,7 @@ async def _handle_subagents_command(
     client: Any,
 ) -> None:
     """Handle /subagents command for listing and controlling subagent runs."""
-    from nano_openclaw.subagent import get_runner, SubagentStatus
+    from nano_openclaw.features.subagents import get_runner, SubagentStatus
 
     parts = user_input.strip().split()
     runner = get_runner()

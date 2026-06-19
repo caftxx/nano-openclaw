@@ -8,7 +8,7 @@ from rich.console import Console
 
 from nano_openclaw.adapters.cli.repl import _list_skills
 from nano_openclaw.core.loop import LoopConfig
-from nano_openclaw.skills import Skill, SkillEntry
+from nano_openclaw.features.skills import Skill, SkillEntry
 
 
 def test_list_skills_no_workspace():
@@ -86,7 +86,7 @@ def test_list_skills_shows_blocked(tmp_path: Path):
         source="bundled",
     )
     
-    from nano_openclaw.skills import SkillMetadata, SkillRequires
+    from nano_openclaw.features.skills import SkillMetadata, SkillRequires
     metadata = SkillMetadata(
         requires=SkillRequires(bins=["nonexistent-cli"]),
     )

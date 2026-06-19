@@ -11,7 +11,7 @@ class SchedulePlugin:
 
     def register(self, api: PluginApi) -> None:
         from pathlib import Path
-        from nano_openclaw.schedule.tools import build_cron_tools
+        from nano_openclaw.features.schedule.tools import build_cron_tools
 
         state_dir = getattr(api.config, "state_dir", "")
         if not state_dir:

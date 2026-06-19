@@ -1,4 +1,4 @@
-"""Tests for ``nano_openclaw.memory.topics`` — scan / manifest / truncate / path guard.
+"""Tests for ``nano_openclaw.features.memory.topics`` — scan / manifest / truncate / path guard.
 
 Pure-function level: no extractor wiring, no subagent spawn. The extractor
 module's behavioural tests live in ``tests/test_memory_extractor.py``.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.memory.topics import (
+from nano_openclaw.features.memory.topics import (
     INDEX_FILE,
     MAX_INDEX_BYTES,
     MAX_INDEX_LINES,

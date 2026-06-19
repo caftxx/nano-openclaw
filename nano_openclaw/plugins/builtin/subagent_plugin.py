@@ -8,7 +8,7 @@ class SubagentPlugin:
     name = "Subagent Tools"
 
     def register(self, api: PluginApi) -> None:
-        from nano_openclaw.subagent.tools import build_spawn_tool, build_subagents_tool
+        from nano_openclaw.features.subagents.tools import build_spawn_tool, build_subagents_tool
 
         api.register_tool(build_spawn_tool())
         api.register_tool(build_subagents_tool())

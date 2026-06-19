@@ -15,13 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.memory.daily import (
+from nano_openclaw.features.memory.daily import (
     build_date_stamps,
     list_daily_memory_files,
     format_daily_memory_block,
     build_daily_memory_prelude,
 )
-from nano_openclaw.workspace.constants import (
+from nano_openclaw.features.workspace.constants import (
     DEFAULT_DAILY_MEMORY_DAYS,
     MAX_DAILY_MEMORY_DAYS,
     DAILY_MEMORY_FILE_MAX_CHARS,
@@ -221,7 +221,7 @@ class TestIntegration:
     def test_prelude_injected_by_memory_plugin(self, workspace_with_memory, monkeypatch):
         """Daily memory prelude should be injected through the memory plugin hook."""
         import asyncio
-        import nano_openclaw.memory.daily as daily
+        import nano_openclaw.features.memory.daily as daily
         from nano_openclaw.config.types import NanoOpenClawConfig, PluginsConfig
         from nano_openclaw.plugins.loader import load_plugins
         from nano_openclaw.core.prompt import build_system_prompt

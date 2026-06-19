@@ -2,7 +2,7 @@
 
 import pytest
 
-from nano_openclaw.subagent.types import (
+from nano_openclaw.features.subagents.types import (
     SubagentConfig,
     SubagentContextMode,
     SubagentCleanupMode,

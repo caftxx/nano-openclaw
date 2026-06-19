@@ -21,7 +21,7 @@ from nano_openclaw.logger import get_logger
 
 if TYPE_CHECKING:
     from nano_openclaw.core.runtime import AgentRuntime
-    from nano_openclaw.schedule.types import CronJob, CronRunRecord
+    from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
 
 
 log = get_logger(__name__)

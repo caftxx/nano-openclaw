@@ -47,8 +47,8 @@ from nano_openclaw.core.images import (
     parse_image_refs,
     to_anthropic_image_block,
 )
-from nano_openclaw.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
-from nano_openclaw.memory.dreaming import DreamingConfig
+from nano_openclaw.features.memory.active import ActiveMemoryConfig, ActiveMemoryManager, ActiveMemoryResult
+from nano_openclaw.features.memory.dreaming import DreamingConfig
 from nano_openclaw.core.prompt import VOICE_STYLE_PROMPT, build_system_prompt
 from nano_openclaw.core.provider import (
     MessageEnd,
@@ -61,7 +61,7 @@ from nano_openclaw.core.provider import (
     ToolUseStart,
     stream_response,
 )
-from nano_openclaw.skills import (
+from nano_openclaw.features.skills import (
     Skill,
     SkillEntry,
     build_skill_registry_from_entries,
@@ -74,7 +74,7 @@ from nano_openclaw.skills import (
 )
 from nano_openclaw.todo import TodoStore
 from nano_openclaw.core.tools import ToolRegistry
-from nano_openclaw.workspace import (
+from nano_openclaw.features.workspace import (
     WorkspaceBootstrapFile,
     get_or_load_bootstrap_files,
     load_workspace_memory_index,
@@ -585,7 +585,7 @@ class AgentSession:
             user_invocable_only=False,
         )
         try:
-            from nano_openclaw.skills.usage import record_event
+            from nano_openclaw.features.skills.usage import record_event
             for skill_name, skill in model_registry.items():
                 record_event(
                     self.cfg.state_dir,
@@ -615,7 +615,7 @@ class AgentSession:
             skill_context = build_slash_command_context(command)
             content.append({"type": "text", "text": skill_context})
             try:
-                from nano_openclaw.skills.usage import record_event
+                from nano_openclaw.features.skills.usage import record_event
                 record_event(
                     self.cfg.state_dir,
                     command.name,
@@ -1032,7 +1032,7 @@ async def _run_agent_session_turn(
             )
             agent_id = "default"
             try:
-                from nano_openclaw.subagent.types import parse_session_key
+                from nano_openclaw.features.subagents.types import parse_session_key
                 parsed = parse_session_key(cfg.session_key)
                 agent_id = parsed.get("agentId", "default")
             except Exception:
@@ -1524,7 +1524,7 @@ async def _wait_for_subagent_announcements(
     if not requester_session_key:
         return []
 
-    from nano_openclaw.subagent.runner import get_runner
+    from nano_openclaw.features.subagents.runner import get_runner
 
     runner = get_runner()
     try:

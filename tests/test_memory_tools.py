@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.memory.tools import (
+from nano_openclaw.features.memory.tools import (
     memory_get,
     memory_search,
     MemorySearchResult,

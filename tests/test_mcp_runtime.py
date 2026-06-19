@@ -8,7 +8,7 @@ import threading
 from types import ModuleType
 
 from nano_openclaw.config.types import McpServerConfig
-from nano_openclaw.mcp.runtime import McpRuntime
+from nano_openclaw.features.mcp.runtime import McpRuntime
 
 
 class _AsyncContextManager:

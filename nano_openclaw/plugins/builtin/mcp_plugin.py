@@ -25,8 +25,8 @@ class McpPlugin:
                 return None
             initialized = True
 
-            from nano_openclaw.mcp.materialize import materialize_mcp_tools
-            from nano_openclaw.mcp.runtime import McpRuntime
+            from nano_openclaw.features.mcp.materialize import materialize_mcp_tools
+            from nano_openclaw.features.mcp.runtime import McpRuntime
 
             runtime = McpRuntime()
             await runtime.initialize(api.config.mcp.servers)

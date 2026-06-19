@@ -1,4 +1,4 @@
-"""Tests for ``nano_openclaw.memory.extractor`` — the stop-hook extractor.
+"""Tests for ``nano_openclaw.features.memory.extractor`` — the stop-hook extractor.
 
 Mocks out the subagent execution (``_execute_extraction``) so the suite
 exercises the trigger / cooldown / mutual-exclusion / coalesce / cursor
@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from nano_openclaw.config.types import ExtractMemoriesConfig
-from nano_openclaw.memory import extractor as ex_module
-from nano_openclaw.memory.extractor import (
+from nano_openclaw.features.memory import extractor as ex_module
+from nano_openclaw.features.memory.extractor import (
     ExtractorState,
     _has_topic_writes_since,
     _index_after_cursor,

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.skills import (
+from nano_openclaw.features.skills import (
     DEFAULT_MAX_SKILL_FILE_BYTES,
     SKILL_FILE_NAME,
     Skill,
@@ -15,7 +15,7 @@ from nano_openclaw.skills import (
     parse_frontmatter,
     resolve_bundled_skills_dir,
 )
-from nano_openclaw.skills.loader import (
+from nano_openclaw.features.skills.loader import (
     extract_content_after_frontmatter,
     parse_metadata_json,
     resolve_skill_metadata,
@@ -333,7 +333,7 @@ def test_parse_frontmatter_invalid_yaml():
 
 def test_resolve_invocation_policy_native_bool():
     """resolve_invocation_policy handles Python bool from PyYAML."""
-    from nano_openclaw.skills.loader import resolve_invocation_policy
+    from nano_openclaw.features.skills.loader import resolve_invocation_policy
     policy = resolve_invocation_policy({"user-invocable": False, "disable-model-invocation": True})
     assert policy.userInvocable is False
     assert policy.disableModelInvocation is True

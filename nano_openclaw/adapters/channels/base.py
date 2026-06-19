@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 if TYPE_CHECKING:
     from nano_openclaw.core.runtime import AgentRuntime
-    from nano_openclaw.schedule.types import CronJob, CronRunRecord
+    from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
     from nano_openclaw.core.tools import ToolRegistry
 
 

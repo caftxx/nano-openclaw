@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 from nano_openclaw.core.loop import AgentSession, LoopConfig, Message, SubagentEvent, SubagentProgress, ToolResult
 from nano_openclaw.core.provider import MessageEnd, TextDelta, ToolUseDelta, ToolUseEnd, ToolUseStart
-from nano_openclaw.subagent.registry import reset_registry
-from nano_openclaw.subagent.runner import SubagentRunner, get_runner, reset_runner
-from nano_openclaw.subagent.types import SpawnParams
+from nano_openclaw.features.subagents.registry import reset_registry
+from nano_openclaw.features.subagents.runner import SubagentRunner, get_runner, reset_runner
+from nano_openclaw.features.subagents.types import SpawnParams
 from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
@@ -112,7 +112,7 @@ def test_subagent_runner_emits_progress_events(monkeypatch, tmp_path):
         ))
         self.history.append(Message("assistant", [{"type": "text", "text": "child done"}]))
 
-    monkeypatch.setattr("nano_openclaw.subagent.runner.AgentSession.run_turn", fake_run_turn)
+    monkeypatch.setattr("nano_openclaw.features.subagents.runner.AgentSession.run_turn", fake_run_turn)
 
     runner = SubagentRunner()
     record = runner.registry.register(

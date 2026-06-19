@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nano_openclaw.core.tools import ToolRegistry
-from nano_openclaw.workspace import (
+from nano_openclaw.features.workspace import (
     WorkspaceBootstrapFile,
     CONTEXT_FILE_ORDER,
     DEFAULT_SOUL_FILENAME,
 )
 
 if TYPE_CHECKING:
-    from nano_openclaw.skills.types import Skill
+    from nano_openclaw.features.skills.types import Skill
 
 
 _IDENTITY = "You are a personal assistant running inside nano-openclaw."
@@ -290,7 +290,7 @@ def build_system_prompt(
     # Skills section (mirrors openclaw applySkillsPromptLimits + formatSkillsForPrompt)
     skills_block = ""
     if skills:
-        from nano_openclaw.skills import (
+        from nano_openclaw.features.skills import (
             apply_skills_prompt_limits,
             format_skills_compact,
             format_skills_for_prompt,

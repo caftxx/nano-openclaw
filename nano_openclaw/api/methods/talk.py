@@ -6,7 +6,7 @@ import base64
 from typing import Any
 
 from nano_openclaw.api.context import GatewayContext
-from nano_openclaw.tts import TalkSpeakError, build_talk_config, synthesize_talk_speech
+from nano_openclaw.features.voice import TalkSpeakError, build_talk_config, synthesize_talk_speech
 
 
 async def talk_config(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:

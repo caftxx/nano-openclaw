@@ -2,12 +2,12 @@
 
 import pytest
 
-from nano_openclaw.subagent.registry import (
+from nano_openclaw.features.subagents.registry import (
     SubagentRegistry,
     get_registry,
     reset_registry,
 )
-from nano_openclaw.subagent.types import (
+from nano_openclaw.features.subagents.types import (
     SubagentStatus,
 )
 

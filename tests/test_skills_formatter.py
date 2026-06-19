@@ -1,6 +1,6 @@
 """Tests for skills formatter module."""
 
-from nano_openclaw.skills import (
+from nano_openclaw.features.skills import (
     Skill,
     apply_skills_prompt_limits,
     escape_xml,

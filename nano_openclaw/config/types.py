@@ -447,7 +447,7 @@ class DreamingConfigInput(BaseModel):
 # factory to avoid pulling the memory subpackage into config import time
 # (which would create a cycle: memory → config → memory).
 def _default_extract_prompt() -> str:
-    from nano_openclaw.memory.extractor_prompts import DEFAULT_EXTRACT_PROMPT_TEMPLATE
+    from nano_openclaw.features.memory.extractor_prompts import DEFAULT_EXTRACT_PROMPT_TEMPLATE
     return DEFAULT_EXTRACT_PROMPT_TEMPLATE
 
 

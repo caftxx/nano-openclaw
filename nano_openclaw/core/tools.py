@@ -30,7 +30,7 @@ log = get_logger(__name__)
 if TYPE_CHECKING:
     from nano_openclaw.config.types import ToolsConfig
     from nano_openclaw.plugins.registry import HookRegistry
-    from nano_openclaw.skills.types import Skill
+    from nano_openclaw.features.skills.types import Skill
     from nano_openclaw.todo import TodoStore
 
 ToolHandler = Callable[..., "str | list[dict[str, Any]]"]
@@ -232,7 +232,7 @@ class ToolRegistry:
                 skill = ctx.eligible_skills.get(skill_name) if ctx.eligible_skills else None
                 if skill is not None:
                     try:
-                        from nano_openclaw.skills.usage import record_event
+                        from nano_openclaw.features.skills.usage import record_event
                         record_event(
                             ctx.state_dir,
                             skill_name,
@@ -616,7 +616,7 @@ async def _skill_install(
         from nano_openclaw.config import resolve_state_dir
         state_dir = str(resolve_state_dir())
 
-    from nano_openclaw.skills.install import install_skill
+    from nano_openclaw.features.skills.install import install_skill
 
     result = await install_skill(
         workspace_dir=workspace_dir,
@@ -627,7 +627,7 @@ async def _skill_install(
     )
     parts = [f"ok={str(result.ok).lower()}", f"message={result.message}"]
     if result.ok:
-        from nano_openclaw.skills.install import resolve_skill_python_env
+        from nano_openclaw.features.skills.install import resolve_skill_python_env
         env_info = resolve_skill_python_env(state_dir, skill_name)
         parts.append(f"python={env_info.python_executable}")
         parts.append(f"venv={env_info.venv_dir}")
@@ -942,7 +942,7 @@ Tool(
 
 
 def build_memory_tools(memory_search_config: Any | None = None) -> list[Tool]:
-    from nano_openclaw.memory.tools import memory_get, memory_search
+    from nano_openclaw.features.memory.tools import memory_get, memory_search
 
     return [
         Tool(

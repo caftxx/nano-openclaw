@@ -16,7 +16,7 @@ import pytest
 
 from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount, ChannelStatus
 from nano_openclaw.services.channels import ChannelManager
-from nano_openclaw.schedule.types import CronJob, CronRunRecord
+from nano_openclaw.features.schedule.types import CronJob, CronRunRecord
 
 
 # ────────────────────────────────────────────────────────────────────────────

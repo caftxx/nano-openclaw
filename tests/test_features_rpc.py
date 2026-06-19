@@ -30,8 +30,8 @@ from nano_openclaw.services.runs import RunRegistry
 from nano_openclaw.services.runtime_update import RuntimeUpdateGuard
 from nano_openclaw.api.ws_route import _dispatch_one
 from nano_openclaw.core.loop import LoopConfig
-from nano_openclaw.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
-from nano_openclaw.memory.dreaming import DreamingConfig
+from nano_openclaw.features.memory.active import ActiveMemoryConfig, PromptStyle, QueryMode
+from nano_openclaw.features.memory.dreaming import DreamingConfig
 from nano_openclaw.core.tools import ToolRegistry
 
 

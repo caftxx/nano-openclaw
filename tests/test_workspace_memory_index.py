@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from nano_openclaw.memory.topics import MAX_INDEX_BYTES, MAX_INDEX_LINES
+from nano_openclaw.features.memory.topics import MAX_INDEX_BYTES, MAX_INDEX_LINES
 from nano_openclaw.core.prompt import build_system_prompt
 from nano_openclaw.core.tools import ToolRegistry
-from nano_openclaw.workspace import load_workspace_memory_index
+from nano_openclaw.features.workspace import load_workspace_memory_index
 
 
 # ─── load_workspace_memory_index ───
@@ -101,7 +101,7 @@ def test_subagent_prompt_does_not_include_auto_memory_index() -> None:
     ``build_system_prompt`` must explicitly leave ``auto_memory_index=None``
     (the default) to preserve this isolation.
     """
-    from nano_openclaw.subagent.runner import SubagentRunner
+    from nano_openclaw.features.subagents.runner import SubagentRunner
 
     runner = SubagentRunner.__new__(SubagentRunner)  # bypass __init__: only need the helper
     prompt = runner._build_subagent_system_prompt("do a thing")
