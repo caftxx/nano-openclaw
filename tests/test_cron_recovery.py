@@ -205,3 +205,31 @@ def test_execute_job_defers_during_runtime_update(tmp_path):
         assert state.last_run_at_ms is None
 
     asyncio.run(run())
+
+
+def test_execute_job_binds_skill_runtime_for_fallback_registry(tmp_path, monkeypatch):
+    async def fake_run_turn(self, prompt):
+        assert prompt == "hello"
+        assert self.registry.skill_installer is not None
+        assert self.registry.skill_usage_recorder is not None
+
+    monkeypatch.setattr("nano_openclaw.core.loop.AgentSession.run_turn", fake_run_turn)
+
+    async def run():
+        store = CronStore(tmp_path / "cron")
+        job = _periodic_job("* * * * *")
+        store.save_jobs({job.id: job})
+        await _execute_job(
+            job,
+            store,
+            tmp_path / "state",
+            tmp_path / "sessions",
+            tmp_path / "workspace",
+            client=object(),
+            base_cfg=LoopConfig(model="test-model"),
+            run_registry=None,
+            approval_manager=None,
+            runtime_guard=None,
+        )
+
+    asyncio.run(run())

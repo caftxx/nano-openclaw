@@ -375,6 +375,8 @@ class SubagentRunner:
         if parent_registry is None:
             # Fallback when no parent registry is provided (e.g. in tests)
             registry = build_core_registry()
+            from nano_openclaw.features.skills.registry import bind_skill_runtime
+            bind_skill_runtime(registry)
             for name in SUBAGENT_TOOL_BLACKLIST:
                 registry._tools.pop(name, None)
             return registry

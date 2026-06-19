@@ -238,6 +238,8 @@ async def _execute_job(
 
     try:
         registry = build_core_registry()
+        from nano_openclaw.features.skills.registry import bind_skill_runtime
+        bind_skill_runtime(registry)
         if workspace_dir:
             registry.set_workspace_dir(workspace_dir)
         # Wire the non-interactive approval path so cron-triggered tool calls

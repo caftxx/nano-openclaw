@@ -155,8 +155,9 @@ def load_workspace_memory_index(workspace_dir: Path) -> str | None:
 
     Applies the same safety guards as bootstrap files (path stays inside
     workspace, 2 MB hard cap, swallow IO errors), then runs the content
-    through ``memory.topics.truncate_index`` so the 200-line / 25 KB caps
-    plus the in-content WARNING line match what the extractor expects.
+    through ``core.workspace.memory_index.truncate_index`` so the 200-line /
+    25 KB caps plus the in-content WARNING line match what the extractor
+    expects.
 
     Returns ``None`` when the file is missing, unreadable, or empty.
     """

@@ -18,3 +18,10 @@ def test_subagent_registry_does_not_inherit_interactive_approval_console():
     assert child.approval_manager is parent.approval_manager
     assert child.console is None
     assert child.approval_handler is None
+
+
+def test_subagent_fallback_registry_binds_skill_runtime():
+    child = SubagentRunner()._build_filtered_registry(None)
+
+    assert child.skill_installer is not None
+    assert child.skill_usage_recorder is not None
