@@ -5,7 +5,7 @@
 混进来污染中文场景的下拉。
 """
 
-from nano_openclaw.adapters.webui.voice_catalog import ALIYUN_TTS_VOICES
+from nano_openclaw.features.voice.voice_catalog import ALIYUN_TTS_VOICES
 
 
 def test_catalog_non_empty_and_well_formed():

@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from nano_openclaw.features.voice.aliyun_token import AliyunTokenProvider, TokenError
-from nano_openclaw.adapters.webui.aliyun_tts import TtsError, synthesize_tts
-from nano_openclaw.adapters.webui.voice_catalog import ALIYUN_TTS_VOICES
+from nano_openclaw.features.voice.aliyun_tts import TtsError, synthesize_tts
+from nano_openclaw.features.voice.voice_catalog import ALIYUN_TTS_VOICES
 
 
 class TalkSpeakError(Exception):
