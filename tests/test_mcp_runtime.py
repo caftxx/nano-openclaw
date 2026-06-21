@@ -63,6 +63,57 @@ def test_streamable_http_uses_current_module_and_three_value_client(monkeypatch)
     assert ready.is_set()
 
 
+def test_stdio_mcp_proxy_config_passes_command_args_and_env(monkeypatch):
+    runtime = McpRuntime()
+    ready = threading.Event()
+    cfg = McpServerConfig(
+        command="mcp-proxy",
+        transport="stdio",
+        args=[
+            "--transport=streamablehttp",
+            "--stateless",
+            "http://ha.lan/api/mcp",
+        ],
+        env={"API_ACCESS_TOKEN": "abc"},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_stdio_client(params):
+        captured["command"] = params.command
+        captured["args"] = list(params.args)
+        captured["env"] = dict(params.env or {})
+        captured["cwd"] = params.cwd
+        return _AsyncContextManager(("reader", "writer"))
+
+    async def fake_manage_session(name, read, write, ready_event):
+        captured["name"] = name
+        captured["read"] = read
+        captured["write"] = write
+        ready_event.set()
+
+    import mcp.client.stdio as stdio_module
+
+    monkeypatch.setattr(stdio_module, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(runtime, "_manage_session", fake_manage_session)
+
+    asyncio.run(runtime._run_stdio_server("HomeAssistant", cfg, ready))
+
+    assert captured == {
+        "command": "mcp-proxy",
+        "args": [
+            "--transport=streamablehttp",
+            "--stateless",
+            "http://ha.lan/api/mcp",
+        ],
+        "env": {"API_ACCESS_TOKEN": "abc"},
+        "cwd": None,
+        "name": "HomeAssistant",
+        "read": "reader",
+        "write": "writer",
+    }
+    assert ready.is_set()
+
+
 def test_run_server_signals_ready_when_connection_fails(caplog, monkeypatch):
     runtime = McpRuntime()
     ready = threading.Event()

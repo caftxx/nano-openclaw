@@ -511,7 +511,7 @@ MCP（Model Context Protocol）用于连接外部工具服务器，将外部工�
 | `<name>.cwd` | string | `null` | stdio 传输：工作目录 |
 | `<name>.workingDirectory` | string | `null` | 同上（别名） |
 | `<name>.url` | string | `null` | SSE/streamable-http 传输：服务器 URL |
-| `<name>.transport` | string | `null` | 传输类型：`sse` \| `streamable-http` |
+| `<name>.transport` | string | `null` | 传输类型：`stdio` \| `sse` \| `streamable-http` |
 | `<name>.headers` | object | `null` | SSE/streamable-http 传输：请求头 |
 | `<name>.connectionTimeoutMs` | number | `null` | 连接超时（毫秒） |
 
@@ -807,9 +807,23 @@ Dream Diary 写入：`workspace/DREAMS.md`
       // stdio 传输示例：本地文件系统服务器
       "filesystem": {
         command: "npx",
+        transport: "stdio",
         args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
         // env: { "DEBUG": "1" },
         // cwd: "/working/directory",
+      },
+      // stdio 桥接器示例：mcp-proxy 连接 streamable HTTP 服务器
+      "HomeAssistant": {
+        command: "mcp-proxy",
+        transport: "stdio",
+        args: [
+          "--transport=streamablehttp",
+          "--stateless",
+          "http://ha.lan/api/mcp",
+        ],
+        env: {
+          API_ACCESS_TOKEN: "${HOME_ASSISTANT_TOKEN}",
+        },
       },
       // SSE 传输示例：远程服务器
       // "remote-server": {

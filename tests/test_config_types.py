@@ -17,6 +17,7 @@ from nano_openclaw.config.types import (
     ModelProvider,
     ModelsConfig,
     ModelThinkingParams,
+    McpServerConfig,
     NanoOpenClawConfig,
     SessionConfig,
     SessionReset,
@@ -270,6 +271,37 @@ class TestNanoOpenClawConfig:
             )
         )
         assert cfg.models.providers["custom"].baseUrl == "https://api.custom.com/v1"
+
+
+class TestMcpServerConfig:
+    def test_stdio_transport_is_allowed(self):
+        cfg = McpServerConfig(command="mcp-proxy", transport="stdio")
+
+        assert cfg.transport == "stdio"
+
+    def test_streamablehttp_transport_alias_normalizes(self):
+        cfg = McpServerConfig(url="http://ha.lan/api/mcp", transport="streamablehttp")
+
+        assert cfg.transport == "streamable-http"
+
+    def test_mcp_proxy_stdio_bridge_config(self):
+        cfg = McpServerConfig(
+            command="mcp-proxy",
+            args=[
+                "--transport=streamablehttp",
+                "--stateless",
+                "http://ha.lan/api/mcp",
+            ],
+            env={"API_ACCESS_TOKEN": "abc"},
+        )
+
+        assert cfg.command == "mcp-proxy"
+        assert cfg.args == [
+            "--transport=streamablehttp",
+            "--stateless",
+            "http://ha.lan/api/mcp",
+        ]
+        assert cfg.env == {"API_ACCESS_TOKEN": "abc"}
 
 
 # =============================================================================

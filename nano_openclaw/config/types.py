@@ -575,9 +575,16 @@ class McpServerConfig(BaseModel):
     cwd: Optional[str] = None
     workingDirectory: Optional[str] = None
     url: Optional[str] = None
-    transport: Optional[Literal["sse", "streamable-http"]] = None
+    transport: Optional[Literal["stdio", "sse", "streamable-http"]] = None
     headers: Optional[Dict[str, Union[str, int, bool]]] = None
     connectionTimeoutMs: Optional[int] = Field(default=None)
+
+    @field_validator("transport", mode="before")
+    @classmethod
+    def normalize_transport(cls, v):
+        if isinstance(v, str) and v.replace("_", "-").lower() in {"streamablehttp", "streamable-http"}:
+            return "streamable-http"
+        return v
 
 
 class McpConfig(BaseModel):
