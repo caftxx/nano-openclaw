@@ -11,6 +11,7 @@ from nano_openclaw.config.types import McpServerConfig
 from nano_openclaw.features.mcp.runtime import (
     McpRuntime,
     _simple_failure_reason,
+    _stdio_env,
     _summarize_stdio_stderr,
 )
 
@@ -102,20 +103,34 @@ def test_stdio_mcp_proxy_config_passes_command_args_and_env(monkeypatch):
 
     asyncio.run(runtime._run_stdio_server("HomeAssistant", cfg, ready))
 
-    assert captured == {
-        "command": "mcp-proxy",
-        "args": [
-            "--transport=streamablehttp",
-            "--stateless",
-            "http://ha.lan/api/mcp",
-        ],
-        "env": {"API_ACCESS_TOKEN": "abc"},
-        "cwd": None,
-        "name": "HomeAssistant",
-        "read": "reader",
-        "write": "writer",
-    }
+    assert captured["command"] == "mcp-proxy"
+    assert captured["args"] == [
+        "--transport=streamablehttp",
+        "--stateless",
+        "http://ha.lan/api/mcp",
+    ]
+    assert captured["env"]["API_ACCESS_TOKEN"] == "abc"
+    assert "PATH" in captured["env"]
+    assert captured["cwd"] is None
+    assert captured["name"] == "HomeAssistant"
+    assert captured["read"] == "reader"
+    assert captured["write"] == "writer"
     assert ready.is_set()
+
+
+def test_stdio_env_adds_user_bin_path(monkeypatch, tmp_path):
+    user_bin = tmp_path / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+
+    import nano_openclaw.features.mcp.runtime as runtime_module
+
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setattr(runtime_module, "_stdio_user_bin_dirs", lambda: [str(user_bin)])
+
+    env = _stdio_env({"API_ACCESS_TOKEN": "abc"})
+
+    assert env["API_ACCESS_TOKEN"] == "abc"
+    assert env["PATH"].split(runtime_module.os.pathsep)[:2] == [str(user_bin), "/usr/bin"]
 
 
 def test_simple_failure_reason_unwraps_exception_group():

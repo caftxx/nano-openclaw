@@ -7,6 +7,7 @@ Transports supported: stdio, SSE, streamable-http.
 """
 
 import asyncio
+import os
 import re
 import sys
 import tempfile
@@ -77,6 +78,35 @@ def _summarize_stdio_stderr(stderr_raw: str) -> str:
     if match:
         return match.group(1)
     return stderr
+
+
+def _stdio_user_bin_dirs() -> list[str]:
+    if os.name == "nt":
+        return []
+    home = os.path.expanduser("~")
+    return [
+        os.path.join(home, ".local", "bin"),
+        os.path.join(home, "bin"),
+    ]
+
+
+def _augment_stdio_path(path: str) -> str:
+    parts = [part for part in path.split(os.pathsep) if part]
+    additions = [
+        part
+        for part in _stdio_user_bin_dirs()
+        if os.path.isdir(part) and part not in parts
+    ]
+    return os.pathsep.join([*additions, *parts])
+
+
+def _stdio_env(config_env: dict[str, Any] | None) -> dict[str, str]:
+    env = {k: str(v) for k, v in (config_env or {}).items()}
+    path = env.get("PATH") or os.environ.get("PATH", "")
+    augmented_path = _augment_stdio_path(path)
+    if augmented_path:
+        env["PATH"] = augmented_path
+    return env
 
 
 class McpRuntime:
@@ -170,7 +200,7 @@ class McpRuntime:
     ) -> None:
         from mcp.client.stdio import stdio_client, StdioServerParameters
 
-        env = {k: str(v) for k, v in (cfg.env or {}).items()}
+        env = _stdio_env(cfg.env)
         cwd = cfg.cwd or cfg.workingDirectory
 
         params = StdioServerParameters(
