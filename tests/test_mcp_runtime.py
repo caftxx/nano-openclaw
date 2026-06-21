@@ -8,7 +8,11 @@ import threading
 from types import ModuleType
 
 from nano_openclaw.config.types import McpServerConfig
-from nano_openclaw.features.mcp.runtime import McpRuntime
+from nano_openclaw.features.mcp.runtime import (
+    McpRuntime,
+    _simple_failure_reason,
+    _summarize_stdio_stderr,
+)
 
 
 class _AsyncContextManager:
@@ -78,7 +82,7 @@ def test_stdio_mcp_proxy_config_passes_command_args_and_env(monkeypatch):
     )
     captured: dict[str, object] = {}
 
-    def fake_stdio_client(params):
+    def fake_stdio_client(params, errlog=None):
         captured["command"] = params.command
         captured["args"] = list(params.args)
         captured["env"] = dict(params.env or {})
@@ -112,6 +116,64 @@ def test_stdio_mcp_proxy_config_passes_command_args_and_env(monkeypatch):
         "write": "writer",
     }
     assert ready.is_set()
+
+
+def test_simple_failure_reason_unwraps_exception_group():
+    reason = _simple_failure_reason(ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [RuntimeError("connection refused")],
+    ))
+
+    assert "ExceptionGroup" in reason
+    assert "RuntimeError: connection refused" in reason
+    assert "unhandled errors in a TaskGroup" not in reason
+
+
+def test_summarize_stdio_stderr_extracts_http_status_error():
+    text = (
+        "Traceback ... response.raise_for_status() | "
+        "httpx.HTTPStatusError: Client error '403 Forbidden' "
+        "for url 'http://ha.lan/api/mcp' For more information check: https://example.test"
+    )
+
+    assert _summarize_stdio_stderr(text) == (
+        "httpx.HTTPStatusError: Client error '403 Forbidden' "
+        "for url 'http://ha.lan/api/mcp'"
+    )
+
+
+def test_stdio_failure_includes_child_exception_and_stderr(monkeypatch):
+    runtime = McpRuntime()
+    ready = threading.Event()
+    cfg = McpServerConfig(command="mcp-proxy", args=["http://ha.lan/api/mcp"])
+
+    class FailingContext:
+        async def __aenter__(self):
+            return ("reader", "writer")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_stdio_client(params, errlog=None):
+        if errlog is not None:
+            errlog.write("401 Unauthorized from Home Assistant\n")
+        return FailingContext()
+
+    async def fake_manage_session(name, read, write, ready_event):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [RuntimeError("initialize failed")])
+
+    import mcp.client.stdio as stdio_module
+
+    monkeypatch.setattr(stdio_module, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(runtime, "_manage_session", fake_manage_session)
+
+    asyncio.run(runtime._run_server("Home Assistant", cfg, ready))
+
+    status = runtime.status_snapshot()
+    error = status["servers"][0]["error"]
+    assert ready.is_set()
+    assert "RuntimeError: initialize failed" in error
+    assert "stderr: 401 Unauthorized from Home Assistant" in error
 
 
 def test_run_server_signals_ready_when_connection_fails(caplog, monkeypatch):

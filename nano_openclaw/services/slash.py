@@ -560,8 +560,8 @@ async def _cmd_mcp(backend, renderer: SlashRenderer, state, args, cmd):
     rows = []
     for server in status.get("servers") or []:
         error = str(server.get("error") or "")
-        if len(error) > 80:
-            error = error[:77].rstrip() + "..."
+        if len(error) > 180:
+            error = error[:177].rstrip() + "..."
         rows.append([
             str(server.get("name") or ""),
             str(server.get("transport") or "unknown"),

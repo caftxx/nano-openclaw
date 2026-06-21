@@ -7,14 +7,20 @@ Transports supported: stdio, SSE, streamable-http.
 """
 
 import asyncio
+import re
 import sys
+import tempfile
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TextIO
 
 from nano_openclaw.config.types import McpServerConfig
 from nano_openclaw.logger import get_logger
 
 log = get_logger(__name__)
+
+HTTP_STATUS_ERROR_RE = re.compile(
+    r"(httpx\.HTTPStatusError: .*? for url '[^']+')"
+)
 
 
 @dataclass
@@ -27,15 +33,50 @@ class McpToolInfo:
 
 
 def _simple_failure_reason(exc: BaseException | str) -> str:
+    if isinstance(exc, BaseExceptionGroup):
+        child_reasons = [
+            _simple_failure_reason(child)
+            for child in exc.exceptions
+        ]
+        text = "; ".join(reason for reason in child_reasons if reason)
+        if text:
+            text = f"{type(exc).__name__}: {text}"
+            return text[:797].rstrip() + "..." if len(text) > 800 else text
+
     text = str(exc).strip() if not isinstance(exc, str) else exc.strip()
     if not text:
         text = type(exc).__name__ if not isinstance(exc, str) else "unknown error"
     text = " ".join(text.splitlines()).strip()
-    if len(text) > 200:
-        text = text[:197].rstrip() + "..."
+    if len(text) > 800:
+        text = text[:797].rstrip() + "..."
     if not isinstance(exc, str) and type(exc).__name__ not in text:
         text = f"{type(exc).__name__}: {text}"
     return text
+
+
+def _append_stdio_stderr(exc: BaseException, errlog: TextIO) -> RuntimeError:
+    reason = _simple_failure_reason(exc)
+    try:
+        errlog.seek(0)
+        stderr_raw = errlog.read()
+    except Exception:
+        stderr_raw = ""
+    stderr = _summarize_stdio_stderr(stderr_raw)
+    if stderr:
+        if len(stderr) > 700:
+            stderr = stderr[-700:].lstrip()
+        reason = f"{reason}; stderr: {stderr}"
+    return RuntimeError(reason)
+
+
+def _summarize_stdio_stderr(stderr_raw: str) -> str:
+    stderr = " ".join(stderr_raw.split()).strip()
+    if not stderr:
+        return ""
+    match = HTTP_STATUS_ERROR_RE.search(stderr)
+    if match:
+        return match.group(1)
+    return stderr
 
 
 class McpRuntime:
@@ -139,8 +180,12 @@ class McpRuntime:
             cwd=cwd,
         )
 
-        async with stdio_client(params) as (read, write):
-            await self._manage_session(name, read, write, ready)
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as errlog:
+            try:
+                async with stdio_client(params, errlog=errlog) as (read, write):
+                    await self._manage_session(name, read, write, ready)
+            except Exception as exc:
+                raise _append_stdio_stderr(exc, errlog) from exc
 
     async def _run_sse_server(
         self,
