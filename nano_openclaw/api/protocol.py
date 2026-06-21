@@ -163,6 +163,7 @@ METHODS = frozenset({
     "review_fork.get", "review_fork.set", "review_fork.run",
     "curator.get", "curator.set", "curator.run",
     "checkpoint.list", "checkpoint.create", "checkpoint.restore",
+    "mcp.status",
     # Introspection (tools / skills / plugins / hooks)
     "tools.list", "skills.list", "plugins.list", "hooks.list",
     # Misc

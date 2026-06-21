@@ -1412,7 +1412,7 @@ const BUILTIN_COMMANDS = new Set([
   // context
   "context", "compact", "usage", "todos", "checkpoint",
   // introspection
-  "tools", "skills", "plugins", "hooks", "subagents",
+  "tools", "skills", "plugins", "hooks", "mcp", "subagents",
   // memory
   "active-memory", "dreaming", "review-fork", "curator",
   // daemon-introspection

@@ -8,8 +8,8 @@ Transports supported: stdio, SSE, streamable-http.
 
 import asyncio
 import sys
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
 from nano_openclaw.config.types import McpServerConfig
 from nano_openclaw.logger import get_logger
@@ -24,6 +24,18 @@ class McpToolInfo:
     tool_name: str
     description: str
     input_schema: Dict[str, Any]
+
+
+def _simple_failure_reason(exc: BaseException | str) -> str:
+    text = str(exc).strip() if not isinstance(exc, str) else exc.strip()
+    if not text:
+        text = type(exc).__name__ if not isinstance(exc, str) else "unknown error"
+    text = " ".join(text.splitlines()).strip()
+    if len(text) > 200:
+        text = text[:197].rstrip() + "..."
+    if not isinstance(exc, str) and type(exc).__name__ not in text:
+        text = f"{type(exc).__name__}: {text}"
+    return text
 
 
 class McpRuntime:
@@ -41,6 +53,7 @@ class McpRuntime:
         self._tool_infos: List[McpToolInfo] = []
         self._server_tasks: Dict[str, asyncio.Task] = {}
         self._ready_events: Dict[str, asyncio.Event] = {}
+        self._server_status: Dict[str, dict[str, Any]] = {}
 
     async def initialize(self, servers: Dict[str, McpServerConfig]) -> None:
         """Initialize connections to all configured MCP servers.
@@ -52,6 +65,13 @@ class McpRuntime:
             return
 
         for name, cfg in servers.items():
+            self._server_status[name] = {
+                "name": name,
+                "transport": self._transport_label(cfg),
+                "status": "starting",
+                "tools": 0,
+                "error": "",
+            }
             ready = asyncio.Event()
             self._ready_events[name] = ready
             task = asyncio.create_task(
@@ -66,7 +86,13 @@ class McpRuntime:
             try:
                 await asyncio.wait_for(ready.wait(), timeout=timeout_ms / 1000)
             except asyncio.TimeoutError:
-                log.warning("mcp.server.timeout", f"server '{name}' connection timeout after {timeout_ms}ms, skipping")
+                reason = f"connection timeout after {timeout_ms}ms"
+                self._mark_failed(name, reason)
+                task = self._server_tasks.get(name)
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                log.warning("mcp.server.timeout", f"server '{name}' {reason}, skipping")
 
     async def _run_server(
         self,
@@ -83,15 +109,16 @@ class McpRuntime:
             elif cfg.url:
                 await self._run_sse_server(name, cfg, ready)
             else:
-                print(
-                    f"MCP: server '{name}' has no valid transport config, skipping",
-                    file=sys.stderr,
-                )
+                reason = "no valid transport config"
+                self._mark_failed(name, reason)
+                print(f"MCP: server '{name}' {reason}, skipping", file=sys.stderr)
                 ready.set()
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log.warning("mcp.server.error", f"server '{name}' connection failed: {e}")
+            reason = _simple_failure_reason(e)
+            self._mark_failed(name, reason)
+            log.warning("mcp.server.error", f"server '{name}' connection failed: {reason}")
             ready.set()
 
     async def _run_stdio_server(
@@ -155,7 +182,9 @@ class McpRuntime:
             await session.initialize()
 
             tools_result = await session.list_tools()
+            tool_count = 0
             for tool in tools_result.tools:
+                tool_count += 1
                 self._tool_infos.append(McpToolInfo(
                     server_name=name,
                     tool_name=tool.name,
@@ -164,6 +193,12 @@ class McpRuntime:
                 ))
 
             self._sessions[name] = session
+            self._server_status[name] = {
+                **self._server_status.get(name, {"name": name, "transport": "unknown"}),
+                "status": "connected",
+                "tools": tool_count,
+                "error": "",
+            }
             ready.set()
 
             # Hold session open until this task is cancelled.
@@ -192,6 +227,40 @@ class McpRuntime:
     def get_mcp_tools(self) -> List[McpToolInfo]:
         """Get list of all MCP tools from connected servers."""
         return self._tool_infos
+
+    def status_snapshot(self) -> dict[str, Any]:
+        """Return a lightweight, serializable MCP status snapshot."""
+        servers = [
+            dict(self._server_status[name])
+            for name in sorted(self._server_status)
+        ]
+        return {
+            "configured": bool(servers),
+            "initialized": bool(self._server_tasks or servers),
+            "servers": servers,
+            "connected": sum(1 for s in servers if s.get("status") == "connected"),
+            "failed": sum(1 for s in servers if s.get("status") == "failed"),
+            "starting": sum(1 for s in servers if s.get("status") == "starting"),
+            "total_tools": len(self._tool_infos),
+        }
+
+    def _mark_failed(self, name: str, reason: BaseException | str) -> None:
+        self._server_status[name] = {
+            **self._server_status.get(name, {"name": name, "transport": "unknown"}),
+            "status": "failed",
+            "tools": 0,
+            "error": _simple_failure_reason(reason),
+        }
+
+    @staticmethod
+    def _transport_label(cfg: McpServerConfig) -> str:
+        if cfg.command:
+            return "stdio"
+        if cfg.transport == "streamable-http" and cfg.url:
+            return "streamable-http"
+        if cfg.url:
+            return cfg.transport or "sse"
+        return "unknown"
 
     async def close(self) -> None:
         """Cancel all server tasks and clean up."""

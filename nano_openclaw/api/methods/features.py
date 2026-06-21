@@ -97,6 +97,10 @@ async def checkpoint_restore(ctx: GatewayContext, params: dict[str, Any]) -> dic
     return await ctx.backend.checkpoint_restore(str((params or {}).get("checkpoint_id") or ""))
 
 
+async def mcp_status(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.backend.mcp_status()
+
+
 HANDLERS = {
     "active_memory.get": active_memory_get,
     "active_memory.set": active_memory_set,
@@ -112,4 +116,5 @@ HANDLERS = {
     "checkpoint.list": checkpoint_list,
     "checkpoint.create": checkpoint_create,
     "checkpoint.restore": checkpoint_restore,
+    "mcp.status": mcp_status,
 }

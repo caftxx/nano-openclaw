@@ -1502,6 +1502,11 @@ class EmbeddedBackend(Backend):
             raise NotFoundError(f"checkpoint not found or ambiguous: {checkpoint_id}")
         return {"restored": cp.__dict__}
 
+    async def mcp_status(self) -> dict[str, Any]:
+        from nano_openclaw.features.mcp.plugin import mcp_status_for_runtime
+
+        return mcp_status_for_runtime(self.runtime)
+
     # ─── Introspection (tools / skills / plugins / hooks) ───
 
     async def tools_list(self) -> list[dict[str, Any]]:

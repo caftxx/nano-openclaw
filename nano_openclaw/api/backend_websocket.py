@@ -694,6 +694,9 @@ class WebSocketBackend(Backend):
     async def checkpoint_restore(self, checkpoint_id: str) -> dict[str, Any]:
         return await self._call("checkpoint.restore", {"checkpoint_id": checkpoint_id}) or {}
 
+    async def mcp_status(self) -> dict[str, Any]:
+        return await self._call("mcp.status") or {"configured": False, "servers": []}
+
     async def slash_run(self, command: str, session_key: str = "") -> SlashRunResult:
         payload = await self._call("slash.run", {"command": command, "session_key": session_key})
         return SlashRunResult(

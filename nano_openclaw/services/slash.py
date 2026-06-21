@@ -551,6 +551,37 @@ async def _cmd_hooks(backend, renderer: SlashRenderer, state, args, cmd):
     )
 
 
+async def _cmd_mcp(backend, renderer: SlashRenderer, state, args, cmd):
+    status = await backend.mcp_status()
+    if not status.get("configured"):
+        renderer.panel("No MCP servers configured.", title="MCP", style="info")
+        return
+
+    rows = []
+    for server in status.get("servers") or []:
+        error = str(server.get("error") or "")
+        if len(error) > 80:
+            error = error[:77].rstrip() + "..."
+        rows.append([
+            str(server.get("name") or ""),
+            str(server.get("transport") or "unknown"),
+            str(server.get("status") or "unknown"),
+            str(server.get("tools") or 0),
+            error or "—",
+        ])
+    renderer.table(["Server", "Transport", "Status", "Tools", "Reason"], rows, title="MCP")
+    summary = (
+        f"{status.get('connected', 0)} connected · "
+        f"{status.get('failed', 0)} failed · "
+        f"{status.get('starting', 0)} starting · "
+        f"{status.get('total_tools', 0)} tool(s)"
+    )
+    load_error = str(status.get("load_error") or "")
+    if load_error:
+        summary += f" · load error: {load_error}"
+    renderer.dim(summary)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Subagents
 # ────────────────────────────────────────────────────────────────────────────
@@ -1118,6 +1149,7 @@ def _register_service_slash(registry: SlashRegistry) -> None:
     registry.register("/health", _cmd_health, "Daemon health snapshot")
     registry.register("/help", _cmd_help, "Show this list")
     registry.register("/hooks", _cmd_hooks, "Registered hook handlers")
+    registry.register("/mcp", _cmd_mcp, "MCP server status")
     registry.register("/new", _cmd_new, "Start a new session")
     registry.register("/plugins", _cmd_plugins, "Loaded plugins")
     registry.register("/quit", _cmd_quit, "Quit (TUI only)", aliases=("/exit", "/q"))

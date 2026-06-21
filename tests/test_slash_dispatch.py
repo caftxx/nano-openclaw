@@ -217,6 +217,40 @@ def test_hooks_renders_no_op_when_no_hooks(tmp_path):
     assert "no hooks registered" in buf.getvalue().lower()
 
 
+def test_mcp_command_renders_failed_server_reason(tmp_path):
+    class McpBackend:
+        async def mcp_status(self):
+            return {
+                "configured": True,
+                "initialized": True,
+                "servers": [
+                    {
+                        "name": "broken",
+                        "transport": "stdio",
+                        "status": "failed",
+                        "tools": 0,
+                        "error": "RuntimeError: boom",
+                    }
+                ],
+                "connected": 0,
+                "failed": 1,
+                "starting": 0,
+                "total_tools": 0,
+            }
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=200, no_color=True)
+
+    async def run():
+        await handle_slash("/mcp", McpBackend(), console, {"session_key": ""})
+
+    asyncio.run(run())
+    out = buf.getvalue()
+    assert "broken" in out
+    assert "failed" in out
+    assert "RuntimeError: boom" in out
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Session lifecycle — state mutation
 # ────────────────────────────────────────────────────────────────────────────

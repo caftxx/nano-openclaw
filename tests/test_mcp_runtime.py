@@ -76,4 +76,33 @@ def test_run_server_signals_ready_when_connection_fails(caplog, monkeypatch):
     asyncio.run(runtime._run_server("broken", cfg, ready))
 
     assert ready.is_set()
-    assert "server 'broken' connection failed: boom" in caplog.text
+    assert "server 'broken' connection failed: RuntimeError: boom" in caplog.text
+    status = runtime.status_snapshot()
+    assert status["failed"] == 1
+    assert status["servers"][0]["name"] == "broken"
+    assert status["servers"][0]["status"] == "failed"
+    assert "boom" in status["servers"][0]["error"]
+
+
+def test_initialize_records_timeout_as_failed_status(monkeypatch):
+    runtime = McpRuntime()
+    cfg = McpServerConfig(command="slow-command", connectionTimeoutMs=1)
+
+    async def never_ready(name, cfg, ready_event):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "_run_stdio_server", never_ready)
+
+    async def run():
+        try:
+            await runtime.initialize({"slow": cfg})
+        finally:
+            await runtime.close()
+
+    asyncio.run(run())
+
+    status = runtime.status_snapshot()
+    assert status["failed"] == 1
+    assert status["servers"][0]["name"] == "slow"
+    assert status["servers"][0]["status"] == "failed"
+    assert "timeout" in status["servers"][0]["error"]
