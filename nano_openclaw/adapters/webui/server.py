@@ -213,6 +213,7 @@ def create_app(
         manager: BackendSessionManager = backend.manager
         send_lock = asyncio.Lock()
         turn_sessions: dict[str, str] = {}
+        current_session_id: str | None = None
 
         async def send(payload: dict[str, Any]) -> None:
             async with send_lock:
@@ -226,7 +227,12 @@ def create_app(
                 if event.event == "runtime.changed":
                     await send({"type": "state.updated", **await backend.webui_state()})
                     continue
-                for payload in _webui_payloads_from_push(event, manager, turn_sessions):
+                for payload in _webui_payloads_from_push(
+                    event,
+                    manager,
+                    turn_sessions,
+                    current_session_id=current_session_id,
+                ):
                     await send(payload)
 
         push_task = asyncio.create_task(push_pump(), name="webui.backend.push")
@@ -234,13 +240,15 @@ def create_app(
         try:
             await emit({"type": "state.updated", **await backend.webui_state()})
             current = manager.create()
+            current_session_id = current.session_id
             await emit({"type": "session.updated", "session": _session_payload(manager, current), "sessions": manager.list()})
             while True:
                 message = await websocket.receive_json()
                 msg_type = message.get("type")
                 if msg_type == "chat.send":
                     req = ChatRequest(**message)
-                    session = manager.get_or_load(req.session_id)
+                    session = manager.get_or_load(req.session_id or current_session_id)
+                    current_session_id = session.session_id
                     try:
                         attachments = decode_attachment_payloads(req.attachments)
                     except Exception as exc:  # noqa: BLE001
@@ -286,6 +294,7 @@ def create_app(
                     except KeyError as exc:
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue
+                    current_session_id = session.session_id
                     await emit({"type": "session.updated", "session": _session_payload(manager, session)})
                 elif msg_type == "session.delete":
                     req = SessionSelectRequest(**message)
@@ -298,6 +307,8 @@ def create_app(
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue
                     session = manager.get_or_load(None)
+                    if req.session_id == current_session_id:
+                        current_session_id = session.session_id
                     await emit({
                         "type": "session.updated",
                         "session": _session_payload(manager, session),
@@ -388,6 +399,7 @@ def create_app(
                                 refreshed = manager.get_or_load(target_id) if target_id else manager.get_or_load(None)
                             except KeyError:
                                 refreshed = manager.get_or_load(None)
+                            current_session_id = refreshed.session_id
                             await emit({
                                 "type": "session.updated",
                                 "session": _session_payload(manager, refreshed),
@@ -400,7 +412,8 @@ def create_app(
                     # unrecognised one. Route it to the agent loop so the
                     # model can decide what to do with it (matches CLI fall-
                     # through semantics).
-                    session = manager.get_or_load(session_id_cmd)
+                    session = manager.get_or_load(session_id_cmd or current_session_id)
+                    current_session_id = session.session_id
                     await emit({"type": "command.result", "command": cmd_text, "text": ""})
                     try:
                         await backend.chat_send(session_key=session.session_id, text=cmd_text, attachments=[], turn_source="webui")
@@ -408,9 +421,10 @@ def create_app(
                         await emit({"type": "turn.error", "session_id": session.session_id, "message": str(exc)})
                 elif msg_type == "session.refresh":
                     try:
-                        session = manager.get_or_load(message.get("session_id"))
+                        session = manager.get_or_load(message.get("session_id") or current_session_id)
                     except KeyError:
                         session = manager.get_or_load(None)
+                    current_session_id = session.session_id
                     await emit({"type": "state.updated", **await backend.webui_state()})
                     await emit({"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()})
                 else:
@@ -431,6 +445,8 @@ def _webui_payloads_from_push(
     event: PushEvent,
     manager: BackendSessionManager,
     turn_sessions: dict[str, str],
+    *,
+    current_session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if event.event == "agent.event":
         payload = dict(event.payload)
@@ -461,9 +477,10 @@ def _webui_payloads_from_push(
 
     if event.event == "session.changed":
         session_id = event.payload.get("session_id") or event.payload.get("session_key")
-        if isinstance(session_id, str):
+        target_session_id = current_session_id or (session_id if isinstance(session_id, str) else None)
+        if isinstance(target_session_id, str):
             try:
-                session = manager.get_or_load(session_id)
+                session = manager.get_or_load(target_session_id)
             except KeyError:
                 session = manager.get_or_load(None)
         else:

@@ -411,6 +411,32 @@ def test_webui_push_adapter_maps_session_changed_to_session_updated():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_webui_push_adapter_keeps_current_session_on_foreign_session_changed():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+        current = manager.create()
+        foreign = manager.create()
+
+        payloads = _webui_payloads_from_push(
+            PushEvent(
+                event="session.changed",
+                payload={"session_id": foreign.session_id},
+                seq=1,
+            ),
+            manager,
+            turn_sessions={},
+            current_session_id=current.session_id,
+        )
+
+        assert payloads[0]["type"] == "session.updated"
+        assert payloads[0]["session"]["session_id"] == current.session_id
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_webui_push_adapter_deleted_session_selects_remaining_session():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:
@@ -443,6 +469,64 @@ def test_webui_push_adapter_deleted_session_selects_remaining_session():
         assert all(item["session_id"] != deleted.session_id for item in payloads[0]["sessions"])
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_webui_chat_send_without_session_uses_connection_session(tmp_path):
+    from fastapi.testclient import TestClient
+    from nano_openclaw.adapters.webui.server import create_app
+
+    class BackendStub:
+        def __init__(self):
+            self.manager = BackendSessionManager(
+                session_dir=tmp_path / "sessions",
+                store_path=tmp_path / "sessions.json",
+                model="test-model",
+                cwd=str(tmp_path),
+            )
+            self.sent: list[dict[str, object]] = []
+
+        async def webui_state(self):
+            return {
+                "agent_id": "default",
+                "agent_options": [],
+                "model": "test-model",
+                "model_ref": "test/test-model",
+                "model_options": [],
+                "image_model": "",
+                "image_model_ref": "",
+                "image_model_options": [],
+                "thinking_level": "off",
+                "thinking_options": ["off"],
+                "assistant_name": "Assistant",
+                "user_name": "User",
+                "workspace_dir": str(tmp_path),
+                "tools": [],
+                "approvals": [],
+                "voice": {},
+            }
+
+        async def subscribe(self):
+            while False:
+                yield None
+
+        async def chat_send(self, **kwargs):
+            self.sent.append(kwargs)
+
+    backend = BackendStub()
+    app = create_app(backend=backend, token=None)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()
+            initial = ws.receive_json()
+            connection_session_id = initial["session"]["session_id"]
+            foreign = backend.manager.create()
+            assert foreign.session_id != connection_session_id
+
+            ws.send_json({"type": "chat.send", "text": "hello", "attachments": []})
+            ws.send_json({"type": "session.refresh", "session_id": None})
+            assert ws.receive_json()["type"] == "state.updated"
+
+    assert backend.sent[0]["session_key"] == connection_session_id
 
 
 def test_web_session_select_uses_store_id_not_transcript_header_id():
