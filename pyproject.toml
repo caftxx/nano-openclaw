@@ -1,6 +1,6 @@
 [project]
 name = "nano-openclaw"
-version = "0.0.25"
+version = "0.0.26"
 description = "Minimal Python reimplementation of OpenClaw's agent loop, for learning."
 readme = "README.md"
 license = { text = "MIT" }
