@@ -20,6 +20,7 @@ from nano_openclaw.features.memory.providers import (
     MemorySearchRequest,
     ProviderSearchResult,
 )
+from nano_openclaw.features.memory.zvec_provider import ZvecMemorySearchProvider
 
 _STOPWORDS = frozenset({
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
@@ -233,6 +234,7 @@ class LexicalMemorySearchProvider(MemorySearchProvider):
 
 _memory_search_manager = MemorySearchManager()
 _memory_search_manager.register(LexicalMemorySearchProvider())
+_memory_search_manager.register(ZvecMemorySearchProvider())
 
 
 def register_memory_search_provider(provider: MemorySearchProvider) -> None:

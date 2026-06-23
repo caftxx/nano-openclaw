@@ -320,7 +320,7 @@ plugins: {
 
 ### memorySearch — 记忆搜索配置
 
-`memorySearch` 控制 `memory_search` 的 provider 与排序行为。默认 `lexical` provider 与 openclaw 保持一致：本地词法匹配，temporal decay 支持存在但不自动开启。
+`memorySearch` 控制 `memory_search` 的 provider 与排序行为。默认 `lexical` provider 与 openclaw 保持一致：本地词法匹配，temporal decay 支持存在但不自动开启。安装 `nano-openclaw[zvec]` 后可选启用 `zvec` provider；默认安装不依赖 Zvec。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -339,6 +339,43 @@ plugins: {
     temporalDecay: {
       enabled: true,
       halfLifeDays: 30,
+    },
+  },
+}
+```
+
+可选 Zvec FTS/BM25 配置（轻量、本地、无 embedding 模型下载）：
+
+```json5
+{
+  memorySearch: {
+    provider: "zvec",
+    providers: {
+      zvec: {
+        mode: "fts",
+        // zh -> jieba tokenizer；en/缺省 -> standard tokenizer
+        bm25: { language: "zh" },
+      },
+    },
+  },
+}
+```
+
+显式启用 Zvec hybrid（FTS/BM25 + local dense）。`nano-openclaw[zvec]` 会安装 local dense 所需 Python 依赖；首次使用仍会下载/加载本地 dense embedding 模型，只建议在 CPU/内存/网络条件合适的机器上使用。
+
+```json5
+{
+  memorySearch: {
+    provider: "zvec",
+    providers: {
+      zvec: {
+        mode: "hybrid",
+        denseEmbedder: "local_dense",
+        localDense: {
+          modelSource: "modelscope", // 国内更稳；国际可用 huggingface
+        },
+        bm25: { language: "zh" },
+      },
     },
   },
 }

@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 from datetime import datetime, timezone
+import sys
 import tempfile
+import types
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,135 @@ def workspace_with_memory_files():
         )
 
         yield str(ws)
+
+
+class _FakeZvecFieldSchema:
+    def __init__(self, name, data_type, nullable=False, index_param=None):
+        self.name = name
+        self.data_type = data_type
+        self.nullable = nullable
+        self.index_param = index_param
+
+
+class _FakeZvecVectorSchema:
+    def __init__(self, name, data_type, dimension=None, index_param=None):
+        self.name = name
+        self.data_type = data_type
+        self.dimension = dimension
+        self.index_param = index_param
+
+
+class _FakeZvecCollectionSchema:
+    def __init__(self, name, fields=None, vectors=None):
+        self.name = name
+        self.fields = fields or []
+        self.vectors = vectors or []
+
+
+class _FakeZvecDoc:
+    def __init__(self, id, fields=None, vectors=None, score=0.0):
+        self.id = id
+        self.fields = fields or {}
+        self.vectors = vectors or {}
+        self.score = score
+
+
+class _FakeZvecFtsIndexParam:
+    def __init__(self, tokenizer_name="standard", filters=None, extra_params=""):
+        self.tokenizer_name = tokenizer_name
+        self.filters = filters or []
+        self.extra_params = extra_params
+
+
+class _FakeZvecCollectionOption:
+    def __init__(self, read_only=False, enable_mmap=True):
+        self.read_only = read_only
+        self.enable_mmap = enable_mmap
+
+
+class _FakeZvecQuery:
+    def __init__(self, field_name, fts=None, vector=None, param=None):
+        self.field_name = field_name
+        self.fts = fts
+        self.vector = vector
+        self.param = param
+
+
+class _FakeZvecFts:
+    def __init__(self, match_string=None, query_string=None):
+        self.match_string = match_string
+        self.query_string = query_string
+
+
+class _FakeZvecCollection:
+    def __init__(self):
+        self.docs = {}
+
+    def upsert(self, docs):
+        if not isinstance(docs, list):
+            docs = [docs]
+        for doc in docs:
+            self.docs[doc.id] = doc
+        return [{"code": 0} for _ in docs]
+
+    def delete(self, ids):
+        if isinstance(ids, str):
+            ids = [ids]
+        for doc_id in ids:
+            self.docs.pop(doc_id, None)
+        return {"code": 0}
+
+    def optimize(self):
+        return {"code": 0}
+
+    def query(self, queries, topk=10, **kwargs):
+        query_text = ""
+        if queries.fts is not None:
+            query_text = queries.fts.match_string or queries.fts.query_string or ""
+        terms = [term.lower() for term in query_text.split() if term.strip()]
+        scored = []
+        for doc in self.docs.values():
+            content = str(doc.fields.get("content") or "").lower()
+            score = sum(1 for term in terms if term in content)
+            if score > 0:
+                scored.append(_FakeZvecDoc(doc.id, fields=doc.fields, vectors={}, score=float(score)))
+        scored.sort(key=lambda doc: doc.score, reverse=True)
+        return scored[:topk]
+
+
+def _install_fake_zvec(monkeypatch):
+    collections = {}
+    fake = types.ModuleType("zvec")
+    fake.created_schemas = []
+    fake.DataType = types.SimpleNamespace(
+        STRING="string",
+        INT64="int64",
+        VECTOR_FP32="vector_fp32",
+    )
+    fake.MetricType = types.SimpleNamespace(COSINE="cosine", IP="ip")
+    fake.FieldSchema = _FakeZvecFieldSchema
+    fake.VectorSchema = _FakeZvecVectorSchema
+    fake.CollectionSchema = _FakeZvecCollectionSchema
+    fake.FtsIndexParam = _FakeZvecFtsIndexParam
+    fake.HnswIndexParam = lambda **kwargs: kwargs
+    fake.CollectionOption = _FakeZvecCollectionOption
+    fake.Doc = _FakeZvecDoc
+    fake.Query = _FakeZvecQuery
+    fake.Fts = _FakeZvecFts
+
+    def create_and_open(path, schema):
+        collection = _FakeZvecCollection()
+        collections[path] = collection
+        fake.created_schemas.append(schema)
+        return collection
+
+    def open_collection(path, option=None):
+        return collections[path]
+
+    fake.create_and_open = create_and_open
+    fake.open = open_collection
+    monkeypatch.setitem(sys.modules, "zvec", fake)
+    return fake
 
 
 class TestMemoryGet:
@@ -181,6 +312,10 @@ class TestMemorySearch:
     def test_default_provider_is_lexical(self):
         """memory_search should expose lexical as the built-in provider."""
         assert "lexical" in memory_search_provider_names()
+
+    def test_zvec_provider_is_registered(self):
+        """The optional Zvec provider should be selectable when installed."""
+        assert "zvec" in memory_search_provider_names()
 
     def test_configured_provider_can_override_search(self, workspace_with_memory_files):
         """Configured providers should run behind the stable memory_search tool."""
@@ -298,6 +433,80 @@ class TestMemorySearch:
         )
 
         assert decayed[0].score == 0.9
+
+    def test_zvec_provider_fts_indexes_and_searches(self, tmp_path, monkeypatch):
+        """Zvec FTS mode should build a local index and return memory hits."""
+        fake_zvec = _install_fake_zvec(monkeypatch)
+        (tmp_path / "MEMORY.md").write_text(
+            "# Project Memory\n\nUse zvec FTS for optional memory search.\n",
+            encoding="utf-8",
+        )
+
+        result = memory_search(
+            {"query": "zvec memory"},
+            str(tmp_path),
+            config={
+                "provider": "zvec",
+                "providers": {
+                    "zvec": {
+                        "mode": "fts",
+                        "path": ".nano-openclaw/test-zvec",
+                        "bm25": {"language": "en"},
+                    }
+                },
+            },
+        )
+
+        assert "Memory search results:" in result
+        assert "MEMORY.md" in result
+        assert "zvec FTS" in result
+        assert fake_zvec.created_schemas[0].fields[-1].index_param.tokenizer_name == "standard"
+
+    def test_zvec_provider_uses_jieba_for_chinese_bm25(self, tmp_path, monkeypatch):
+        """Chinese BM25 config should map to Zvec's jieba tokenizer."""
+        fake_zvec = _install_fake_zvec(monkeypatch)
+        (tmp_path / "MEMORY.md").write_text("记忆 搜索 使用 zvec\n", encoding="utf-8")
+
+        memory_search(
+            {"query": "记忆"},
+            str(tmp_path),
+            config={
+                "provider": "zvec",
+                "providers": {
+                    "zvec": {
+                        "mode": "fts",
+                        "path": ".nano-openclaw/test-zvec-zh",
+                        "bm25": {"language": "zh"},
+                    }
+                },
+            },
+        )
+
+        assert fake_zvec.created_schemas[0].fields[-1].index_param.tokenizer_name == "jieba"
+
+    def test_zvec_provider_incrementally_updates_changed_memory(self, tmp_path, monkeypatch):
+        """Changed memory files should replace old Zvec chunks on the next search."""
+        _install_fake_zvec(monkeypatch)
+        memory_md = tmp_path / "MEMORY.md"
+        memory_md.write_text("oldtoken decision\n", encoding="utf-8")
+        config = {
+            "provider": "zvec",
+            "providers": {
+                "zvec": {
+                    "mode": "fts",
+                    "path": ".nano-openclaw/test-zvec-incremental",
+                }
+            },
+        }
+
+        first = memory_search({"query": "oldtoken"}, str(tmp_path), config=config)
+        memory_md.write_text("newtoken changed decision\n", encoding="utf-8")
+        second = memory_search({"query": "newtoken"}, str(tmp_path), config=config)
+        old_after_update = memory_search({"query": "oldtoken"}, str(tmp_path), config=config)
+
+        assert "oldtoken" in first
+        assert "newtoken" in second
+        assert "no matches found" in old_after_update.lower()
 
 
 class TestMemorySearchKnobs:

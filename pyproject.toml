@@ -42,6 +42,17 @@ dependencies = [
     "qrcode>=7.0",
 ]
 
+[project.optional-dependencies]
+zvec = [
+    # Zvec 0.5.0 publishes wheels for Linux x86_64/aarch64, Windows amd64,
+    # and macOS arm64. Unsupported arches keep the extra installable but no-op.
+    "zvec>=0.5.0; (platform_system == 'Linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')) or (platform_system == 'Windows' and platform_machine == 'AMD64') or (platform_system == 'Darwin' and platform_machine == 'arm64')",
+    # Required by Zvec's DefaultLocalDenseEmbedding used by dense/hybrid modes.
+    "sentence-transformers>=3.0",
+    # Enables localDense.modelSource = "modelscope" for China-friendly model downloads.
+    "modelscope>=1.20",
+]
+
 [project.urls]
 Homepage = "https://github.com/caftxx/nano-openclaw"
 Repository = "https://github.com/caftxx/nano-openclaw"

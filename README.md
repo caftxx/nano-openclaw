@@ -2,8 +2,7 @@
 
 [![Tests](https://github.com/caftxx/nano-openclaw/actions/workflows/test.yml/badge.svg)](https://github.com/caftxx/nano-openclaw/actions/workflows/test.yml)
 
-用最少的代码复刻 OpenClaw 的 agent 运行原理。
-精神类比 [nanoGPT](https://github.com/karpathy/nanoGPT) 之于 GPT：**真实可跑，但只保留骨架，删掉一切可选层**。
+用最少的代码复刻 OpenClaw 的 agent 运行原理：**真实可跑，但只保留骨架，删掉一切可选层**。
 
 读完这个仓库里的核心 `.py` 文件，你就理解了一个"会用工具的 LLM agent"的全部秘密。
 
@@ -21,6 +20,14 @@ uvx nano-openclaw
 
 第一次运行 `nano-openclaw` 会自动把模板配置拷到 `~/.nano-openclaw/`，编辑里面的 `nano-openclaw.json5` 填入 API key 即可。
 
+可选安装 Zvec 本地索引 provider：
+
+```bash
+uv tool install "nano-openclaw[zvec]"
+```
+
+默认配置仍使用 `lexical` 记忆搜索；安装 extra 只提供 `memorySearch.provider: "zvec"` 的可选能力，不会自动开启。`zvec` provider 的 FTS/BM25 模式不需要 embedding 模型；`local_dense` dense/hybrid 模式会在首次运行时从 Hugging Face 或 ModelScope 下载本地 embedding 模型。Zvec 0.5.0 发布 Linux x86_64/aarch64、Windows amd64、macOS arm64 wheel；Intel macOS 上该 extra 不安装 Zvec，`memory_search` 会继续回退到 `lexical`。配置示例见 [memorySearch — 记忆搜索配置](docs/CONFIG_EXAMPLE.md#memorysearch--记忆搜索配置)。
+
 升级 / 卸载：
 
 ```bash
@@ -30,7 +37,7 @@ uv tool uninstall nano-openclaw
 # Windows 用 `Remove-Item -Recurse -Force $HOME\.nano-openclaw`
 ```
 
-支持 Linux / macOS / Windows（纯 Python wheel，无平台特定二进制依赖）。
+默认安装支持 Linux / macOS / Windows（纯 Python wheel，无平台特定二进制依赖）。可选 extras 可能引入对应平台的原生 wheel。
 
 ### Development setup
 
@@ -375,7 +382,7 @@ Workspace 引导文件：从 `workspaceDir` 加载 8 个标准引导文件（AGE
 
 Memory 系统：包含多层机制：
 - **Daily Memory**：启动时自动加载 `workspace/memory/*.md` 中最近 N 天的记忆文件（默认 2 天）。
-- **Memory Tools**：`memory_get` / `memory_search` 工具。`memory_search` 通过 provider 层检索，默认 `lexical` provider 用词法匹配；后续可接入 embedding/外部语义检索 provider。
+- **Memory Tools**：`memory_get` / `memory_search` 工具。`memory_search` 通过 provider 层检索，默认 `lexical` provider 用词法匹配；安装 `nano-openclaw[zvec]` 后可选启用 `zvec` provider，用 Zvec 本地 FTS/BM25 或 hybrid 检索。
 - **Active Memory**：每次用户消息前自动子 agent 搜索记忆。需提供 `activeMemory` 块才启用（缺省不配置 = 关；块内 `enabled` 默认 true）。
 - **Dreaming**：定期将高频记忆提升到 MEMORY.md（默认开）。通过 `dreaming` 配置。
 - **Extract Memories**：stop-hook 后台 extractor，把对话蒸馏进 `memory/topics/*.md` 并更新 `memory/MEMORY.md`（默认开）。通过 `extractMemories` 配置。
