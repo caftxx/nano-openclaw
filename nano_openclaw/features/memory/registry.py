@@ -26,7 +26,7 @@ def build_memory_tools(memory_search_config: Any | None = None) -> list[Tool]:
         ),
         Tool(
             name="memory_search",
-            description="Search memory files (MEMORY.md + memory/*.md) for keywords. Use before answering questions about prior work or decisions.",
+            description="Search memory files (MEMORY.md + memory/*.md) with the configured memory provider. Use before answering questions about prior work or decisions.",
             input_schema={
                 "type": "object",
                 "properties": {

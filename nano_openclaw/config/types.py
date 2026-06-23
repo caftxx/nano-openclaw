@@ -283,6 +283,14 @@ class MemorySearchConfig(BaseModel):
     """Memory search ranking configuration."""
     model_config = ConfigDict(populate_by_name=True)
 
+    provider: str = Field(
+        default="lexical",
+        description="memory_search provider id. Built-in default: lexical.",
+    )
+    providers: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Provider-specific memory_search settings keyed by provider id.",
+    )
     temporalDecay: TemporalDecayConfig = Field(
         default_factory=TemporalDecayConfig,
         alias="temporalDecay",

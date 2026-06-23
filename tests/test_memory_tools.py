@@ -19,8 +19,11 @@ from nano_openclaw.features.memory.tools import (
     memory_get,
     memory_search,
     MemorySearchResult,
+    memory_search_provider_names,
+    register_memory_search_provider,
     _apply_temporal_decay,
 )
+from nano_openclaw.features.memory.providers import MemorySearchProvider, MemorySearchRequest
 from nano_openclaw.config.types import MemorySearchConfig, NanoOpenClawConfig, PluginsConfig
 from nano_openclaw.plugins.loader import load_plugins
 from nano_openclaw.core.tools import build_core_registry
@@ -174,6 +177,50 @@ class TestMemorySearch:
         assert "MEMORY.md" in result
         # Line numbers format: path:start-end
         assert ":" in result  # Should have line separator
+
+    def test_default_provider_is_lexical(self):
+        """memory_search should expose lexical as the built-in provider."""
+        assert "lexical" in memory_search_provider_names()
+
+    def test_configured_provider_can_override_search(self, workspace_with_memory_files):
+        """Configured providers should run behind the stable memory_search tool."""
+
+        class DummyProvider(MemorySearchProvider):
+            @property
+            def name(self) -> str:
+                return "dummy-test"
+
+            def search(self, request: MemorySearchRequest, *, workspace_dir: str, config=None, now=None):
+                return [
+                    MemorySearchResult(
+                        path="memory/dummy.md",
+                        snippet=f"dummy hit for {request.query}",
+                        score=0.99,
+                        start_line=1,
+                        end_line=1,
+                    )
+                ]
+
+        register_memory_search_provider(DummyProvider())
+        result = memory_search(
+            {"query": "decisions"},
+            workspace_with_memory_files,
+            config={"provider": "dummy-test"},
+        )
+
+        assert "memory/dummy.md:1-1" in result
+        assert "dummy hit for decisions" in result
+
+    def test_unknown_provider_falls_back_to_lexical(self, workspace_with_memory_files):
+        """A typo in memorySearch.provider should not break memory_search."""
+        result = memory_search(
+            {"query": "decisions"},
+            workspace_with_memory_files,
+            config={"provider": "missing-provider"},
+        )
+
+        assert "Memory search results:" in result
+        assert "MEMORY.md" in result
 
     def test_temporal_decay_disabled_by_default(self):
         """Temporal decay should not apply unless explicitly configured."""

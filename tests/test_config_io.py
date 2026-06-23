@@ -173,6 +173,10 @@ class TestLoadConfig:
         content = '''
         {
             memorySearch: {
+                provider: "semantic",
+                providers: {
+                    semantic: { endpoint: "http://localhost:9999" },
+                },
                 temporalDecay: {
                     enabled: true,
                     halfLifeDays: 14,
@@ -186,6 +190,8 @@ class TestLoadConfig:
             env = {"NANO_OPENCLAW_STATE_DIR": tmpdir}
             cfg, warnings = load_config(env=env)
 
+            assert cfg.memorySearch.provider == "semantic"
+            assert cfg.memorySearch.providers["semantic"]["endpoint"] == "http://localhost:9999"
             assert cfg.memorySearch.temporalDecay.enabled is True
             assert cfg.memorySearch.temporalDecay.halfLifeDays == 14
             assert len(warnings) == 0

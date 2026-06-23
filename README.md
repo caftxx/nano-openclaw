@@ -375,7 +375,7 @@ Workspace 引导文件：从 `workspaceDir` 加载 8 个标准引导文件（AGE
 
 Memory 系统：包含多层机制：
 - **Daily Memory**：启动时自动加载 `workspace/memory/*.md` 中最近 N 天的记忆文件（默认 2 天）。
-- **Memory Tools**：`memory_get` / `memory_search` 工具。nano 用词法匹配而非 embedding 搜索。
+- **Memory Tools**：`memory_get` / `memory_search` 工具。`memory_search` 通过 provider 层检索，默认 `lexical` provider 用词法匹配；后续可接入 embedding/外部语义检索 provider。
 - **Active Memory**：每次用户消息前自动子 agent 搜索记忆。需提供 `activeMemory` 块才启用（缺省不配置 = 关；块内 `enabled` 默认 true）。
 - **Dreaming**：定期将高频记忆提升到 MEMORY.md（默认开）。通过 `dreaming` 配置。
 - **Extract Memories**：stop-hook 后台 extractor，把对话蒸馏进 `memory/topics/*.md` 并更新 `memory/MEMORY.md`（默认开）。通过 `extractMemories` 配置。

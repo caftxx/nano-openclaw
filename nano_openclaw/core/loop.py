@@ -324,6 +324,7 @@ class LoopConfig:
     max_skills_prompt_chars: int = 18_000  # Max chars for skills section
     # Active Memory configuration (mirrors openclaw active-memory plugin)
     active_memory_config: Any | None = None  # None = disabled
+    memory_search_config: Any | None = None
     active_memory_recall: ActiveMemoryRecallHook | None = None
     # Pre-compaction memory flush configuration
     memory_flush_config: MemoryFlushConfig = field(default_factory=MemoryFlushConfig)
@@ -733,6 +734,7 @@ class AgentSession:
             model=self.cfg.model,
             workspace_dir=str(self.cfg.workspace_dir),
             config=self.cfg.active_memory_config,
+            memory_search_config=self.cfg.memory_search_config,
             messages=wire_messages,
         )
         if not recall_result:

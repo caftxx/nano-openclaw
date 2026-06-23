@@ -1,7 +1,8 @@
-"""Memory tools: memory_get and memory_search (lexical version).
+"""Memory tools: memory_get and provider-backed memory_search.
 
 Mirrors openclaw extensions/memory-core/src/tools.ts but without embedding provider.
-Uses context-window search (like ripgrep -C) instead of single-line matching.
+The default provider uses context-window lexical search (like ripgrep -C)
+instead of single-line matching.
 """
 
 from __future__ import annotations
@@ -12,6 +13,13 @@ from pathlib import Path
 import math
 import re
 from typing import Any
+
+from nano_openclaw.features.memory.providers import (
+    MemorySearchManager,
+    MemorySearchProvider,
+    MemorySearchRequest,
+    ProviderSearchResult,
+)
 
 _STOPWORDS = frozenset({
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
@@ -29,18 +37,9 @@ _DATED_MEMORY_PATH_RE = re.compile(r"^memory/(\d{4})-(\d{2})-(\d{2})\.md$")
 
 
 @dataclass
-class MemorySearchResult:
+class MemorySearchResult(ProviderSearchResult):
     """One search result from memory_search."""
-    path: str
-    snippet: str
-    score: float
-    start_line: int
-    end_line: int
-    raw_score: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.raw_score is None:
-            self.raw_score = self.score
+    pass
 
 
 def memory_get(args: dict[str, Any], workspace_dir: str | None = None) -> str:
@@ -103,12 +102,13 @@ def memory_search(
     config: Any | None = None,
     now: datetime | None = None,
 ) -> str:
-    """Lexical search across memory files.
+    """Search across memory files using the configured provider.
 
-    Mirrors openclaw memory_search but uses keyword matching instead of embedding.
+    The default provider mirrors openclaw memory_search but uses keyword
+    matching instead of embedding. Alternative providers can be registered via
+    the MemorySearchManager while keeping this tool surface stable.
 
     Searches MEMORY.md and memory/*.md for keyword matches.
-    No embedding - uses simple text/keyword matching.
 
     Args:
         query: Search query (keywords)
@@ -142,54 +142,111 @@ def memory_search(
 
     if not workspace_dir:
         return '{"results": [], "error": "no workspace directory"}'
-
-    results: list[MemorySearchResult] = []
-    workspace = Path(workspace_dir)
-
-    # Keywords from query — filter stopwords and single-char noise.
-    # Stopword filtering keys off the lowercased form regardless of case_sensitive,
-    # so the stopword list stays effective across both modes (scoring unchanged).
-    raw_keywords_match = re.findall(r"\w+", query if case_sensitive else query.lower())
-    raw_keywords_for_stopword = re.findall(r"\w+", query.lower())
-
-    keywords: list[str] = []
-    for kw_match, kw_lower in zip(raw_keywords_match, raw_keywords_for_stopword):
-        if kw_lower in _STOPWORDS or len(kw_lower) <= 1:
-            continue
-        keywords.append(kw_match)
-    if not keywords:
-        keywords = raw_keywords_match  # fallback: avoid empty results for all-stopword queries
-    if not keywords:
+    if not str(query).strip():
         return '{"results": []}'
 
-    # Search MEMORY.md
-    memory_md = workspace / "MEMORY.md"
-    if memory_md.exists():
-        results.extend(_search_file(
-            memory_md, keywords, min_score, workspace,
-            context_lines=context_lines, case_sensitive=case_sensitive,
-        ))
-
-    # Search memory/*.md
-    memory_dir = workspace / "memory"
-    if memory_dir.exists():
-        for entry in sorted(memory_dir.glob("*.md")):
-            results.extend(_search_file(
-                entry, keywords, min_score, workspace,
-                context_lines=context_lines, case_sensitive=case_sensitive,
-            ))
-
-    results = _apply_temporal_decay(results, config, now=now)
-
-    # Sort by score descending
-    results.sort(key=lambda r: r.score, reverse=True)
-    results = results[:max_results]
+    request = MemorySearchRequest(
+        query=query,
+        max_results=max_results,
+        min_score=min_score,
+        context_lines=context_lines,
+        case_sensitive=case_sensitive,
+        output_mode=output_mode,
+    )
+    results = _memory_search_manager.search(
+        request,
+        workspace_dir=workspace_dir,
+        config=config,
+        now=now,
+    )
 
     # Track recall events for dreaming (always, regardless of dreaming.enabled)
     if results and workspace_dir:
         _track_results(results, query, workspace_dir)
 
-    # Format output
+    return _format_search_results(results, output_mode)
+
+
+class LexicalMemorySearchProvider(MemorySearchProvider):
+    """Local keyword/context-window memory search provider."""
+
+    @property
+    def name(self) -> str:
+        return "lexical"
+
+    def search(
+        self,
+        request: MemorySearchRequest,
+        *,
+        workspace_dir: str,
+        config: Any | None = None,
+        now: datetime | None = None,
+    ) -> list[MemorySearchResult]:
+        results: list[MemorySearchResult] = []
+        workspace = Path(workspace_dir)
+
+        # Keywords from query — filter stopwords and single-char noise.
+        # Stopword filtering keys off the lowercased form regardless of
+        # case_sensitive, so the stopword list stays effective across both
+        # modes (scoring unchanged).
+        raw_keywords_match = re.findall(
+            r"\w+",
+            request.query if request.case_sensitive else request.query.lower(),
+        )
+        raw_keywords_for_stopword = re.findall(r"\w+", request.query.lower())
+
+        keywords: list[str] = []
+        for kw_match, kw_lower in zip(raw_keywords_match, raw_keywords_for_stopword):
+            if kw_lower in _STOPWORDS or len(kw_lower) <= 1:
+                continue
+            keywords.append(kw_match)
+        if not keywords:
+            keywords = raw_keywords_match  # fallback: avoid empty results for all-stopword queries
+        if not keywords:
+            return []
+
+        # Search MEMORY.md
+        memory_md = workspace / "MEMORY.md"
+        if memory_md.exists():
+            results.extend(_search_file(
+                memory_md, keywords, request.min_score, workspace,
+                context_lines=request.context_lines,
+                case_sensitive=request.case_sensitive,
+            ))
+
+        # Search memory/*.md
+        memory_dir = workspace / "memory"
+        if memory_dir.exists():
+            for entry in sorted(memory_dir.glob("*.md")):
+                results.extend(_search_file(
+                    entry, keywords, request.min_score, workspace,
+                    context_lines=request.context_lines,
+                    case_sensitive=request.case_sensitive,
+                ))
+
+        results = _apply_temporal_decay(results, config, now=now)
+
+        # Sort by score descending
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results[:request.max_results]
+
+
+_memory_search_manager = MemorySearchManager()
+_memory_search_manager.register(LexicalMemorySearchProvider())
+
+
+def register_memory_search_provider(provider: MemorySearchProvider) -> None:
+    """Register an additional provider for memory_search."""
+    _memory_search_manager.register(provider)
+
+
+def memory_search_provider_names() -> list[str]:
+    """Return registered memory_search provider names."""
+    return _memory_search_manager.names()
+
+
+def _format_search_results(results: list[ProviderSearchResult], output_mode: str) -> str:
+    """Format provider results using the stable memory_search text contract."""
     if not results:
         if output_mode == "count":
             return "Memory search: 0 files, 0 hits."

@@ -13,6 +13,7 @@ async def recall_active_memory(
     model: str,
     workspace_dir: str,
     config: Any,
+    memory_search_config: Any | None = None,
     messages: list[dict[str, Any]],
 ) -> Any | None:
     if not config or not getattr(config, "enabled", False):
@@ -22,5 +23,6 @@ async def recall_active_memory(
         model=model,
         workspace_dir=workspace_dir,
         config=config,
+        memory_search_config=memory_search_config,
     )
     return await manager.run(messages)

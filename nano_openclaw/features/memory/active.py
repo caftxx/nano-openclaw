@@ -55,6 +55,7 @@ class ActiveMemoryConfig:
     prompt_append: str | None = None      # append extra instructions to the prompt
     cache_ttl_ms: int = 15000             # cache TTL in milliseconds
     logging: bool = False                 # print debug line after each recall
+    memory_search_config: Any | None = None  # Runtime-only memory_search provider config
 
 
 @dataclass
@@ -198,11 +199,16 @@ Do not explain your search process. Just output the result.
 
 # ──────────────────────────── Tool dispatch ────────────────────────────
 
-def _dispatch_tool(name: str, args: dict[str, Any], workspace_dir: str) -> str:
+def _dispatch_tool(
+    name: str,
+    args: dict[str, Any],
+    workspace_dir: str,
+    memory_search_config: Any | None = None,
+) -> str:
     """Execute a memory tool call and return its string result."""
     from nano_openclaw.features.memory.tools import memory_search, memory_get
     if name == "memory_search":
-        return memory_search(args, workspace_dir)
+        return memory_search(args, workspace_dir, config=memory_search_config)
     if name == "memory_get":
         return memory_get(args, workspace_dir)
     return f"[unknown tool: {name}]"
@@ -212,7 +218,7 @@ def _anthropic_tools_schema() -> list[dict]:
     return [
         {
             "name": "memory_search",
-            "description": "Search memory files for keywords.",
+            "description": "Search memory files with the configured memory provider.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -263,7 +269,7 @@ def _openai_tools_schema() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "memory_search",
-                "description": "Search memory files for keywords.",
+                "description": "Search memory files with the configured memory provider.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -345,6 +351,7 @@ class AnthropicRecallBackend(RecallBackend):
         self._model = model
 
     async def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
+        memory_search_config = getattr(config, "memory_search_config", None)
         tools = _anthropic_tools_schema()
         messages: list[dict] = [{"role": "user", "content": prompt}]
 
@@ -381,7 +388,12 @@ class AnthropicRecallBackend(RecallBackend):
                         "name": block.name,
                         "input": block.input,
                     })
-                    result = _dispatch_tool(block.name, block.input, workspace_dir)
+                    result = _dispatch_tool(
+                        block.name,
+                        block.input,
+                        workspace_dir,
+                        memory_search_config,
+                    )
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -405,6 +417,7 @@ class OpenAIRecallBackend(RecallBackend):
         self._model = model
 
     async def run(self, prompt: str, system: str, workspace_dir: str, config: ActiveMemoryConfig) -> str | None:
+        memory_search_config = getattr(config, "memory_search_config", None)
         tools = _openai_tools_schema()
         messages: list[dict] = [
             {"role": "system", "content": system},
@@ -442,7 +455,12 @@ class OpenAIRecallBackend(RecallBackend):
                         args = json.loads(tc.function.arguments)
                     except json.JSONDecodeError:
                         args = {}
-                    result = _dispatch_tool(tc.function.name, args, workspace_dir)
+                    result = _dispatch_tool(
+                        tc.function.name,
+                        args,
+                        workspace_dir,
+                        memory_search_config,
+                    )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -533,6 +551,7 @@ class ActiveMemoryManager:
     model: str
     workspace_dir: str
     config: ActiveMemoryConfig = field(default_factory=ActiveMemoryConfig)
+    memory_search_config: Any | None = None
     # Cache entries: query+style key → (result, insertion_timestamp)
     _cache: dict[str, tuple[ActiveMemoryResult, float]] = field(default_factory=dict)
 
@@ -554,6 +573,7 @@ class ActiveMemoryManager:
         """
         if not self.config.enabled:
             return None
+        self.config.memory_search_config = self.memory_search_config
 
         query = build_query(messages, self.config.query_mode, self.config)
         if not query:

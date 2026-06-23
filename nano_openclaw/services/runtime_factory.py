@@ -173,6 +173,7 @@ async def build_agent_runtime(
         max_skills_in_prompt=config.skills.load.maxSkillsInPrompt,
         max_skills_prompt_chars=config.skills.load.maxSkillsPromptChars,
         active_memory_config=active_mem_cfg,
+        memory_search_config=config.memorySearch,
         active_memory_recall=recall_active_memory,
         memory_flush_config=config.memoryFlush,
         dreaming_config=dreaming_cfg,

@@ -72,8 +72,18 @@ class TestMemoryFlushConfig:
 class TestMemorySearchConfig:
     def test_default_temporal_decay_disabled(self):
         cfg = MemorySearchConfig()
+        assert cfg.provider == "lexical"
+        assert cfg.providers == {}
         assert cfg.temporalDecay.enabled is False
         assert cfg.temporalDecay.halfLifeDays == 30
+
+    def test_custom_provider(self):
+        cfg = MemorySearchConfig(
+            provider="semantic",
+            providers={"semantic": {"endpoint": "http://localhost:9999"}},
+        )
+        assert cfg.provider == "semantic"
+        assert cfg.providers["semantic"]["endpoint"] == "http://localhost:9999"
 
     def test_custom_temporal_decay(self):
         cfg = MemorySearchConfig(

@@ -320,10 +320,12 @@ plugins: {
 
 ### memorySearch — 记忆搜索配置
 
-`memorySearch` 控制 `memory_search` 的排序行为。默认与 openclaw 保持一致：temporal decay 支持存在但不自动开启。
+`memorySearch` 控制 `memory_search` 的 provider 与排序行为。默认 `lexical` provider 与 openclaw 保持一致：本地词法匹配，temporal decay 支持存在但不自动开启。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
+| `provider` | string | `"lexical"` | `memory_search` provider id；未知 provider 会回退到 `lexical` |
+| `providers` | object | `{}` | provider 专属配置，按 provider id 分组 |
 | `temporalDecay.enabled` | boolean | `false` | 是否启用按时间衰减的排序 |
 | `temporalDecay.halfLifeDays` | number | `30` | 半衰期天数；开启后 dated daily note 每 N 天分数减半 |
 
@@ -332,6 +334,8 @@ plugins: {
 ```json5
 {
   memorySearch: {
+    provider: "lexical",
+    providers: {},
     temporalDecay: {
       enabled: true,
       halfLifeDays: 30,
