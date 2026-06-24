@@ -40,6 +40,8 @@ class ChatRequest(BaseModel):
     text: str
     attachments: list[dict[str, Any]] = []
     response_style: str = ""   # "voice" → spoken-style system directive (web voice mode)
+    voiceId: str = ""          # Web Voice selected Aliyun TTS voice for this turn
+    voiceOutput: str = ""      # local / aliyun-flowing / aliyun-rest
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -264,6 +266,8 @@ def create_app(
                             attachments=attachments,
                             turn_source="webui",
                             response_style=req.response_style,
+                            voice_id=req.voiceId,
+                            voice_output=req.voiceOutput,
                         )
                     except BusyError as exc:
                         await emit({"type": "turn.error", "session_id": session.session_id, "message": str(exc)})

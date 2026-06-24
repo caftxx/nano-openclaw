@@ -64,6 +64,7 @@ from nano_openclaw.core.loop import (
     append_active_todo_reminder,
 )
 from nano_openclaw.core.tools import ToolRegistry
+from nano_openclaw.features.voice.voice_catalog import is_emotion_voice
 
 if TYPE_CHECKING:
     from nano_openclaw.core.runtime import AgentRuntime
@@ -295,6 +296,8 @@ class EmbeddedBackend(Backend):
         cancellation_token: CancellationToken | None = None,
         turn_source: str = "tui",
         response_style: str = "",
+        voice_id: str = "",
+        voice_output: str = "",
         channel_id: str = "",
         channel_account_id: str = "",
         channel_sender_key: str = "",
@@ -335,6 +338,8 @@ class EmbeddedBackend(Backend):
                 on_local_event=on_local_event,
                 turn_source=turn_source,
                 response_style=response_style,
+                voice_id=voice_id,
+                voice_output=voice_output,
                 channel_id=channel_id,
                 channel_account_id=channel_account_id,
                 channel_sender_key=channel_sender_key,
@@ -447,6 +452,8 @@ class EmbeddedBackend(Backend):
         on_local_event: Any = None,
         turn_source: str = "tui",
         response_style: str = "",
+        voice_id: str = "",
+        voice_output: str = "",
         channel_id: str = "",
         channel_account_id: str = "",
         channel_sender_key: str = "",
@@ -488,7 +495,14 @@ class EmbeddedBackend(Backend):
 
         self._wire_spawn_context(turn_registry, session.session_id, on_event=on_event)
 
-        cfg = replace(self.runtime.cfg, session_key=session.session_id, turn_source=turn_source, response_style=response_style)
+        cfg = replace(
+            self.runtime.cfg,
+            session_key=session.session_id,
+            turn_source=turn_source,
+            response_style=response_style,
+            voice_id=voice_id,
+            voice_output=voice_output,
+        )
 
         # Notify subscribers turn started.
         self._emit(
@@ -504,6 +518,11 @@ class EmbeddedBackend(Backend):
                         {"name": a.name, "mime": a.mime, "size": a.size}
                         for a in attachments
                     ],
+                    "voice_id": voice_id,
+                    "voice_output": voice_output,
+                    "voice_ssml": response_style == "voice"
+                    and voice_output.startswith("aliyun")
+                    and is_emotion_voice(voice_id),
                 },
                 seq=self._next_seq(),
             )

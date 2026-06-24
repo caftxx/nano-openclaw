@@ -310,6 +310,9 @@ def test_webui_push_adapter_maps_backend_turn_started_to_chat_accepted():
                     "session_id": session.session_id,
                     "user_text": "hello",
                     "attachments": [],
+                    "voice_id": "zhimiao_emo",
+                    "voice_output": "aliyun-flowing",
+                    "voice_ssml": True,
                 },
                 seq=1,
             ),
@@ -319,6 +322,8 @@ def test_webui_push_adapter_maps_backend_turn_started_to_chat_accepted():
 
         assert payloads[0]["type"] == "chat.accepted"
         assert payloads[0]["turn_id"] == "turn-1"
+        assert payloads[0]["voice_ssml"] is True
+        assert payloads[0]["voice_id"] == "zhimiao_emo"
         assert turn_sessions == {"turn-1": session.session_id}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

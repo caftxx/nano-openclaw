@@ -140,13 +140,14 @@
   // ── 内部小工具（全部纯函数，操作浅拷贝）────────────────────────────────────
   function res(state, ctx, commands) { return { state: state, ctx: ctx, commands: commands || [] }; }
 
-  function newTurn(id, muted) {
+  function newTurn(id, muted, ssml) {
     return {
       id: id || "",
       open: true,
       text: "",
       sentUpTo: 0,        // 已投合成的文本进度（按句末标点切）
       muted: Boolean(muted),
+      ssml: Boolean(ssml),
       cancelRequested: false,
       anyAudio: false,
       pushed: false,
@@ -428,7 +429,7 @@
         cmds.push({ type: "stopSpeech" });   // 新 turn 接管：旧播报清场
         ctx.resumeReplay = false;
         // muted：非活跃态（暂停中）接的 turn 本轮禁播报（旧 speakThisTurn=v.active）
-        ctx.turn = newTurn(event.turnId, !isActive(state));
+        ctx.turn = newTurn(event.turnId, !isActive(state), event.voiceSsml || event.voice_ssml);
         if (state === "capturing" || state === "starting") {
           cmds.push({ type: "stopMic" });
           cmds.push({ type: "clearTimer", tag: "start" });
@@ -446,6 +447,10 @@
         if (!turn) return res(state, ctx, cmds);
         turn.text += event.text || "";
         if (turn.muted || !isActive(state)) return res(state, ctx, cmds);
+        if (turn.ssml) {
+          if (state === "thinking") ctx.statusOverride = "正在接收回复…";
+          return res(state, ctx, cmds);
+        }
         if (ctx.hidden) {
           // 后台不起播报：标记回前台全文重播【D2】
           if (turn.text.trim()) ctx.resumeReplay = true;
@@ -478,8 +483,12 @@
           if (turn.text.trim()) ctx.resumeReplay = true;
           return res(state, ctx, cmds);
         }
-        tail = turn.text.slice(turn.sentUpTo).trim();
-        turn.sentUpTo = turn.text.length;
+        if (turn.ssml) {
+          tail = turn.text.trim();
+        } else {
+          tail = turn.text.slice(turn.sentUpTo).trim();
+          turn.sentUpTo = turn.text.length;
+        }
         if (tail) speakCmds(turn, tail, cmds);
         if (turn.pushed) {
           cmds.push({ type: "speakerEnd" });   // 文本流收尾：云端发 Stop / 本地标记排空即完【B4】

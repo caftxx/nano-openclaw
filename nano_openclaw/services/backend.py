@@ -289,6 +289,8 @@ class Backend(Protocol):
         attachments: list[PromptAttachment] | None = None,
         turn_source: str = "tui",
         response_style: str = "",
+        voice_id: str = "",
+        voice_output: str = "",
         channel_id: str = "",
         channel_account_id: str = "",
         channel_sender_key: str = "",
@@ -305,6 +307,10 @@ class Backend(Protocol):
         directive (concise, no markdown/emoji) for the web voice mode. Empty =
         normal. Kept separate from ``turn_source`` so memory/analytics are
         unaffected.
+
+        ``voice_id`` / ``voice_output`` are optional Web Voice TTS context used
+        to select stricter output formatting, such as SSML for multi-emotion
+        Aliyun voices. Other frontends leave them empty.
 
         ``channel_*`` identifies a channel-originated turn so the services
         layer can apply channel-owned tool decoration (for example WeChat

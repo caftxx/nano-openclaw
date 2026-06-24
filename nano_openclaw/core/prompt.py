@@ -28,6 +28,7 @@ from nano_openclaw.core.workspace import (
     CONTEXT_FILE_ORDER,
     DEFAULT_SOUL_FILENAME,
 )
+from nano_openclaw.features.voice.voice_catalog import emotion_categories_for_voice
 
 
 _IDENTITY = "You are a personal assistant running inside nano-openclaw."
@@ -243,6 +244,22 @@ VOICE_STYLE_PROMPT = """\
 - 避免长链接、长串代码 / ID / 文件路径这类没法听的内容；非给不可时只说关键部分。
 - 思考过程与工具调用不受影响，但最终面向用户的那段回答务必遵守以上口语化要求。
 </voice_mode>"""
+
+
+def build_voice_ssml_emotion_prompt(voice_id: str) -> str:
+    categories = emotion_categories_for_voice(voice_id)
+    category_text = ", ".join(categories) if categories else "neutral"
+    return f"""\
+<voice_ssml_emotion_mode>
+当前 Web Voice 选择的是阿里云多情感音色 `{voice_id}`。最终面向用户的回复必须输出一个完整、合法的 SSML XML 文档：
+- 只输出一个 `<speak>...</speak>` 根节点；不要 XML header、Markdown、代码块、解释文字或根节点外文本。
+- 在 `<speak>` 内像正常人说话：普通语句直接写文本即可，不要把整段回复统一包进一个 emotion。
+- 只在确实需要情感区别的短语、词语或单个句子上局部使用 `<emotion category="..." intensity="...">...</emotion>`。
+- 当前音色只允许使用这些 emotion category：{category_text}。没有明确情绪变化时不要打 emotion；确实需要中性标记时才使用 `neutral`，默认 intensity 使用 `1.0`。
+- 可用 `<break time="300ms"/>` 这类短暂停顿；不要使用未确认支持的标签。
+- XML 特殊字符必须转义：`&amp;`、`&lt;`、`&gt;`、`&quot;`、`&apos;`。
+- 回复尽量短；长回复请在 `<speak>` 内自然分成多个短句，便于客户端按阿里云 TTS 限制拆分请求。
+</voice_ssml_emotion_mode>"""
 
 
 def build_system_prompt(

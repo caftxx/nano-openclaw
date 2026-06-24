@@ -80,6 +80,7 @@
     var onDrained = opts.onDrained || function () {};
     var onFallback = opts.onFallback || function () {};
     var log = opts.log || function () {};
+    var ssml = opts.ssml || null;
 
     var currentIdx = 0;        // 会话内记住的降级层级【B3】
     var engines = [];          // 懒建的各级引擎实例（按 levels 下标）
@@ -90,6 +91,7 @@
     var audibleFired = false;  // onAudible 仅上报一次
     var begun = false;
     var turnDirective = null;
+    var flowingSessionWeight = 0;
 
     function anyCloudLevel() {
       for (var i = 0; i < levels.length; i++) if (levels[i].usesPlayer) return true;
@@ -127,6 +129,35 @@
     function markAudible() {
       audioHeard = true;
       if (!audibleFired) { audibleFired = true; onAudible(); }
+    }
+
+    function chunksForLevel(idx, text) {
+      var level = levels[idx] || {};
+      if (!ssml || !ssml.isSsml || !ssml.isSsml(text)) return [text];
+      if (level.name === "local") return [ssml.stripSsmlToText(text)];
+      if (level.name === "aliyun-rest" && ssml.chunkSsmlForAliyun) {
+        return ssml.chunkSsmlForAliyun(text, "rest");
+      }
+      if (level.name === "aliyun-flowing" && ssml.chunkSsmlForAliyun) {
+        return ssml.chunkSsmlForAliyun(text, "flowing");
+      }
+      return [text];
+    }
+
+    function pushToLevel(idx, text, directive) {
+      var eng = engineAt(idx);
+      var parts = chunksForLevel(idx, text);
+      for (var i = 0; i < parts.length; i++) {
+        if (levels[idx] && levels[idx].name === "aliyun-flowing" && ssml && ssml._weightedLen) {
+          var weight = ssml._weightedLen(ssml.stripSsmlToText ? ssml.stripSsmlToText(parts[i]) : parts[i]);
+          if (ssml.FLOWING_SESSION_WEIGHT_LIMIT && flowingSessionWeight + weight > ssml.FLOWING_SESSION_WEIGHT_LIMIT) {
+            log("tts-ssml", "flowing session text limit reached; remaining SSML was not synthesized");
+            return;
+          }
+          flowingSessionWeight += weight;
+        }
+        if (parts[i]) eng.push(parts[i], directive);
+      }
     }
 
     function engineAt(idx) {
@@ -174,7 +205,7 @@
           if (player) { try { player.stop(); } catch (_) {} }
           var eng = engineAt(currentIdx);
           eng.begin(turnDirective);
-          for (var i = 0; i < pushed.length; i++) eng.push(pushed[i], turnDirective);
+          for (var i = 0; i < pushed.length; i++) pushToLevel(currentIdx, pushed[i], turnDirective);
           if (endRequested) eng.end();   // 上游已收尾：补 end，别让新引擎永不 complete【B4】
           return;
         }
@@ -199,6 +230,7 @@
       audibleFired = false;
       begun = false;
       turnDirective = null;
+      flowingSessionWeight = 0;
     }
 
     function push(text) {
@@ -212,7 +244,7 @@
       }
       if (!text) return;
       pushed.push(text);
-      engineAt(currentIdx).push(text, turnDirective);
+      pushToLevel(currentIdx, text, turnDirective);
     }
 
     function end() {
@@ -232,6 +264,7 @@
       audibleFired = false;
       begun = false;
       turnDirective = null;
+      flowingSessionWeight = 0;
       for (var i = 0; i < engines.length; i++) {
         if (engines[i]) { try { engines[i].abort(); } catch (_) {} }
       }

@@ -112,3 +112,42 @@ ALIYUN_TTS_VOICES = [
     {"value": "zhistella", "label": "知莎·普通话女声"},
     {"value": "kelly", "label": "Kelly·香港粤语女声"},
 ]
+
+
+ALIYUN_EMOTION_VOICE_CATEGORIES = {
+    "zhifeng_emo": ["angry", "fear", "happy", "neutral", "sad", "surprise"],
+    "zhibing_emo": ["angry", "fear", "happy", "neutral", "sad", "surprise"],
+    "zhimiao_emo": [
+        "serious",
+        "sad",
+        "disgust",
+        "jealousy",
+        "embarrassed",
+        "happy",
+        "fear",
+        "surprise",
+        "neutral",
+        "frustrated",
+        "affectionate",
+        "gentle",
+        "angry",
+        "newscast",
+        "customer-service",
+        "story",
+        "living",
+    ],
+    "zhimi_emo": ["angry", "fear", "happy", "hate", "neutral", "sad", "surprise"],
+    "zhiyan_emo": ["neutral", "happy", "angry", "sad", "fear", "hate", "surprise", "arousal"],
+    "zhibei_emo": ["neutral", "happy", "angry", "sad", "fear", "hate", "surprise"],
+    "zhitian_emo": ["neutral", "happy", "angry", "sad", "fear", "hate", "surprise"],
+}
+
+
+def is_emotion_voice(voice_id: str | None) -> bool:
+    return bool(voice_id and voice_id in ALIYUN_EMOTION_VOICE_CATEGORIES)
+
+
+def emotion_categories_for_voice(voice_id: str | None) -> list[str]:
+    if not voice_id:
+        return []
+    return list(ALIYUN_EMOTION_VOICE_CATEGORIES.get(voice_id, []))

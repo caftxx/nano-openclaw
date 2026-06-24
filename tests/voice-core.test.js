@@ -443,6 +443,29 @@ test("W2：唤醒词命中 → chime + 停麦重开（shell 据 awake 切回所�
   assert.ok(r.cmds.some((c) => c.type === "clearTimer" && c.tag === "wakeIdle"), "进入对话回落计时失效");
 });
 
+test("SSML turn：delta 阶段不分句朗读，done 后完整 XML 一次性投递", () => {
+  let r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "用情绪回答" },
+    { type: "CHAT_ACCEPTED", turnId: "t1", voiceSsml: true },
+    { type: "TEXT_DELTA", text: "<speak><emotion category=\"happy\" intensity=\"1.0\">今天晴。" },
+  ]);
+  assert.strictEqual(r.model.state, "thinking");
+  assert.ok(!has(r.cmds, "speak"));
+
+  r = replay([{ type: "TEXT_DELTA", text: "适合出门。</emotion></speak>" }], r.model);
+  assert.strictEqual(r.model.state, "thinking");
+  assert.ok(!has(r.cmds, "speak"));
+
+  r = replay([{ type: "TURN_DONE", turnId: "t1" }], r.model);
+  assert.strictEqual(r.model.state, "speaking");
+  assert.deepStrictEqual(types(r.cmds), ["speakerBegin", "speak", "speakerEnd"]);
+  assert.strictEqual(
+    get(r.cmds, "speak").text,
+    "<speak><emotion category=\"happy\" intensity=\"1.0\">今天晴。适合出门。</emotion></speak>",
+  );
+});
+
 test("W3：一句话直达——\"小克今天天气\" → chime + 直接发送尾巴（原文切片，标点/空格保留）", () => {
   const r = replay([...WAKE_BOOT, { type: "MIC_FINAL", text: "小克，今天天气。" }]);
   assert.strictEqual(r.model.state, "thinking");

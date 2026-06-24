@@ -16,6 +16,7 @@
     var createFlowingSpeaker = opts.createFlowingSpeaker;
     var createRestSpeaker = opts.createRestSpeaker;
     var createVoicePcmPlayer = opts.createVoicePcmPlayer;
+    var ssml = opts.ssml || null;
     var getSelectedSystemVoice = opts.getSelectedSystemVoice || function () { return null; };
     var getAliyunConfig = opts.getAliyunConfig || function () { return {}; };
     var getToken = opts.getToken;
@@ -98,6 +99,7 @@
         onDrained: callbacks.onDrained,
         onFallback: callbacks.onFallback,
         log: log,
+        ssml: ssml,
       });
     }
 

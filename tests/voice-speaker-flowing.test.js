@@ -5,6 +5,8 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const createFlowingSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-flowing.js");
+const createFallbackSpeaker = require("../nano_openclaw/adapters/webui/static/voice-speaker-fallback.js");
+const ssml = require("../nano_openclaw/adapters/webui/static/voice-ssml.js");
 const { parseTtsEvent, buildStartSynthesis, buildRunSynthesis, buildStopSynthesis } = createFlowingSpeaker;
 
 function makeFakeWS() {
@@ -86,6 +88,34 @@ test("Talk directive：首段音色覆盖 StartSynthesis voice", async () => {
   ws.open();
   const start = JSON.parse(ws.sent[0]);
   assert.strictEqual(start.payload.voice, "longxiaochun");
+});
+
+test("SSML：fallback 在 flowing 层拆成多个完整 speak RunSynthesis", async () => {
+  const { sp: flowing, FakeWS } = makeSpeaker();
+  const fallback = createFallbackSpeaker({
+    levels: [{
+      name: "aliyun-flowing",
+      usesPlayer: true,
+      create: () => flowing,
+    }],
+    createPlayer: () => ({ enqueue() {}, markEnded() {}, stop() {}, isActive: () => false }),
+    ssml,
+  });
+  const longText = "今天天气很好，适合出门。".repeat(1200);
+  fallback.begin();
+  fallback.push(`<speak><emotion category="happy" intensity="1.0">${longText}</emotion></speak>`);
+  fallback.end();
+  await tick();
+  const ws = FakeWS.instances[0];
+  ws.open();
+  ws.message(evt("SynthesisStarted"));
+  const runs = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.header.name === "RunSynthesis");
+  assert.ok(runs.length > 1);
+  for (const run of runs) {
+    assert.ok(ssml.isSsml(run.payload.text));
+    assert.match(run.payload.text, /^<speak>/);
+    assert.match(run.payload.text, /<\/speak>$/);
+  }
 });
 
 test("Started 前调 end()：Started 后补发 StopSynthesis（缓存文本不丢）", async () => {

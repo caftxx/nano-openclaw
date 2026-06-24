@@ -47,7 +47,12 @@ from nano_openclaw.core.images import (
     parse_image_refs,
     to_anthropic_image_block,
 )
-from nano_openclaw.core.prompt import VOICE_STYLE_PROMPT, build_system_prompt
+from nano_openclaw.core.prompt import (
+    VOICE_STYLE_PROMPT,
+    build_system_prompt,
+    build_voice_ssml_emotion_prompt,
+)
+from nano_openclaw.features.voice.voice_catalog import is_emotion_voice
 from nano_openclaw.core.provider import (
     MessageEnd,
     StreamEvent,
@@ -341,6 +346,10 @@ class LoopConfig:
     # a spoken-conversation directive (concise, no markdown/emoji) for the web
     # voice hands-free mode. Empty = normal. Does not affect memory/triggerSources.
     response_style: str = ""
+    # Web Voice TTS context for per-turn output-format hints. Only populated by
+    # the browser voice overlay; other surfaces leave these empty.
+    voice_id: str = ""
+    voice_output: str = ""
     # If set, bypasses build_system_prompt() entirely (used by subagent runner)
     system_prompt_override: str | None = None
     # Lightweight plugin hooks, installed by the plugin loader.
@@ -790,6 +799,8 @@ class AgentSession:
         # prompt prefix still caches; only a voice<->text switch misses.
         if self.cfg.response_style == "voice":
             system = f"{system}\n\n{VOICE_STYLE_PROMPT}"
+            if self.cfg.voice_output.startswith("aliyun") and is_emotion_voice(self.cfg.voice_id):
+                system = f"{system}\n\n{build_voice_ssml_emotion_prompt(self.cfg.voice_id)}"
 
         return system
 

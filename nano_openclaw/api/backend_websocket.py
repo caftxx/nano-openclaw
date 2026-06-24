@@ -331,6 +331,8 @@ class WebSocketBackend(Backend):
         cancellation_token: Any = None,
         turn_source: str = "tui",
         response_style: str = "",
+        voice_id: str = "",
+        voice_output: str = "",
         channel_id: str = "",
         channel_account_id: str = "",
         channel_sender_key: str = "",
@@ -340,6 +342,8 @@ class WebSocketBackend(Backend):
             "text": text,
             "turn_source": turn_source,
             "response_style": response_style,
+            "voice_id": voice_id,
+            "voice_output": voice_output,
         }
         if channel_id:
             params["channel_id"] = channel_id

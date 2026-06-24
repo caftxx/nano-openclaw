@@ -31,6 +31,7 @@
   // 只有单句超 300 字才会走到这里，硬切兜底即可）。
   function splitForTts(text) {
     if (!text) return [];
+    if (/^\s*<speak(?:\s|>)/.test(String(text))) return [text];
     if (text.length <= MAX_LEN) return [text];
     var out = [];
     var buf = "";

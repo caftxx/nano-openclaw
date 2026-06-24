@@ -188,6 +188,7 @@
         createFlowingSpeaker: window.createFlowingSpeaker,
         createRestSpeaker: window.createRestSpeaker,
         createVoicePcmPlayer: window.createVoicePcmPlayer,
+        ssml: window.VoiceSsml,
         getSelectedSystemVoice,
         getAliyunConfig: () => ({
           appkey: voiceCfg && voiceCfg.appkey,
@@ -303,7 +304,14 @@
         const sid = state.currentSession && state.currentSession.session_id;
         if (!sid) { dispatch({ type: "SEND_FAILED", message: "没有可用会话" }); break; }
         // response_style:"voice" → 后端给本轮 system prompt 追加口语化指令
-        if (!send("chat.send", { session_id: sid, text: cmd.text, attachments: [], response_style: "voice" })) {
+        if (!send("chat.send", {
+          session_id: sid,
+          text: cmd.text,
+          attachments: [],
+          response_style: "voice",
+          voiceId: currentAliyunVoice(),
+          voiceOutput: effectiveOut || selectedOut(),
+        })) {
           dispatch({ type: "SEND_FAILED", message: "未连接到服务器" });
         }
         break;
@@ -461,7 +469,11 @@
           view.addUserBubble(typeof formatAcceptedUserText === "function" ? formatAcceptedUserText(event) : (event.text || ""));
           view.startAiBubble();
         }
-        dispatch({ type: "CHAT_ACCEPTED", turnId: event.turn_id || "" });
+        dispatch({
+          type: "CHAT_ACCEPTED",
+          turnId: event.turn_id || "",
+          voiceSsml: Boolean(event.voice_ssml || event.voiceSsml),
+        });
         break;
       case "text.delta":
         dispatch({ type: "TEXT_DELTA", text: event.text || "" });

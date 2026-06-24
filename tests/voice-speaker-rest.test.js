@@ -172,6 +172,22 @@ test("talk.speak JSON 响应：解码 audioBase64 并传给播放器", async () 
   assert.deepStrictEqual([...new Uint8Array(base64ToArrayBuffer("AQID"))], [1, 2, 3]);
 });
 
+test("REST SSML：完整 speak 不被 300 字符硬切坏", async () => {
+  const captured = [];
+  const fetchImpl = async (url, init) => {
+    captured.push(JSON.parse(init.body));
+    return okResponse(new Uint8Array([1]));
+  };
+  const { sp } = makeSpeaker(fetchImpl);
+  const xml = `<speak><emotion category="happy" intensity="1.0">${"你好。".repeat(120)}</emotion></speak>`;
+  sp.begin();
+  sp.push(xml);
+  sp.end();
+  await tick(); await tick(); await tick();
+  assert.strictEqual(captured.length, 1);
+  assert.strictEqual(captured[0].text, xml);
+});
+
 test("talk.speak JSON 响应带 ReadableStream 时不得把 JSON 字节当 PCM 播放", async () => {
   const jsonBytes = new TextEncoder().encode(JSON.stringify({
     audioBase64: Buffer.from([10, 11, 12]).toString("base64"),

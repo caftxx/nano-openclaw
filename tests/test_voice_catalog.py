@@ -5,7 +5,11 @@
 混进来污染中文场景的下拉。
 """
 
-from nano_openclaw.features.voice.voice_catalog import ALIYUN_TTS_VOICES
+from nano_openclaw.features.voice.voice_catalog import (
+    ALIYUN_TTS_VOICES,
+    emotion_categories_for_voice,
+    is_emotion_voice,
+)
 
 
 def test_catalog_non_empty_and_well_formed():
@@ -39,3 +43,22 @@ def test_catalog_excludes_known_foreign_voices():
     assert not (foreign & values)
     # *_ecmix 英中混合英文音色也排除
     assert not any(v.endswith("_ecmix") for v in values)
+
+
+def test_emotion_voice_metadata_matches_catalog():
+    values = {x["value"] for x in ALIYUN_TTS_VOICES}
+    expected = {
+        "zhifeng_emo",
+        "zhibing_emo",
+        "zhimiao_emo",
+        "zhimi_emo",
+        "zhiyan_emo",
+        "zhibei_emo",
+        "zhitian_emo",
+    }
+    assert expected <= values
+    for voice_id in expected:
+        assert is_emotion_voice(voice_id)
+        assert "neutral" in emotion_categories_for_voice(voice_id)
+    assert not is_emotion_voice("xiaoxian")
+    assert emotion_categories_for_voice("xiaoxian") == []
