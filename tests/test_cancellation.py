@@ -365,9 +365,19 @@ class _ReplBackend:
             writer=None,
             todo_store=SimpleNamespace(),
         )
-        self.manager = SimpleNamespace(get_or_load=lambda _key=None: self.session)
+        self.created = 0
+        self.loaded_keys: list[object] = []
+        self.manager = SimpleNamespace(get_or_load=self.get_or_load, create=self.create)
         self.await_side_effect = await_side_effect
         self.chat_calls: list[dict[str, object]] = []
+
+    def get_or_load(self, key=None):
+        self.loaded_keys.append(key)
+        return self.session
+
+    def create(self):
+        self.created += 1
+        return self.session
 
     async def chat_send(self, **kwargs):
         self.chat_calls.append(kwargs)
@@ -404,6 +414,30 @@ def test_repl_swallow_turn_cancelled(monkeypatch):
     assert "turn cancelled" in output.lower()
     assert "error:" not in output.lower()
     assert backend.chat_calls[0]["text"] == "hello"
+
+
+def test_repl_default_start_creates_fresh_session(monkeypatch):
+    registry = ToolRegistry()
+    cfg = LoopConfig(session_key="last-session")
+    console = Console(record=True)
+
+    inputs = iter(["/quit"])
+
+    async def fake_prompt_async():
+        return next(inputs)
+
+    fake_session = SimpleNamespace(prompt_async=fake_prompt_async)
+
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl.Console", lambda: console)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._get_pt_session", lambda: fake_session)
+    monkeypatch.setattr("nano_openclaw.adapters.cli.repl._print_banner", lambda *_args, **_kwargs: None)
+    backend = _ReplBackend(session_id="fresh-session")
+
+    asyncio.run(repl(registry, client=MagicMock(), cfg=cfg, backend=backend))
+
+    assert backend.created == 1
+    assert backend.loaded_keys == []
+    assert cfg.session_key == "fresh-session"
 
 
 def test_ws_repl_escape_aborts_turn(monkeypatch):

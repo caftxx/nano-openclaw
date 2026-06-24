@@ -108,11 +108,17 @@ async def repl(
         raise ValueError("repl requires a BackendService")
     console = Console()
 
-    try:
-        backend_session = backend.manager.get_or_load(session_id or None)
-    except KeyError:
-        # session_id pointed at a transcript that doesn't exist (or was
-        # mid-creation by an older binary) — fall through to a fresh session.
+    if session_id:
+        try:
+            backend_session = backend.manager.get_or_load(session_id)
+        except KeyError:
+            # session_id pointed at a transcript that doesn't exist (or was
+            # mid-creation by an older binary) — fall through to a fresh session.
+            backend_session = backend.manager.create()
+    else:
+        # Default TUI starts should not attach to the most-recent WebUI/voice
+        # conversation. ``get_or_load(None)`` means "last session" for WebUI
+        # compatibility, so embedded TUI must explicitly create.
         backend_session = backend.manager.create()
     session_id = backend_session.session_id
     history = backend_session.history
