@@ -120,6 +120,17 @@ def test_load_bundled_skill_base_dir_is_skill_dir():
     assert (Path(clawhub.baseDir) / "scripts" / "clawhub_api.py").is_file()
 
 
+def test_standup_explain_is_bundled(tmp_path: Path):
+    """Bundled standup-explain skill loads with nano-openclaw metadata."""
+    entries = load_skill_entries(tmp_path)
+    entry = next(entry for entry in entries if entry.skill.name == "standup-explain")
+
+    assert entry.skill.source == "bundled"
+    assert "脱口秀" in entry.skill.description
+    assert entry.metadata is not None
+    assert entry.metadata.emoji == "🎙️"
+
+
 def test_clawhub_declares_httpx_uv_installer(tmp_path: Path):
     """Bundled clawhub exposes its Python dependency to skill_install."""
     entries = load_skill_entries(tmp_path)
