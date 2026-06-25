@@ -1783,6 +1783,7 @@ class EmbeddedBackend(Backend):
             assign_agents,
             build_start_summary,
             normalize_rounds,
+            podcast_model_options,
             voice_label,
         )
 
@@ -1793,10 +1794,16 @@ class EmbeddedBackend(Backend):
         host_voice_label = host_voice_label.strip() or voice_label(host_voice_id) or HOST_VOICE_LABEL
         run_id = uuid.uuid4().hex
         import random
+        model_refs, model_labels = podcast_model_options(self.runtime.config)
+        if not model_refs:
+            model_refs = [self.runtime.model_ref]
+            model_labels = {self.runtime.model_ref: self.runtime.model_id}
         assigned = assign_agents(
             agents,
             topic,
             excluded_voice_id=host_voice_id,
+            model_refs=model_refs,
+            model_labels=model_labels,
             rng=random.Random(run_id),
         )
         token = CancellationToken()
@@ -1853,6 +1860,8 @@ class EmbeddedBackend(Backend):
                     "requested_role": a.requested_role,
                     "voice_id": a.voice_id,
                     "voice_label": a.voice_label,
+                    "model_ref": a.model_ref,
+                    "model_label": a.model_label,
                 }
                 for a in assigned
             ],
@@ -2126,6 +2135,7 @@ class EmbeddedBackend(Backend):
             "session_id": session.session_id,
             "round": round_index,
             "role": agent.role,
+            "model_ref": getattr(agent, "model_ref", ""),
         })
 
         def on_subagent_event(event: Any) -> None:
@@ -2137,6 +2147,7 @@ class EmbeddedBackend(Backend):
                     "session_id": session.session_id,
                     "round": round_index,
                     "role": agent.role,
+                    "model_ref": getattr(agent, "model_ref", ""),
                     "event_type": event_type,
                 }
                 for name in ("run_id", "label", "status", "tool_uses", "input_tokens", "output_tokens", "current_activity", "elapsed_ms", "error_message"):
@@ -2161,6 +2172,7 @@ class EmbeddedBackend(Backend):
             approval_handler=None,
         )
         runner = get_runner()
+        model_client, model_cfg, close_model_client = self._podcast_model_runtime(getattr(agent, "model_ref", ""))
         record = runner.spawn(
             SpawnParams(
                 task=task,
@@ -2171,8 +2183,8 @@ class EmbeddedBackend(Backend):
                 context=SubagentContextMode.ISOLATED,
             ),
             requester_session_key=session.session_id,
-            client=self.runtime.client,
-            base_cfg=self.runtime.cfg,
+            client=model_client,
+            base_cfg=model_cfg,
             session_dir=self.runtime.session_dir,
             workspace_dir=self.runtime.workspace_dir,
             on_event=on_subagent_event,
@@ -2183,6 +2195,9 @@ class EmbeddedBackend(Backend):
         except asyncio.CancelledError:
             await runner.kill(record.run_id)
             raise
+        finally:
+            if close_model_client:
+                await self._close_podcast_model_client(model_client)
         if token.is_cancelled:
             await runner.kill(record.run_id)
             raise asyncio.CancelledError()
@@ -2202,6 +2217,7 @@ class EmbeddedBackend(Backend):
             "session_id": session.session_id,
             "round": round_index,
             "role": agent.role,
+            "model_ref": getattr(agent, "model_ref", ""),
             "subagent_run_id": record.run_id,
             "status": status,
             "error": error,
@@ -2258,6 +2274,7 @@ class EmbeddedBackend(Backend):
             token=token,
             use_research_tools=False,
             persist=False,
+            model_ref=getattr(agent, "model_ref", ""),
         )
         return agent, speaker_text
 
@@ -2268,6 +2285,56 @@ class EmbeddedBackend(Backend):
                 items.append(queue.get_nowait())
             except asyncio.QueueEmpty:
                 return items
+
+    def _podcast_model_runtime(self, model_ref: str) -> tuple[Any, Any, bool]:
+        model_ref = str(model_ref or "").strip()
+        if not model_ref or model_ref == self.runtime.model_ref:
+            return self.runtime.client, self.runtime.cfg, False
+
+        from nano_openclaw.config import resolve_model_config
+        from nano_openclaw.services.runtime_factory import _build_client
+
+        resolved = resolve_model_config(model_ref, self.runtime.config)
+        api_type = resolved["api_type"]
+        api = "anthropic" if api_type == "anthropic-messages" else "openai"
+        model_id = resolved["model_id"]
+        max_tokens = int(resolved["max_tokens"] or self.runtime.cfg.max_tokens)
+        context_window = int(resolved["context_window"] or 0)
+        if context_window > 0 and max_tokens > context_window:
+            max_tokens = context_window
+        context_budget = self.runtime.cfg.context_budget
+        if context_window > 0 and context_budget > context_window:
+            context_budget = context_window
+        cache_ttl = (
+            self.runtime.config.promptCaching.cache_ttl
+            if api == "anthropic" and self.runtime.config.promptCaching.enabled
+            else None
+        )
+        cfg = replace(
+            self.runtime.cfg,
+            model=model_id,
+            api=api,
+            base_url=resolved["base_url"],
+            model_input=tuple(resolved["model_input"] or ["text"]),
+            max_tokens=max_tokens,
+            context_window=context_window,
+            context_budget=context_budget,
+            thinking_level=self.runtime.config.resolve_thinking_level(model_ref),
+            cache_ttl=cache_ttl,
+            session_key=f"{self.runtime.cfg.session_key}:voice-podcast:{model_ref}",
+        )
+        return _build_client(api, resolved["api_key"], resolved["base_url"]), cfg, True
+
+    async def _close_podcast_model_client(self, client: Any) -> None:
+        close = getattr(client, "aclose", None)
+        if close is not None:
+            await close()
+            return
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
 
     async def _generate_podcast_utterance(
         self,
@@ -2285,6 +2352,7 @@ class EmbeddedBackend(Backend):
         token: CancellationToken,
         use_research_tools: bool,
         persist: bool = True,
+        model_ref: str = "",
     ) -> str:
         from nano_openclaw.features.voice.podcast import generate_utterance
 
@@ -2300,6 +2368,7 @@ class EmbeddedBackend(Backend):
             "role": role,
             "voice_id": voice_id,
             "voice_label": voice_label,
+            "model_ref": model_ref,
         })
 
         def on_delta(text: str) -> None:
@@ -2315,6 +2384,7 @@ class EmbeddedBackend(Backend):
                     "role": role,
                     "voice_id": voice_id,
                     "voice_label": voice_label,
+                    "model_ref": model_ref,
                     "text": text,
                 })
 
@@ -2333,14 +2403,21 @@ class EmbeddedBackend(Backend):
         if not use_research_tools:
             exclude.update({"web_search", "web_fetch", "read_file", "list_dir", "memory_search", "memory_get"})
         registry = self.runtime.registry.clone(exclude=exclude, console=None, approval_handler=None)
-        text = await generate_utterance(
-            runtime=self.runtime,
-            registry=registry,
-            system_prompt=system_prompt,
-            user_text=user_text,
-            cancellation_token=token,
-            on_delta=on_delta,
-        )
+        model_client, model_cfg, close_model_client = self._podcast_model_runtime(model_ref)
+        try:
+            text = await generate_utterance(
+                runtime=self.runtime,
+                registry=registry,
+                system_prompt=system_prompt,
+                user_text=user_text,
+                cancellation_token=token,
+                on_delta=on_delta,
+                client=model_client,
+                cfg=model_cfg,
+            )
+        finally:
+            if close_model_client:
+                await self._close_podcast_model_client(model_client)
         if text and persist:
             await self._append_podcast_message(session, "assistant", f"【{role}｜{voice_label}】{text}")
         self._emit_podcast({
@@ -2354,6 +2431,7 @@ class EmbeddedBackend(Backend):
             "role": role,
             "voice_id": voice_id,
             "voice_label": voice_label,
+            "model_ref": model_ref,
             "text": text,
         })
         return text

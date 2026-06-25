@@ -280,7 +280,8 @@
     var host = payload.host || {};
     el.hidden = false;
     el.innerHTML = "主持人：" + escapeHtml(host.voice_label || host.voice_id || "当前音色") + "<br>" + agents.map(function (a) {
-      return escapeHtml(a.role + "：" + (a.voice_label || a.voice_id || ""));
+      var model = a.model_label || a.model_ref || "";
+      return escapeHtml(a.role + "：" + (a.voice_label || a.voice_id || "") + (model ? " · " + model : ""));
     }).join("<br>");
   }
 

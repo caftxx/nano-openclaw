@@ -72,6 +72,8 @@ class PodcastAgent:
     requested_role: str
     voice_id: str
     voice_label: str
+    model_ref: str = ""
+    model_label: str = ""
 
 
 def voice_label(voice_id: str) -> str:
@@ -124,6 +126,8 @@ def assign_agents(
     topic: str,
     *,
     excluded_voice_id: str | None = HOST_VOICE_ID,
+    model_refs: list[str] | None = None,
+    model_labels: dict[str, str] | None = None,
     rng: random.Random | None = None,
 ) -> list[PodcastAgent]:
     raw_agent_list = list(raw_agents or [{"role": "自动"}, {"role": "自动"}])
@@ -132,19 +136,59 @@ def assign_agents(
         excluded_voice_id=excluded_voice_id,
         rng=rng,
     )
+    assigned_model_refs = _assigned_model_refs(len(raw_agent_list), model_refs or [], rng=rng)
+    model_labels = model_labels or {}
     agents: list[PodcastAgent] = []
     for idx, raw in enumerate(raw_agent_list):
         requested = str(raw.get("role") or "自动").strip() or "自动"
         role = resolve_role(requested, topic, idx)
         voice_id = voice_ids[idx % len(voice_ids)]
+        model_ref = assigned_model_refs[idx] if idx < len(assigned_model_refs) else ""
         agents.append(PodcastAgent(
             id=str(raw.get("id") or f"agent-{idx + 1}"),
             role=role,
             requested_role=requested if requested in AGENT_ROLES else "自动",
             voice_id=voice_id,
             voice_label=voice_label(voice_id),
+            model_ref=model_ref,
+            model_label=model_labels.get(model_ref, model_ref),
         ))
     return agents
+
+
+def podcast_model_options(config: Any) -> tuple[list[str], dict[str, str]]:
+    refs: list[str] = []
+    labels: dict[str, str] = {}
+    providers = getattr(getattr(config, "models", None), "providers", None) or {}
+    for provider_id, provider in providers.items():
+        for model in getattr(provider, "models", []) or []:
+            model_id = str(getattr(model, "id", "") or "").strip()
+            if not model_id:
+                continue
+            model_input = list(getattr(model, "input", None) or ["text"])
+            if "text" not in model_input:
+                continue
+            ref = f"{provider_id}/{model_id}"
+            refs.append(ref)
+            labels[ref] = str(getattr(model, "name", None) or model_id)
+    return refs, labels
+
+
+def _assigned_model_refs(
+    count: int,
+    model_refs: list[str],
+    *,
+    rng: random.Random | None = None,
+) -> list[str]:
+    if count <= 0 or not model_refs:
+        return []
+    local_rng = rng or random
+    pool = list(dict.fromkeys(ref for ref in model_refs if ref))
+    local_rng.shuffle(pool)
+    assigned: list[str] = []
+    while len(assigned) < count:
+        assigned.extend(pool)
+    return assigned[:count]
 
 
 def _balanced_speaker_voice_ids(
@@ -227,7 +271,8 @@ def build_start_summary(
         "主讲 Agent：",
     ]
     for agent in agents:
-        lines.append(f"- {agent.role}（{agent.voice_label} / {agent.voice_id}）")
+        model = f"，模型：{agent.model_label or agent.model_ref}" if agent.model_ref else ""
+        lines.append(f"- {agent.role}（{agent.voice_label} / {agent.voice_id}{model}）")
     return "\n".join(lines)
 
 
@@ -300,6 +345,8 @@ async def generate_utterance(
     user_text: str,
     cancellation_token: CancellationToken,
     on_delta: Any | None = None,
+    client: Any | None = None,
+    cfg: Any | None = None,
 ) -> str:
     from dataclasses import replace
 
@@ -311,13 +358,13 @@ async def generate_utterance(
         if on_delta is not None and type(event).__name__ == "TextDelta":
             on_delta(getattr(event, "text", ""))
 
-    cfg = runtime.cfg
+    cfg = cfg or runtime.cfg
 
     agent_session = AgentSession(
         history=temp_history,
         registry=registry,
         on_event=handle_event,
-        client=runtime.client,
+        client=client or runtime.client,
         cfg=replace(
             cfg,
             system_prompt_override=system_prompt,

@@ -16,6 +16,7 @@ from nano_openclaw.features.voice.podcast import (
     choose_speakers,
     normalize_utterance,
     normalize_rounds,
+    podcast_model_options,
 )
 from nano_openclaw.services.backend import PushEvent
 
@@ -55,6 +56,40 @@ def test_podcast_voice_assignment_is_randomized_at_binding_time():
     assert [agent.voice_id for agent in first] == [agent.voice_id for agent in second]
     assert [agent.voice_id for agent in first] != [agent.voice_id for agent in different]
     assert len({agent.voice_id for agent in first}) == len(raw_agents)
+
+
+def test_podcast_model_assignment_uses_configured_text_models():
+    config = SimpleNamespace(
+        models=SimpleNamespace(
+            providers={
+                "p1": SimpleNamespace(
+                    models=[
+                        SimpleNamespace(id="m1", name="Model One", input=["text"]),
+                        SimpleNamespace(id="vision", name="Vision", input=["image"]),
+                    ]
+                ),
+                "p2": SimpleNamespace(
+                    models=[
+                        SimpleNamespace(id="m2", name="", input=["text", "image"]),
+                    ]
+                ),
+            }
+        )
+    )
+
+    refs, labels = podcast_model_options(config)
+    agents = assign_agents(
+        [{"role": "作家"}, {"role": "云计算架构师"}],
+        "AI 播客",
+        model_refs=refs,
+        model_labels=labels,
+        rng=random.Random("models"),
+    )
+
+    assert refs == ["p1/m1", "p2/m2"]
+    assert labels["p1/m1"] == "Model One"
+    assert {agent.model_ref for agent in agents} == {"p1/m1", "p2/m2"}
+    assert agents[0].model_label
 
 
 def test_podcast_voice_assignment_balances_male_and_female_voices():
