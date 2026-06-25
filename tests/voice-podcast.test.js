@@ -25,3 +25,14 @@ test("podcast pcm playback timeout follows audio duration", () => {
     PodcastMode._helpers.playbackTimeoutMs({ chunks: [elevenSeconds], sampleRate: 16000 }) >= 19000,
   );
 });
+
+test("podcast done text falls back to streamed deltas", () => {
+  assert.strictEqual(
+    PodcastMode._helpers.finalUtteranceText("", { text: "已经流式生成的观点" }),
+    "已经流式生成的观点",
+  );
+  assert.strictEqual(
+    PodcastMode._helpers.finalUtteranceText("最终观点", { text: "临时观点" }),
+    "最终观点",
+  );
+});

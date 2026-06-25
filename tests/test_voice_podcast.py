@@ -12,6 +12,7 @@ from nano_openclaw.features.voice.podcast import (
     build_speaker_prompt,
     build_start_summary,
     choose_speakers,
+    normalize_utterance,
     normalize_rounds,
 )
 from nano_openclaw.services.backend import PushEvent
@@ -92,6 +93,25 @@ def test_speaker_prompt_consumes_subagent_research_result():
     assert "你的专属 research 子 Agent 已返回以下研究摘要" in prompt
     assert "Kubernetes 和可观测性" in prompt
     assert "不超过 200 个中文字符" in prompt
+    assert "完整句子收尾" in prompt
+
+
+def test_normalize_utterance_cleans_without_truncating():
+    text = (
+        "【AI Agent研发工程师｜小刚】  主持人提到协作和可靠性怎么交汇，我给一个具体的技术落点："
+        "这两个方向的交汇处就是可观测的多智能体编排层。"
+        "现在多Agent协作最大的坑不是模型不够聪明，而是你根本不知道哪个环节出了问题——"
+        "一个Agent把错误结果传给下一个，链条就断了。"
+        "所以真正该投入的是Agent链路的状态追踪、中间产物检查点和工具调用的重试容错机制。"
+        "MCP解决了工具接入标准化，但没有解决调用失败后怎么办。"
+        "谁先把这个可观测加容错机制产品化，谁就更可能胜出。"
+    )
+
+    value = normalize_utterance(text, limit=200)
+
+    assert len(value) > 200
+    assert not value.startswith("【")
+    assert "谁先把这个可观测加容错机制产品化" in value
 
 
 def test_webui_forwards_podcast_push_payload():

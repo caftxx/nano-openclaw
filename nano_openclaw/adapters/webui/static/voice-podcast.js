@@ -187,6 +187,11 @@
     if (event.phase === "speaker") return "第 " + event.round + " 轮 " + (event.role || "Agent") + " 发言";
     return event.role || "播客";
   }
+  function finalUtteranceText(eventText, entry) {
+    var value = String(eventText || "").trim();
+    if (value) return value;
+    return String(entry && entry.text || "").trim();
+  }
   function setActive(active) {
     podcast.active = Boolean(active);
     var btn = $("voicePodcastBtn");
@@ -356,16 +361,17 @@
     }
     if (event.type === "podcast.utterance.done") {
       var done = podcast.utterances.get(event.utterance_id);
-      if (done) updateBubble(done, event.text || done.text);
+      var finalText = finalUtteranceText(event.text, done);
+      if (done) updateBubble(done, finalText);
       var doneSeq = done ? done.seq : (Number(event.sequence) || podcast.nextSeq++);
       if (doneSeq >= podcast.nextSeq) podcast.nextSeq = doneSeq + 1;
       if (event.phase === "interjection") {
         skipSpeechSeq(doneSeq);
-        enqueuePrioritySpeech(event.text || "", event.voice_id || "xiaoxian", phaseLabel(event));
+        enqueuePrioritySpeech(finalText, event.voice_id || "xiaoxian", phaseLabel(event));
         setVoiceStatus(phaseLabel(event) + "已生成，正在优先准备语音...");
         return;
       }
-      enqueueSpeech(doneSeq, event.text || "", event.voice_id || "xiaoxian", phaseLabel(event));
+      enqueueSpeech(doneSeq, finalText, event.voice_id || "xiaoxian", phaseLabel(event));
       setVoiceStatus(phaseLabel(event) + "已生成，正在准备语音...");
       return;
     }
@@ -887,6 +893,7 @@
       selectedOut: selectedOut,
       escapeHtml: escapeHtml,
       playbackTimeoutMs: playbackTimeoutMs,
+      finalUtteranceText: finalUtteranceText,
     },
   };
 });

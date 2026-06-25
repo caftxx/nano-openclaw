@@ -194,6 +194,7 @@ def build_host_prompt(*, topic: str, round_index: int, speakers: list[PodcastAge
 - 只输出你要说的话，不要 Markdown、标题、列表、括号舞台说明。
 - 如果有用户插话，先自然回应用户的问题或观点，再把话题交给主讲人。
 - 语气亲切、简洁，最多 120 个中文字符。
+- 必须用完整句子收尾，宁可少讲一点，也不要让最后一句断在半句。
 """
 
 
@@ -220,6 +221,7 @@ def build_speaker_prompt(*, topic: str, agent: PodcastAgent, round_index: int, c
 输出要求：
 - 只输出最终发言，不要展示研究过程、引用列表、Markdown、标题或项目符号。
 - 口语化但信息密度高，不超过 200 个中文字符。
+- 必须用完整句子收尾；宁可少讲一个观点，也不要让最后一句断在半句。
 - 不要自称“作为某某”，直接发表观点。
 """
 
@@ -281,7 +283,4 @@ def _message_text(message: Any) -> str:
 def normalize_utterance(text: str, *, limit: int = MAX_UTTERANCE_CHARS) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     value = re.sub(r"^【[^】]+】\s*", "", value)
-    value = value.strip("`#*- \n\t")
-    if len(value) <= limit:
-        return value
-    return value[:limit].rstrip("，。；、,.!！？? ") + "。"
+    return value.strip("`#*- \n\t")
