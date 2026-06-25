@@ -60,6 +60,7 @@ from nano_openclaw.logger import get_logger
 from nano_openclaw.core.loop import (
     AgentSession,
     CancellationToken,
+    Message,
     TurnCancelled,
     append_active_todo_reminder,
 )
@@ -215,6 +216,7 @@ class EmbeddedBackend(Backend):
         # change, effective from the next turn).
         self._pending_thinking_level: str | None = None
         self._voice_token_provider: Any | None = None
+        self._podcast_runs: dict[str, dict[str, Any]] = {}
         # Wire LLM-facing runtime introspection tools (list_models /
         # switch_model / get_runtime / …). These need a live ``Backend``
         # reference, which only exists once we've built ``self`` — that's why
@@ -1763,6 +1765,606 @@ class EmbeddedBackend(Backend):
             "mimeType": result.mime_type,
             "fileExtension": result.file_extension,
         }
+
+    async def podcast_start(
+        self,
+        *,
+        session_key: str,
+        topic: str,
+        agents: list[dict[str, Any]],
+        rounds: int = 20,
+        host_voice_id: str = "",
+        host_voice_label: str = "",
+    ) -> dict[str, Any]:
+        from nano_openclaw.features.voice.podcast import (
+            HOST_ROLE,
+            HOST_VOICE_ID,
+            HOST_VOICE_LABEL,
+            assign_agents,
+            build_start_summary,
+            normalize_rounds,
+            voice_label,
+        )
+
+        session = self._resolve_session(session_key)
+        topic = topic.strip() or "自由讨论"
+        rounds = normalize_rounds(rounds)
+        host_voice_id = host_voice_id.strip() or HOST_VOICE_ID
+        host_voice_label = host_voice_label.strip() or voice_label(host_voice_id) or HOST_VOICE_LABEL
+        assigned = assign_agents(agents, topic, excluded_voice_id=host_voice_id)
+        run_id = uuid.uuid4().hex
+        token = CancellationToken()
+        input_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        await self._append_podcast_message(
+            session,
+            "user",
+            build_start_summary(
+                topic,
+                assigned,
+                rounds,
+                host_voice_id=host_voice_id,
+                host_voice_label=host_voice_label,
+            ),
+        )
+
+        task = asyncio.create_task(
+            self._run_podcast(
+                run_id=run_id,
+                session=session,
+                topic=topic,
+                agents=assigned,
+                rounds=rounds,
+                host_voice_id=host_voice_id,
+                host_voice_label=host_voice_label,
+                token=token,
+                input_queue=input_queue,
+            ),
+            name=f"backend.voice_podcast:{run_id}",
+        )
+        self._podcast_runs[run_id] = {
+            "session_id": session.session_id,
+            "token": token,
+            "task": task,
+            "input_queue": input_queue,
+        }
+        task.add_done_callback(lambda _task, rid=run_id: self._podcast_runs.pop(rid, None))
+
+        payload = {
+            "run_id": run_id,
+            "session_id": session.session_id,
+            "topic": topic,
+            "rounds": rounds,
+            "host": {
+                "role": HOST_ROLE,
+                "voice_id": host_voice_id,
+                "voice_label": host_voice_label,
+            },
+            "agents": [
+                {
+                    "id": a.id,
+                    "role": a.role,
+                    "requested_role": a.requested_role,
+                    "voice_id": a.voice_id,
+                    "voice_label": a.voice_label,
+                }
+                for a in assigned
+            ],
+        }
+        self._emit_podcast({"type": "podcast.started", **payload})
+        return payload
+
+    async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
+        run = self._podcast_runs.get(run_id)
+        if run is None:
+            raise NotFoundError(f"podcast run not found: {run_id}")
+        text = text.strip()
+        if not text:
+            return {"ok": False, "reason": "empty input"}
+        await run["input_queue"].put(text)
+        self._emit_podcast({
+            "type": "podcast.input.accepted",
+            "run_id": run_id,
+            "session_id": run.get("session_id"),
+            "text": text,
+        })
+        return {"ok": True}
+
+    async def podcast_stop(self, *, run_id: str) -> dict[str, Any]:
+        run = self._podcast_runs.get(run_id)
+        if run is None:
+            return {"ok": False, "reason": "not_found"}
+        run["token"].cancel()
+        task = run.get("task")
+        if task is not None:
+            task.cancel()
+        self._emit_podcast({
+            "type": "podcast.stopped",
+            "run_id": run_id,
+            "session_id": run.get("session_id"),
+        })
+        return {"ok": True}
+
+    async def _run_podcast(
+        self,
+        *,
+        run_id: str,
+        session: AgentBackendSession,
+        topic: str,
+        agents: list[Any],
+        rounds: int,
+        host_voice_id: str,
+        host_voice_label: str,
+        token: CancellationToken,
+        input_queue: asyncio.Queue[str],
+    ) -> None:
+        import random
+
+        from nano_openclaw.features.voice.podcast import (
+            HOST_ROLE,
+            build_host_prompt,
+            build_speaker_prompt,
+            choose_speakers,
+        )
+
+        rng = random.Random(run_id)
+        context: list[str] = []
+        research_cache: dict[str, str] = {}
+        next_utterance_sequence = 1
+
+        def next_sequence() -> int:
+            nonlocal next_utterance_sequence
+            value = next_utterance_sequence
+            next_utterance_sequence += 1
+            return value
+
+        try:
+            async with self.runtime.runtime_guard.reader():
+                first_speaker = rng.choice(agents) if agents else None
+                if first_speaker is not None:
+                    host_text = await self._generate_podcast_utterance(
+                        run_id=run_id,
+                        session=session,
+                        round_index=0,
+                        phase="opening",
+                        sequence=next_sequence(),
+                        role=HOST_ROLE,
+                        voice_id=host_voice_id,
+                        voice_label=host_voice_label,
+                        system_prompt=build_host_prompt(
+                            topic=topic,
+                            round_index=0,
+                            speakers=[first_speaker],
+                            user_input="",
+                        ),
+                        user_text=f"请先做一段精简开场白，然后自然 cue {first_speaker.role} 作为第一位主讲人开始。",
+                        token=token,
+                        use_research_tools=False,
+                    )
+                    if host_text:
+                        context.append(f"{HOST_ROLE}: {host_text}")
+                for round_index in range(1, rounds + 1):
+                    if token.is_cancelled:
+                        break
+                    pending_inputs = self._drain_podcast_inputs(input_queue)
+                    speakers = choose_speakers(agents, round_index, rng)
+                    if round_index == 1 and first_speaker is not None:
+                        speakers = [first_speaker] + [
+                            agent for agent in speakers
+                            if getattr(agent, "id", None) != getattr(first_speaker, "id", None)
+                        ]
+                        if len(speakers) == 1 and len(agents) > 1:
+                            remaining = [
+                                agent for agent in agents
+                                if getattr(agent, "id", None) != getattr(first_speaker, "id", None)
+                            ]
+                            if remaining:
+                                speakers.append(rng.choice(remaining))
+                    if not speakers:
+                        break
+
+                    if pending_inputs:
+                        user_input = "\n".join(pending_inputs)
+                        host_text = await self._generate_podcast_utterance(
+                            run_id=run_id,
+                            session=session,
+                            round_index=round_index,
+                            phase="interjection",
+                            sequence=next_sequence(),
+                            role=HOST_ROLE,
+                            voice_id=host_voice_id,
+                            voice_label=host_voice_label,
+                            system_prompt=build_host_prompt(
+                                topic=topic,
+                                round_index=round_index,
+                                speakers=speakers,
+                                user_input=user_input,
+                            ),
+                            user_text="请回应用户插话，并自然引出本轮主讲人。",
+                            token=token,
+                            use_research_tools=False,
+                        )
+                        if host_text:
+                            context.append(f"{HOST_ROLE}: {host_text}")
+
+                    self._emit_podcast({
+                        "type": "podcast.round.started",
+                        "run_id": run_id,
+                        "session_id": session.session_id,
+                        "round": round_index,
+                        "speaker_count": len(speakers),
+                    })
+                    round_context = "\n".join(context[-10:])
+                    speaker_tasks = [
+                        asyncio.create_task(
+                            self._run_podcast_speaker_turn(
+                                run_id=run_id,
+                                session=session,
+                                topic=topic,
+                                agent=agent,
+                                round_index=round_index,
+                                sequence=next_sequence(),
+                                context=round_context,
+                                research_cache=research_cache,
+                                token=token,
+                            ),
+                            name=f"backend.voice_podcast.speaker:{run_id}:{round_index}:{idx}",
+                        )
+                        for idx, agent in enumerate(speakers)
+                    ]
+                    speaker_results = await asyncio.gather(*speaker_tasks)
+                    spoken_this_round: list[str] = []
+                    for agent, speaker_text in speaker_results:
+                        if speaker_text:
+                            line = f"{agent.role}: {speaker_text}"
+                            spoken_this_round.append(line)
+                            context.append(line)
+                            await self._append_podcast_message(session, "assistant", f"【{agent.role}｜{agent.voice_label}】{speaker_text}")
+
+                    if token.is_cancelled:
+                        break
+                    summary_prompt = build_host_prompt(
+                        topic=topic,
+                        round_index=round_index,
+                        speakers=speakers,
+                        user_input="",
+                    ) + "\n请用一句话精简总结刚才主讲人的观点，并可自然 cue 下一位或下一轮。"
+                    host_summary = await self._generate_podcast_utterance(
+                        run_id=run_id,
+                        session=session,
+                        round_index=round_index,
+                        phase="summary",
+                        sequence=next_sequence(),
+                        role=HOST_ROLE,
+                        voice_id=host_voice_id,
+                        voice_label=host_voice_label,
+                        system_prompt=summary_prompt,
+                        user_text="\n".join(spoken_this_round) or "请做简短串讲。",
+                        token=token,
+                        use_research_tools=False,
+                    )
+                    if host_summary:
+                        context.append(f"{HOST_ROLE}: {host_summary}")
+                    self._emit_podcast({
+                        "type": "podcast.round.done",
+                        "run_id": run_id,
+                        "session_id": session.session_id,
+                        "round": round_index,
+                    })
+
+            self._emit_podcast({
+                "type": "podcast.done",
+                "run_id": run_id,
+                "session_id": session.session_id,
+            })
+        except asyncio.CancelledError:
+            self._emit_podcast({
+                "type": "podcast.stopped",
+                "run_id": run_id,
+                "session_id": session.session_id,
+            })
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("backend.podcast.error", f"{type(exc).__name__}: {exc}")
+            self._emit_podcast({
+                "type": "podcast.error",
+                "run_id": run_id,
+                "session_id": session.session_id,
+                "message": f"{type(exc).__name__}: {exc}",
+            })
+
+    async def _run_podcast_research_subagent(
+        self,
+        *,
+        run_id: str,
+        session: AgentBackendSession,
+        topic: str,
+        agent: Any,
+        round_index: int,
+        context: str,
+        token: CancellationToken,
+    ) -> str:
+        from nano_openclaw.features.subagents import (
+            SpawnParams,
+            SubagentCleanupMode,
+            SubagentContextMode,
+            get_runner,
+        )
+
+        if token.is_cancelled:
+            raise asyncio.CancelledError()
+        task = f"""\
+你是 AI 播客主讲人「{agent.role}」的 research 子 Agent。
+
+播客主题：{topic}
+当前轮次：{round_index}
+近期讨论上下文：
+{context or "暂无。"}
+
+请围绕该身份做深入但聚焦的 research：
+- 优先使用 web_search / web_fetch 等工具查找主流、被认可、可验证的信息。
+- 只总结和本身份相关的关键事实、共识观点、重要争议边界。
+- 不要写播客发言稿；只输出供主讲人使用的研究摘要。
+- 输出控制在 500 中文字以内。
+"""
+        self._emit_podcast({
+            "type": "podcast.research.started",
+            "run_id": run_id,
+            "session_id": session.session_id,
+            "round": round_index,
+            "role": agent.role,
+        })
+
+        def on_subagent_event(event: Any) -> None:
+            event_type = type(event).__name__
+            if event_type in {"SubagentSpawned", "SubagentProgress", "SubagentAnnounced", "SubagentKilled"}:
+                payload: dict[str, Any] = {
+                    "type": "podcast.research.event",
+                    "run_id": run_id,
+                    "session_id": session.session_id,
+                    "round": round_index,
+                    "role": agent.role,
+                    "event_type": event_type,
+                }
+                for name in ("run_id", "label", "status", "tool_uses", "input_tokens", "output_tokens", "current_activity", "elapsed_ms", "error_message"):
+                    if hasattr(event, name):
+                        payload[name] = getattr(event, name)
+                self._emit_podcast(payload)
+
+        parent_registry = self.runtime.registry.clone(
+            exclude={
+                "write_file",
+                "apply_patch",
+                "bash",
+                "skill_install",
+                "sessions_spawn",
+                "subagents",
+                "cron_create",
+                "cron_delete",
+                "schedule_wakeup",
+                "todo",
+            },
+            console=None,
+            approval_handler=None,
+        )
+        runner = get_runner()
+        record = runner.spawn(
+            SpawnParams(
+                task=task,
+                label=f"podcast research: {agent.role}",
+                thinking="high",
+                run_timeout_seconds=120,
+                cleanup=SubagentCleanupMode.KEEP,
+                context=SubagentContextMode.ISOLATED,
+            ),
+            requester_session_key=session.session_id,
+            client=self.runtime.client,
+            base_cfg=self.runtime.cfg,
+            session_dir=self.runtime.session_dir,
+            workspace_dir=self.runtime.workspace_dir,
+            on_event=on_subagent_event,
+            parent_registry=parent_registry,
+        )
+        try:
+            result = await runner.wait_for(record.run_id, timeout=125)
+        except asyncio.CancelledError:
+            await runner.kill(record.run_id)
+            raise
+        if token.is_cancelled:
+            await runner.kill(record.run_id)
+            raise asyncio.CancelledError()
+        text = ""
+        status = ""
+        error = ""
+        if result is not None:
+            status = result.status.value
+            text = result.result_text or ""
+            error = result.error_message or ""
+        else:
+            status = "timeout"
+            error = "research subagent wait timed out"
+        self._emit_podcast({
+            "type": "podcast.research.done",
+            "run_id": run_id,
+            "session_id": session.session_id,
+            "round": round_index,
+            "role": agent.role,
+            "subagent_run_id": record.run_id,
+            "status": status,
+            "error": error,
+        })
+        return text or f"research 子 Agent 未返回有效结果：{error or status}"
+
+    async def _run_podcast_speaker_turn(
+        self,
+        *,
+        run_id: str,
+        session: AgentBackendSession,
+        topic: str,
+        agent: Any,
+        round_index: int,
+        sequence: int,
+        context: str,
+        research_cache: dict[str, str],
+        token: CancellationToken,
+    ) -> tuple[Any, str]:
+        from nano_openclaw.features.voice.podcast import build_speaker_prompt
+
+        if token.is_cancelled:
+            raise asyncio.CancelledError()
+        cache_key = str(getattr(agent, "id", "") or getattr(agent, "role", ""))
+        research_text = research_cache.get(cache_key, "")
+        if not research_text:
+            research_text = await self._run_podcast_research_subagent(
+                run_id=run_id,
+                session=session,
+                topic=topic,
+                agent=agent,
+                round_index=round_index,
+                context=context,
+                token=token,
+            )
+            research_cache[cache_key] = research_text
+        speaker_text = await self._generate_podcast_utterance(
+            run_id=run_id,
+            session=session,
+            round_index=round_index,
+            phase="speaker",
+            sequence=sequence,
+            role=agent.role,
+            voice_id=agent.voice_id,
+            voice_label=agent.voice_label,
+            system_prompt=build_speaker_prompt(
+                topic=topic,
+                agent=agent,
+                round_index=round_index,
+                context=context,
+                research=research_text,
+            ),
+            user_text="请基于你的身份、首次 research 摘要和当前讨论上下文，给出本轮观点。",
+            token=token,
+            use_research_tools=False,
+            persist=False,
+        )
+        return agent, speaker_text
+
+    def _drain_podcast_inputs(self, queue: asyncio.Queue[str]) -> list[str]:
+        items: list[str] = []
+        while True:
+            try:
+                items.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                return items
+
+    async def _generate_podcast_utterance(
+        self,
+        *,
+        run_id: str,
+        session: AgentBackendSession,
+        round_index: int,
+        phase: str,
+        sequence: int,
+        role: str,
+        voice_id: str,
+        voice_label: str,
+        system_prompt: str,
+        user_text: str,
+        token: CancellationToken,
+        use_research_tools: bool,
+        persist: bool = True,
+    ) -> str:
+        from nano_openclaw.features.voice.podcast import generate_utterance
+
+        utterance_id = uuid.uuid4().hex
+        self._emit_podcast({
+            "type": "podcast.utterance.started",
+            "run_id": run_id,
+            "utterance_id": utterance_id,
+            "session_id": session.session_id,
+            "round": round_index,
+            "phase": phase,
+            "sequence": sequence,
+            "role": role,
+            "voice_id": voice_id,
+            "voice_label": voice_label,
+        })
+
+        def on_delta(text: str) -> None:
+            if text:
+                self._emit_podcast({
+                    "type": "podcast.text.delta",
+                    "run_id": run_id,
+                    "utterance_id": utterance_id,
+                    "session_id": session.session_id,
+                    "round": round_index,
+                    "phase": phase,
+                    "sequence": sequence,
+                    "role": role,
+                    "voice_id": voice_id,
+                    "voice_label": voice_label,
+                    "text": text,
+                })
+
+        exclude = {
+            "write_file",
+            "apply_patch",
+            "bash",
+            "skill_install",
+            "sessions_spawn",
+            "subagents",
+            "cron_create",
+            "cron_delete",
+            "schedule_wakeup",
+            "todo",
+        }
+        if not use_research_tools:
+            exclude.update({"web_search", "web_fetch", "read_file", "list_dir", "memory_search", "memory_get"})
+        registry = self.runtime.registry.clone(exclude=exclude, console=None, approval_handler=None)
+        text = await generate_utterance(
+            runtime=self.runtime,
+            registry=registry,
+            system_prompt=system_prompt,
+            user_text=user_text,
+            cancellation_token=token,
+            on_delta=on_delta,
+        )
+        if text and persist:
+            await self._append_podcast_message(session, "assistant", f"【{role}｜{voice_label}】{text}")
+        self._emit_podcast({
+            "type": "podcast.utterance.done",
+            "run_id": run_id,
+            "utterance_id": utterance_id,
+            "session_id": session.session_id,
+            "round": round_index,
+            "phase": phase,
+            "sequence": sequence,
+            "role": role,
+            "voice_id": voice_id,
+            "voice_label": voice_label,
+            "text": text,
+        })
+        return text
+
+    async def _append_podcast_message(self, session: AgentBackendSession, role: str, text: str) -> None:
+        message = Message(role=role, content=[{"type": "text", "text": text}])
+        async with session.lock:
+            session.history.append(message)
+            session.writer.append_message(message)
+            self.manager.save_metadata(session)
+        self._emit(
+            PushEvent(
+                event="session.changed",
+                payload={
+                    "session_id": session.session_id,
+                    "session_key": session.session_id,
+                    "history_changed": True,
+                },
+                seq=self._next_seq(),
+            )
+        )
+
+    def _emit_podcast(self, payload: dict[str, Any]) -> None:
+        self._emit(PushEvent(event="podcast.event", payload=payload, seq=self._next_seq()))
 
     # ─── Push event subscription ───
 

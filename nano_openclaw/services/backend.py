@@ -77,6 +77,7 @@ PushEventKind = Literal[
     "session.changed",   # Session metadata or list changed
     "channel.changed",   # Channel start/stop/error
     "runtime.changed",   # ``runtime_update`` completed (model / agent / thinking swap)
+    "podcast.event",     # Web Voice AI podcast orchestration event
     "gap",               # Subscriber's bounded queue overflowed; client should chat_history
 ]
 
@@ -333,6 +334,28 @@ class Backend(Protocol):
         after_seq: int | None = None,
     ) -> HistoryPayload:
         """Snapshot for a (re)connecting client. ``after_seq`` reserved for delta replay."""
+        ...
+
+    # ─── Web Voice podcast ───
+    async def podcast_start(
+        self,
+        *,
+        session_key: str,
+        topic: str,
+        agents: list[dict[str, Any]],
+        rounds: int = 20,
+        host_voice_id: str = "",
+        host_voice_label: str = "",
+    ) -> dict[str, Any]:
+        """Start a background AI podcast run for the given WebUI session."""
+        ...
+
+    async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
+        """Queue a user interjection for an active podcast run."""
+        ...
+
+    async def podcast_stop(self, *, run_id: str) -> dict[str, Any]:
+        """Cancel an active podcast run."""
         ...
 
     # ─── Sessions ───

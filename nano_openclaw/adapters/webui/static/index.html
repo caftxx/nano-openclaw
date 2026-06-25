@@ -117,7 +117,7 @@
     <div id="voiceOverlay" class="voice-overlay" hidden>
       <div class="voice-stage-head">
         <button id="voiceExitBtn" class="voice-exit" type="button" aria-label="退出语音">✕</button>
-        <span class="voice-stage-title">语音 · 同会话</span>
+        <button id="voicePodcastBtn" class="voice-podcast-btn" type="button" title="AI播客" aria-label="AI播客">AI播客</button>
         <select id="voiceVoice" class="voice-voice-select" aria-label="音色" title="音色">
           <option value="">🗣 系统默认</option>
         </select>
@@ -144,6 +144,37 @@
           <option value="aliyun-rest">🔊 阿里云</option>
           <option value="aliyun-flowing">🔊 阿里云流式</option>
         </select>
+      </div>
+    </div>
+
+    <div id="podcastDialog" class="podcast-dialog" hidden>
+      <div class="podcast-panel" role="dialog" aria-modal="true" aria-labelledby="podcastTitle">
+        <div class="podcast-panel-head">
+          <h2 id="podcastTitle">AI播客</h2>
+          <button id="podcastCloseBtn" class="podcast-icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="podcast-field">
+          <span>话题</span>
+          <textarea id="podcastTopic" rows="2" placeholder="输入播客讨论主题"></textarea>
+        </label>
+        <div class="podcast-row">
+          <label class="podcast-rounds">
+            <span>轮数</span>
+            <input id="podcastRounds" type="number" min="1" max="100" value="20" />
+          </label>
+          <button id="podcastAddAgentBtn" type="button" class="podcast-secondary">添加Agent</button>
+        </div>
+        <div class="podcast-host-row">
+          <span>主持人</span>
+          <strong id="podcastHostVoice">跟随当前音色</strong>
+        </div>
+        <div id="podcastAgents" class="podcast-agents"></div>
+        <div id="podcastAssignedVoices" class="podcast-assigned" hidden></div>
+        <div id="podcastStatus" class="podcast-status"></div>
+        <div class="podcast-actions">
+          <button id="podcastStopBtn" type="button" class="podcast-secondary" disabled>停止</button>
+          <button id="podcastStartBtn" type="button" class="podcast-primary">开始</button>
+        </div>
       </div>
     </div>
 
@@ -176,5 +207,6 @@
     <script src="/static/voice-speaker-provider.js?v=20260613-talk-provider"></script>
     <script src="/static/voice-view.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-shell.js?v=20260613-provider"></script>
+    <script src="/static/voice-podcast.js?v=20260625-podcast"></script>
   </body>
 </html>

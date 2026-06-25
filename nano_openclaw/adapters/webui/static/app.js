@@ -205,7 +205,7 @@ function handleEvent(event) {
       syncSessionActiveTurn(state.currentSession);
       renderSessions();
       updateSendBtn();
-      if (previousSessionId !== (state.currentSession?.session_id || null) || !$("messages").children.length) {
+      if (event.history_changed || previousSessionId !== (state.currentSession?.session_id || null) || !$("messages").children.length) {
         renderHistory();
       }
       break;
@@ -351,6 +351,7 @@ function handleEvent(event) {
   // Feed every event to the voice overlay (TTS / captions / hands-free state
   // machine) so it rides the same ws + session as the chat surface.
   if (window.VoiceMode) window.VoiceMode.onEvent(event);
+  if (window.PodcastMode) window.PodcastMode.onEvent(event);
 }
 
 function renderRuntime(payload) {

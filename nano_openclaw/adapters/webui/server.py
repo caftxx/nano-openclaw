@@ -78,6 +78,29 @@ class VoiceTtsRequest(BaseModel):
     rateWpm: int | None = None
 
 
+class PodcastAgentRequest(BaseModel):
+    id: str = ""
+    role: str = "自动"
+
+
+class PodcastStartRequest(BaseModel):
+    session_id: str = ""
+    topic: str = ""
+    agents: list[PodcastAgentRequest] = []
+    rounds: int = 20
+    host_voice_id: str = ""
+    host_voice_label: str = ""
+
+
+class PodcastInputRequest(BaseModel):
+    run_id: str
+    text: str
+
+
+class PodcastStopRequest(BaseModel):
+    run_id: str
+
+
 def create_app(
     *,
     backend: Any,
@@ -156,6 +179,31 @@ def create_app(
                     "fallbackEligible": exc.fallback_eligible,
                 },
             ) from exc
+
+    @app.post("/api/voice/podcast/start", dependencies=[Depends(require_http_token)])
+    async def podcast_start(req: PodcastStartRequest) -> dict[str, Any]:
+        try:
+            return await app.state.backend.podcast_start(
+                session_key=req.session_id,
+                topic=req.topic,
+                agents=[agent.model_dump() for agent in req.agents],
+                rounds=req.rounds,
+                host_voice_id=req.host_voice_id,
+                host_voice_label=req.host_voice_label,
+            )
+        except BackendError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/voice/podcast/input", dependencies=[Depends(require_http_token)])
+    async def podcast_input(req: PodcastInputRequest) -> dict[str, Any]:
+        try:
+            return await app.state.backend.podcast_input(run_id=req.run_id, text=req.text)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/voice/podcast/stop", dependencies=[Depends(require_http_token)])
+    async def podcast_stop(req: PodcastStopRequest) -> dict[str, Any]:
+        return await app.state.backend.podcast_stop(run_id=req.run_id)
 
     @app.get("/api/sessions", dependencies=[Depends(require_http_token)])
     async def sessions() -> dict[str, Any]:
@@ -489,10 +537,18 @@ def _webui_payloads_from_push(
                 session = manager.get_or_load(None)
         else:
             session = manager.get_or_load(None)
-        return [{"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()}]
+        return [{
+            "type": "session.updated",
+            "session": _session_payload(manager, session),
+            "sessions": manager.list(),
+            "history_changed": bool(event.payload.get("history_changed")),
+        }]
 
     if event.event == "gap":
         return [{"type": "session.error", "message": "event stream lagged; refreshing session", "sessions": manager.list()}]
+
+    if event.event == "podcast.event":
+        return [dict(event.payload)]
 
     return []
 

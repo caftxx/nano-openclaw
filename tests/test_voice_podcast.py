@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import asyncio
+import random
+from types import SimpleNamespace
+
+from nano_openclaw.adapters.webui.server import _webui_payloads_from_push
+from nano_openclaw.api.methods.podcast import podcast_start
+from nano_openclaw.features.voice.podcast import (
+    HOST_VOICE_ID,
+    assign_agents,
+    build_speaker_prompt,
+    build_start_summary,
+    choose_speakers,
+    normalize_rounds,
+)
+from nano_openclaw.services.backend import PushEvent
+
+
+def test_podcast_assigns_distinct_speaker_voices_and_excludes_host_voice():
+    agents = assign_agents(
+        [
+            {"id": "a1", "role": "自动"},
+            {"id": "a2", "role": "云计算架构师"},
+            {"id": "a3", "role": "AI Agent研发工程师"},
+        ],
+        "讨论 AI Agent 在云上部署和 RDMA 数据中心网络",
+        excluded_voice_id="zhishuo",
+    )
+
+    voice_ids = [agent.voice_id for agent in agents]
+    assert HOST_VOICE_ID == "xiaoxian"
+    assert HOST_VOICE_ID not in voice_ids
+    assert "zhishuo" not in voice_ids
+    assert len(set(voice_ids)) == len(voice_ids)
+    assert agents[0].role == "高性能网络协议设计师"
+    assert agents[1].role == "云计算架构师"
+
+
+def test_podcast_hardware_engineer_role_is_selectable_and_auto_matched():
+    explicit = assign_agents([{"role": "硬件工程师"}], "聊一个设备方案")[0]
+    auto = assign_agents([{"role": "自动"}], "PCB 电源和传感器的硬件可靠性")[0]
+
+    assert explicit.role == "硬件工程师"
+    assert auto.role == "硬件工程师"
+
+
+def test_podcast_round_speaker_selection_uses_multiple_agents():
+    agents = assign_agents(
+        [{"role": "作家"}, {"role": "云计算架构师"}, {"role": "AI Agent研发工程师"}],
+        "AI播客",
+    )
+
+    selected = choose_speakers(agents, 1, random.Random(1))
+    assert 2 <= len(selected) <= len(agents)
+    assert len(choose_speakers(agents, 3, random.Random(1))) == len(agents)
+
+
+def test_podcast_rounds_and_start_summary():
+    agents = assign_agents([{"role": "作家"}], "写作")
+
+    assert normalize_rounds(None) == 20
+    assert normalize_rounds(0) == 1
+    assert normalize_rounds(500) == 100
+
+    summary = build_start_summary("话题", agents, 3)
+    assert "主持人：女主持人（小仙·亲切女声 / xiaoxian）" in summary
+    assert "作家" in summary
+    assert agents[0].voice_id in summary
+
+    custom_summary = build_start_summary(
+        "话题",
+        agents,
+        3,
+        host_voice_id="zhishuo",
+        host_voice_label="知硕",
+    )
+    assert "主持人：女主持人（知硕 / zhishuo）" in custom_summary
+
+
+def test_speaker_prompt_consumes_subagent_research_result():
+    agent = assign_agents([{"role": "云计算架构师"}], "云上 AI Agent")[0]
+
+    prompt = build_speaker_prompt(
+        topic="云上 AI Agent",
+        agent=agent,
+        round_index=1,
+        context="主持人开场",
+        research="Kubernetes 和可观测性是主流落地关注点。",
+    )
+
+    assert "你的专属 research 子 Agent 已返回以下研究摘要" in prompt
+    assert "Kubernetes 和可观测性" in prompt
+    assert "不超过 200 个中文字符" in prompt
+
+
+def test_webui_forwards_podcast_push_payload():
+    event = PushEvent(
+        event="podcast.event",
+        payload={"type": "podcast.done", "run_id": "run-1"},
+        seq=1,
+    )
+
+    assert _webui_payloads_from_push(event, manager=None, turn_sessions={}) == [
+        {"type": "podcast.done", "run_id": "run-1"}
+    ]
+
+
+def test_podcast_start_rpc_handler_delegates_to_backend():
+    class Backend:
+        async def podcast_start(self, *, session_key, topic, agents, rounds, host_voice_id="", host_voice_label=""):
+            self.call = {
+                "session_key": session_key,
+                "topic": topic,
+                "agents": agents,
+                "rounds": rounds,
+                "host_voice_id": host_voice_id,
+                "host_voice_label": host_voice_label,
+            }
+            return {"run_id": "run-1", "agents": agents}
+
+    backend = Backend()
+    result = asyncio.run(
+        podcast_start(
+            SimpleNamespace(backend=backend),
+            {
+            "session_id": "s1",
+            "topic": "AI播客",
+            "rounds": 7,
+            "host_voice_id": "zhishuo",
+            "host_voice_label": "知硕",
+            "agents": [{"id": "a1", "role": "作家"}],
+            },
+        )
+    )
+
+    assert result["run_id"] == "run-1"
+    assert backend.call == {
+        "session_key": "s1",
+        "topic": "AI播客",
+        "agents": [{"id": "a1", "role": "作家"}],
+        "rounds": 7,
+        "host_voice_id": "zhishuo",
+        "host_voice_label": "知硕",
+    }
