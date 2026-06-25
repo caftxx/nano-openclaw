@@ -8,7 +8,9 @@ from nano_openclaw.adapters.webui.server import _webui_payloads_from_push
 from nano_openclaw.api.methods.podcast import podcast_start
 from nano_openclaw.features.voice.podcast import (
     HOST_VOICE_ID,
+    _voice_gender,
     assign_agents,
+    build_host_prompt,
     build_speaker_prompt,
     build_start_summary,
     choose_speakers,
@@ -27,11 +29,11 @@ def test_podcast_assigns_distinct_speaker_voices_and_excludes_host_voice():
         ],
         "讨论 AI Agent 在云上部署和 RDMA 数据中心网络",
         excluded_voice_id="zhishuo",
+        rng=random.Random("assigned-voices"),
     )
 
     voice_ids = [agent.voice_id for agent in agents]
     assert HOST_VOICE_ID == "xiaoxian"
-    assert HOST_VOICE_ID not in voice_ids
     assert "zhishuo" not in voice_ids
     assert len(set(voice_ids)) == len(voice_ids)
     assert agents[0].role == "高性能网络协议设计师"
@@ -53,6 +55,26 @@ def test_podcast_voice_assignment_is_randomized_at_binding_time():
     assert [agent.voice_id for agent in first] == [agent.voice_id for agent in second]
     assert [agent.voice_id for agent in first] != [agent.voice_id for agent in different]
     assert len({agent.voice_id for agent in first}) == len(raw_agents)
+
+
+def test_podcast_voice_assignment_balances_male_and_female_voices():
+    agents = assign_agents(
+        [
+            {"id": "a1", "role": "作家"},
+            {"id": "a2", "role": "云计算架构师"},
+            {"id": "a3", "role": "AI Agent研发工程师"},
+            {"id": "a4", "role": "硬件工程师"},
+            {"id": "a5", "role": "IT后台研发工程师"},
+            {"id": "a6", "role": "IT前端研发工程师"},
+        ],
+        "AI 播客",
+        rng=random.Random("balanced-voices"),
+    )
+
+    genders = [_voice_gender(agent.voice_id) for agent in agents]
+
+    assert genders.count("male") == 3
+    assert genders.count("female") == 3
 
 
 def test_podcast_hardware_engineer_role_is_selectable_and_auto_matched():
@@ -111,6 +133,29 @@ def test_speaker_prompt_consumes_subagent_research_result():
     assert "Kubernetes 和可观测性" in prompt
     assert "不超过 200 个中文字符" in prompt
     assert "完整句子收尾" in prompt
+    assert "不要复述主持人或其他 Agent 已经说过的内容" in prompt
+
+
+def test_host_prompt_prevents_mid_run_closing_and_allows_final_closing():
+    agent = assign_agents([{"role": "云计算架构师"}], "云上 AI Agent")[0]
+
+    mid_prompt = build_host_prompt(
+        topic="云上 AI Agent",
+        round_index=5,
+        total_rounds=20,
+        speakers=[agent],
+    )
+    final_prompt = build_host_prompt(
+        topic="云上 AI Agent",
+        round_index=20,
+        total_rounds=20,
+        speakers=[agent],
+    )
+
+    assert "禁止说“本期结束”" in mid_prompt
+    assert "必须继续引导讨论" in mid_prompt
+    assert "最后一轮" in final_prompt
+    assert "最终收束" in final_prompt
 
 
 def test_normalize_utterance_cleans_without_truncating():

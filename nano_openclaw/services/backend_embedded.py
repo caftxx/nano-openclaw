@@ -1941,6 +1941,7 @@ class EmbeddedBackend(Backend):
                             topic=topic,
                             round_index=0,
                             speakers=[first_speaker],
+                            total_rounds=rounds,
                             user_input="",
                         ),
                         user_text=f"请先做一段精简开场白，然后自然 cue {first_speaker.role} 作为第一位主讲人开始。",
@@ -1984,6 +1985,7 @@ class EmbeddedBackend(Backend):
                                 topic=topic,
                                 round_index=round_index,
                                 speakers=speakers,
+                                total_rounds=rounds,
                                 user_input=user_input,
                             ),
                             user_text="请回应用户插话，并自然引出本轮主讲人。",
@@ -2033,8 +2035,13 @@ class EmbeddedBackend(Backend):
                         topic=topic,
                         round_index=round_index,
                         speakers=speakers,
+                        total_rounds=rounds,
                         user_input="",
-                    ) + "\n请用一句话精简总结刚才主讲人的观点，并可自然 cue 下一位或下一轮。"
+                    )
+                    if round_index >= rounds:
+                        summary_prompt += "\n请用一句话精简总结刚才主讲人的观点，并做最终收束。"
+                    else:
+                        summary_prompt += "\n请用一句话承接刚才主讲人的观点，并自然 cue 下一位或下一轮；禁止输出结束播客、结束节目、感谢收听等收尾语。"
                     host_summary = await self._generate_podcast_utterance(
                         run_id=run_id,
                         session=session,

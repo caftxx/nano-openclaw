@@ -126,10 +126,14 @@ def assign_agents(
     excluded_voice_id: str | None = HOST_VOICE_ID,
     rng: random.Random | None = None,
 ) -> list[PodcastAgent]:
-    voice_ids = _speaker_voice_pool(excluded_voice_id=excluded_voice_id)
-    (rng or random).shuffle(voice_ids)
+    raw_agent_list = list(raw_agents or [{"role": "自动"}, {"role": "自动"}])
+    voice_ids = _balanced_speaker_voice_ids(
+        len(raw_agent_list),
+        excluded_voice_id=excluded_voice_id,
+        rng=rng,
+    )
     agents: list[PodcastAgent] = []
-    for idx, raw in enumerate(raw_agents or []):
+    for idx, raw in enumerate(raw_agent_list):
         requested = str(raw.get("role") or "自动").strip() or "自动"
         role = resolve_role(requested, topic, idx)
         voice_id = voice_ids[idx % len(voice_ids)]
@@ -140,14 +144,53 @@ def assign_agents(
             voice_id=voice_id,
             voice_label=voice_label(voice_id),
         ))
-    if not agents:
-        return assign_agents(
-            [{"role": "自动"}, {"role": "自动"}],
-            topic,
-            excluded_voice_id=excluded_voice_id,
-            rng=rng,
-        )
     return agents
+
+
+def _balanced_speaker_voice_ids(
+    count: int,
+    *,
+    excluded_voice_id: str | None = HOST_VOICE_ID,
+    rng: random.Random | None = None,
+) -> list[str]:
+    local_rng = rng or random
+    pool = _speaker_voice_pool(excluded_voice_id=excluded_voice_id)
+    male = [voice_id for voice_id in pool if _voice_gender(voice_id) == "male"]
+    female = [voice_id for voice_id in pool if _voice_gender(voice_id) == "female"]
+    neutral = [voice_id for voice_id in pool if _voice_gender(voice_id) == "neutral"]
+    local_rng.shuffle(male)
+    local_rng.shuffle(female)
+    local_rng.shuffle(neutral)
+
+    male_target = count // 2
+    female_target = count // 2
+    if count % 2:
+        if local_rng.choice([True, False]):
+            male_target += 1
+        else:
+            female_target += 1
+
+    selected = male[:male_target] + female[:female_target]
+    if len(selected) < count:
+        remaining = [
+            voice_id for voice_id in neutral + male[male_target:] + female[female_target:]
+            if voice_id not in selected
+        ]
+        selected.extend(remaining[:count - len(selected)])
+    local_rng.shuffle(selected)
+
+    tail = [voice_id for voice_id in pool if voice_id not in selected]
+    local_rng.shuffle(tail)
+    return selected + tail
+
+
+def _voice_gender(voice_id: str) -> str:
+    label = voice_label(voice_id)
+    if "男" in label or "老铁" in label or "大虎" in label:
+        return "male"
+    if "女" in label or "姐姐" in label or "老妹" in label or "柜姐" in label or "萝莉" in label:
+        return "female"
+    return "neutral"
 
 
 def _speaker_voice_pool(*, excluded_voice_id: str | None = HOST_VOICE_ID) -> list[str]:
@@ -188,18 +231,32 @@ def build_start_summary(
     return "\n".join(lines)
 
 
-def build_host_prompt(*, topic: str, round_index: int, speakers: list[PodcastAgent], user_input: str = "") -> str:
+def build_host_prompt(
+    *,
+    topic: str,
+    round_index: int,
+    speakers: list[PodcastAgent],
+    total_rounds: int | None = None,
+    user_input: str = "",
+) -> str:
     speaker_names = "、".join(a.role for a in speakers) or "一位主讲人"
     input_clause = f"\n用户刚刚插话：{user_input.strip()}" if user_input.strip() else ""
+    total_clause = f"\n总轮数：{total_rounds}" if total_rounds else ""
+    if total_rounds and round_index >= total_rounds:
+        ending_rule = "当前是最后一轮，可以用一句话做最终收束，但不要冗长告别。"
+    else:
+        ending_rule = "当前不是结束环节，禁止说“本期结束”“今天就到这里”“感谢收听”等收尾话；必须继续引导讨论。"
     return f"""\
 你是 AI 播客的女主持人，负责串讲、承接、引导，不做长篇分析。
 当前主题：{topic}
-当前轮次：{round_index}
+当前轮次：{round_index}{total_clause}
 本轮将由这些主讲人发言：{speaker_names}{input_clause}
 
 要求：
 - 只输出你要说的话，不要 Markdown、标题、列表、括号舞台说明。
 - 如果有用户插话，先自然回应用户的问题或观点，再把话题交给主讲人。
+- 串讲只能承接和引导，不要替主讲人展开长篇分析。
+- {ending_rule}
 - 语气亲切、简洁，最多 120 个中文字符。
 - 必须用完整句子收尾，宁可少讲一点，也不要让最后一句断在半句。
 """
@@ -224,6 +281,8 @@ def build_speaker_prompt(*, topic: str, agent: PodcastAgent, round_index: int, c
 - 基于 research 摘要和你的身份提炼观点。
 - 观点必须是主流、被广泛认可、可解释的；不要输出未经证实的小众判断。
 - 如果资料不足，要明确降低断言强度。
+- 必须保持你的身份视角鲜明，优先给出新角度、具体机制、反例、风险或落地建议。
+- 不要复述主持人或其他 Agent 已经说过的内容；如果上下文已有类似观点，直接推进到差异化判断。
 
 输出要求：
 - 只输出最终发言，不要展示研究过程、引用列表、Markdown、标题或项目符号。
