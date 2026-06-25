@@ -95,8 +95,13 @@ def resolve_role(requested: str, topic: str, index: int) -> str:
     requested = requested if requested in AGENT_ROLES else "自动"
     if requested != "自动":
         return requested
+    candidates = _auto_role_candidates(topic)
+    return candidates[index % len(candidates)]
+
+
+def _auto_role_candidates(topic: str) -> list[str]:
     text = topic.lower()
-    candidates = [
+    keyword_roles = [
         (("rdma", "roce", "infiniband", "数据中心", "低延迟", "网卡", "高性能网络", "网络协议"), "高性能网络协议设计师"),
         (("硬件", "pcb", "芯片", "电路", "传感器", "电源", "射频", "信号完整性", "热设计", "量产"), "硬件工程师"),
         (("agent", "智能体", "工具调用", "规划", "memory", "mcp"), "AI Agent研发工程师"),
@@ -107,18 +112,23 @@ def resolve_role(requested: str, topic: str, index: int) -> str:
         (("喜剧", "脱口秀", "幽默"), "脱口秀工作者"),
         (("相声", "曲艺"), "相声演员"),
     ]
-    for keywords, role in candidates:
-        if any(k in text for k in keywords):
-            return role
+    matched = [
+        role
+        for keywords, role in keyword_roles
+        if any(k in text for k in keywords)
+    ]
     fallback = [
         "AI Agent研发工程师",
         "云计算架构师",
         "IT后台研发工程师",
         "IT前端研发工程师",
+        "高性能网络协议设计师",
         "硬件工程师",
         "作家",
+        "脱口秀工作者",
+        "相声演员",
     ]
-    return fallback[index % len(fallback)]
+    return list(dict.fromkeys(matched + fallback))
 
 
 def assign_agents(
@@ -139,9 +149,18 @@ def assign_agents(
     assigned_model_refs = _assigned_model_refs(len(raw_agent_list), model_refs or [], rng=rng)
     model_labels = model_labels or {}
     agents: list[PodcastAgent] = []
+    auto_roles = _auto_role_candidates(topic)
+    used_roles: set[str] = set()
+    auto_index = 0
     for idx, raw in enumerate(raw_agent_list):
         requested = str(raw.get("role") or "自动").strip() or "自动"
-        role = resolve_role(requested, topic, idx)
+        normalized_requested = requested if requested in AGENT_ROLES else "自动"
+        if normalized_requested == "自动":
+            role = _next_distinct_auto_role(auto_roles, used_roles, auto_index)
+            auto_index += 1
+        else:
+            role = resolve_role(requested, topic, idx)
+        used_roles.add(role)
         voice_id = voice_ids[idx % len(voice_ids)]
         model_ref = assigned_model_refs[idx] if idx < len(assigned_model_refs) else ""
         agents.append(PodcastAgent(
@@ -154,6 +173,13 @@ def assign_agents(
             model_label=model_labels.get(model_ref, model_ref),
         ))
     return agents
+
+
+def _next_distinct_auto_role(candidates: list[str], used_roles: set[str], index: int) -> str:
+    for role in candidates:
+        if role not in used_roles:
+            return role
+    return candidates[index % len(candidates)]
 
 
 def podcast_model_options(config: Any) -> tuple[list[str], dict[str, str]]:

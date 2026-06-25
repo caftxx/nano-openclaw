@@ -120,6 +120,22 @@ def test_podcast_hardware_engineer_role_is_selectable_and_auto_matched():
     assert auto.role == "硬件工程师"
 
 
+def test_podcast_auto_roles_prefer_distinct_identities():
+    agents = assign_agents(
+        [{"role": "自动"}, {"role": "自动"}, {"role": "自动"}, {"role": "自动"}],
+        "讨论 AI Agent 在云上部署、后端服务和 RDMA 数据中心网络",
+        rng=random.Random("auto-roles"),
+    )
+
+    roles = [agent.role for agent in agents]
+
+    assert len(set(roles)) == len(roles)
+    assert roles[0] == "高性能网络协议设计师"
+    assert "AI Agent研发工程师" in roles
+    assert "云计算架构师" in roles
+    assert "IT后台研发工程师" in roles
+
+
 def test_podcast_round_speaker_selection_uses_multiple_agents():
     agents = assign_agents(
         [{"role": "作家"}, {"role": "云计算架构师"}, {"role": "AI Agent研发工程师"}],
