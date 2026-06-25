@@ -1791,8 +1791,14 @@ class EmbeddedBackend(Backend):
         rounds = normalize_rounds(rounds)
         host_voice_id = host_voice_id.strip() or HOST_VOICE_ID
         host_voice_label = host_voice_label.strip() or voice_label(host_voice_id) or HOST_VOICE_LABEL
-        assigned = assign_agents(agents, topic, excluded_voice_id=host_voice_id)
         run_id = uuid.uuid4().hex
+        import random
+        assigned = assign_agents(
+            agents,
+            topic,
+            excluded_voice_id=host_voice_id,
+            rng=random.Random(run_id),
+        )
         token = CancellationToken()
         input_queue: asyncio.Queue[str] = asyncio.Queue()
 

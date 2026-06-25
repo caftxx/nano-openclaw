@@ -124,8 +124,10 @@ def assign_agents(
     topic: str,
     *,
     excluded_voice_id: str | None = HOST_VOICE_ID,
+    rng: random.Random | None = None,
 ) -> list[PodcastAgent]:
     voice_ids = _speaker_voice_pool(excluded_voice_id=excluded_voice_id)
+    (rng or random).shuffle(voice_ids)
     agents: list[PodcastAgent] = []
     for idx, raw in enumerate(raw_agents or []):
         requested = str(raw.get("role") or "自动").strip() or "自动"
@@ -139,7 +141,12 @@ def assign_agents(
             voice_label=voice_label(voice_id),
         ))
     if not agents:
-        return assign_agents([{"role": "自动"}, {"role": "自动"}], topic, excluded_voice_id=excluded_voice_id)
+        return assign_agents(
+            [{"role": "自动"}, {"role": "自动"}],
+            topic,
+            excluded_voice_id=excluded_voice_id,
+            rng=rng,
+        )
     return agents
 
 

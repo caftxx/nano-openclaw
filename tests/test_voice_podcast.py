@@ -38,6 +38,23 @@ def test_podcast_assigns_distinct_speaker_voices_and_excludes_host_voice():
     assert agents[1].role == "云计算架构师"
 
 
+def test_podcast_voice_assignment_is_randomized_at_binding_time():
+    raw_agents = [
+        {"id": "a1", "role": "作家"},
+        {"id": "a2", "role": "云计算架构师"},
+        {"id": "a3", "role": "AI Agent研发工程师"},
+        {"id": "a4", "role": "硬件工程师"},
+    ]
+
+    first = assign_agents(raw_agents, "AI 播客", rng=random.Random("voice-seed"))
+    second = assign_agents(raw_agents, "AI 播客", rng=random.Random("voice-seed"))
+    different = assign_agents(raw_agents, "AI 播客", rng=random.Random("other-seed"))
+
+    assert [agent.voice_id for agent in first] == [agent.voice_id for agent in second]
+    assert [agent.voice_id for agent in first] != [agent.voice_id for agent in different]
+    assert len({agent.voice_id for agent in first}) == len(raw_agents)
+
+
 def test_podcast_hardware_engineer_role_is_selectable_and_auto_matched():
     explicit = assign_agents([{"role": "硬件工程师"}], "聊一个设备方案")[0]
     auto = assign_agents([{"role": "自动"}], "PCB 电源和传感器的硬件可靠性")[0]
