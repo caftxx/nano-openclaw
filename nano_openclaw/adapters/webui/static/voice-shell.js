@@ -534,6 +534,7 @@
     if (els.micBtn) els.micBtn.onclick = () => openOverlay(true);
     if (els.exit) els.exit.onclick = closeOverlay;
     if (els.circle) els.circle.onclick = () => {
+      if (els.overlay && els.overlay.classList.contains("podcast-mode")) return;
       if (els.circle.disabled) return;
       dispatch({ type: "TOGGLE", externalTurnOpen: externalTurnOpen(), wakeKeyword: wakeKeyword() });
     };
@@ -541,6 +542,7 @@
     // 点圆/字幕/底栏以外的空白区：手势意图由状态机路由（flush/cancel/interrupt），
     // 手势解锁（primeAudio）也由核心作为命令发出，与 OPEN/TOGGLE 同一通道。
     if (els.overlay) els.overlay.addEventListener("click", (e) => {
+      if (els.overlay.classList.contains("podcast-mode")) return;
       if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
       dispatch({ type: "TAP", externalTurnOpen: externalTurnOpen(), externalTurnId: state.activeTurnId || "" });
     });
@@ -624,7 +626,12 @@
     renderAll();
   }
 
-  window.VoiceMode = { onEvent, open: () => openOverlay(true), close: closeOverlay };
+  window.VoiceMode = {
+    onEvent,
+    open: () => openOverlay(true),
+    close: closeOverlay,
+    suspendForPodcast: closeOverlay,
+  };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();

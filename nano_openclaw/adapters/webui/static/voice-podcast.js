@@ -34,14 +34,20 @@
     currentPcmPlayer: null,
     currentPcmResolve: null,
     inputRecognizer: null,
+    topicRecognizer: null,
     synthJobs: new Map(),
     synthEngines: new Set(),
     skippedSeqs: new Set(),
     nextSeq: 1,
     nextPlaySeq: 1,
+    generation: 0,
+    pendingInputText: "",
     playPumpActive: false,
     voiceCfg: null,
+    mode: false,
     capturingInput: false,
+    capturingTopic: false,
+    topicCaptureArmed: false,
     playbackStopped: false,
     playbackPausedForInput: false,
     prioritySpeechActive: false,
@@ -167,9 +173,13 @@
     var dlg = $("podcastDialog");
     if (dlg) dlg.hidden = !open;
     if (open) {
+      setPodcastMode(true);
+      podcast.topicCaptureArmed = true;
       renderAgents();
       updateHostPreview();
       loadVoiceConfig().then(updateHostPreview).catch(function () {});
+      setStatus("可输入话题，或直接点击开始后说出话题。");
+      setVoiceStatus("AI播客待启动，配置后可点击屏幕说出讨论话题。");
     }
   }
   function setStatus(text) {
@@ -179,6 +189,67 @@
   function setVoiceStatus(text) {
     var el = $("voiceStatus");
     if (el) el.textContent = text || "";
+    var podcastStatus = $("podcastModeStatus");
+    if (podcastStatus) podcastStatus.textContent = text || "";
+  }
+  function setPodcastMode(on) {
+    if (on) suspendNormalVoiceMode();
+    podcast.mode = Boolean(on);
+    var overlay = $("voiceOverlay");
+    if (overlay) overlay.classList.toggle("podcast-mode", podcast.mode);
+    var stage = $("podcastStage");
+    if (stage) stage.hidden = !podcast.mode;
+    var btn = $("voicePodcastBtn");
+    if (btn) {
+      btn.classList.toggle("is-active", podcast.mode);
+      btn.setAttribute("aria-pressed", podcast.mode ? "true" : "false");
+      btn.setAttribute("aria-label", podcast.mode ? "切换到语音" : "切换到AI播客");
+      btn.title = podcast.mode ? "切换到语音" : "切换到AI播客";
+    }
+    updatePodcastControl();
+  }
+  function suspendNormalVoiceMode() {
+    if (root.VoiceMode && typeof root.VoiceMode.suspendForPodcast === "function") {
+      try { root.VoiceMode.suspendForPodcast(); } catch (_) {}
+    } else if (root.VoiceMode && typeof root.VoiceMode.close === "function") {
+      try { root.VoiceMode.close(); } catch (_) {}
+    }
+    var overlay = $("voiceOverlay");
+    if (overlay) overlay.hidden = false;
+    if (root.document && root.document.body) root.document.body.classList.add("voice-open");
+  }
+  function setPodcastControl(cls, icon, label) {
+    var circle = $("podcastCircle");
+    var iconEl = $("podcastCircleIcon");
+    var labelEl = $("podcastCircleLabel");
+    if (circle) circle.className = "podcast-circle " + (cls || "idle");
+    if (iconEl) iconEl.textContent = icon || "◎";
+    if (labelEl) labelEl.textContent = label || "点击说话题";
+  }
+  function updatePodcastControl() {
+    var circle = $("podcastCircle");
+    if (circle) circle.disabled = Boolean(podcast.starting);
+    if (podcast.capturingTopic) {
+      setPodcastControl("listening", "◉", "正在听话题");
+      return;
+    }
+    if (podcast.capturingInput) {
+      setPodcastControl("listening", "◉", "正在听插话");
+      return;
+    }
+    if (podcast.starting) {
+      setPodcastControl("generating", "◌", "启动中");
+      return;
+    }
+    if (podcast.runId) {
+      if (podcast.playPumpActive || podcast.currentSpeaker || podcast.currentPcmResolve) {
+        setPodcastControl("speaking", "▶", "播放中");
+      } else {
+        setPodcastControl("generating", "◆", "点击插话");
+      }
+      return;
+    }
+    setPodcastControl("idle", "◎", "点击说话题");
   }
   function phaseLabel(event) {
     if (event.phase === "opening") return "主持人开场";
@@ -197,14 +268,20 @@
     var btn = $("voicePodcastBtn");
     var start = $("podcastStartBtn");
     var stop = $("podcastStopBtn");
-    if (btn) btn.classList.toggle("is-active", podcast.active);
-    if (start) start.disabled = podcast.active || podcast.starting;
+    if (start) start.disabled = podcast.active || podcast.starting || podcast.capturingTopic;
     if (stop) stop.disabled = !podcast.active;
+    updatePodcastControl();
   }
 
-  function topicValue() {
+  function explicitTopicValue() {
     var el = $("podcastTopic");
-    var value = el ? el.value.trim() : "";
+    return el ? el.value.trim() : "";
+  }
+
+  function topicValue(topicOverride) {
+    var value = String(topicOverride || "").trim();
+    if (value) return value;
+    value = explicitTopicValue();
     if (value) return value;
     var prompt = $("prompt");
     if (prompt && prompt.value.trim()) return prompt.value.trim();
@@ -219,9 +296,11 @@
     return "自由讨论";
   }
 
-  async function startPodcast() {
+  async function startPodcast(topicOverride) {
     if (podcast.active || podcast.starting) return;
     podcast.starting = true;
+    podcast.topicCaptureArmed = false;
+    setPodcastMode(true);
     setActive(false);
     setStatus("正在启动...");
     setVoiceStatus("AI播客正在启动...");
@@ -231,7 +310,7 @@
       var hostVoice = currentHostVoice();
       var payload = await apiSafe("/api/voice/podcast/start", {
         session_id: currentSessionId(),
-        topic: topicValue(),
+        topic: topicValue(topicOverride),
         rounds: Number(roundsEl && roundsEl.value || 20),
         host_voice_id: hostVoice.id,
         host_voice_label: hostVoice.label,
@@ -248,9 +327,11 @@
       setStatus("播客进行中，点屏幕空白处可插话。");
       setVoiceStatus("AI播客已启动，正在生成主持人开场...");
       setDialog(false);
+      setPodcastMode(true);
       setActive(true);
     } catch (err) {
       setStatus("启动失败：" + (err && err.message || err));
+      podcast.topicCaptureArmed = true;
     } finally {
       podcast.starting = false;
       setActive(Boolean(podcast.runId));
@@ -265,8 +346,11 @@
     podcast.playbackPausedForInput = false;
     podcast.prioritySpeechActive = false;
     podcast.generationDone = true;
+    podcast.topicCaptureArmed = false;
+    setPodcastMode(true);
     setActive(false);
     stopInterjectionCapture();
+    stopTopicCapture();
     stopSpeech();
     setStatus("正在停止...");
     setVoiceStatus("AI播客正在停止...");
@@ -309,11 +393,44 @@
     var captions = $("voiceCaptions");
     if (captions) captions.scrollTop = captions.scrollHeight;
   }
+  function removeAgentBubbles() {
+    var captions = $("voiceCaptions");
+    if (!captions) return;
+    var nodes = captions.querySelectorAll(".vbubble.ai");
+    nodes.forEach(function (node) { node.remove(); });
+  }
+
+  function resetForUserInput(generation) {
+    if (Number.isFinite(Number(generation))) podcast.generation = Number(generation);
+    stopSpeech();
+    podcast.utterances.clear();
+    podcast.synthJobs.clear();
+    podcast.skippedSeqs.clear();
+    podcast.nextPlaySeq = 0;
+    podcast.playPumpActive = false;
+    podcast.playbackPausedForInput = false;
+    podcast.prioritySpeechActive = false;
+    podcast.replayCurrentPlayback = false;
+    podcast.generationDone = false;
+    removeAgentBubbles();
+    setVoiceStatus("已收到你的插话，正在重新生成播客内容...");
+    updatePodcastControl();
+  }
+
+  function eventGeneration(event) {
+    return event && event.generation != null ? Number(event.generation) || 0 : podcast.generation;
+  }
+
+  function isCurrentGenerationEvent(event) {
+    return event && event.generation != null ? eventGeneration(event) === podcast.generation : true;
+  }
 
   function onEvent(event) {
     if (!event || typeof event.type !== "string" || !event.type.startsWith("podcast.")) return;
     if (event.run_id && podcast.runId && event.run_id !== podcast.runId) return;
     if (event.type === "podcast.started") {
+      setPodcastMode(true);
+      podcast.generation = Number(event.generation) || 0;
       podcast.runId = event.run_id || podcast.runId;
       podcast.playbackStopped = false;
       podcast.generationDone = false;
@@ -322,13 +439,17 @@
       renderAssignments(event);
       setActive(true);
       setVoiceStatus("AI播客已启动，正在生成主持人开场...");
+      updatePodcastControl();
       return;
     }
     if (event.type === "podcast.input.accepted") {
-      addBubble("you", event.text || "");
+      resetForUserInput(eventGeneration(event));
+      if (event.text && event.text !== podcast.pendingInputText) addBubble("you", event.text || "");
+      podcast.pendingInputText = "";
       setVoiceStatus("已收到你的插话，主持人准备回应...");
       return;
     }
+    if (!isCurrentGenerationEvent(event)) return;
     if (event.type === "podcast.round.started") {
       setVoiceStatus("第 " + event.round + " 轮开始，" + (event.speaker_count || 1) + " 个 Agent 并行生成中...");
       return;
@@ -344,6 +465,7 @@
     if (event.type === "podcast.utterance.started") {
       var speaker = event.role + " · " + (event.voice_label || event.voice_id || "");
       var seq = Number(event.sequence) || podcast.nextSeq++;
+      if (podcast.nextPlaySeq <= 0) podcast.nextPlaySeq = seq;
       if (seq >= podcast.nextSeq) podcast.nextSeq = seq + 1;
       podcast.utterances.set(event.utterance_id, {
         seq: seq,
@@ -351,6 +473,7 @@
         node: addBubble("ai", "", speaker),
       });
       setVoiceStatus(phaseLabel(event) + "生成中...");
+      updatePodcastControl();
       return;
     }
     if (event.type === "podcast.text.delta") {
@@ -374,6 +497,7 @@
       }
       enqueueSpeech(doneSeq, finalText, event.voice_id || "xiaoxian", phaseLabel(event));
       setVoiceStatus(phaseLabel(event) + "已生成，正在准备语音...");
+      updatePodcastControl();
       return;
     }
     if (event.type === "podcast.round.done") {
@@ -387,6 +511,7 @@
       setStatus("播客内容已生成完成。");
       setVoiceStatus("AI播客内容已生成完成，继续播放剩余语音...");
       pumpPlayback();
+      updatePodcastControl();
       return;
     }
     if (event.type === "podcast.stopped") {
@@ -399,6 +524,7 @@
       stopInterjectionCapture();
       setStatus("播客已停止。");
       setVoiceStatus("AI播客已停止。");
+      updatePodcastControl();
       return;
     }
     if (event.type === "podcast.error") {
@@ -407,6 +533,7 @@
       setActive(false);
       setStatus("播客出错：" + (event.message || "未知错误"));
       setVoiceStatus("AI播客出错：" + (event.message || "未知错误"));
+      setPodcastControl("error", "!", "出错");
     }
   }
 
@@ -416,6 +543,7 @@
       try { engine.abort && engine.abort(); } catch (_) {}
     });
     podcast.synthEngines.clear();
+    updatePodcastControl();
   }
 
   function stopCurrentPlayback(replayCurrent) {
@@ -436,6 +564,7 @@
       podcast.currentPcmResolve = null;
     }
     if (hadCurrent && replayCurrent) podcast.replayCurrentPlayback = true;
+    updatePodcastControl();
   }
 
   function resetPlaybackState() {
@@ -463,6 +592,7 @@
       return;
     }
     setVoiceStatus((label || ("第 " + seq + " 段")) + "语音合成中...");
+    if (podcast.nextPlaySeq <= 0) podcast.nextPlaySeq = seq;
     var job = synthSpeech(text, voiceId).then(function (prepared) {
       prepared.label = label || ("第 " + seq + " 段");
       return prepared;
@@ -482,6 +612,7 @@
       return;
     }
     podcast.prioritySpeechActive = true;
+    updatePodcastControl();
     try {
       setVoiceStatus((label || "主持人回应") + "语音合成中...");
       var prepared = await synthSpeech(text, voiceId).catch(function (err) {
@@ -492,10 +623,12 @@
       if (podcast.playbackStopped) return;
       stopCurrentPlayback(false);
       setVoiceStatus(prepared.label + "播放中...");
+      updatePodcastControl();
       await playPrepared(prepared);
     } finally {
       podcast.prioritySpeechActive = false;
       podcast.playbackPausedForInput = false;
+      updatePodcastControl();
       if (!podcast.playbackStopped) pumpPlayback();
     }
   }
@@ -517,6 +650,7 @@
     if (podcast.playPumpActive) return;
     if (podcast.playbackPausedForInput || podcast.prioritySpeechActive) return;
     podcast.playPumpActive = true;
+    updatePodcastControl();
     try {
       while (!podcast.playbackStopped) {
         if (podcast.playbackPausedForInput || podcast.prioritySpeechActive) break;
@@ -529,6 +663,7 @@
         var prepared = await job;
         if (podcast.playbackStopped) break;
         setVoiceStatus((prepared.label || ("第 " + podcast.nextPlaySeq + " 段")) + "播放中...");
+        updatePodcastControl();
         await playPrepared(prepared);
         if (podcast.replayCurrentPlayback) {
           podcast.replayCurrentPlayback = false;
@@ -542,6 +677,7 @@
       advanceSkippedSeqs();
       if (!podcast.playbackStopped && podcast.synthJobs.has(podcast.nextPlaySeq)) pumpPlayback();
       else if (!podcast.playbackStopped && podcast.generationDone && !podcast.synthJobs.size) setVoiceStatus("AI播客播放完成。");
+      updatePodcastControl();
     }
   }
 
@@ -776,6 +912,94 @@
     return null;
   }
 
+  function startPodcastFromUi() {
+    if (explicitTopicValue()) {
+      startPodcast();
+      return;
+    }
+    startTopicCapture();
+  }
+
+  function startTopicCapture() {
+    if (podcast.runId || podcast.starting || podcast.capturingTopic) return;
+    var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
+    if (!SR) {
+      setDialog(true);
+      setStatus("当前浏览器不支持语音输入，请手动输入话题。");
+      setVoiceStatus("当前浏览器不支持语音话题输入。");
+      return;
+    }
+    podcast.topicCaptureArmed = true;
+    podcast.capturingTopic = true;
+    setPodcastMode(true);
+    setActive(false);
+    setDialog(false);
+    setStatus("请说出 AI 播客要讨论的话题...");
+    setVoiceStatus("正在收听播客话题，说完后会自动开始。");
+    var rec = new SR();
+    podcast.topicRecognizer = rec;
+    var submitted = false;
+    rec.lang = "zh-CN";
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.onresult = function (event) {
+      var text = "";
+      for (var i = 0; i < event.results.length; i++) {
+        text += event.results[i][0] && event.results[i][0].transcript || "";
+      }
+      text = text.trim();
+      submitted = Boolean(text);
+      stopTopicCapture();
+      if (!text) {
+        podcast.topicCaptureArmed = true;
+        setStatus("没有听清话题，点击屏幕可重试。");
+        setVoiceStatus("没有听清话题，点击屏幕可重新说。");
+        return;
+      }
+      var topic = $("podcastTopic");
+      if (topic) topic.value = text;
+      addBubble("you", "话题：" + text);
+      startPodcast(text);
+    };
+    rec.onerror = function () {
+      stopTopicCapture();
+      podcast.topicCaptureArmed = true;
+      setStatus("话题识别失败，点击屏幕可重试。");
+      setVoiceStatus("话题识别失败，点击屏幕可重新说。");
+      updatePodcastControl();
+    };
+    rec.onend = function () {
+      if (podcast.topicRecognizer === rec) podcast.topicRecognizer = null;
+      podcast.capturingTopic = false;
+      setActive(Boolean(podcast.runId));
+      updatePodcastControl();
+      if (!submitted && !podcast.runId && !podcast.starting) {
+        podcast.topicCaptureArmed = true;
+        setStatus("点击屏幕空白处，说出 AI 播客话题。");
+        setVoiceStatus("AI播客待启动，点击屏幕说出讨论话题。");
+      }
+    };
+    try { rec.start(); } catch (_) {
+      stopTopicCapture();
+      podcast.topicCaptureArmed = true;
+      setStatus("话题识别启动失败，点击屏幕可重试。");
+      setVoiceStatus("话题识别启动失败。");
+      updatePodcastControl();
+    }
+  }
+
+  function stopTopicCapture() {
+    var rec = podcast.topicRecognizer;
+    podcast.topicRecognizer = null;
+    podcast.capturingTopic = false;
+    setActive(Boolean(podcast.runId));
+    updatePodcastControl();
+    if (!rec) return;
+    try { rec.onresult = null; rec.onerror = null; } catch (_) {}
+    try { rec.stop(); } catch (_) {}
+    try { rec.abort && rec.abort(); } catch (_) {}
+  }
+
   function startInterjectionCapture() {
     if (!podcast.runId || podcast.capturingInput) return;
     var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
@@ -786,6 +1010,8 @@
     podcast.playbackPausedForInput = true;
     stopCurrentPlayback(true);
     podcast.capturingInput = true;
+    setPodcastMode(true);
+    updatePodcastControl();
     setStatus("请说出你的观点或问题...");
     setVoiceStatus("正在收听你的插话，说完后会自动关闭麦克风...");
     var rec = new SR();
@@ -818,6 +1044,7 @@
         pumpPlayback();
       }
       if (podcast.runId) setStatus("播客进行中，点屏幕空白处可插话。");
+      updatePodcastControl();
     };
     try { rec.start(); } catch (_) {
       stopInterjectionCapture();
@@ -830,6 +1057,7 @@
     var rec = podcast.inputRecognizer;
     podcast.inputRecognizer = null;
     podcast.capturingInput = false;
+    updatePodcastControl();
     if (!rec) return;
     try { rec.onresult = null; rec.onerror = null; } catch (_) {}
     try { rec.stop(); } catch (_) {}
@@ -842,6 +1070,9 @@
       pumpPlayback();
       return;
     }
+    podcast.pendingInputText = text;
+    resetForUserInput(podcast.generation + 1);
+    addBubble("you", text);
     try {
       await apiSafe("/api/voice/podcast/input", { run_id: podcast.runId, text: text });
     } catch (err) {
@@ -855,7 +1086,23 @@
   function init() {
     var btn = $("voicePodcastBtn");
     if (!btn) return;
-    btn.onclick = function () { setDialog(true); };
+    btn.onclick = function () {
+      if (podcast.mode) {
+        if (podcast.runId || podcast.starting || podcast.capturingTopic || podcast.capturingInput) {
+          setStatus("播客正在进行中，请先停止后再切回语音。");
+          setVoiceStatus("AI播客进行中，停止后可切回语音。");
+          return;
+        }
+        podcast.topicCaptureArmed = false;
+        stopTopicCapture();
+        setDialog(false);
+        setPodcastMode(false);
+        setVoiceStatus("点击麦克风，开始连续语音对话");
+        return;
+      }
+      setPodcastMode(true);
+      setDialog(true);
+    };
     var close = $("podcastCloseBtn");
     if (close) close.onclick = function () { setDialog(false); };
     var dlg = $("podcastDialog");
@@ -868,16 +1115,36 @@
       renderAgents();
     };
     var start = $("podcastStartBtn");
-    if (start) start.onclick = startPodcast;
+    if (start) start.onclick = startPodcastFromUi;
     var stop = $("podcastStopBtn");
     if (stop) stop.onclick = stopPodcast;
-    var overlay = $("voiceOverlay");
-    if (overlay) overlay.addEventListener("click", function (event) {
-      if (!podcast.runId) return;
-      if (event.target.closest(".voice-stage-head, .voice-footer, .voice-captions, .voice-circle, .podcast-dialog")) return;
+    var exit = $("voiceExitBtn");
+    if (exit) exit.addEventListener("click", function () {
+      if (!podcast.runId && !podcast.starting && !podcast.capturingTopic) {
+        podcast.topicCaptureArmed = false;
+        setPodcastMode(false);
+        setDialog(false);
+      }
+    });
+    var podcastCircle = $("podcastCircle");
+    if (podcastCircle) podcastCircle.addEventListener("click", function (event) {
+      if (!podcast.mode) return;
       event.stopPropagation();
       event.preventDefault();
-      startInterjectionCapture();
+      if (podcast.runId) startInterjectionCapture();
+      else if (explicitTopicValue()) startPodcast();
+      else startTopicCapture();
+    }, true);
+    var overlay = $("voiceOverlay");
+    if (overlay) overlay.addEventListener("click", function (event) {
+      if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
+      if (event.target.closest(".voice-stage-head, .voice-footer, .voice-captions, .podcast-dialog")) return;
+      if (event.target.closest(".voice-circle")) return;
+      event.stopPropagation();
+      event.preventDefault();
+      if (podcast.runId) startInterjectionCapture();
+      else if (explicitTopicValue()) startPodcast();
+      else startTopicCapture();
     }, true);
     renderAgents();
   }

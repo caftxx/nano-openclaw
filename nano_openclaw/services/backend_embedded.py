@@ -1808,6 +1808,7 @@ class EmbeddedBackend(Backend):
         )
         token = CancellationToken()
         input_queue: asyncio.Queue[str] = asyncio.Queue()
+        run_state: dict[str, Any] = {"generation": 0}
 
         await self._append_podcast_message(
             session,
@@ -1832,6 +1833,7 @@ class EmbeddedBackend(Backend):
                 host_voice_label=host_voice_label,
                 token=token,
                 input_queue=input_queue,
+                run_state=run_state,
             ),
             name=f"backend.voice_podcast:{run_id}",
         )
@@ -1840,6 +1842,7 @@ class EmbeddedBackend(Backend):
             "token": token,
             "task": task,
             "input_queue": input_queue,
+            "run_state": run_state,
         }
         task.add_done_callback(lambda _task, rid=run_id: self._podcast_runs.pop(rid, None))
 
@@ -1876,12 +1879,19 @@ class EmbeddedBackend(Backend):
         text = text.strip()
         if not text:
             return {"ok": False, "reason": "empty input"}
+        run_state = run.get("run_state")
+        if isinstance(run_state, dict):
+            run_state["generation"] = int(run_state.get("generation", 0)) + 1
+            generation = int(run_state["generation"])
+        else:
+            generation = 0
         await run["input_queue"].put(text)
         self._emit_podcast({
             "type": "podcast.input.accepted",
             "run_id": run_id,
             "session_id": run.get("session_id"),
             "text": text,
+            "generation": generation,
         })
         return {"ok": True}
 
@@ -1912,6 +1922,7 @@ class EmbeddedBackend(Backend):
         host_voice_label: str,
         token: CancellationToken,
         input_queue: asyncio.Queue[str],
+        run_state: dict[str, Any],
     ) -> None:
         import random
 
@@ -1926,6 +1937,8 @@ class EmbeddedBackend(Backend):
         context: list[str] = []
         research_cache: dict[str, str] = {}
         next_utterance_sequence = 1
+        active_generation = 0
+        completed_rounds = 0
 
         def next_sequence() -> int:
             nonlocal next_utterance_sequence
@@ -1955,14 +1968,23 @@ class EmbeddedBackend(Backend):
                         ),
                         user_text=f"请先做一段精简开场白，然后自然 cue {first_speaker.role} 作为第一位主讲人开始。",
                         token=token,
+                        generation=active_generation,
+                        is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
                         use_research_tools=False,
                     )
                     if host_text:
                         context.append(f"{HOST_ROLE}: {host_text}")
-                for round_index in range(1, rounds + 1):
+                while completed_rounds < rounds:
                     if token.is_cancelled:
                         break
                     pending_inputs = self._drain_podcast_inputs(input_queue)
+                    if pending_inputs:
+                        active_generation = int(run_state.get("generation", active_generation))
+                        context = []
+                        completed_rounds = 0
+                        for item in pending_inputs:
+                            context.append(f"用户插话: {item}")
+                    round_index = completed_rounds + 1
                     speakers = choose_speakers(agents, round_index, rng)
                     if round_index == 1 and first_speaker is not None:
                         speakers = [first_speaker] + [
@@ -1999,6 +2021,8 @@ class EmbeddedBackend(Backend):
                             ),
                             user_text="请回应用户插话，并自然引出本轮主讲人。",
                             token=token,
+                            generation=active_generation,
+                            is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
                             use_research_tools=False,
                         )
                         if host_text:
@@ -2010,6 +2034,7 @@ class EmbeddedBackend(Backend):
                         "session_id": session.session_id,
                         "round": round_index,
                         "speaker_count": len(speakers),
+                        "generation": active_generation,
                     })
                     round_context = "\n".join(context[-10:])
                     speaker_tasks = [
@@ -2024,12 +2049,18 @@ class EmbeddedBackend(Backend):
                                 context=round_context,
                                 research_cache=research_cache,
                                 token=token,
+                                generation=active_generation,
+                                is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
                             ),
                             name=f"backend.voice_podcast.speaker:{run_id}:{round_index}:{idx}",
                         )
                         for idx, agent in enumerate(speakers)
                     ]
                     speaker_results = await asyncio.gather(*speaker_tasks)
+                    if int(run_state.get("generation", active_generation)) != active_generation:
+                        context = []
+                        completed_rounds = 0
+                        continue
                     spoken_this_round: list[str] = []
                     for agent, speaker_text in speaker_results:
                         if speaker_text:
@@ -2040,6 +2071,10 @@ class EmbeddedBackend(Backend):
 
                     if token.is_cancelled:
                         break
+                    if int(run_state.get("generation", active_generation)) != active_generation:
+                        context = []
+                        completed_rounds = 0
+                        continue
                     summary_prompt = build_host_prompt(
                         topic=topic,
                         round_index=round_index,
@@ -2063,6 +2098,8 @@ class EmbeddedBackend(Backend):
                         system_prompt=summary_prompt,
                         user_text="\n".join(spoken_this_round) or "请做简短串讲。",
                         token=token,
+                        generation=active_generation,
+                        is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
                         use_research_tools=False,
                     )
                     if host_summary:
@@ -2072,12 +2109,15 @@ class EmbeddedBackend(Backend):
                         "run_id": run_id,
                         "session_id": session.session_id,
                         "round": round_index,
+                        "generation": active_generation,
                     })
+                    completed_rounds += 1
 
             self._emit_podcast({
                 "type": "podcast.done",
                 "run_id": run_id,
                 "session_id": session.session_id,
+                "generation": active_generation,
             })
         except asyncio.CancelledError:
             self._emit_podcast({
@@ -2236,6 +2276,8 @@ class EmbeddedBackend(Backend):
         context: str,
         research_cache: dict[str, str],
         token: CancellationToken,
+        generation: int,
+        is_generation_current: Any,
     ) -> tuple[Any, str]:
         from nano_openclaw.features.voice.podcast import build_speaker_prompt
 
@@ -2272,6 +2314,8 @@ class EmbeddedBackend(Backend):
             ),
             user_text="请基于你的身份、首次 research 摘要和当前讨论上下文，给出本轮观点。",
             token=token,
+            generation=generation,
+            is_generation_current=is_generation_current,
             use_research_tools=False,
             persist=False,
             model_ref=getattr(agent, "model_ref", ""),
@@ -2351,12 +2395,16 @@ class EmbeddedBackend(Backend):
         user_text: str,
         token: CancellationToken,
         use_research_tools: bool,
+        generation: int = 0,
+        is_generation_current: Any | None = None,
         persist: bool = True,
         model_ref: str = "",
     ) -> str:
         from nano_openclaw.features.voice.podcast import generate_utterance
 
         utterance_id = uuid.uuid4().hex
+        if is_generation_current is not None and not is_generation_current(generation):
+            return ""
         self._emit_podcast({
             "type": "podcast.utterance.started",
             "run_id": run_id,
@@ -2369,10 +2417,11 @@ class EmbeddedBackend(Backend):
             "voice_id": voice_id,
             "voice_label": voice_label,
             "model_ref": model_ref,
+            "generation": generation,
         })
 
         def on_delta(text: str) -> None:
-            if text:
+            if text and (is_generation_current is None or is_generation_current(generation)):
                 self._emit_podcast({
                     "type": "podcast.text.delta",
                     "run_id": run_id,
@@ -2386,6 +2435,7 @@ class EmbeddedBackend(Backend):
                     "voice_label": voice_label,
                     "model_ref": model_ref,
                     "text": text,
+                    "generation": generation,
                 })
 
         exclude = {
@@ -2418,6 +2468,8 @@ class EmbeddedBackend(Backend):
         finally:
             if close_model_client:
                 await self._close_podcast_model_client(model_client)
+        if is_generation_current is not None and not is_generation_current(generation):
+            return ""
         if text and persist:
             await self._append_podcast_message(session, "assistant", f"【{role}｜{voice_label}】{text}")
         self._emit_podcast({
@@ -2433,6 +2485,7 @@ class EmbeddedBackend(Backend):
             "voice_label": voice_label,
             "model_ref": model_ref,
             "text": text,
+            "generation": generation,
         })
         return text
 

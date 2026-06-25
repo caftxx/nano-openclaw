@@ -117,7 +117,10 @@
     <div id="voiceOverlay" class="voice-overlay" hidden>
       <div class="voice-stage-head">
         <button id="voiceExitBtn" class="voice-exit" type="button" aria-label="退出语音">✕</button>
-        <button id="voicePodcastBtn" class="voice-podcast-btn" type="button" title="AI播客" aria-label="AI播客">AI播客</button>
+        <button id="voicePodcastBtn" class="voice-mode-switch" type="button" title="语音 / AI播客" aria-label="切换语音和AI播客" aria-pressed="false">
+          <span class="voice-mode-option voice-option-talk">语音</span>
+          <span class="voice-mode-option voice-option-podcast">播客</span>
+        </button>
         <select id="voiceVoice" class="voice-voice-select" aria-label="音色" title="音色">
           <option value="">🗣 系统默认</option>
         </select>
@@ -129,6 +132,14 @@
         </button>
         <div id="voiceStatus" class="voice-status">点击麦克风，开始连续语音对话</div>
         <div id="voiceUnsupported" class="voice-unsupported" hidden></div>
+      </div>
+      <div id="podcastStage" class="podcast-stage" hidden>
+        <div class="podcast-stage-label">AI播客模式</div>
+        <button id="podcastCircle" class="podcast-circle idle" type="button" aria-label="AI播客语音操作">
+          <span id="podcastCircleIcon" class="podcast-circle-icon">◎</span>
+          <span id="podcastCircleLabel" class="podcast-circle-label">点击说话题</span>
+        </button>
+        <div id="podcastModeStatus" class="podcast-mode-status">配置后说出讨论话题，自动开始多 Agent 播客</div>
       </div>
       <div id="voiceCaptions" class="voice-captions"></div>
       <div class="voice-footer">
@@ -155,7 +166,7 @@
         </div>
         <label class="podcast-field">
           <span>话题</span>
-          <textarea id="podcastTopic" rows="2" placeholder="输入播客讨论主题"></textarea>
+          <textarea id="podcastTopic" rows="2" placeholder="可手动输入，也可留空后点击开始说出话题"></textarea>
         </label>
         <div class="podcast-row">
           <label class="podcast-rounds">
@@ -173,7 +184,7 @@
         <div id="podcastStatus" class="podcast-status"></div>
         <div class="podcast-actions">
           <button id="podcastStopBtn" type="button" class="podcast-secondary" disabled>停止</button>
-          <button id="podcastStartBtn" type="button" class="podcast-primary">开始</button>
+          <button id="podcastStartBtn" type="button" class="podcast-primary">开始 / 说话题</button>
         </div>
       </div>
     </div>
