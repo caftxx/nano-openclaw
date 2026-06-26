@@ -792,6 +792,37 @@ class WebSocketBackend(Backend):
             payload = {k: v for k, v in payload.items() if k != "ok"}
         return dict(payload)
 
+    async def podcast_start(
+        self,
+        *,
+        session_key: str,
+        topic: str,
+        agents: list[dict[str, Any]],
+        rounds: int = 20,
+        host_voice_id: str = "",
+        host_voice_label: str = "",
+    ) -> dict[str, Any]:
+        return await self._call("podcast.start", {
+            "session_key": session_key,
+            "topic": topic,
+            "agents": agents,
+            "rounds": rounds,
+            "host_voice_id": host_voice_id,
+            "host_voice_label": host_voice_label,
+        }) or {}
+
+    async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
+        return await self._call("podcast.input", {"run_id": run_id, "text": text}) or {}
+
+    async def podcast_stop(self, *, run_id: str) -> dict[str, Any]:
+        return await self._call("podcast.stop", {"run_id": run_id}) or {}
+
+    async def podcast_remove_agent(self, *, run_id: str, agent_id: str) -> dict[str, Any]:
+        return await self._call("podcast.remove_agent", {"run_id": run_id, "agent_id": agent_id}) or {}
+
+    async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
+        return await self._call("podcast.update_agent", {"run_id": run_id, "agent": agent}) or {}
+
     # ─── Push event subscription ───
 
     def subscribe(

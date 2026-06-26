@@ -5,7 +5,7 @@ import random
 from types import SimpleNamespace
 
 from nano_openclaw.adapters.webui.server import _webui_payloads_from_push
-from nano_openclaw.api.methods.podcast import podcast_start
+from nano_openclaw.api.methods.podcast import podcast_remove_agent, podcast_start, podcast_update_agent
 from nano_openclaw.features.voice.podcast import (
     HOST_VOICE_ID,
     _voice_gender,
@@ -90,6 +90,31 @@ def test_podcast_model_assignment_uses_configured_text_models():
     assert labels["p1/m1"] == "Model One"
     assert {agent.model_ref for agent in agents} == {"p1/m1", "p2/m2"}
     assert agents[0].model_label
+
+
+def test_podcast_agent_can_request_voice_and_model():
+    agents = assign_agents(
+        [
+            {
+                "id": "a1",
+                "role": "作家",
+                "voice_id": "zhishuo",
+                "voice_label": "知硕",
+                "model_ref": "p2/m2",
+                "model_label": "Model Two",
+            }
+        ],
+        "AI 播客",
+        excluded_voice_id="zhishuo",
+        model_refs=["p1/m1"],
+        model_labels={"p1/m1": "Model One", "p2/m2": "Model Two"},
+        rng=random.Random("requested-agent"),
+    )
+
+    assert agents[0].voice_id == "zhishuo"
+    assert agents[0].voice_label == "知硕"
+    assert agents[0].model_ref == "p2/m2"
+    assert agents[0].model_label == "Model Two"
 
 
 def test_podcast_voice_assignment_balances_male_and_female_voices():
@@ -275,4 +300,56 @@ def test_podcast_start_rpc_handler_delegates_to_backend():
         "rounds": 7,
         "host_voice_id": "zhishuo",
         "host_voice_label": "知硕",
+    }
+
+
+def test_podcast_remove_agent_rpc_handler_delegates_to_backend():
+    class Backend:
+        async def podcast_remove_agent(self, *, run_id, agent_id):
+            self.call = {"run_id": run_id, "agent_id": agent_id}
+            return {"ok": True, "agent_id": agent_id}
+
+    backend = Backend()
+    result = asyncio.run(
+        podcast_remove_agent(
+            SimpleNamespace(backend=backend),
+            {"run_id": "run-1", "agent_id": "agent-2"},
+        )
+    )
+
+    assert result == {"ok": True, "agent_id": "agent-2"}
+    assert backend.call == {"run_id": "run-1", "agent_id": "agent-2"}
+
+
+def test_podcast_update_agent_rpc_handler_delegates_to_backend():
+    class Backend:
+        async def podcast_update_agent(self, *, run_id, agent):
+            self.call = {"run_id": run_id, "agent": agent}
+            return {"ok": True, "agent_id": agent["id"], "generation": 2}
+
+    backend = Backend()
+    result = asyncio.run(
+        podcast_update_agent(
+            SimpleNamespace(backend=backend),
+            {
+                "run_id": "run-1",
+                "agent": {
+                    "id": "agent-2",
+                    "role": "作家",
+                    "voice_id": "zhishuo",
+                    "model_ref": "p/m",
+                },
+            },
+        )
+    )
+
+    assert result == {"ok": True, "agent_id": "agent-2", "generation": 2}
+    assert backend.call == {
+        "run_id": "run-1",
+        "agent": {
+            "id": "agent-2",
+            "role": "作家",
+            "voice_id": "zhishuo",
+            "model_ref": "p/m",
+        },
     }

@@ -1808,7 +1808,7 @@ class EmbeddedBackend(Backend):
         )
         token = CancellationToken()
         input_queue: asyncio.Queue[str] = asyncio.Queue()
-        run_state: dict[str, Any] = {"generation": 0}
+        run_state: dict[str, Any] = {"generation": 0, "removed_agent_ids": set()}
 
         await self._append_podcast_message(
             session,
@@ -1843,6 +1843,9 @@ class EmbeddedBackend(Backend):
             "task": task,
             "input_queue": input_queue,
             "run_state": run_state,
+            "topic": topic,
+            "agents": assigned,
+            "host_voice_id": host_voice_id,
         }
         task.add_done_callback(lambda _task, rid=run_id: self._podcast_runs.pop(rid, None))
 
@@ -1910,6 +1913,95 @@ class EmbeddedBackend(Backend):
         })
         return {"ok": True}
 
+    async def podcast_remove_agent(self, *, run_id: str, agent_id: str) -> dict[str, Any]:
+        run = self._podcast_runs.get(run_id)
+        if run is None:
+            raise NotFoundError(f"podcast run not found: {run_id}")
+        agent_id = agent_id.strip()
+        if not agent_id:
+            return {"ok": False, "reason": "empty agent_id"}
+        run_state = run.get("run_state")
+        if not isinstance(run_state, dict):
+            return {"ok": False, "reason": "invalid run state"}
+        removed = run_state.setdefault("removed_agent_ids", set())
+        if not isinstance(removed, set):
+            removed = set(removed or [])
+            run_state["removed_agent_ids"] = removed
+        removed.add(agent_id)
+        self._emit_podcast({
+            "type": "podcast.agent.removed",
+            "run_id": run_id,
+            "session_id": run.get("session_id"),
+            "agent_id": agent_id,
+            "generation": int(run_state.get("generation", 0) or 0),
+        })
+        return {"ok": True, "agent_id": agent_id}
+
+    async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
+        run = self._podcast_runs.get(run_id)
+        if run is None:
+            raise NotFoundError(f"podcast run not found: {run_id}")
+        raw_agent = dict(agent or {})
+        agent_id = str(raw_agent.get("id") or raw_agent.get("agent_id") or raw_agent.get("agentId") or "").strip()
+        if not agent_id:
+            return {"ok": False, "reason": "empty agent_id"}
+        run_state = run.get("run_state")
+        if not isinstance(run_state, dict):
+            return {"ok": False, "reason": "invalid run state"}
+
+        from nano_openclaw.features.voice.podcast import assign_agents, podcast_model_options
+
+        model_refs, model_labels = podcast_model_options(self.runtime.config)
+        if not model_refs:
+            model_refs = [self.runtime.model_ref]
+            model_labels = {self.runtime.model_ref: self.runtime.model_id}
+        assigned = assign_agents(
+            [raw_agent],
+            str(run.get("topic") or ""),
+            excluded_voice_id=str(run.get("host_voice_id") or ""),
+            model_refs=model_refs,
+            model_labels=model_labels,
+        )[0]
+        agents = run.get("agents") or []
+        updated = False
+        for idx, current in enumerate(agents):
+            if str(getattr(current, "id", "") or "") != agent_id:
+                continue
+            agents[idx] = replace(
+                current,
+                role=assigned.role,
+                requested_role=assigned.requested_role,
+                voice_id=assigned.voice_id,
+                voice_label=assigned.voice_label,
+                model_ref=assigned.model_ref,
+                model_label=assigned.model_label,
+            )
+            updated = True
+            break
+        if not updated:
+            return {"ok": False, "reason": "agent_not_found", "agent_id": agent_id}
+        run["agents"] = agents
+        run_state["generation"] = int(run_state.get("generation", 0)) + 1
+        generation = int(run_state["generation"])
+        payload_agent = {
+            "id": agent_id,
+            "role": assigned.role,
+            "requested_role": assigned.requested_role,
+            "voice_id": assigned.voice_id,
+            "voice_label": assigned.voice_label,
+            "model_ref": assigned.model_ref,
+            "model_label": assigned.model_label,
+        }
+        self._emit_podcast({
+            "type": "podcast.agent.updated",
+            "run_id": run_id,
+            "session_id": run.get("session_id"),
+            "agent_id": agent_id,
+            "generation": generation,
+            "agent": payload_agent,
+        })
+        return {"ok": True, "agent_id": agent_id, "generation": generation, "agent": payload_agent}
+
     async def _run_podcast(
         self,
         *,
@@ -1945,6 +2037,16 @@ class EmbeddedBackend(Backend):
             value = next_utterance_sequence
             next_utterance_sequence += 1
             return value
+
+        def removed_agent_ids() -> set[str]:
+            value = run_state.get("removed_agent_ids", set())
+            if isinstance(value, set):
+                return value
+            return set(value or [])
+
+        def agent_is_active(agent: Any) -> bool:
+            agent_id = str(getattr(agent, "id", "") or "")
+            return bool(agent_id) and agent_id not in removed_agent_ids()
 
         try:
             async with self.runtime.runtime_guard.reader():
@@ -1984,16 +2086,19 @@ class EmbeddedBackend(Backend):
                         completed_rounds = 0
                         for item in pending_inputs:
                             context.append(f"用户插话: {item}")
+                    active_agents = [agent for agent in agents if agent_is_active(agent)]
+                    if not active_agents:
+                        break
                     round_index = completed_rounds + 1
-                    speakers = choose_speakers(agents, round_index, rng)
-                    if round_index == 1 and first_speaker is not None:
+                    speakers = choose_speakers(active_agents, round_index, rng)
+                    if round_index == 1 and first_speaker is not None and agent_is_active(first_speaker):
                         speakers = [first_speaker] + [
                             agent for agent in speakers
                             if getattr(agent, "id", None) != getattr(first_speaker, "id", None)
                         ]
-                        if len(speakers) == 1 and len(agents) > 1:
+                        if len(speakers) == 1 and len(active_agents) > 1:
                             remaining = [
-                                agent for agent in agents
+                                agent for agent in active_agents
                                 if getattr(agent, "id", None) != getattr(first_speaker, "id", None)
                             ]
                             if remaining:
@@ -2051,6 +2156,7 @@ class EmbeddedBackend(Backend):
                                 token=token,
                                 generation=active_generation,
                                 is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
+                                is_agent_active=agent_is_active,
                             ),
                             name=f"backend.voice_podcast.speaker:{run_id}:{round_index}:{idx}",
                         )
@@ -2063,6 +2169,8 @@ class EmbeddedBackend(Backend):
                         continue
                     spoken_this_round: list[str] = []
                     for agent, speaker_text in speaker_results:
+                        if not agent_is_active(agent):
+                            continue
                         if speaker_text:
                             line = f"{agent.role}: {speaker_text}"
                             spoken_this_round.append(line)
@@ -2074,6 +2182,9 @@ class EmbeddedBackend(Backend):
                     if int(run_state.get("generation", active_generation)) != active_generation:
                         context = []
                         completed_rounds = 0
+                        continue
+                    speakers = [agent for agent in speakers if agent_is_active(agent)]
+                    if not speakers:
                         continue
                     summary_prompt = build_host_prompt(
                         topic=topic,
@@ -2174,6 +2285,7 @@ class EmbeddedBackend(Backend):
             "run_id": run_id,
             "session_id": session.session_id,
             "round": round_index,
+            "agent_id": getattr(agent, "id", ""),
             "role": agent.role,
             "model_ref": getattr(agent, "model_ref", ""),
         })
@@ -2186,6 +2298,7 @@ class EmbeddedBackend(Backend):
                     "run_id": run_id,
                     "session_id": session.session_id,
                     "round": round_index,
+                    "agent_id": getattr(agent, "id", ""),
                     "role": agent.role,
                     "model_ref": getattr(agent, "model_ref", ""),
                     "event_type": event_type,
@@ -2256,6 +2369,7 @@ class EmbeddedBackend(Backend):
             "run_id": run_id,
             "session_id": session.session_id,
             "round": round_index,
+            "agent_id": getattr(agent, "id", ""),
             "role": agent.role,
             "model_ref": getattr(agent, "model_ref", ""),
             "subagent_run_id": record.run_id,
@@ -2278,12 +2392,19 @@ class EmbeddedBackend(Backend):
         token: CancellationToken,
         generation: int,
         is_generation_current: Any,
+        is_agent_active: Any,
     ) -> tuple[Any, str]:
         from nano_openclaw.features.voice.podcast import build_speaker_prompt
 
         if token.is_cancelled:
             raise asyncio.CancelledError()
-        cache_key = str(getattr(agent, "id", "") or getattr(agent, "role", ""))
+        if not is_agent_active(agent):
+            return agent, ""
+        cache_key = ":".join([
+            str(getattr(agent, "id", "") or ""),
+            str(getattr(agent, "role", "") or ""),
+            str(getattr(agent, "model_ref", "") or ""),
+        ])
         research_text = research_cache.get(cache_key, "")
         if not research_text:
             research_text = await self._run_podcast_research_subagent(
@@ -2296,12 +2417,15 @@ class EmbeddedBackend(Backend):
                 token=token,
             )
             research_cache[cache_key] = research_text
+        if not is_agent_active(agent):
+            return agent, ""
         speaker_text = await self._generate_podcast_utterance(
             run_id=run_id,
             session=session,
             round_index=round_index,
             phase="speaker",
             sequence=sequence,
+            agent_id=getattr(agent, "id", ""),
             role=agent.role,
             voice_id=agent.voice_id,
             voice_label=agent.voice_label,
@@ -2320,6 +2444,8 @@ class EmbeddedBackend(Backend):
             persist=False,
             model_ref=getattr(agent, "model_ref", ""),
         )
+        if not is_agent_active(agent):
+            return agent, ""
         return agent, speaker_text
 
     def _drain_podcast_inputs(self, queue: asyncio.Queue[str]) -> list[str]:
@@ -2399,6 +2525,7 @@ class EmbeddedBackend(Backend):
         is_generation_current: Any | None = None,
         persist: bool = True,
         model_ref: str = "",
+        agent_id: str = "",
     ) -> str:
         from nano_openclaw.features.voice.podcast import generate_utterance
 
@@ -2413,6 +2540,7 @@ class EmbeddedBackend(Backend):
             "round": round_index,
             "phase": phase,
             "sequence": sequence,
+            "agent_id": agent_id,
             "role": role,
             "voice_id": voice_id,
             "voice_label": voice_label,
@@ -2430,6 +2558,7 @@ class EmbeddedBackend(Backend):
                     "round": round_index,
                     "phase": phase,
                     "sequence": sequence,
+                    "agent_id": agent_id,
                     "role": role,
                     "voice_id": voice_id,
                     "voice_label": voice_label,
@@ -2480,6 +2609,7 @@ class EmbeddedBackend(Backend):
             "round": round_index,
             "phase": phase,
             "sequence": sequence,
+            "agent_id": agent_id,
             "role": role,
             "voice_id": voice_id,
             "voice_label": voice_label,

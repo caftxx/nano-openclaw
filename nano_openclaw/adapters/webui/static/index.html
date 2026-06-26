@@ -13,7 +13,7 @@
         document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260619-session-delete2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260626-agent-hit-no-bg" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -117,30 +117,37 @@
     <div id="voiceOverlay" class="voice-overlay" hidden>
       <div class="voice-stage-head">
         <button id="voiceExitBtn" class="voice-exit" type="button" aria-label="退出语音">✕</button>
-        <button id="voicePodcastBtn" class="voice-mode-switch" type="button" title="语音 / AI播客" aria-label="切换语音和AI播客" aria-pressed="false">
-          <span class="voice-mode-option voice-option-talk">语音</span>
-          <span class="voice-mode-option voice-option-podcast">播客</span>
-        </button>
+        <div id="groupParticipants" class="group-participants" aria-label="群聊成员"></div>
         <select id="voiceVoice" class="voice-voice-select" aria-label="音色" title="音色">
           <option value="">🗣 系统默认</option>
         </select>
       </div>
+      <div id="groupMemberMenu" class="group-member-menu" role="menu" hidden></div>
       <div class="voice-stage">
-        <button id="voiceCircle" class="voice-circle off" type="button" aria-label="开始或暂停语音">
-          <span class="voice-emoji">🎙️</span>
-          <span class="voice-circle-label">点击开始</span>
-        </button>
+        <div class="voice-home-actions">
+          <button id="voiceCircle" class="voice-circle off" type="button" aria-label="开始或暂停语音">
+            <span class="voice-emoji">🎙️</span>
+            <span class="voice-circle-label">点击开始</span>
+          </button>
+          <button id="voiceAddRoleBtn" class="voice-add-role-card" type="button" aria-label="添加角色进入群聊">
+            <span class="voice-add-role-icon">+</span>
+            <span class="voice-add-role-text">添加角色</span>
+          </button>
+        </div>
         <div id="voiceStatus" class="voice-status">点击麦克风，开始连续语音对话</div>
         <div id="voiceUnsupported" class="voice-unsupported" hidden></div>
       </div>
       <div id="podcastStage" class="podcast-stage" hidden>
-        <div class="podcast-stage-label">AI播客模式</div>
-        <button id="podcastCircle" class="podcast-circle idle" type="button" aria-label="AI播客语音操作">
+        <div class="podcast-stage-bar">
+          <div class="podcast-stage-label">群聊</div>
+          <button id="podcastStageStopBtn" class="podcast-stage-stop" type="button" disabled>停止</button>
+        </div>
+        <div id="groupAgentGrid" class="group-agent-grid" aria-label="群聊角色"></div>
+        <button id="podcastCircle" class="podcast-action-chip idle" type="button" aria-label="群聊语音操作">
           <span id="podcastCircleIcon" class="podcast-circle-icon">◎</span>
           <span id="podcastCircleLabel" class="podcast-circle-label">点击说话题</span>
         </button>
-        <button id="podcastStageStopBtn" class="podcast-stage-stop" type="button" disabled>停止</button>
-        <div id="podcastModeStatus" class="podcast-mode-status">配置后说出讨论话题，自动开始多 Agent 播客</div>
+        <div id="podcastModeStatus" class="podcast-mode-status">群聊会自动讨论，点击屏幕可插话</div>
       </div>
       <div id="voiceCaptions" class="voice-captions"></div>
       <div class="voice-footer">
@@ -162,19 +169,19 @@
     <div id="podcastDialog" class="podcast-dialog" hidden>
       <div class="podcast-panel" role="dialog" aria-modal="true" aria-labelledby="podcastTitle">
         <div class="podcast-panel-head">
-          <h2 id="podcastTitle">AI播客</h2>
+          <h2 id="podcastTitle">群聊</h2>
           <button id="podcastCloseBtn" class="podcast-icon-btn" type="button" aria-label="关闭">×</button>
         </div>
         <label class="podcast-field">
           <span>话题</span>
-          <textarea id="podcastTopic" rows="2" placeholder="可手动输入，也可留空后点击开始说出话题"></textarea>
+          <textarea id="podcastTopic" rows="2" placeholder="可手动输入，也可沿用当前对话话题"></textarea>
         </label>
         <div class="podcast-row">
           <label class="podcast-rounds">
             <span>轮数</span>
             <input id="podcastRounds" type="number" min="1" max="100" value="20" />
           </label>
-          <button id="podcastAddAgentBtn" type="button" class="podcast-secondary">添加Agent</button>
+          <button id="podcastAddAgentBtn" type="button" class="podcast-secondary">添加成员</button>
         </div>
         <div class="podcast-host-row">
           <span>主持人</span>
@@ -184,8 +191,36 @@
         <div id="podcastAssignedVoices" class="podcast-assigned" hidden></div>
         <div id="podcastStatus" class="podcast-status"></div>
         <div class="podcast-actions">
-          <button id="podcastStopBtn" type="button" class="podcast-secondary" disabled>停止</button>
-          <button id="podcastStartBtn" type="button" class="podcast-primary">开始 / 说话题</button>
+          <button id="podcastStopBtn" type="button" class="podcast-secondary" disabled>停止群聊</button>
+          <button id="podcastStartBtn" type="button" class="podcast-primary">开始群聊</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="agentEditorDialog" class="agent-editor-dialog" hidden>
+      <div class="agent-editor-panel" role="dialog" aria-modal="true" aria-labelledby="agentEditorTitle">
+        <div class="agent-editor-head">
+          <div class="agent-editor-title-wrap">
+            <span id="agentEditorAvatar" class="agent-editor-avatar">🧠</span>
+            <h2 id="agentEditorTitle">成员设置</h2>
+          </div>
+          <button id="agentEditorCloseBtn" class="podcast-icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="agent-editor-field">
+          <span>身份</span>
+          <select id="agentEditorRole" aria-label="修改身份"></select>
+        </label>
+        <label class="agent-editor-field">
+          <span>音色</span>
+          <select id="agentEditorVoice" aria-label="更换音色"></select>
+        </label>
+        <label class="agent-editor-field">
+          <span>模型</span>
+          <select id="agentEditorModel" aria-label="更换模型"></select>
+        </label>
+        <div class="agent-editor-actions">
+          <button id="agentEditorCancelBtn" type="button" class="podcast-secondary">取消</button>
+          <button id="agentEditorDoneBtn" type="button" class="podcast-primary">确认</button>
         </div>
       </div>
     </div>
@@ -219,6 +254,6 @@
     <script src="/static/voice-speaker-provider.js?v=20260613-talk-provider"></script>
     <script src="/static/voice-view.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-shell.js?v=20260613-provider"></script>
-    <script src="/static/voice-podcast.js?v=20260625-podcast"></script>
+    <script src="/static/voice-podcast.js?v=20260626-agent-hit-no-bg"></script>
   </body>
 </html>

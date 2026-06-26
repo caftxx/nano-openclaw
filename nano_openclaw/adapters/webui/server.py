@@ -81,6 +81,10 @@ class VoiceTtsRequest(BaseModel):
 class PodcastAgentRequest(BaseModel):
     id: str = ""
     role: str = "自动"
+    voice_id: str = ""
+    voice_label: str = ""
+    model_ref: str = ""
+    model_label: str = ""
 
 
 class PodcastStartRequest(BaseModel):
@@ -99,6 +103,16 @@ class PodcastInputRequest(BaseModel):
 
 class PodcastStopRequest(BaseModel):
     run_id: str
+
+
+class PodcastRemoveAgentRequest(BaseModel):
+    run_id: str
+    agent_id: str
+
+
+class PodcastUpdateAgentRequest(BaseModel):
+    run_id: str
+    agent: PodcastAgentRequest
 
 
 def create_app(
@@ -160,6 +174,11 @@ def create_app(
         except VoiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
+    @app.get("/api/models", dependencies=[Depends(require_http_token)])
+    async def models() -> dict[str, Any]:
+        state_payload = await app.state.backend.webui_state()
+        return {"models": state_payload.get("model_options", [])}
+
     @app.post("/api/talk/speak", dependencies=[Depends(require_http_token)])
     async def talk_speak(req: VoiceTtsRequest) -> dict[str, Any]:
         try:
@@ -204,6 +223,20 @@ def create_app(
     @app.post("/api/voice/podcast/stop", dependencies=[Depends(require_http_token)])
     async def podcast_stop(req: PodcastStopRequest) -> dict[str, Any]:
         return await app.state.backend.podcast_stop(run_id=req.run_id)
+
+    @app.post("/api/voice/podcast/remove_agent", dependencies=[Depends(require_http_token)])
+    async def podcast_remove_agent(req: PodcastRemoveAgentRequest) -> dict[str, Any]:
+        try:
+            return await app.state.backend.podcast_remove_agent(run_id=req.run_id, agent_id=req.agent_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/voice/podcast/update_agent", dependencies=[Depends(require_http_token)])
+    async def podcast_update_agent(req: PodcastUpdateAgentRequest) -> dict[str, Any]:
+        try:
+            return await app.state.backend.podcast_update_agent(run_id=req.run_id, agent=req.agent.model_dump())
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/sessions", dependencies=[Depends(require_http_token)])
     async def sessions() -> dict[str, Any]:

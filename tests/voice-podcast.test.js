@@ -50,4 +50,8 @@ test("podcast overlay taps allow captions but ignore controls", () => {
   assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".podcast-stage-stop")), true);
   assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".voice-footer")), true);
   assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".voice-circle")), true);
+  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".group-participant")), true);
+  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".group-member-menu")), true);
+  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".group-agent-grid")), true);
+  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".podcast-action-chip")), true);
 });

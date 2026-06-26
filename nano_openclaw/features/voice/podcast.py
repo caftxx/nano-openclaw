@@ -161,16 +161,20 @@ def assign_agents(
         else:
             role = resolve_role(requested, topic, idx)
         used_roles.add(role)
-        voice_id = voice_ids[idx % len(voice_ids)]
-        model_ref = assigned_model_refs[idx] if idx < len(assigned_model_refs) else ""
+        requested_voice_id = str(raw.get("voice_id") or raw.get("voiceId") or "").strip()
+        voice_id = requested_voice_id or voice_ids[idx % len(voice_ids)]
+        requested_voice_label = str(raw.get("voice_label") or raw.get("voiceLabel") or "").strip()
+        requested_model_ref = str(raw.get("model_ref") or raw.get("modelRef") or "").strip()
+        model_ref = requested_model_ref or (assigned_model_refs[idx] if idx < len(assigned_model_refs) else "")
+        requested_model_label = str(raw.get("model_label") or raw.get("modelLabel") or "").strip()
         agents.append(PodcastAgent(
             id=str(raw.get("id") or f"agent-{idx + 1}"),
             role=role,
             requested_role=requested if requested in AGENT_ROLES else "自动",
             voice_id=voice_id,
-            voice_label=voice_label(voice_id),
+            voice_label=requested_voice_label or voice_label(voice_id),
             model_ref=model_ref,
-            model_label=model_labels.get(model_ref, model_ref),
+            model_label=requested_model_label or model_labels.get(model_ref, model_ref),
         ))
     return agents
 
