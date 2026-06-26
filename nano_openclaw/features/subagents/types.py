@@ -152,7 +152,7 @@ def parse_session_key(session_key: str) -> dict[str, str]:
 @dataclass
 class SubagentConfig:
     """Configuration for subagent behavior."""
-    max_concurrent: int = 3
+    max_concurrent: int = 10
     max_spawn_depth: int = 1
     run_timeout_seconds: int = 0
     archive_after_minutes: int = 60

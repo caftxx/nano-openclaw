@@ -561,7 +561,7 @@ class SubagentConfigInput(BaseModel):
     """Subagent configuration, aligns with openclaw agents.defaults.subagents."""
     model_config = ConfigDict(populate_by_name=True)
 
-    maxConcurrent: int = Field(default=3, ge=1, le=10, description="Max concurrent subagent runs")
+    maxConcurrent: int = Field(default=10, ge=1, le=10, description="Max concurrent subagent runs")
     maxSpawnDepth: int = Field(default=1, ge=1, le=1, description="Max nesting depth (always 1 for nano)")
     runTimeoutSeconds: int = Field(default=0, ge=0, description="Run timeout in seconds (0 = no timeout)")
     archiveAfterMinutes: int = Field(default=60, ge=0, description="Auto-archive delay in minutes")

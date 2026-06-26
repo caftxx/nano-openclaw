@@ -428,7 +428,7 @@ Subagent 能力会注册两个模型工具：`sessions_spawn` 用于派生 isola
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `maxConcurrent` | number | `3` | 同时运行的子 agent 上限（范围 1-10） |
+| `maxConcurrent` | number | `10` | 同时运行的子 agent 上限（范围 1-10） |
 | `maxSpawnDepth` | number | `1` | 最大派生深度；nano 固定只允许 1，避免子 agent 再派生子 agent |
 | `runTimeoutSeconds` | number | `0` | 单个子 agent 运行超时秒数；`0` 表示不超时 |
 | `archiveAfterMinutes` | number | `60` | 终态 run 保留多久后可清理；`0` 表示可立即清理 |
@@ -782,7 +782,7 @@ Dream Diary 写入：`workspace/DREAMS.md`
 ```json5
 {
   subagents: {
-    maxConcurrent: 3,
+    maxConcurrent: 10,
     maxSpawnDepth: 1,
     runTimeoutSeconds: 600,
     archiveAfterMinutes: 60,

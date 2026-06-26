@@ -196,6 +196,7 @@ class TestNanoOpenClawConfig:
         cfg = NanoOpenClawConfig()
         assert cfg.agents.defaults.model == "anthropic/claude-sonnet-4-5-20250929"
         assert cfg.maxIterations == 12
+        assert cfg.subagents.maxConcurrent == 10
         assert cfg.memoryFlush.enabled is True
         assert cfg.memorySearch.temporalDecay.enabled is False
         assert cfg.memorySearch.temporalDecay.halfLifeDays == 30

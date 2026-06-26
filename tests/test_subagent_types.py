@@ -128,7 +128,7 @@ class TestSubagentTypes:
     def test_subagent_config_defaults(self):
         """Test SubagentConfig defaults."""
         config = SubagentConfig()
-        assert config.max_concurrent == 3
+        assert config.max_concurrent == 10
         assert config.max_spawn_depth == 1
         assert config.run_timeout_seconds == 0
         assert config.archive_after_minutes == 60
