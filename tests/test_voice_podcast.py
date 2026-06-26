@@ -211,6 +211,9 @@ def test_speaker_prompt_consumes_subagent_research_result():
     assert "不超过 200 个中文字符" in prompt
     assert "完整句子收尾" in prompt
     assert "不要复述主持人或其他 Agent 已经说过的内容" in prompt
+    assert "说人话" in prompt
+    assert "少用黑话" in prompt
+    assert "短比喻、小例子或轻微幽默" in prompt
 
 
 def test_host_prompt_prevents_mid_run_closing_and_allows_final_closing():
