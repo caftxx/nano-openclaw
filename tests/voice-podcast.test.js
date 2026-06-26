@@ -26,6 +26,22 @@ test("podcast pcm playback timeout follows audio duration", () => {
   );
 });
 
+test("podcast cloud synthesis timeout is capped", () => {
+  assert.strictEqual(PodcastMode._helpers.synthTimeoutMs("短句"), 12000);
+  assert.strictEqual(PodcastMode._helpers.synthTimeoutMs("x".repeat(1000)), 30000);
+});
+
+test("podcast retries transient Aliyun TTS failures", () => {
+  assert.strictEqual(PodcastMode._helpers.cloudTtsRetryDelayMs(1), 600);
+  assert.strictEqual(PodcastMode._helpers.cloudTtsRetryDelayMs(3), 2400);
+  assert.strictEqual(PodcastMode._helpers.cloudTtsRetryDelayMs(20), 4000);
+  assert.strictEqual(PodcastMode._helpers.isRetryableCloudTtsError(new Error("HTTP 429")), true);
+  assert.strictEqual(PodcastMode._helpers.isRetryableCloudTtsError(new Error("并发请求超限")), true);
+  assert.strictEqual(PodcastMode._helpers.isRetryableCloudTtsError(new Error("HTTP 503")), true);
+  assert.strictEqual(PodcastMode._helpers.isRetryableCloudTtsError(new Error("阿里云配置或 Token 缺失")), false);
+  assert.strictEqual(PodcastMode._helpers.isRetryableCloudTtsError(new Error("flowing speaker unavailable")), false);
+});
+
 test("podcast done text falls back to streamed deltas", () => {
   assert.strictEqual(
     PodcastMode._helpers.finalUtteranceText("", { text: "已经流式生成的观点" }),

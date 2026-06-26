@@ -27,6 +27,8 @@
   var AGENTS_KEY = "nanoGroupAgents";
   var TOPIC_KEY = "nanoGroupTopic";
   var MAX_GROUP_AGENTS = 9;
+  var CLOUD_TTS_MAX_CONCURRENCY = 2;
+  var CLOUD_TTS_MAX_ATTEMPTS = 3;
   var MEMBER_COLORS = ["#0f9f8f", "#2d7ff9", "#d49300", "#8b5cf6", "#e0527d", "#3ca65c", "#d76035", "#6475e8"];
   var MEMBER_EMOJIS = ["🦊", "🐼", "🐯", "🐧", "✍️", "🧑‍💻", "🧠", "🛠️"];
   var ROLE_EMOJIS = {
@@ -74,6 +76,8 @@
     modelOptions: null,
     playPumpActive: false,
     voiceCfg: null,
+    cloudTtsActive: 0,
+    cloudTtsQueue: [],
     mode: false,
     capturingInput: false,
     capturingTopic: false,
@@ -1125,6 +1129,15 @@
     return event && event.generation != null ? eventGeneration(event) === podcast.generation : true;
   }
 
+  function eventSequence(event) {
+    return Number(event && event.sequence) || 0;
+  }
+
+  function skipEventSpeechSeq(event) {
+    var seq = eventSequence(event);
+    if (seq) skipSpeechSeq(seq);
+  }
+
   function onEvent(event) {
     if (!event || typeof event.type !== "string" || !event.type.startsWith("podcast.")) return;
     if (event.run_id && podcast.runId && event.run_id !== podcast.runId) return;
@@ -1178,8 +1191,15 @@
       setVoiceStatus("群成员已踢出，其他成员继续讨论。");
       return;
     }
+    if (event.type === "podcast.utterance.skipped") {
+      skipEventSpeechSeq(event);
+      return;
+    }
     if (event.type === "podcast.utterance.started") {
-      if (isRemovedSpeakerEvent(event)) return;
+      if (isRemovedSpeakerEvent(event)) {
+        skipEventSpeechSeq(event);
+        return;
+      }
       var speaker = event.role + " · " + (event.voice_label || event.voice_id || "");
       var seq = Number(event.sequence) || podcast.nextSeq++;
       if (podcast.nextPlaySeq <= 0) podcast.nextPlaySeq = seq;
@@ -1197,7 +1217,10 @@
       return;
     }
     if (event.type === "podcast.text.delta") {
-      if (isRemovedSpeakerEvent(event)) return;
+      if (isRemovedSpeakerEvent(event)) {
+        skipEventSpeechSeq(event);
+        return;
+      }
       var entry = podcast.utterances.get(event.utterance_id);
       if (!entry) return;
       entry.text += event.text || "";
@@ -1205,7 +1228,10 @@
       return;
     }
     if (event.type === "podcast.utterance.done") {
-      if (isRemovedSpeakerEvent(event)) return;
+      if (isRemovedSpeakerEvent(event)) {
+        skipEventSpeechSeq(event);
+        return;
+      }
       var done = podcast.utterances.get(event.utterance_id);
       var finalText = finalUtteranceText(event.text, done);
       if (done) updateBubble(done, finalText);
@@ -1455,44 +1481,121 @@
     if (typeof root.createFlowingSpeaker !== "function") {
       return Promise.reject(new Error("flowing speaker unavailable"));
     }
-    return collectCloudAudio(function (callbacks) {
-      return root.createFlowingSpeaker({
-        getConfig: function () {
-          var cfg = podcast.voiceCfg || {};
-          return {
-            appkey: cfg.appkey,
-            endpoint: cfg.endpoint,
-            voice: voiceId,
-            sampleRate: cfg.tts && cfg.tts.sample_rate || 16000,
-          };
-        },
-        getToken: function () {
-          return typeof root.api === "function" ? root.api("/api/voice/token") : fetch("/api/voice/token", { headers: authHeadersSafe() }).then(function (r) { return r.json(); });
-        },
-        onAudio: callbacks.onAudio,
-        onCompleted: callbacks.onCompleted,
-        onError: callbacks.onError,
-      });
-    }, text, voiceId, "aliyun-flowing");
+    return synthCloudAudioWithRetry("aliyun-flowing", function () {
+      return collectCloudAudio(function (callbacks) {
+        return root.createFlowingSpeaker({
+          getConfig: function () {
+            var cfg = podcast.voiceCfg || {};
+            return {
+              appkey: cfg.appkey,
+              endpoint: cfg.endpoint,
+              voice: voiceId,
+              sampleRate: cfg.tts && cfg.tts.sample_rate || 16000,
+            };
+          },
+          getToken: function () {
+            return typeof root.api === "function" ? root.api("/api/voice/token") : fetch("/api/voice/token", { headers: authHeadersSafe() }).then(function (r) { return r.json(); });
+          },
+          onAudio: callbacks.onAudio,
+          onCompleted: callbacks.onCompleted,
+          onError: callbacks.onError,
+        });
+      }, text, voiceId, "aliyun-flowing");
+    });
   }
 
   function synthRest(text, voiceId) {
     if (typeof root.createRestSpeaker !== "function") {
       return Promise.reject(new Error("rest speaker unavailable"));
     }
-    return collectCloudAudio(function (callbacks) {
-      return root.createRestSpeaker({
-        url: "/api/talk/speak",
-        headers: authHeadersSafe(),
-        getConfig: function () {
-          var cfg = podcast.voiceCfg || {};
-          return { voice: voiceId, sampleRate: cfg.tts && cfg.tts.sample_rate || 16000 };
-        },
-        onAudio: callbacks.onAudio,
-        onCompleted: callbacks.onCompleted,
-        onError: callbacks.onError,
-      });
-    }, text, voiceId, "aliyun-rest");
+    return synthCloudAudioWithRetry("aliyun-rest", function () {
+      return collectCloudAudio(function (callbacks) {
+        return root.createRestSpeaker({
+          url: "/api/talk/speak",
+          headers: authHeadersSafe(),
+          getConfig: function () {
+            var cfg = podcast.voiceCfg || {};
+            return { voice: voiceId, sampleRate: cfg.tts && cfg.tts.sample_rate || 16000 };
+          },
+          onAudio: callbacks.onAudio,
+          onCompleted: callbacks.onCompleted,
+          onError: callbacks.onError,
+        });
+      }, text, voiceId, "aliyun-rest");
+    });
+  }
+
+  async function synthCloudAudioWithRetry(engineName, task) {
+    var lastErr = null;
+    for (var attempt = 1; attempt <= CLOUD_TTS_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await withCloudTtsSlot(task);
+      } catch (err) {
+        lastErr = err;
+        if (attempt >= CLOUD_TTS_MAX_ATTEMPTS || !isRetryableCloudTtsError(err)) throw err;
+        console.warn("[podcast] " + engineName + " synth retry " + attempt + "/" + CLOUD_TTS_MAX_ATTEMPTS, err);
+        await sleep(cloudTtsRetryDelayMs(attempt));
+      }
+    }
+    throw lastErr || new Error(engineName + " failed");
+  }
+
+  function withCloudTtsSlot(task) {
+    return new Promise(function (resolve, reject) {
+      function run() {
+        podcast.cloudTtsActive++;
+        Promise.resolve()
+          .then(task)
+          .then(resolve, reject)
+          .finally(function () {
+            podcast.cloudTtsActive = Math.max(0, podcast.cloudTtsActive - 1);
+            drainCloudTtsQueue();
+          });
+      }
+      if (podcast.cloudTtsActive < CLOUD_TTS_MAX_CONCURRENCY) run();
+      else podcast.cloudTtsQueue.push(run);
+    });
+  }
+
+  function drainCloudTtsQueue() {
+    while (podcast.cloudTtsActive < CLOUD_TTS_MAX_CONCURRENCY && podcast.cloudTtsQueue.length) {
+      var next = podcast.cloudTtsQueue.shift();
+      if (next) next();
+    }
+  }
+
+  function cloudTtsRetryDelayMs(attempt) {
+    return Math.min(4000, 600 * Math.pow(2, Math.max(0, Number(attempt) - 1)));
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function isRetryableCloudTtsError(err) {
+    var text = String(err && (err.message || err.name || err) || "").toLowerCase();
+    if (!text) return true;
+    if (text.indexOf("unavailable") >= 0 || text.indexOf("不可用") >= 0) return false;
+    if (text.indexOf("config") >= 0 || text.indexOf("配置") >= 0 || text.indexOf("token 缺失") >= 0) return false;
+    return Boolean(
+      text.indexOf("timeout") >= 0
+        || text.indexOf("429") >= 0
+        || /^http 5\d\d/.test(text)
+        || text.indexOf("limit") >= 0
+        || text.indexOf("thrott") >= 0
+        || text.indexOf("quota") >= 0
+        || text.indexOf("qps") >= 0
+        || text.indexOf("busy") >= 0
+        || text.indexOf("rate") >= 0
+        || text.indexOf("too many") >= 0
+        || text.indexOf("concurrent") >= 0
+        || text.indexOf("websocket 错误") >= 0
+        || text.indexOf("请求失败") >= 0
+        || text.indexOf("超时") >= 0
+        || text.indexOf("并发") >= 0
+        || text.indexOf("限流") >= 0
+        || text.indexOf("频率") >= 0
+    );
   }
 
   function collectCloudAudio(createEngine, text, voiceId, engineName) {
@@ -1502,7 +1605,7 @@
       var engine = null;
       var timeout = setTimeout(function () {
         finish(null, new Error(engineName + " timeout"));
-      }, Math.max(15000, text.length * 900));
+      }, synthTimeoutMs(text));
       function finish(value, err) {
         if (settled) return;
         settled = true;
@@ -1542,6 +1645,10 @@
         finish(null, err);
       }
     });
+  }
+
+  function synthTimeoutMs(text) {
+    return Math.min(30000, Math.max(12000, String(text || "").length * 250));
   }
 
   function copyAudioBuffer(buf) {
@@ -1969,6 +2076,9 @@
       selectedOut: selectedOut,
       escapeHtml: escapeHtml,
       playbackTimeoutMs: playbackTimeoutMs,
+      synthTimeoutMs: synthTimeoutMs,
+      cloudTtsRetryDelayMs: cloudTtsRetryDelayMs,
+      isRetryableCloudTtsError: isRetryableCloudTtsError,
       finalUtteranceText: finalUtteranceText,
       shouldIgnoreOverlayTap: shouldIgnoreOverlayTap,
     },

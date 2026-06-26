@@ -19,6 +19,7 @@ from nano_openclaw.features.voice.podcast import (
     podcast_model_options,
 )
 from nano_openclaw.services.backend import PushEvent
+from nano_openclaw.services.backend_embedded import EmbeddedBackend
 
 
 def test_podcast_assigns_distinct_speaker_voices_and_excludes_host_voice():
@@ -353,3 +354,50 @@ def test_podcast_update_agent_rpc_handler_delegates_to_backend():
             "model_ref": "p/m",
         },
     }
+
+
+def test_podcast_skipped_utterance_event_preserves_sequence_for_playback_queue():
+    class Backend:
+        def __init__(self):
+            self.events = []
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+    backend = Backend()
+    session = SimpleNamespace(session_id="session-1")
+    agent = SimpleNamespace(
+        id="agent-2",
+        role="作家",
+        voice_id="zhishuo",
+        voice_label="知硕",
+        model_ref="p/m",
+    )
+
+    EmbeddedBackend._emit_podcast_utterance_skipped(
+        backend,
+        run_id="run-1",
+        session=session,
+        round_index=3,
+        phase="speaker",
+        sequence=7,
+        agent=agent,
+        generation=2,
+    )
+
+    assert backend.events == [
+        {
+            "type": "podcast.utterance.skipped",
+            "run_id": "run-1",
+            "session_id": "session-1",
+            "round": 3,
+            "phase": "speaker",
+            "sequence": 7,
+            "agent_id": "agent-2",
+            "role": "作家",
+            "voice_id": "zhishuo",
+            "voice_label": "知硕",
+            "model_ref": "p/m",
+            "generation": 2,
+        }
+    ]

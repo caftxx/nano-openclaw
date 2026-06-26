@@ -2399,6 +2399,15 @@ class EmbeddedBackend(Backend):
         if token.is_cancelled:
             raise asyncio.CancelledError()
         if not is_agent_active(agent):
+            self._emit_podcast_utterance_skipped(
+                run_id=run_id,
+                session=session,
+                round_index=round_index,
+                phase="speaker",
+                sequence=sequence,
+                agent=agent,
+                generation=generation,
+            )
             return agent, ""
         cache_key = ":".join([
             str(getattr(agent, "id", "") or ""),
@@ -2418,6 +2427,15 @@ class EmbeddedBackend(Backend):
             )
             research_cache[cache_key] = research_text
         if not is_agent_active(agent):
+            self._emit_podcast_utterance_skipped(
+                run_id=run_id,
+                session=session,
+                round_index=round_index,
+                phase="speaker",
+                sequence=sequence,
+                agent=agent,
+                generation=generation,
+            )
             return agent, ""
         speaker_text = await self._generate_podcast_utterance(
             run_id=run_id,
@@ -2447,6 +2465,32 @@ class EmbeddedBackend(Backend):
         if not is_agent_active(agent):
             return agent, ""
         return agent, speaker_text
+
+    def _emit_podcast_utterance_skipped(
+        self,
+        *,
+        run_id: str,
+        session: AgentBackendSession,
+        round_index: int,
+        phase: str,
+        sequence: int,
+        agent: Any,
+        generation: int,
+    ) -> None:
+        self._emit_podcast({
+            "type": "podcast.utterance.skipped",
+            "run_id": run_id,
+            "session_id": session.session_id,
+            "round": round_index,
+            "phase": phase,
+            "sequence": sequence,
+            "agent_id": getattr(agent, "id", ""),
+            "role": getattr(agent, "role", ""),
+            "voice_id": getattr(agent, "voice_id", ""),
+            "voice_label": getattr(agent, "voice_label", ""),
+            "model_ref": getattr(agent, "model_ref", ""),
+            "generation": generation,
+        })
 
     def _drain_podcast_inputs(self, queue: asyncio.Queue[str]) -> list[str]:
         items: list[str] = []
