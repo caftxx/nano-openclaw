@@ -289,7 +289,7 @@ def create_app(
 
         try:
             await emit({"type": "state.updated", **await backend.webui_state()})
-            current = manager.create()
+            current = manager.get_or_load(None)
             current_session_id = current.session_id
             await emit({"type": "session.updated", "session": _session_payload(manager, current), "sessions": manager.list()})
             while True:
@@ -351,7 +351,25 @@ def create_app(
                 elif msg_type == "session.delete":
                     req = SessionSelectRequest(**message)
                     try:
+                        target = manager.get_or_load(req.session_id)
+                        if target.active_turn_id:
+                            turn_id = target.active_turn_id
+                            await backend.chat_abort(turn_id=turn_id)
+                            await_turn = getattr(backend, "await_turn", None)
+                            if await_turn is not None:
+                                await asyncio.wait_for(await_turn(turn_id), timeout=5)
                         await backend.sessions_delete(req.session_id)
+                    except KeyError as exc:
+                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
+                        continue
+                    except asyncio.TimeoutError:
+                        await emit({
+                            "type": "session.error",
+                            "session_id": req.session_id,
+                            "message": "session is still stopping; try again shortly",
+                            "sessions": manager.list(),
+                        })
+                        continue
                     except BusyError as exc:
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
                         continue

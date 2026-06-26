@@ -534,6 +534,131 @@ def test_webui_chat_send_without_session_uses_connection_session(tmp_path):
     assert backend.sent[0]["session_key"] == connection_session_id
 
 
+def test_webui_ws_initial_connection_resumes_existing_session(tmp_path):
+    from fastapi.testclient import TestClient
+    from nano_openclaw.adapters.webui.server import create_app
+
+    class BackendStub:
+        def __init__(self):
+            self.manager = BackendSessionManager(
+                session_dir=tmp_path / "sessions",
+                store_path=tmp_path / "sessions.json",
+                model="test-model",
+                cwd=str(tmp_path),
+            )
+
+        async def webui_state(self):
+            return {
+                "agent_id": "default",
+                "agent_options": [],
+                "model": "test-model",
+                "model_ref": "test/test-model",
+                "model_options": [],
+                "image_model": "",
+                "image_model_ref": "",
+                "image_model_options": [],
+                "thinking_level": "off",
+                "thinking_options": ["off"],
+                "assistant_name": "Assistant",
+                "user_name": "User",
+                "workspace_dir": str(tmp_path),
+                "tools": [],
+                "approvals": [],
+                "voice": {},
+            }
+
+        async def subscribe(self):
+            while False:
+                yield None
+
+    backend = BackendStub()
+    existing = backend.manager.create()
+    existing.history.append(_message("user", "keep this session"))
+    existing.writer.append_message(existing.history[0])
+    backend.manager.save_metadata(existing)
+
+    app = create_app(backend=backend, token=None)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()
+            initial = ws.receive_json()
+
+    assert initial["session"]["session_id"] == existing.session_id
+
+
+def test_webui_session_delete_aborts_active_turn_before_delete(tmp_path):
+    from fastapi.testclient import TestClient
+    from nano_openclaw.adapters.webui.server import create_app
+
+    class BackendStub:
+        def __init__(self):
+            self.manager = BackendSessionManager(
+                session_dir=tmp_path / "sessions",
+                store_path=tmp_path / "sessions.json",
+                model="test-model",
+                cwd=str(tmp_path),
+            )
+            self.aborted: list[str] = []
+            self.deleted: list[str] = []
+
+        async def webui_state(self):
+            return {
+                "agent_id": "default",
+                "agent_options": [],
+                "model": "test-model",
+                "model_ref": "test/test-model",
+                "model_options": [],
+                "image_model": "",
+                "image_model_ref": "",
+                "image_model_options": [],
+                "thinking_level": "off",
+                "thinking_options": ["off"],
+                "assistant_name": "Assistant",
+                "user_name": "User",
+                "workspace_dir": str(tmp_path),
+                "tools": [],
+                "approvals": [],
+                "voice": {},
+            }
+
+        async def subscribe(self):
+            while False:
+                yield None
+
+        async def chat_abort(self, *, turn_id: str):
+            self.aborted.append(turn_id)
+            for session in self.manager._loaded.values():
+                if session.active_turn_id == turn_id:
+                    session.active_turn_id = None
+
+        async def await_turn(self, turn_id: str):
+            return None
+
+        async def sessions_delete(self, session_id: str):
+            session = self.manager.get_or_load(session_id)
+            assert session.active_turn_id is None
+            self.deleted.append(session_id)
+
+    backend = BackendStub()
+    session = backend.manager.create()
+    session.history.append(_message("user", "running session"))
+    session.writer.append_message(session.history[0])
+    backend.manager.save_metadata(session)
+    session.active_turn_id = "turn-1"
+
+    app = create_app(backend=backend, token=None)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()
+            ws.receive_json()
+            ws.send_json({"type": "session.delete", "session_id": session.session_id})
+            updated = ws.receive_json()
+
+    assert backend.aborted == ["turn-1"]
+    assert backend.deleted == [session.session_id]
+    assert updated["type"] == "session.updated"
+
+
 def test_web_session_select_uses_store_id_not_transcript_header_id():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:

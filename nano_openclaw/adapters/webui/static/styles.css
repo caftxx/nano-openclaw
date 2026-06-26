@@ -1808,6 +1808,24 @@ body.voice-open { overflow: hidden; }
   opacity: .6;
   cursor: default;
 }
+.podcast-stage-stop {
+  min-height: 34px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklch, var(--danger) 42%, var(--line));
+  background: color-mix(in oklch, var(--danger) 10%, var(--surface));
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 800;
+}
+.podcast-stage-stop:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.podcast-stage-stop:not(:disabled):hover,
+.podcast-stage-stop:not(:disabled):focus-visible {
+  background: color-mix(in oklch, var(--danger) 16%, var(--surface-raised));
+}
 @keyframes podcastPulse {
   0%, 100% { box-shadow: 0 0 0 8px rgba(15, 159, 143, .18), 0 0 50px rgba(15, 159, 143, .28); }
   50%      { box-shadow: 0 0 0 16px rgba(15, 159, 143, .06), 0 0 72px rgba(15, 159, 143, .42); }

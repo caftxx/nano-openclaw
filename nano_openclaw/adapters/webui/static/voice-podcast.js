@@ -22,6 +22,8 @@
     "高性能网络协议设计师",
     "硬件工程师",
   ];
+  var MODE_KEY = "nanoPodcastMode";
+  var RUN_KEY = "nanoPodcastRunId";
 
   var podcast = {
     runId: "",
@@ -63,6 +65,48 @@
   }
   function localGet(key) {
     try { return root.localStorage.getItem(key) || ""; } catch (_) { return ""; }
+  }
+  function sessionGet(key) {
+    try { return root.sessionStorage.getItem(key) || ""; } catch (_) { return ""; }
+  }
+  function sessionSet(key, value) {
+    try { root.sessionStorage.setItem(key, String(value || "")); } catch (_) {}
+  }
+  function sessionRemove(key) {
+    try { root.sessionStorage.removeItem(key); } catch (_) {}
+  }
+  function savePodcastState() {
+    if (podcast.mode || podcast.runId || podcast.topicCaptureArmed) {
+      sessionSet(MODE_KEY, "1");
+      if (podcast.runId) sessionSet(RUN_KEY, podcast.runId);
+      else sessionRemove(RUN_KEY);
+      return;
+    }
+    sessionRemove(MODE_KEY);
+    sessionRemove(RUN_KEY);
+  }
+  function restorePodcastSurface() {
+    if (!sessionGet(MODE_KEY) && !podcast.mode && !podcast.runId) return;
+    var savedRunId = sessionGet(RUN_KEY);
+    if (!podcast.runId && savedRunId) {
+      podcast.runId = savedRunId;
+      podcast.playbackStopped = false;
+      podcast.generationDone = false;
+    }
+    setPodcastMode(true);
+    if (podcast.runId) {
+      setActive(true);
+      if (!podcast.capturingInput && !podcast.capturingTopic) {
+        setStatus("播客进行中，点屏幕空白处可插话。");
+        setVoiceStatus("AI播客已恢复，等待后续内容...");
+      }
+    } else {
+      podcast.topicCaptureArmed = true;
+      setActive(false);
+      setStatus("点击屏幕空白处，说出 AI 播客话题。");
+      setVoiceStatus("AI播客待启动，点击屏幕说出讨论话题。");
+    }
+    savePodcastState();
   }
   function optionLabel(select) {
     if (!select || select.selectedIndex < 0) return "";
@@ -207,6 +251,7 @@
       btn.title = podcast.mode ? "切换到语音" : "切换到AI播客";
     }
     updatePodcastControl();
+    savePodcastState();
   }
   function suspendNormalVoiceMode() {
     if (root.VoiceMode && typeof root.VoiceMode.suspendForPodcast === "function") {
@@ -268,8 +313,10 @@
     var btn = $("voicePodcastBtn");
     var start = $("podcastStartBtn");
     var stop = $("podcastStopBtn");
+    var stageStop = $("podcastStageStopBtn");
     if (start) start.disabled = podcast.active || podcast.starting || podcast.capturingTopic;
     if (stop) stop.disabled = !podcast.active;
+    if (stageStop) stageStop.disabled = !podcast.runId;
     updatePodcastControl();
   }
 
@@ -321,6 +368,7 @@
       podcast.runId = payload.run_id || "";
       podcast.playbackStopped = false;
       podcast.generationDone = false;
+      savePodcastState();
       resetPlaybackState();
       primePlayback();
       renderAssignments(payload);
@@ -347,6 +395,7 @@
     podcast.prioritySpeechActive = false;
     podcast.generationDone = true;
     podcast.topicCaptureArmed = false;
+    savePodcastState();
     setPodcastMode(true);
     setActive(false);
     stopInterjectionCapture();
@@ -434,6 +483,7 @@
       podcast.runId = event.run_id || podcast.runId;
       podcast.playbackStopped = false;
       podcast.generationDone = false;
+      savePodcastState();
       resetPlaybackState();
       primePlayback();
       renderAssignments(event);
@@ -507,6 +557,7 @@
     if (event.type === "podcast.done") {
       podcast.runId = "";
       podcast.generationDone = true;
+      savePodcastState();
       setActive(false);
       setStatus("播客内容已生成完成。");
       setVoiceStatus("AI播客内容已生成完成，继续播放剩余语音...");
@@ -520,6 +571,7 @@
       podcast.playbackStopped = true;
       podcast.playbackPausedForInput = false;
       podcast.prioritySpeechActive = false;
+      savePodcastState();
       setActive(false);
       stopInterjectionCapture();
       setStatus("播客已停止。");
@@ -530,6 +582,7 @@
     if (event.type === "podcast.error") {
       podcast.runId = "";
       podcast.generationDone = true;
+      savePodcastState();
       setActive(false);
       setStatus("播客出错：" + (event.message || "未知错误"));
       setVoiceStatus("AI播客出错：" + (event.message || "未知错误"));
@@ -912,6 +965,14 @@
     return null;
   }
 
+  function shouldIgnoreOverlayTap(target) {
+    if (!target || typeof target.closest !== "function") return false;
+    return Boolean(
+      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop")
+      || target.closest(".voice-circle")
+    );
+  }
+
   function startPodcastFromUi() {
     if (explicitTopicValue()) {
       startPodcast();
@@ -1118,6 +1179,11 @@
     if (start) start.onclick = startPodcastFromUi;
     var stop = $("podcastStopBtn");
     if (stop) stop.onclick = stopPodcast;
+    var stageStop = $("podcastStageStopBtn");
+    if (stageStop) stageStop.onclick = function (event) {
+      event.stopPropagation();
+      stopPodcast();
+    };
     var exit = $("voiceExitBtn");
     if (exit) exit.addEventListener("click", function () {
       if (!podcast.runId && !podcast.starting && !podcast.capturingTopic) {
@@ -1138,8 +1204,7 @@
     var overlay = $("voiceOverlay");
     if (overlay) overlay.addEventListener("click", function (event) {
       if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
-      if (event.target.closest(".voice-stage-head, .voice-footer, .voice-captions, .podcast-dialog")) return;
-      if (event.target.closest(".voice-circle")) return;
+      if (shouldIgnoreOverlayTap(event.target)) return;
       event.stopPropagation();
       event.preventDefault();
       if (podcast.runId) startInterjectionCapture();
@@ -1147,6 +1212,22 @@
       else startTopicCapture();
     }, true);
     renderAgents();
+    restorePodcastSurface();
+    if (root.document) {
+      root.document.addEventListener("visibilitychange", function () {
+        if (root.document.visibilityState === "visible") restorePodcastSurface();
+        else savePodcastState();
+      });
+    }
+    if (root.window) {
+      root.window.addEventListener("pagehide", savePodcastState);
+      root.window.addEventListener("pageshow", restorePodcastSurface);
+      root.window.addEventListener("focus", restorePodcastSurface);
+    } else if (root.addEventListener) {
+      root.addEventListener("pagehide", savePodcastState);
+      root.addEventListener("pageshow", restorePodcastSurface);
+      root.addEventListener("focus", restorePodcastSurface);
+    }
   }
 
   if (root.document) {
@@ -1162,6 +1243,7 @@
       escapeHtml: escapeHtml,
       playbackTimeoutMs: playbackTimeoutMs,
       finalUtteranceText: finalUtteranceText,
+      shouldIgnoreOverlayTap: shouldIgnoreOverlayTap,
     },
   };
 });

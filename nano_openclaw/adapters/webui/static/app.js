@@ -514,6 +514,7 @@ function renderSessions() {
       item.setAttribute("role", "button");
       item.tabIndex = 0;
       const startDate = session.created_at ? new Date(session.created_at * 1000).toLocaleDateString() : "";
+      const deleteLabel = `${isRunning ? "Stop and delete" : "Delete"} session ${session.title || session.session_id.slice(0, 8)}`;
       item.innerHTML = `<span class="session-content">
           <span class="session-id">${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
           <span class="session-preview">${escapeHtml(session.preview || session.session_id.slice(0, 8))}</span>
@@ -522,7 +523,7 @@ function renderSessions() {
             ${isRunning ? `<span class="session-spinner" title="Processing" aria-label="Processing"></span>` : ""}
           </span>
         </span>
-        <button type="button" class="session-delete" title="Delete session" aria-label="Delete session ${escapeHtml(session.title || session.session_id.slice(0, 8))}">×</button>`;
+        <button type="button" class="session-delete" title="${escapeHtml(deleteLabel)}" aria-label="${escapeHtml(deleteLabel)}">×</button>`;
       const selectSession = () => {
         send("session.select", { session_id: session.session_id });
         if (isMobileViewport()) closeDrawers();
