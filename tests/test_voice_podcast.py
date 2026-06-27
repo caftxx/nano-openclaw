@@ -5,7 +5,7 @@ import random
 from types import SimpleNamespace
 
 from nano_openclaw.adapters.webui.server import _webui_payloads_from_push
-from nano_openclaw.api.methods.podcast import podcast_remove_agent, podcast_start, podcast_update_agent
+from nano_openclaw.api.methods.podcast import podcast_add_agent, podcast_remove_agent, podcast_start, podcast_update_agent
 from nano_openclaw.features.voice.podcast import (
     HOST_VOICE_ID,
     _voice_gender,
@@ -325,6 +325,40 @@ def test_podcast_remove_agent_rpc_handler_delegates_to_backend():
     assert backend.call == {"run_id": "run-1", "agent_id": "agent-2"}
 
 
+def test_podcast_add_agent_rpc_handler_delegates_to_backend():
+    class Backend:
+        async def podcast_add_agent(self, *, run_id, agent):
+            self.call = {"run_id": run_id, "agent": agent}
+            return {"ok": True, "agent_id": agent["id"], "generation": 2}
+
+    backend = Backend()
+    result = asyncio.run(
+        podcast_add_agent(
+            SimpleNamespace(backend=backend),
+            {
+                "run_id": "run-1",
+                "agent": {
+                    "id": "agent-3",
+                    "role": "作家",
+                    "voice_id": "zhishuo",
+                    "model_ref": "p/m",
+                },
+            },
+        )
+    )
+
+    assert result == {"ok": True, "agent_id": "agent-3", "generation": 2}
+    assert backend.call == {
+        "run_id": "run-1",
+        "agent": {
+            "id": "agent-3",
+            "role": "作家",
+            "voice_id": "zhishuo",
+            "model_ref": "p/m",
+        },
+    }
+
+
 def test_podcast_update_agent_rpc_handler_delegates_to_backend():
     class Backend:
         async def podcast_update_agent(self, *, run_id, agent):
@@ -357,6 +391,162 @@ def test_podcast_update_agent_rpc_handler_delegates_to_backend():
             "model_ref": "p/m",
         },
     }
+
+
+def test_podcast_update_agent_voice_only_keeps_generation():
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(
+                config=SimpleNamespace(models=SimpleNamespace(providers={})),
+                model_ref="p/m",
+                model_id="m",
+            )
+            self.events = []
+            self._podcast_runs = {
+                "run-1": {
+                    "session_id": "session-1",
+                    "topic": "话题",
+                    "host_voice_id": "xiaoxian",
+                    "run_state": {"generation": 3},
+                    "agents": assign_agents(
+                        [
+                            {
+                                "id": "agent-1",
+                                "role": "作家",
+                                "voice_id": "zhishuo",
+                                "model_ref": "p/m",
+                            }
+                        ],
+                        "话题",
+                        model_refs=["p/m"],
+                        model_labels={"p/m": "m"},
+                    ),
+                }
+            }
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+    backend = Backend()
+    result = asyncio.run(
+        EmbeddedBackend.podcast_update_agent(
+            backend,
+            run_id="run-1",
+            agent={
+                "id": "agent-1",
+                "role": "作家",
+                "voice_id": "xiaogang",
+                "model_ref": "p/m",
+            },
+        )
+    )
+
+    assert result["generation"] == 3
+    assert result["content_changed"] is False
+    assert result["voice_only"] is True
+    assert backend._podcast_runs["run-1"]["run_state"]["generation"] == 3
+    assert backend.events[-1]["content_changed"] is False
+    assert backend.events[-1]["agent"]["voice_id"] == "xiaogang"
+
+
+def test_podcast_add_agent_appends_without_generation_reset():
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(
+                config=SimpleNamespace(models=SimpleNamespace(providers={})),
+                model_ref="p/m",
+                model_id="m",
+            )
+            self.events = []
+            self._podcast_runs = {
+                "run-1": {
+                    "session_id": "session-1",
+                    "topic": "话题",
+                    "host_voice_id": "xiaoxian",
+                    "run_state": {"generation": 3, "removed_agent_ids": set()},
+                    "agents": assign_agents(
+                        [{"id": "agent-1", "role": "作家", "voice_id": "zhishuo", "model_ref": "p/m"}],
+                        "话题",
+                        model_refs=["p/m"],
+                        model_labels={"p/m": "m"},
+                    ),
+                }
+            }
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+    backend = Backend()
+    agents = backend._podcast_runs["run-1"]["agents"]
+    result = asyncio.run(
+        EmbeddedBackend.podcast_add_agent(
+            backend,
+            run_id="run-1",
+            agent={
+                "id": "agent-2",
+                "role": "云计算架构师",
+                "voice_id": "xiaogang",
+                "model_ref": "p/m",
+            },
+        )
+    )
+
+    assert result["generation"] == 3
+    assert result["agent"]["id"] == "agent-2"
+    assert result["agent"]["role"] == "云计算架构师"
+    assert len(agents) == 2
+    assert agents[-1].id == "agent-2"
+    assert backend._podcast_runs["run-1"]["run_state"]["generation"] == 3
+    assert backend.events[-1]["type"] == "podcast.agent.added"
+    assert backend.events[-1]["generation"] == 3
+
+
+def test_podcast_update_agent_content_change_increments_generation():
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(
+                config=SimpleNamespace(models=SimpleNamespace(providers={})),
+                model_ref="p/m",
+                model_id="m",
+            )
+            self.events = []
+            self._podcast_runs = {
+                "run-1": {
+                    "session_id": "session-1",
+                    "topic": "话题",
+                    "host_voice_id": "xiaoxian",
+                    "run_state": {"generation": 3},
+                    "agents": assign_agents(
+                        [{"id": "agent-1", "role": "作家", "voice_id": "zhishuo", "model_ref": "p/m"}],
+                        "话题",
+                        model_refs=["p/m"],
+                        model_labels={"p/m": "m"},
+                    ),
+                }
+            }
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+    backend = Backend()
+    result = asyncio.run(
+        EmbeddedBackend.podcast_update_agent(
+            backend,
+            run_id="run-1",
+            agent={
+                "id": "agent-1",
+                "role": "云计算架构师",
+                "voice_id": "zhishuo",
+                "model_ref": "p/m",
+            },
+        )
+    )
+
+    assert result["generation"] == 4
+    assert result["content_changed"] is True
+    assert result["voice_only"] is False
+    assert backend._podcast_runs["run-1"]["run_state"]["generation"] == 4
+    assert backend.events[-1]["content_changed"] is True
 
 
 def test_podcast_skipped_utterance_event_preserves_sequence_for_playback_queue():

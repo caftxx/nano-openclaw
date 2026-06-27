@@ -38,6 +38,13 @@ async def podcast_remove_agent(ctx: GatewayContext, params: dict[str, Any]) -> d
     )
 
 
+async def podcast_add_agent(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.backend.podcast_add_agent(
+        run_id=str(params.get("run_id") or params.get("runId") or ""),
+        agent=dict(params.get("agent") or {}),
+    )
+
+
 async def podcast_update_agent(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
     return await ctx.backend.podcast_update_agent(
         run_id=str(params.get("run_id") or params.get("runId") or ""),
@@ -50,5 +57,6 @@ HANDLERS = {
     "podcast.input": podcast_input,
     "podcast.stop": podcast_stop,
     "podcast.remove_agent": podcast_remove_agent,
+    "podcast.add_agent": podcast_add_agent,
     "podcast.update_agent": podcast_update_agent,
 }

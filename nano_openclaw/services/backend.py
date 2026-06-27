@@ -362,6 +362,10 @@ class Backend(Protocol):
         """Remove one speaker from an active podcast run without restarting it."""
         ...
 
+    async def podcast_add_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
+        """Append one speaker to an active podcast run without restarting it."""
+        ...
+
     async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
         """Update one speaker in an active podcast run and regenerate affected output."""
         ...

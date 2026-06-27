@@ -110,6 +110,11 @@ class PodcastRemoveAgentRequest(BaseModel):
     agent_id: str
 
 
+class PodcastAddAgentRequest(BaseModel):
+    run_id: str
+    agent: PodcastAgentRequest
+
+
 class PodcastUpdateAgentRequest(BaseModel):
     run_id: str
     agent: PodcastAgentRequest
@@ -228,6 +233,13 @@ def create_app(
     async def podcast_remove_agent(req: PodcastRemoveAgentRequest) -> dict[str, Any]:
         try:
             return await app.state.backend.podcast_remove_agent(run_id=req.run_id, agent_id=req.agent_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/voice/podcast/add_agent", dependencies=[Depends(require_http_token)])
+    async def podcast_add_agent(req: PodcastAddAgentRequest) -> dict[str, Any]:
+        try:
+            return await app.state.backend.podcast_add_agent(run_id=req.run_id, agent=req.agent.model_dump())
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

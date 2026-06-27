@@ -157,7 +157,7 @@ METHODS = frozenset({
     "subagents.list", "subagents.kill",
     # WebUI / Talk / voice
     "webui.state", "voice.token", "talk.config", "talk.speak",
-    "podcast.start", "podcast.input", "podcast.stop", "podcast.remove_agent", "podcast.update_agent",
+    "podcast.start", "podcast.input", "podcast.stop", "podcast.remove_agent", "podcast.add_agent", "podcast.update_agent",
     # Features (active-memory / dreaming / review-fork / curator / checkpoint)
     "active_memory.get", "active_memory.set",
     "dreaming.get", "dreaming.set", "dreaming.run",

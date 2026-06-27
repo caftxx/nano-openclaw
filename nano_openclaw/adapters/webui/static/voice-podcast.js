@@ -60,9 +60,11 @@
     currentSpeakerResolve: null,
     currentPcmPlayer: null,
     currentPcmResolve: null,
+    currentPlaySeq: 0,
     inputRecognizer: null,
     topicRecognizer: null,
     synthJobs: new Map(),
+    speechJobVersions: new Map(),
     synthEngines: new Set(),
     skippedSeqs: new Set(),
     nextSeq: 1,
@@ -319,7 +321,7 @@
         removable: true,
       });
     });
-    if (!podcast.runId && !podcast.starting && podcast.agents.length < MAX_GROUP_AGENTS) {
+    if (!podcast.starting && podcast.agents.length < MAX_GROUP_AGENTS) {
       list.push({ id: "add", kind: "add", name: "添加", emoji: "+", color: "#6b7280", removable: false });
     }
     return list;
@@ -338,7 +340,7 @@
   function isRemovedSpeakerEvent(event) {
     if (!event || event.phase !== "speaker") return false;
     var agentId = String(event.agent_id || event.agentId || "");
-    if (agentId && podcast.removedAgentIds.indexOf(agentId) >= 0) return true;
+    if (agentId) return podcast.removedAgentIds.indexOf(agentId) >= 0;
     var role = String(event.role || "");
     return Boolean(role && podcast.removedSpeakerRoles.indexOf(role) >= 0);
   }
@@ -457,6 +459,19 @@
       if (podcast.agents[i].id === agentId) return podcast.agents[i];
     }
     return null;
+  }
+  function voiceForSpeaker(speakerKey, event) {
+    var agent = findAgent(speakerKey);
+    if (agent && agent.voiceId) {
+      return {
+        id: agent.voiceId,
+        label: agent.voiceLabel || agent.voiceId,
+      };
+    }
+    return {
+      id: event && event.voice_id || "xiaoxian",
+      label: event && (event.voice_label || event.voice_id) || "",
+    };
   }
   function openMemberMenu(member, anchor) {
     if (!member || member.kind === "add" || !root.document) return;
@@ -595,12 +610,7 @@
     if (target && target.focus) target.focus();
   }
   async function openAddAgentEditor(focusField) {
-    if (podcast.runId || podcast.starting) {
-      setStatus("群聊进行中不能添加新成员，请停止后再添加。");
-      setVoiceStatus("群聊进行中不能添加新成员。");
-      updatePodcastControl();
-      return;
-    }
+    if (podcast.starting) return;
     if (podcast.agents.length >= MAX_GROUP_AGENTS) {
       setStatus("群聊最多支持 9 个角色。");
       setVoiceStatus("群聊最多支持 9 个角色。");
@@ -651,25 +661,69 @@
     agent.modelRef = assigned.model_ref || "";
     agent.modelLabel = assigned.model_label || "";
   }
+  function agentFromDraft(draft) {
+    draft = typeof draft === "string" ? { role: draft } : (draft || {});
+    var id = draft.id || ("agent-" + podcast.nextAgentId++);
+    var index = podcast.agents.length;
+    return {
+      id: id,
+      role: safeAgentRole(draft.role || "自动"),
+      assignedRole: draft.assignedRole || "",
+      voiceId: draft.voiceId || draft.voice_id || "",
+      voiceLabel: draft.voiceLabel || draft.voice_label || "",
+      modelRef: draft.modelRef || draft.model_ref || "",
+      modelLabel: draft.modelLabel || draft.model_label || "",
+      emoji: draft.emoji || MEMBER_EMOJIS[index % MEMBER_EMOJIS.length],
+      colorIndex: Number.isFinite(Number(draft.colorIndex)) ? Number(draft.colorIndex) : index,
+    };
+  }
+  function agentFromAssigned(assigned) {
+    return agentFromDraft({
+      id: assigned && assigned.id,
+      role: assigned && (assigned.requested_role || assigned.role),
+      assignedRole: assigned && assigned.role || "",
+      voice_id: assigned && assigned.voice_id,
+      voice_label: assigned && assigned.voice_label,
+      model_ref: assigned && assigned.model_ref,
+      model_label: assigned && assigned.model_label,
+    });
+  }
+  function appendAssignedAgent(assigned) {
+    if (!assigned || !assigned.id) return null;
+    var existing = findAgent(assigned.id);
+    if (existing) {
+      applyAssignedAgent(assigned.id, assigned);
+      return existing;
+    }
+    var agent = agentFromAssigned(assigned);
+    podcast.agents.push(agent);
+    normalizeAgents(podcast.agents);
+    return agent;
+  }
+  function agentEditChange(agent, draft) {
+    return {
+      role: agent.role !== safeAgentRole(draft.role),
+      voice: (agent.voiceId || "") !== (draft.voiceId || ""),
+      model: (agent.modelRef || "") !== (draft.modelRef || ""),
+    };
+  }
   async function confirmAgentEditor() {
     var draft = podcast.editorDraft;
     if (!draft) return;
     if (podcast.editorMode === "add") {
-      if (podcast.runId || podcast.starting) {
-        setStatus("群聊进行中不能添加新成员，请停止后再添加。");
-        setVoiceStatus("群聊进行中不能添加新成员。");
-        setAgentEditor(false);
-        return;
+      if (podcast.runId) {
+        await addGroupAgentDuringRun(draft);
+      } else {
+        addGroupAgent(draft);
       }
-      addGroupAgent(draft);
       setAgentEditor(false);
       return;
     }
     var agent = findAgent(podcast.editingAgentId);
     if (!agent) return;
-    var changed = agent.role !== safeAgentRole(draft.role)
-      || (agent.voiceId || "") !== (draft.voiceId || "")
-      || (agent.modelRef || "") !== (draft.modelRef || "");
+    var changes = agentEditChange(agent, draft);
+    var changed = changes.role || changes.voice || changes.model;
+    var voiceOnly = changes.voice && !changes.role && !changes.model;
     if (agent.role !== draft.role) agent.assignedRole = "";
     agent.role = safeAgentRole(draft.role);
     agent.voiceId = draft.voiceId || "";
@@ -681,8 +735,13 @@
     savePodcastState();
     setAgentEditor(false);
     if (!changed || !podcast.runId) return;
-    setStatus("角色配置已更新，正在重新生成相关内容...");
-    setVoiceStatus("角色配置已更新，正在重新生成内容和语音...");
+    if (voiceOnly) {
+      setStatus("角色音色已更新，正在替换该角色语音...");
+      setVoiceStatus("正在重新生成该角色语音，不影响其他成员。");
+    } else {
+      setStatus("角色配置已更新，正在重新生成相关内容...");
+      setVoiceStatus("角色配置已更新，正在重新生成内容和语音...");
+    }
     try {
       var payload = await apiSafe("/api/voice/podcast/update_agent", {
         run_id: podcast.runId,
@@ -690,7 +749,12 @@
       });
       if (payload && payload.ok === false) throw new Error(payload.reason || "update failed");
       if (payload && payload.agent) applyAssignedAgent(agent.id, payload.agent);
-      resetForAgentConfigChange(payload && payload.generation);
+      if (payload && payload.content_changed === false) {
+        refreshAgentSpeechVoice(agent.id, agent.voiceId || "", agent.voiceLabel || "");
+        setVoiceStatus("该角色语音已切换到新音色。");
+      } else {
+        resetForAgentConfigChange(payload && payload.generation);
+      }
       renderAgents();
       renderParticipants();
       savePodcastState();
@@ -705,21 +769,8 @@
       updatePodcastControl();
       return;
     }
-    var draft = typeof config === "string" ? { role: config } : (config || {});
-    var id = "agent-" + podcast.nextAgentId++;
-    var index = podcast.agents.length;
-    var role = safeAgentRole(draft.role || "自动");
-    podcast.agents.push({
-      id: id,
-      role: role,
-      assignedRole: "",
-      voiceId: draft.voiceId || "",
-      voiceLabel: draft.voiceLabel || "",
-      modelRef: draft.modelRef || "",
-      modelLabel: draft.modelLabel || "",
-      emoji: MEMBER_EMOJIS[index % MEMBER_EMOJIS.length],
-      colorIndex: index,
-    });
+    var agent = agentFromDraft(config);
+    podcast.agents.push(agent);
     setPodcastMode(true);
     podcast.topicCaptureArmed = true;
     setStatus("已添加群成员，可开始群聊。");
@@ -727,6 +778,34 @@
     renderAgents();
     renderParticipants();
     savePodcastState();
+    return agent;
+  }
+  async function addGroupAgentDuringRun(config) {
+    if (podcast.agents.length >= MAX_GROUP_AGENTS) {
+      setStatus("群聊最多支持 9 个角色。");
+      setVoiceStatus("群聊最多支持 9 个角色。");
+      updatePodcastControl();
+      return;
+    }
+    var agent = agentFromDraft(config);
+    setStatus("正在添加群成员...");
+    setVoiceStatus("新成员会从下一轮开始参与。");
+    try {
+      var payload = await apiSafe("/api/voice/podcast/add_agent", {
+        run_id: podcast.runId,
+        agent: agentUpdatePayload(agent),
+      });
+      if (payload && payload.ok === false) throw new Error(payload.reason || "add failed");
+      appendAssignedAgent(payload && payload.agent || agentUpdatePayload(agent));
+      renderAgents();
+      renderParticipants();
+      savePodcastState();
+      setStatus("已添加群成员，下一轮开始参与。");
+      setVoiceStatus("已添加群成员，下一轮开始参与。");
+    } catch (err) {
+      setStatus("添加群成员失败：" + (err && err.message || err));
+      setVoiceStatus("添加群成员失败。");
+    }
   }
   async function removeGroupAgent(agentId) {
     var removedAgent = null;
@@ -939,7 +1018,7 @@
     if (start) start.disabled = podcast.active || podcast.starting || podcast.capturingTopic;
     if (stop) stop.disabled = !podcast.active;
     if (stageStop) stageStop.disabled = !podcast.runId;
-    if (add) add.disabled = podcast.agents.length >= MAX_GROUP_AGENTS || Boolean(podcast.runId || podcast.starting);
+    if (add) add.disabled = podcast.agents.length >= MAX_GROUP_AGENTS || Boolean(podcast.starting);
     updatePodcastControl();
   }
 
@@ -1099,6 +1178,11 @@
     var captions = $("voiceCaptions");
     if (captions) captions.scrollTop = captions.scrollHeight;
   }
+  function updateBubbleSpeaker(entry, speaker) {
+    if (!entry || !entry.node) return;
+    var strong = entry.node.querySelector("strong");
+    if (strong) strong.textContent = speaker || "";
+  }
   function removeAgentBubbles() {
     var captions = $("voiceCaptions");
     if (!captions) return;
@@ -1113,6 +1197,7 @@
     setActiveSpeaker("me", "speaking");
     podcast.utterances.clear();
     podcast.synthJobs.clear();
+    podcast.speechJobVersions.clear();
     podcast.skippedSeqs.clear();
     podcast.nextPlaySeq = 0;
     podcast.playPumpActive = false;
@@ -1131,6 +1216,7 @@
     stopSpeech();
     podcast.utterances.clear();
     podcast.synthJobs.clear();
+    podcast.speechJobVersions.clear();
     podcast.skippedSeqs.clear();
     podcast.nextPlaySeq = 0;
     podcast.playPumpActive = false;
@@ -1187,10 +1273,22 @@
     }
     if (event.type === "podcast.agent.updated") {
       if (event.agent_id && event.agent) applyAssignedAgent(event.agent_id, event.agent);
-      resetForAgentConfigChange(eventGeneration(event));
+      if (event.content_changed === false) {
+        refreshAgentSpeechVoice(event.agent_id || "", event.agent && event.agent.voice_id || "", event.agent && event.agent.voice_label || "");
+      } else {
+        resetForAgentConfigChange(eventGeneration(event));
+      }
       renderAgents();
       renderParticipants();
       savePodcastState();
+      return;
+    }
+    if (event.type === "podcast.agent.added") {
+      appendAssignedAgent(event.agent);
+      renderAgents();
+      renderParticipants();
+      savePodcastState();
+      setVoiceStatus("新群成员已加入，下一轮开始参与。");
       return;
     }
     if (!isCurrentGenerationEvent(event)) return;
@@ -1227,12 +1325,19 @@
       if (podcast.nextPlaySeq <= 0) podcast.nextPlaySeq = seq;
       if (seq >= podcast.nextSeq) podcast.nextSeq = seq + 1;
       var speakerKey = speakerKeyFromRole(event.role, event.phase, event.agent_id || event.agentId || "");
+      var startVoice = voiceForSpeaker(speakerKey, event);
+      speaker = event.role + " · " + (startVoice.label || startVoice.id || "");
       setActiveSpeaker(speakerKey, "generating");
       podcast.utterances.set(event.utterance_id, {
         seq: seq,
         text: "",
         node: addBubble("ai", "", speaker),
         speakerKey: speakerKey,
+        label: phaseLabel(event),
+        speaker: speaker,
+        voiceId: startVoice.id || "",
+        voiceLabel: startVoice.label || "",
+        finalText: "",
       });
       setVoiceStatus(phaseLabel(event) + "生成中...");
       updatePodcastControl();
@@ -1256,17 +1361,28 @@
       }
       var done = podcast.utterances.get(event.utterance_id);
       var finalText = finalUtteranceText(event.text, done);
-      if (done) updateBubble(done, finalText);
+      if (done) {
+        done.finalText = finalText;
+        done.voiceId = event.voice_id || done.voiceId || "";
+        done.voiceLabel = event.voice_label || done.voiceLabel || event.voice_id || "";
+        done.label = phaseLabel(event);
+        updateBubble(done, finalText);
+      }
       var doneSeq = done ? done.seq : (Number(event.sequence) || podcast.nextSeq++);
       if (doneSeq >= podcast.nextSeq) podcast.nextSeq = doneSeq + 1;
       var doneSpeakerKey = done && done.speakerKey || speakerKeyFromRole(event.role, event.phase, event.agent_id || event.agentId || "");
+      var doneVoice = voiceForSpeaker(doneSpeakerKey, event);
       if (event.phase === "interjection") {
         skipSpeechSeq(doneSeq);
-        enqueuePrioritySpeech(finalText, event.voice_id || "xiaoxian", phaseLabel(event), doneSpeakerKey || "host");
+        enqueuePrioritySpeech(finalText, doneVoice.id || "xiaoxian", phaseLabel(event), doneSpeakerKey || "host");
         setVoiceStatus(phaseLabel(event) + "已生成，正在优先准备语音...");
         return;
       }
-      enqueueSpeech(doneSeq, finalText, event.voice_id || "xiaoxian", phaseLabel(event), doneSpeakerKey);
+      if (done) {
+        done.voiceId = doneVoice.id || done.voiceId || "";
+        done.voiceLabel = doneVoice.label || done.voiceLabel || done.voiceId || "";
+      }
+      enqueueSpeech(doneSeq, finalText, doneVoice.id || "xiaoxian", phaseLabel(event), doneSpeakerKey);
       setVoiceStatus(phaseLabel(event) + "已生成，正在准备语音...");
       updatePodcastControl();
       return;
@@ -1378,9 +1494,11 @@
     invalidatePlaybackWork();
     stopSpeech();
     podcast.synthJobs.clear();
+    podcast.speechJobVersions.clear();
     podcast.skippedSeqs.clear();
     podcast.nextSeq = 1;
     podcast.nextPlaySeq = 1;
+    podcast.currentPlaySeq = 0;
     podcast.playPumpActive = false;
     podcast.playbackPausedForInput = false;
     podcast.prioritySpeechActive = false;
@@ -1395,6 +1513,25 @@
     } catch (_) {}
   }
 
+  function makeSpeechJob(seq, text, voiceId, label, speakerKey) {
+    var version = Number(podcast.speechJobVersions.get(seq) || 0) + 1;
+    podcast.speechJobVersions.set(seq, version);
+    var generation = podcast.playbackGeneration;
+    return synthSpeech(text, voiceId, generation).then(function (prepared) {
+      if (!isCurrentPlaybackGeneration(generation) || podcast.speechJobVersions.get(seq) !== version) throw stalePlaybackError();
+      prepared.label = label || ("第 " + seq + " 段");
+      prepared.speakerKey = speakerKey || "";
+      prepared.playbackGeneration = generation;
+      return prepared;
+    }).catch(function (err) {
+      if (isStalePlaybackError(err) || !isCurrentPlaybackGeneration(generation) || podcast.speechJobVersions.get(seq) !== version) {
+        return { kind: "stale", playbackGeneration: generation };
+      }
+      console.warn("[podcast] synth failed; fallback to local", err);
+      return { kind: "local", text: text, voiceId: voiceId, label: label || ("第 " + seq + " 段"), speakerKey: speakerKey || "", playbackGeneration: generation };
+    });
+  }
+
   function enqueueSpeech(seq, text, voiceId, label, speakerKey) {
     text = String(text || "").trim();
     if (!text) {
@@ -1403,22 +1540,31 @@
     }
     setVoiceStatus((label || ("第 " + seq + " 段")) + "语音合成中...");
     if (podcast.nextPlaySeq <= 0) podcast.nextPlaySeq = seq;
-    var generation = podcast.playbackGeneration;
-    var job = synthSpeech(text, voiceId, generation).then(function (prepared) {
-      if (!isCurrentPlaybackGeneration(generation)) throw stalePlaybackError();
-      prepared.label = label || ("第 " + seq + " 段");
-      prepared.speakerKey = speakerKey || "";
-      prepared.playbackGeneration = generation;
-      return prepared;
-    }).catch(function (err) {
-      if (isStalePlaybackError(err) || !isCurrentPlaybackGeneration(generation)) {
-        return { kind: "stale", playbackGeneration: generation };
-      }
-      console.warn("[podcast] synth failed; fallback to local", err);
-      return { kind: "local", text: text, voiceId: voiceId, label: label || ("第 " + seq + " 段"), speakerKey: speakerKey || "", playbackGeneration: generation };
-    });
-    podcast.synthJobs.set(seq, job);
+    podcast.synthJobs.set(seq, makeSpeechJob(seq, text, voiceId, label, speakerKey));
     pumpPlayback();
+  }
+
+  function refreshAgentSpeechVoice(agentId, voiceId, voiceLabel) {
+    agentId = String(agentId || "");
+    if (!agentId) return;
+    var refreshed = 0;
+    podcast.utterances.forEach(function (entry) {
+      if (!entry || entry.speakerKey !== agentId || !entry.seq || !entry.finalText) return;
+      entry.voiceId = voiceId || entry.voiceId || "xiaoxian";
+      entry.voiceLabel = voiceLabel || entry.voiceLabel || entry.voiceId;
+      entry.speaker = entry.speaker ? entry.speaker.replace(/ · .*/, " · " + (entry.voiceLabel || entry.voiceId)) : "";
+      updateBubbleSpeaker(entry, entry.speaker);
+      if (entry.seq < podcast.nextPlaySeq && entry.seq !== podcast.currentPlaySeq) return;
+      podcast.synthJobs.set(entry.seq, makeSpeechJob(entry.seq, entry.finalText, entry.voiceId, entry.label, entry.speakerKey));
+      refreshed++;
+    });
+    if (podcast.playingSpeakerKey === agentId) {
+      stopCurrentPlayback(true);
+    }
+    if (refreshed) {
+      setVoiceStatus("已重新生成该角色的待播放语音。");
+      pumpPlayback();
+    }
   }
 
   async function enqueuePrioritySpeech(text, voiceId, label, speakerKey) {
@@ -1494,9 +1640,11 @@
           continue;
         }
         setVoiceStatus((prepared.label || ("第 " + podcast.nextPlaySeq + " 段")) + "正在发言...");
+        podcast.currentPlaySeq = podcast.nextPlaySeq;
         setPlayingSpeaker(prepared.speakerKey || "");
         updatePodcastControl();
         await playPrepared(prepared);
+        if (podcast.currentPlaySeq === podcast.nextPlaySeq) podcast.currentPlaySeq = 0;
         if (podcast.playingSpeakerKey === (prepared.speakerKey || "")) setPlayingSpeaker("");
         if (podcast.replayCurrentPlayback) {
           podcast.replayCurrentPlayback = false;

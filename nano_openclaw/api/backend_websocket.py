@@ -820,6 +820,9 @@ class WebSocketBackend(Backend):
     async def podcast_remove_agent(self, *, run_id: str, agent_id: str) -> dict[str, Any]:
         return await self._call("podcast.remove_agent", {"run_id": run_id, "agent_id": agent_id}) or {}
 
+    async def podcast_add_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
+        return await self._call("podcast.add_agent", {"run_id": run_id, "agent": agent}) or {}
+
     async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
         return await self._call("podcast.update_agent", {"run_id": run_id, "agent": agent}) or {}
 

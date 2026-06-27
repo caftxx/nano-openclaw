@@ -1938,6 +1938,53 @@ class EmbeddedBackend(Backend):
         })
         return {"ok": True, "agent_id": agent_id}
 
+    async def podcast_add_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
+        run = self._podcast_runs.get(run_id)
+        if run is None:
+            raise NotFoundError(f"podcast run not found: {run_id}")
+        raw_agent = dict(agent or {})
+        agent_id = str(raw_agent.get("id") or raw_agent.get("agent_id") or raw_agent.get("agentId") or "").strip()
+        if not agent_id:
+            return {"ok": False, "reason": "empty agent_id"}
+        run_state = run.get("run_state")
+        if not isinstance(run_state, dict):
+            return {"ok": False, "reason": "invalid run state"}
+        agents = run.get("agents") or []
+        if len(agents) >= 9:
+            return {"ok": False, "reason": "too_many_agents"}
+        if any(str(getattr(current, "id", "") or "") == agent_id for current in agents):
+            return {"ok": False, "reason": "agent_exists", "agent_id": agent_id}
+
+        from nano_openclaw.features.voice.podcast import assign_agents, podcast_model_options
+
+        model_refs, model_labels = podcast_model_options(self.runtime.config)
+        if not model_refs:
+            model_refs = [self.runtime.model_ref]
+            model_labels = {self.runtime.model_ref: self.runtime.model_id}
+        assigned = assign_agents(
+            [raw_agent],
+            str(run.get("topic") or ""),
+            excluded_voice_id=str(run.get("host_voice_id") or ""),
+            model_refs=model_refs,
+            model_labels=model_labels,
+        )[0]
+        agents.append(assigned)
+        run["agents"] = agents
+        removed = run_state.get("removed_agent_ids", set())
+        if isinstance(removed, set):
+            removed.discard(agent_id)
+        generation = int(run_state.get("generation", 0))
+        payload_agent = EmbeddedBackend._podcast_agent_payload(self, assigned)
+        self._emit_podcast({
+            "type": "podcast.agent.added",
+            "run_id": run_id,
+            "session_id": run.get("session_id"),
+            "agent_id": agent_id,
+            "generation": generation,
+            "agent": payload_agent,
+        })
+        return {"ok": True, "agent_id": agent_id, "generation": generation, "agent": payload_agent}
+
     async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
         run = self._podcast_runs.get(run_id)
         if run is None:
@@ -1965,9 +2012,14 @@ class EmbeddedBackend(Backend):
         )[0]
         agents = run.get("agents") or []
         updated = False
+        content_changed = False
         for idx, current in enumerate(agents):
             if str(getattr(current, "id", "") or "") != agent_id:
                 continue
+            content_changed = (
+                str(getattr(current, "role", "") or "") != assigned.role
+                or str(getattr(current, "model_ref", "") or "") != assigned.model_ref
+            )
             agents[idx] = replace(
                 current,
                 role=assigned.role,
@@ -1982,26 +2034,39 @@ class EmbeddedBackend(Backend):
         if not updated:
             return {"ok": False, "reason": "agent_not_found", "agent_id": agent_id}
         run["agents"] = agents
-        run_state["generation"] = int(run_state.get("generation", 0)) + 1
-        generation = int(run_state["generation"])
-        payload_agent = {
-            "id": agent_id,
-            "role": assigned.role,
-            "requested_role": assigned.requested_role,
-            "voice_id": assigned.voice_id,
-            "voice_label": assigned.voice_label,
-            "model_ref": assigned.model_ref,
-            "model_label": assigned.model_label,
-        }
+        if content_changed:
+            run_state["generation"] = int(run_state.get("generation", 0)) + 1
+        generation = int(run_state.get("generation", 0))
+        payload_agent = EmbeddedBackend._podcast_agent_payload(self, replace(assigned, id=agent_id))
         self._emit_podcast({
             "type": "podcast.agent.updated",
             "run_id": run_id,
             "session_id": run.get("session_id"),
             "agent_id": agent_id,
             "generation": generation,
+            "content_changed": content_changed,
+            "voice_only": not content_changed,
             "agent": payload_agent,
         })
-        return {"ok": True, "agent_id": agent_id, "generation": generation, "agent": payload_agent}
+        return {
+            "ok": True,
+            "agent_id": agent_id,
+            "generation": generation,
+            "content_changed": content_changed,
+            "voice_only": not content_changed,
+            "agent": payload_agent,
+        }
+
+    def _podcast_agent_payload(self, agent: Any) -> dict[str, Any]:
+        return {
+            "id": getattr(agent, "id", ""),
+            "role": getattr(agent, "role", ""),
+            "requested_role": getattr(agent, "requested_role", ""),
+            "voice_id": getattr(agent, "voice_id", ""),
+            "voice_label": getattr(agent, "voice_label", ""),
+            "model_ref": getattr(agent, "model_ref", ""),
+            "model_label": getattr(agent, "model_label", ""),
+        }
 
     async def _run_podcast(
         self,
