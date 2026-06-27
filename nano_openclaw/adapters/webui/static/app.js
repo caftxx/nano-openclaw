@@ -125,7 +125,11 @@ async function api(path, options = {}) {
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const qs = state.token ? `?token=${encodeURIComponent(state.token)}` : "";
+  const params = new URLSearchParams();
+  if (state.token) params.set("token", state.token);
+  const sessionId = currentSessionId();
+  if (sessionId) params.set("session_id", sessionId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
   state.ws = new WebSocket(`${scheme}://${location.host}/ws${qs}`);
   state.ws.onopen = () => {
     state.reconnectDelay = 1200;
@@ -138,6 +142,31 @@ function connect() {
     state.reconnectDelay = Math.min(state.reconnectDelay * 1.6, 10000);
     setTimeout(connect, delay);
   };
+}
+
+async function createSessionAndRender() {
+  const data = await api("/api/sessions", { method: "POST", body: "{}" });
+  state.sessions = data.sessions;
+  state.currentSession = data.session;
+  syncSessionActiveTurn(state.currentSession);
+  if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
+  renderSessions();
+  updateSendBtn();
+  renderHistory();
+  return state.currentSession;
+}
+
+async function startWebClient() {
+  try {
+    await createSessionAndRender();
+  } catch (error) {
+    if (String(error?.message || error) !== "unauthorized") {
+      addEvent("startup.error", String(error?.message || error), { type: "startup.error" });
+    }
+    return;
+  }
+  connect();
+  $("prompt").focus();
 }
 
 function send(type, payload = {}) {
@@ -1480,14 +1509,7 @@ $("prompt").onkeydown = (event) => {
 };
 
 $("newSessionNavBtn").onclick = async () => {
-  const data = await api("/api/sessions", { method: "POST", body: "{}" });
-  state.sessions = data.sessions;
-  state.currentSession = data.session;
-  syncSessionActiveTurn(state.currentSession);
-  if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
-  renderSessions();
-  updateSendBtn();
-  renderHistory();
+  await createSessionAndRender();
   if (isMobileViewport()) closeDrawers();
 };
 
@@ -1509,7 +1531,7 @@ $("tokenSave").onclick = () => {
   state.token = $("tokenInput").value.trim();
   localStorage.setItem("nanoOpenClawToken", state.token);
   $("tokenDialog").classList.add("hidden");
-  connect();
+  startWebClient();
   $("prompt").focus();
 };
 
@@ -1567,6 +1589,5 @@ themeMedia.addEventListener("change", () => {
 
 applyThemePreference();
 syncDrawerStateForViewport();
-connect();
-$("prompt").focus();
 resizePrompt();
+startWebClient();

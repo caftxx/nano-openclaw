@@ -334,6 +334,7 @@ def create_app(
         send_lock = asyncio.Lock()
         turn_sessions: dict[str, str] = {}
         current_session_id: str | None = None
+        initial_session_id = websocket.query_params.get("session_id") or None
 
         async def send(payload: dict[str, Any]) -> None:
             async with send_lock:
@@ -359,7 +360,13 @@ def create_app(
 
         try:
             await emit({"type": "state.updated", **await backend.webui_state()})
-            current = manager.get_or_load(None)
+            if initial_session_id:
+                try:
+                    current = manager.select(initial_session_id)
+                except KeyError:
+                    current = manager.get_or_load(None)
+            else:
+                current = manager.get_or_load(None)
             current_session_id = current.session_id
             await emit({"type": "session.updated", "session": _session_payload(manager, current), "sessions": manager.list()})
             while True:
