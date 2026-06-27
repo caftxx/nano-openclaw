@@ -13,7 +13,7 @@
         document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260627-agent-editor-disabled" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260627-group-session-update-ignore" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -140,6 +140,10 @@
       <div id="podcastStage" class="podcast-stage" hidden>
         <div class="podcast-stage-bar">
           <div class="podcast-stage-label">群聊</div>
+          <label class="podcast-round-control">
+            <span>轮数</span>
+            <input id="podcastStageRounds" type="number" min="1" max="100" value="20" aria-label="群聊轮数" />
+          </label>
           <button id="podcastStageStopBtn" class="podcast-stage-stop" type="button" disabled>停止</button>
         </div>
         <div id="groupAgentGrid" class="group-agent-grid" aria-label="群聊角色"></div>
@@ -255,6 +259,6 @@
     <script src="/static/voice-speaker-provider.js?v=20260613-talk-provider"></script>
     <script src="/static/voice-view.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-shell.js?v=20260613-provider"></script>
-    <script src="/static/voice-podcast.js?v=20260627-agent-editor-disabled"></script>
+    <script src="/static/voice-podcast.js?v=20260627-group-session-update-ignore"></script>
   </body>
 </html>

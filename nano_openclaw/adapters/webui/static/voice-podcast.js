@@ -27,6 +27,7 @@
   var AGENTS_KEY = "nanoGroupAgents";
   var TOPIC_KEY = "nanoGroupTopic";
   var HOST_MODEL_KEY = "nanoGroupHostModel";
+  var ROUNDS_KEY = "nanoGroupRounds";
   var MAX_GROUP_AGENTS = 9;
   var CLOUD_TTS_MAX_CONCURRENCY = 2;
   var CLOUD_TTS_MAX_ATTEMPTS = 3;
@@ -58,6 +59,7 @@
     removedSpeakerRoles: [],
     hostModelRef: "",
     hostModelLabel: "",
+    rounds: 20,
     utterances: new Map(),
     currentSpeaker: null,
     currentSpeakerResolve: null,
@@ -181,7 +183,7 @@
   function savePodcastState(sessionId) {
     var sid = storageSessionId(sessionId);
     if (!sid) return;
-    if (podcast.mode || podcast.runId || podcast.topicCaptureArmed) {
+    if (hasLocalPodcastState()) {
       sessionSet(MODE_KEY, "1", sid);
       if (podcast.runId) sessionSet(RUN_KEY, podcast.runId, sid);
       else sessionRemove(RUN_KEY, sid);
@@ -190,6 +192,7 @@
       else sessionRemove(TOPIC_KEY, sid);
       if (podcast.hostModelRef) sessionSet(HOST_MODEL_KEY, JSON.stringify({ ref: podcast.hostModelRef, label: podcast.hostModelLabel || "" }), sid);
       else sessionRemove(HOST_MODEL_KEY, sid);
+      sessionSet(ROUNDS_KEY, String(normalizeRounds(podcast.rounds)), sid);
       return;
     }
     sessionRemove(MODE_KEY, sid);
@@ -197,9 +200,13 @@
     sessionRemove(AGENTS_KEY, sid);
     sessionRemove(TOPIC_KEY, sid);
     sessionRemove(HOST_MODEL_KEY, sid);
+    sessionRemove(ROUNDS_KEY, sid);
   }
   function hasPodcastState(sessionId) {
     return Boolean(sessionGet(MODE_KEY, sessionId) || sessionGet(RUN_KEY, sessionId) || sessionGet(AGENTS_KEY, sessionId));
+  }
+  function hasLocalPodcastState() {
+    return Boolean(podcast.mode || podcast.runId || podcast.topicCaptureArmed || podcast.agents.length || podcast.starting || podcast.capturingTopic);
   }
   function resetPodcastRuntimeForSession(sessionId) {
     stopInterjectionCapture();
@@ -216,6 +223,7 @@
     podcast.lastTopic = "";
     podcast.hostModelRef = "";
     podcast.hostModelLabel = "";
+    podcast.rounds = 20;
     podcast.removedAgentIds = [];
     podcast.removedSpeakerRoles = [];
     podcast.utterances.clear();
@@ -237,10 +245,16 @@
     renderAgents();
     renderParticipants();
     updatePodcastControl();
+    syncRoundInputs(podcast.rounds);
   }
   function handleSessionChanged(sessionId) {
     var sid = String(sessionId || currentSessionId() || "");
     if (!sid || podcast.sessionId === sid) return;
+    if (!podcast.sessionId && hasLocalPodcastState()) {
+      podcast.sessionId = sid;
+      savePodcastState(sid);
+      return;
+    }
     if (podcast.sessionId) savePodcastState(podcast.sessionId);
     if (hasPodcastState(sid)) {
       resetPodcastRuntimeForSession(sid);
@@ -266,6 +280,8 @@
     }
     if (!podcast.agents.length) podcast.agents = normalizeAgents(sessionGetJson(AGENTS_KEY, [], sid));
     if (!podcast.lastTopic) podcast.lastTopic = sessionGet(TOPIC_KEY, sid);
+    podcast.rounds = normalizeRounds(sessionGet(ROUNDS_KEY, sid) || podcast.rounds || 20);
+    syncRoundInputs(podcast.rounds);
     if (!podcast.hostModelRef) {
       var savedHostModel = sessionGetJson(HOST_MODEL_KEY, null, sid);
       if (savedHostModel) {
@@ -298,6 +314,34 @@
     }
     renderAgents();
     renderParticipants();
+    syncRoundInputs(podcast.rounds);
+    savePodcastState();
+  }
+  function normalizeRounds(value) {
+    var n = Number(value);
+    if (!Number.isFinite(n)) n = 20;
+    n = Math.round(n);
+    return Math.max(1, Math.min(100, n));
+  }
+  function syncRoundInputs(value) {
+    var normalized = normalizeRounds(value);
+    podcast.rounds = normalized;
+    ["podcastRounds", "podcastStageRounds"].forEach(function (id) {
+      var input = $(id);
+      if (!input) return;
+      input.value = String(normalized);
+      input.disabled = Boolean(podcast.runId || podcast.starting);
+    });
+  }
+  function currentPodcastRounds() {
+    var stage = $("podcastStageRounds");
+    var dialog = $("podcastRounds");
+    var value = stage && stage.value ? stage.value : dialog && dialog.value ? dialog.value : podcast.rounds;
+    return normalizeRounds(value);
+  }
+  function updatePodcastRounds(value) {
+    podcast.rounds = normalizeRounds(value);
+    syncRoundInputs(podcast.rounds);
     savePodcastState();
   }
   function optionLabel(select) {
@@ -1219,6 +1263,7 @@
       podcast.topicCaptureArmed = true;
       renderAgents();
       renderParticipants();
+      syncRoundInputs(podcast.rounds);
       updateHostPreview();
       loadVoiceConfig().then(updateHostPreview).catch(function () {});
       setStatus("可输入话题，或直接点击开始群聊。");
@@ -1320,6 +1365,7 @@
     if (stop) stop.disabled = !podcast.active;
     if (stageStop) stageStop.disabled = !podcast.runId;
     if (add) add.disabled = podcast.agents.length >= MAX_GROUP_AGENTS || Boolean(podcast.starting);
+    syncRoundInputs(podcast.rounds);
     updatePodcastControl();
   }
 
@@ -1349,6 +1395,7 @@
   async function startPodcast(topicOverride) {
     if (podcast.active || podcast.starting) return;
     if (!podcast.agents.length) addGroupAgent();
+    if (!podcast.sessionId) podcast.sessionId = String(currentSessionId() || "");
     podcast.starting = true;
     podcast.topicCaptureArmed = false;
     setPodcastMode(true);
@@ -1356,16 +1403,16 @@
     setStatus("正在启动...");
     setVoiceStatus("群聊正在启动...");
     try {
-      var roundsEl = $("podcastRounds");
       await loadVoiceConfig();
       var hostVoice = currentHostVoice();
       podcast.lastTopic = topicValue(topicOverride);
+      podcast.rounds = currentPodcastRounds();
       podcast.removedAgentIds = [];
       podcast.removedSpeakerRoles = [];
       var payload = await apiSafe("/api/voice/podcast/start", {
         session_id: currentSessionId(),
         topic: podcast.lastTopic,
-        rounds: Number(roundsEl && roundsEl.value || 20),
+        rounds: podcast.rounds,
         host_voice_id: hostVoice.id,
         host_voice_label: hostVoice.label,
         host_model_ref: podcast.hostModelRef || runtimeModelRef(),
@@ -1555,7 +1602,6 @@
   function onEvent(event) {
     if (!event || typeof event.type !== "string") return;
     if (event.type === "session.updated") {
-      handleSessionChanged(event.session && event.session.session_id || "");
       return;
     }
     if (!event.type.startsWith("podcast.")) return;
@@ -2345,7 +2391,7 @@
   function shouldIgnoreOverlayTap(target) {
     if (!target || typeof target.closest !== "function") return false;
     return Boolean(
-      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-action-chip, .group-member-menu, .group-participant, .group-agent-grid")
+      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-round-control, .podcast-action-chip, .group-member-menu, .group-participant, .group-agent-grid")
       || target.closest(".voice-circle")
     );
   }
@@ -2361,6 +2407,7 @@
 
   function startTopicCapture() {
     if (podcast.runId || podcast.starting || podcast.capturingTopic) return;
+    if (!podcast.sessionId) podcast.sessionId = String(currentSessionId() || "");
     var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
     if (!SR) {
       setDialog(true);
@@ -2391,6 +2438,10 @@
       stopTopicCapture();
       if (!text) {
         podcast.topicCaptureArmed = true;
+        if (podcast.agents.length) {
+          setDialog(false);
+          setPodcastMode(true);
+        }
         setStatus("没有听清话题，点击屏幕可重试。");
         setVoiceStatus("没有听清话题，点击屏幕可重新说。");
         return;
@@ -2403,6 +2454,10 @@
     rec.onerror = function () {
       stopTopicCapture();
       podcast.topicCaptureArmed = true;
+      if (podcast.agents.length) {
+        setDialog(false);
+        setPodcastMode(true);
+      }
       setStatus("话题识别失败，点击屏幕可重试。");
       setVoiceStatus("话题识别失败，点击屏幕可重新说。");
       updatePodcastControl();
@@ -2414,6 +2469,10 @@
       updatePodcastControl();
       if (!submitted && !podcast.runId && !podcast.starting) {
         podcast.topicCaptureArmed = true;
+        if (podcast.agents.length) {
+          setDialog(false);
+          setPodcastMode(true);
+        }
         setStatus("点击屏幕空白处，说出群聊话题。");
         setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
       }
@@ -2421,6 +2480,10 @@
     try { rec.start(); } catch (_) {
       stopTopicCapture();
       podcast.topicCaptureArmed = true;
+      if (podcast.agents.length) {
+        setDialog(false);
+        setPodcastMode(true);
+      }
       setStatus("话题识别启动失败，点击屏幕可重试。");
       setVoiceStatus("话题识别启动失败。");
       updatePodcastControl();
@@ -2578,6 +2641,19 @@
       event.stopPropagation();
       openAddAgentEditor();
     };
+    var normalVoiceCircle = $("voiceCircle");
+    if (normalVoiceCircle) normalVoiceCircle.addEventListener("click", function (event) {
+      if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed && !podcast.agents.length) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!podcast.mode && podcast.agents.length) {
+        podcast.topicCaptureArmed = true;
+        setPodcastMode(true);
+      }
+      if (podcast.runId) startInterjectionCapture();
+      else if (explicitTopicValue()) startPodcast();
+      else startTopicCapture();
+    }, true);
     var start = $("podcastStartBtn");
     if (start) start.onclick = startPodcastFromUi;
     var stop = $("podcastStopBtn");
@@ -2587,6 +2663,14 @@
       event.stopPropagation();
       stopPodcast();
     };
+    ["podcastRounds", "podcastStageRounds"].forEach(function (id) {
+      var input = $(id);
+      if (!input) return;
+      input.onchange = function () { updatePodcastRounds(input.value); };
+      input.oninput = function () {
+        if (input.value !== "") updatePodcastRounds(input.value);
+      };
+    });
     var exit = $("voiceExitBtn");
     if (exit) exit.addEventListener("click", function (event) {
       if (podcast.runId || podcast.starting || podcast.capturingTopic || podcast.capturingInput) {
@@ -2600,6 +2684,10 @@
     }, true);
     var podcastCircle = $("podcastCircle");
     if (podcastCircle) podcastCircle.addEventListener("click", function (event) {
+      if (!podcast.mode && podcast.agents.length) {
+        podcast.topicCaptureArmed = true;
+        setPodcastMode(true);
+      }
       if (!podcast.mode) return;
       event.stopPropagation();
       event.preventDefault();
@@ -2609,6 +2697,10 @@
     }, true);
     var overlay = $("voiceOverlay");
     if (overlay) overlay.addEventListener("click", function (event) {
+      if (!podcast.mode && !podcast.runId && podcast.agents.length) {
+        podcast.topicCaptureArmed = true;
+        setPodcastMode(true);
+      }
       if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
       if (shouldIgnoreOverlayTap(event.target)) return;
       event.stopPropagation();
