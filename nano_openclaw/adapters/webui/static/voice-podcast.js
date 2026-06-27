@@ -75,6 +75,7 @@
     editorDraft: null,
     modelOptions: null,
     playPumpActive: false,
+    playbackGeneration: 0,
     voiceCfg: null,
     cloudTtsActive: 0,
     cloudTtsQueue: [],
@@ -318,7 +319,7 @@
         removable: true,
       });
     });
-    if (podcast.agents.length < MAX_GROUP_AGENTS) {
+    if (!podcast.runId && !podcast.starting && podcast.agents.length < MAX_GROUP_AGENTS) {
       list.push({ id: "add", kind: "add", name: "添加", emoji: "+", color: "#6b7280", removable: false });
     }
     return list;
@@ -594,6 +595,12 @@
     if (target && target.focus) target.focus();
   }
   async function openAddAgentEditor(focusField) {
+    if (podcast.runId || podcast.starting) {
+      setStatus("群聊进行中不能添加新成员，请停止后再添加。");
+      setVoiceStatus("群聊进行中不能添加新成员。");
+      updatePodcastControl();
+      return;
+    }
     if (podcast.agents.length >= MAX_GROUP_AGENTS) {
       setStatus("群聊最多支持 9 个角色。");
       setVoiceStatus("群聊最多支持 9 个角色。");
@@ -648,6 +655,12 @@
     var draft = podcast.editorDraft;
     if (!draft) return;
     if (podcast.editorMode === "add") {
+      if (podcast.runId || podcast.starting) {
+        setStatus("群聊进行中不能添加新成员，请停止后再添加。");
+        setVoiceStatus("群聊进行中不能添加新成员。");
+        setAgentEditor(false);
+        return;
+      }
       addGroupAgent(draft);
       setAgentEditor(false);
       return;
@@ -792,7 +805,13 @@
         select.appendChild(opt);
       });
       select.value = agent.role || "自动";
+      select.disabled = Boolean(podcast.runId || podcast.starting);
       select.onchange = function () {
+        if (podcast.runId || podcast.starting) {
+          select.value = agent.role || "自动";
+          setStatus("群聊进行中请点击角色头像修改身份。");
+          return;
+        }
         podcast.agents[index].role = select.value;
         podcast.agents[index].assignedRole = "";
         renderParticipants();
@@ -920,7 +939,7 @@
     if (start) start.disabled = podcast.active || podcast.starting || podcast.capturingTopic;
     if (stop) stop.disabled = !podcast.active;
     if (stageStop) stageStop.disabled = !podcast.runId;
-    if (add) add.disabled = podcast.agents.length >= MAX_GROUP_AGENTS;
+    if (add) add.disabled = podcast.agents.length >= MAX_GROUP_AGENTS || Boolean(podcast.runId || podcast.starting);
     updatePodcastControl();
   }
 
@@ -1018,6 +1037,7 @@
     setActive(false);
     stopInterjectionCapture();
     stopTopicCapture();
+    invalidatePlaybackWork();
     stopSpeech();
     setStatus("正在停止...");
     setVoiceStatus("群聊正在停止...");
@@ -1088,6 +1108,7 @@
 
   function resetForUserInput(generation) {
     if (Number.isFinite(Number(generation))) podcast.generation = Number(generation);
+    invalidatePlaybackWork();
     stopSpeech();
     setActiveSpeaker("me", "speaking");
     podcast.utterances.clear();
@@ -1106,6 +1127,7 @@
 
   function resetForAgentConfigChange(generation) {
     if (Number.isFinite(Number(generation))) podcast.generation = Number(generation);
+    invalidatePlaybackWork();
     stopSpeech();
     podcast.utterances.clear();
     podcast.synthJobs.clear();
@@ -1273,6 +1295,8 @@
       podcast.topicCaptureArmed = podcast.agents.length > 0;
       setActiveSpeaker("", "");
       setPlayingSpeaker("");
+      invalidatePlaybackWork();
+      stopSpeech();
       savePodcastState();
       setActive(false);
       stopInterjectionCapture();
@@ -1284,8 +1308,11 @@
     if (event.type === "podcast.error") {
       podcast.runId = "";
       podcast.generationDone = true;
+      podcast.playbackStopped = true;
       setActiveSpeaker("", "");
       setPlayingSpeaker("");
+      invalidatePlaybackWork();
+      stopSpeech();
       savePodcastState();
       setActive(false);
       setStatus("群聊出错：" + (event.message || "未知错误"));
@@ -1303,6 +1330,26 @@
     setActiveSpeaker("", "");
     setPlayingSpeaker("");
     updatePodcastControl();
+  }
+
+  function stalePlaybackError() {
+    return new Error("stale podcast playback generation");
+  }
+
+  function isCurrentPlaybackGeneration(generation) {
+    return generation === podcast.playbackGeneration;
+  }
+
+  function isStalePlaybackError(err) {
+    return String(err && err.message || err || "").indexOf("stale podcast playback generation") >= 0;
+  }
+
+  function invalidatePlaybackWork() {
+    podcast.playbackGeneration++;
+    var queued = podcast.cloudTtsQueue.splice(0);
+    queued.forEach(function (entry) {
+      try { entry.reject(stalePlaybackError()); } catch (_) {}
+    });
   }
 
   function stopCurrentPlayback(replayCurrent) {
@@ -1328,6 +1375,7 @@
   }
 
   function resetPlaybackState() {
+    invalidatePlaybackWork();
     stopSpeech();
     podcast.synthJobs.clear();
     podcast.skippedSeqs.clear();
@@ -1355,13 +1403,19 @@
     }
     setVoiceStatus((label || ("第 " + seq + " 段")) + "语音合成中...");
     if (podcast.nextPlaySeq <= 0) podcast.nextPlaySeq = seq;
-    var job = synthSpeech(text, voiceId).then(function (prepared) {
+    var generation = podcast.playbackGeneration;
+    var job = synthSpeech(text, voiceId, generation).then(function (prepared) {
+      if (!isCurrentPlaybackGeneration(generation)) throw stalePlaybackError();
       prepared.label = label || ("第 " + seq + " 段");
       prepared.speakerKey = speakerKey || "";
+      prepared.playbackGeneration = generation;
       return prepared;
     }).catch(function (err) {
+      if (isStalePlaybackError(err) || !isCurrentPlaybackGeneration(generation)) {
+        return { kind: "stale", playbackGeneration: generation };
+      }
       console.warn("[podcast] synth failed; fallback to local", err);
-      return { kind: "local", text: text, voiceId: voiceId, label: label || ("第 " + seq + " 段"), speakerKey: speakerKey || "" };
+      return { kind: "local", text: text, voiceId: voiceId, label: label || ("第 " + seq + " 段"), speakerKey: speakerKey || "", playbackGeneration: generation };
     });
     podcast.synthJobs.set(seq, job);
     pumpPlayback();
@@ -1375,13 +1429,16 @@
       return;
     }
     podcast.prioritySpeechActive = true;
+    var generation = podcast.playbackGeneration;
     updatePodcastControl();
     try {
       setVoiceStatus((label || "主持人回应") + "语音合成中...");
-      var prepared = await synthSpeech(text, voiceId).catch(function (err) {
+      var prepared = await synthSpeech(text, voiceId, generation).catch(function (err) {
+        if (isStalePlaybackError(err) || !isCurrentPlaybackGeneration(generation)) return { kind: "stale" };
         console.warn("[podcast] priority synth failed; fallback to local", err);
         return { kind: "local", text: text, voiceId: voiceId };
       });
+      if (!isCurrentPlaybackGeneration(generation) || prepared.kind === "stale") return;
       prepared.label = label || "主持人回应";
       prepared.speakerKey = speakerKey || "host";
       if (isRemovedSpeakerKey(prepared.speakerKey)) return;
@@ -1416,10 +1473,11 @@
   async function pumpPlayback() {
     if (podcast.playPumpActive) return;
     if (podcast.playbackPausedForInput || podcast.prioritySpeechActive) return;
+    var generation = podcast.playbackGeneration;
     podcast.playPumpActive = true;
     updatePodcastControl();
     try {
-      while (!podcast.playbackStopped) {
+      while (!podcast.playbackStopped && isCurrentPlaybackGeneration(generation)) {
         if (podcast.playbackPausedForInput || podcast.prioritySpeechActive) break;
         advanceSkippedSeqs();
         var job = podcast.synthJobs.get(podcast.nextPlaySeq);
@@ -1428,6 +1486,7 @@
           break;
         }
         var prepared = await job;
+        if (!isCurrentPlaybackGeneration(generation) || prepared.kind === "stale") break;
         if (podcast.playbackStopped) break;
         if (isRemovedSpeakerKey(prepared.speakerKey)) {
           podcast.synthJobs.delete(podcast.nextPlaySeq);
@@ -1447,6 +1506,7 @@
         podcast.nextPlaySeq++;
       }
     } finally {
+      if (!isCurrentPlaybackGeneration(generation)) return;
       podcast.playPumpActive = false;
       advanceSkippedSeqs();
       if (!podcast.playbackStopped && podcast.synthJobs.has(podcast.nextPlaySeq)) pumpPlayback();
@@ -1458,17 +1518,20 @@
     }
   }
 
-  async function synthSpeech(text, voiceId) {
+  async function synthSpeech(text, voiceId, playbackGeneration) {
     await loadVoiceConfig();
+    if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
     var out = selectedOut();
     if (out === "aliyun-flowing" && aliyunTtsUsable()) {
-      try { return await synthFlowing(text, voiceId); }
+      try { return await synthFlowing(text, voiceId, playbackGeneration); }
       catch (err) { console.warn("[podcast] flowing synth failed", err); }
     }
+    if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
     if (out !== "local" && aliyunTtsUsable()) {
-      try { return await synthRest(text, voiceId); }
+      try { return await synthRest(text, voiceId, playbackGeneration); }
       catch (err2) { console.warn("[podcast] rest synth failed", err2); }
     }
+    if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
     return { kind: "local", text: text, voiceId: voiceId };
   }
 
@@ -1477,11 +1540,11 @@
     return Boolean(cfg.available && cfg.appkey && cfg.endpoint && cfg.tts && cfg.tts.enabled);
   }
 
-  function synthFlowing(text, voiceId) {
+  function synthFlowing(text, voiceId, playbackGeneration) {
     if (typeof root.createFlowingSpeaker !== "function") {
       return Promise.reject(new Error("flowing speaker unavailable"));
     }
-    return synthCloudAudioWithRetry("aliyun-flowing", function () {
+    return synthCloudAudioWithRetry("aliyun-flowing", playbackGeneration, function () {
       return collectCloudAudio(function (callbacks) {
         return root.createFlowingSpeaker({
           getConfig: function () {
@@ -1504,11 +1567,11 @@
     });
   }
 
-  function synthRest(text, voiceId) {
+  function synthRest(text, voiceId, playbackGeneration) {
     if (typeof root.createRestSpeaker !== "function") {
       return Promise.reject(new Error("rest speaker unavailable"));
     }
-    return synthCloudAudioWithRetry("aliyun-rest", function () {
+    return synthCloudAudioWithRetry("aliyun-rest", playbackGeneration, function () {
       return collectCloudAudio(function (callbacks) {
         return root.createRestSpeaker({
           url: "/api/talk/speak",
@@ -1525,13 +1588,15 @@
     });
   }
 
-  async function synthCloudAudioWithRetry(engineName, task) {
+  async function synthCloudAudioWithRetry(engineName, playbackGeneration, task) {
     var lastErr = null;
     for (var attempt = 1; attempt <= CLOUD_TTS_MAX_ATTEMPTS; attempt++) {
       try {
-        return await withCloudTtsSlot(task);
+        if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
+        return await withCloudTtsSlot(task, playbackGeneration);
       } catch (err) {
         lastErr = err;
+        if (isStalePlaybackError(err) || !isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
         if (attempt >= CLOUD_TTS_MAX_ATTEMPTS || !isRetryableCloudTtsError(err)) throw err;
         console.warn("[podcast] " + engineName + " synth retry " + attempt + "/" + CLOUD_TTS_MAX_ATTEMPTS, err);
         await sleep(cloudTtsRetryDelayMs(attempt));
@@ -1540,9 +1605,13 @@
     throw lastErr || new Error(engineName + " failed");
   }
 
-  function withCloudTtsSlot(task) {
+  function withCloudTtsSlot(task, playbackGeneration) {
     return new Promise(function (resolve, reject) {
       function run() {
+        if (!isCurrentPlaybackGeneration(playbackGeneration)) {
+          reject(stalePlaybackError());
+          return;
+        }
         podcast.cloudTtsActive++;
         Promise.resolve()
           .then(task)
@@ -1553,14 +1622,14 @@
           });
       }
       if (podcast.cloudTtsActive < CLOUD_TTS_MAX_CONCURRENCY) run();
-      else podcast.cloudTtsQueue.push(run);
+      else podcast.cloudTtsQueue.push({ run: run, reject: reject, playbackGeneration: playbackGeneration });
     });
   }
 
   function drainCloudTtsQueue() {
     while (podcast.cloudTtsActive < CLOUD_TTS_MAX_CONCURRENCY && podcast.cloudTtsQueue.length) {
       var next = podcast.cloudTtsQueue.shift();
-      if (next) next();
+      if (next) next.run();
     }
   }
 
@@ -2016,10 +2085,16 @@
       stopPodcast();
     };
     var exit = $("voiceExitBtn");
-    if (exit) exit.addEventListener("click", function () {
-      if (podcast.runId || podcast.starting || podcast.capturingTopic || podcast.capturingInput) return;
+    if (exit) exit.addEventListener("click", function (event) {
+      if (podcast.runId || podcast.starting || podcast.capturingTopic || podcast.capturingInput) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setStatus("群聊进行中，请先点击停止。");
+        setVoiceStatus("群聊进行中，请先点击停止。");
+        return;
+      }
       if (podcast.agents.length) exitGroupChat();
-    });
+    }, true);
     var podcastCircle = $("podcastCircle");
     if (podcastCircle) podcastCircle.addEventListener("click", function (event) {
       if (!podcast.mode) return;
@@ -2039,23 +2114,30 @@
       else if (explicitTopicValue()) startPodcast();
       else startTopicCapture();
     }, true);
+    function restoreAndResumePodcast() {
+      restorePodcastSurface();
+      if (podcast.mode || podcast.runId) {
+        primePlayback();
+        if (!podcast.playbackStopped) pumpPlayback();
+      }
+    }
     renderAgents();
     renderParticipants();
     restorePodcastSurface();
     if (root.document) {
       root.document.addEventListener("visibilitychange", function () {
-        if (root.document.visibilityState === "visible") restorePodcastSurface();
+        if (root.document.visibilityState === "visible") restoreAndResumePodcast();
         else savePodcastState();
       });
     }
     if (root.window) {
       root.window.addEventListener("pagehide", savePodcastState);
-      root.window.addEventListener("pageshow", restorePodcastSurface);
-      root.window.addEventListener("focus", restorePodcastSurface);
+      root.window.addEventListener("pageshow", restoreAndResumePodcast);
+      root.window.addEventListener("focus", restoreAndResumePodcast);
     } else if (root.addEventListener) {
       root.addEventListener("pagehide", savePodcastState);
-      root.addEventListener("pageshow", restorePodcastSurface);
-      root.addEventListener("focus", restorePodcastSurface);
+      root.addEventListener("pageshow", restoreAndResumePodcast);
+      root.addEventListener("focus", restoreAndResumePodcast);
     }
     if (root.document) {
       root.document.addEventListener("click", function (event) {

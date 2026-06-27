@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import os
 import time
 import uuid
@@ -2048,6 +2049,17 @@ class EmbeddedBackend(Backend):
             agent_id = str(getattr(agent, "id", "") or "")
             return bool(agent_id) and agent_id not in removed_agent_ids()
 
+        def current_generation() -> int:
+            return int(run_state.get("generation", active_generation))
+
+        def reset_generation(next_generation: int) -> None:
+            nonlocal active_generation, context, completed_rounds
+            if next_generation == active_generation:
+                return
+            active_generation = next_generation
+            context = []
+            completed_rounds = 0
+
         try:
             async with self.runtime.runtime_guard.reader():
                 first_speaker = rng.choice(agents) if agents else None
@@ -2081,11 +2093,13 @@ class EmbeddedBackend(Backend):
                         break
                     pending_inputs = self._drain_podcast_inputs(input_queue)
                     if pending_inputs:
-                        active_generation = int(run_state.get("generation", active_generation))
+                        reset_generation(current_generation())
                         context = []
                         completed_rounds = 0
                         for item in pending_inputs:
                             context.append(f"用户插话: {item}")
+                    else:
+                        reset_generation(current_generation())
                     active_agents = [agent for agent in agents if agent_is_active(agent)]
                     if not active_agents:
                         break
@@ -2162,10 +2176,15 @@ class EmbeddedBackend(Backend):
                         )
                         for idx, agent in enumerate(speakers)
                     ]
-                    speaker_results = await asyncio.gather(*speaker_tasks)
-                    if int(run_state.get("generation", active_generation)) != active_generation:
-                        context = []
-                        completed_rounds = 0
+                    try:
+                        speaker_results = await asyncio.gather(*speaker_tasks)
+                    except Exception:
+                        for speaker_task in speaker_tasks:
+                            speaker_task.cancel()
+                        await asyncio.gather(*speaker_tasks, return_exceptions=True)
+                        raise
+                    if current_generation() != active_generation:
+                        reset_generation(current_generation())
                         continue
                     spoken_this_round: list[str] = []
                     for agent, speaker_text in speaker_results:
@@ -2179,9 +2198,8 @@ class EmbeddedBackend(Backend):
 
                     if token.is_cancelled:
                         break
-                    if int(run_state.get("generation", active_generation)) != active_generation:
-                        context = []
-                        completed_rounds = 0
+                    if current_generation() != active_generation:
+                        reset_generation(current_generation())
                         continue
                     speakers = [agent for agent in speakers if agent_is_active(agent)]
                     if not speakers:
@@ -2398,7 +2416,7 @@ class EmbeddedBackend(Backend):
 
         if token.is_cancelled:
             raise asyncio.CancelledError()
-        if not is_agent_active(agent):
+        def emit_skipped() -> None:
             self._emit_podcast_utterance_skipped(
                 run_id=run_id,
                 session=session,
@@ -2408,6 +2426,9 @@ class EmbeddedBackend(Backend):
                 agent=agent,
                 generation=generation,
             )
+
+        if not is_agent_active(agent):
+            emit_skipped()
             return agent, ""
         cache_key = ":".join([
             str(getattr(agent, "id", "") or ""),
@@ -2416,26 +2437,42 @@ class EmbeddedBackend(Backend):
         ])
         research_text = research_cache.get(cache_key, "")
         if not research_text:
-            research_text = await self._run_podcast_research_subagent(
-                run_id=run_id,
-                session=session,
-                topic=topic,
-                agent=agent,
-                round_index=round_index,
-                context=context,
-                token=token,
+            research_task = asyncio.create_task(
+                self._run_podcast_research_subagent(
+                    run_id=run_id,
+                    session=session,
+                    topic=topic,
+                    agent=agent,
+                    round_index=round_index,
+                    context=context,
+                    token=token,
+                ),
+                name=f"backend.voice_podcast.research:{run_id}:{round_index}:{getattr(agent, 'id', '')}",
             )
+            while not research_task.done():
+                await asyncio.wait({research_task}, timeout=0.5)
+                if research_task.done():
+                    break
+                if token.is_cancelled:
+                    research_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await research_task
+                    raise asyncio.CancelledError()
+                if not is_generation_current(generation):
+                    research_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await research_task
+                    return agent, ""
+                if not is_agent_active(agent):
+                    research_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await research_task
+                    emit_skipped()
+                    return agent, ""
+            research_text = await research_task
             research_cache[cache_key] = research_text
         if not is_agent_active(agent):
-            self._emit_podcast_utterance_skipped(
-                run_id=run_id,
-                session=session,
-                round_index=round_index,
-                phase="speaker",
-                sequence=sequence,
-                agent=agent,
-                generation=generation,
-            )
+            emit_skipped()
             return agent, ""
         speaker_text = await self._generate_podcast_utterance(
             run_id=run_id,

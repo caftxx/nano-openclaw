@@ -404,3 +404,66 @@ def test_podcast_skipped_utterance_event_preserves_sequence_for_playback_queue()
             "generation": 2,
         }
     ]
+
+
+def test_podcast_run_syncs_generation_after_live_agent_update():
+    class Guard:
+        def reader(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(runtime_guard=Guard())
+            self.events = []
+            self.speaker_generations = []
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+        async def _append_podcast_message(self, *args, **kwargs):
+            return None
+
+        async def _generate_podcast_utterance(self, **kwargs):
+            return f"{kwargs['phase']} gen {kwargs['generation']}"
+
+        async def _run_podcast_speaker_turn(self, **kwargs):
+            generation = kwargs["generation"]
+            self.speaker_generations.append(generation)
+            if generation == 0:
+                run_state["generation"] = 1
+                return kwargs["agent"], "stale speaker"
+            return kwargs["agent"], "fresh speaker"
+
+        def _drain_podcast_inputs(self, queue):
+            return EmbeddedBackend._drain_podcast_inputs(self, queue)
+
+    backend = Backend()
+    run_state = {"generation": 0, "removed_agent_ids": set()}
+    agent = assign_agents([{"id": "agent-1", "role": "作家"}], "话题")[0]
+
+    asyncio.run(
+        EmbeddedBackend._run_podcast(
+            backend,
+            run_id="run-1",
+            session=SimpleNamespace(session_id="session-1"),
+            topic="话题",
+            agents=[agent],
+            rounds=1,
+            host_voice_id="xiaoxian",
+            host_voice_label="小仙",
+            token=SimpleNamespace(is_cancelled=False),
+            input_queue=asyncio.Queue(),
+            run_state=run_state,
+        )
+    )
+
+    assert backend.speaker_generations == [0, 1]
+    assert any(event.get("type") == "podcast.round.started" and event.get("generation") == 1 for event in backend.events)
+    assert backend.events[-1]["type"] == "podcast.done"
+    assert backend.events[-1]["generation"] == 1
