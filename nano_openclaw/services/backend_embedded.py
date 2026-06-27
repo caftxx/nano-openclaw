@@ -78,6 +78,7 @@ log = get_logger(__name__)
 
 SUBSCRIBER_QUEUE_MAX = 256
 SUBSCRIBER_GAP_DROP = 5
+PODCAST_UTTERANCE_TIMEOUT_SECONDS = 120
 
 
 def _new_runtime_guard():
@@ -2808,6 +2809,7 @@ class EmbeddedBackend(Backend):
 
         def on_delta(text: str) -> None:
             if text and (is_generation_current is None or is_generation_current(generation)):
+                partial_chunks.append(text)
                 self._emit_podcast({
                     "type": "podcast.text.delta",
                     "run_id": run_id,
@@ -2825,6 +2827,7 @@ class EmbeddedBackend(Backend):
                     "generation": generation,
                 })
 
+        partial_chunks: list[str] = []
         exclude = {
             "write_file",
             "apply_patch",
@@ -2842,16 +2845,44 @@ class EmbeddedBackend(Backend):
         registry = self.runtime.registry.clone(exclude=exclude, console=None, approval_handler=None)
         model_client, model_cfg, close_model_client = self._podcast_model_runtime(model_ref)
         try:
-            text = await generate_utterance(
-                runtime=self.runtime,
-                registry=registry,
-                system_prompt=system_prompt,
-                user_text=user_text,
-                cancellation_token=token,
-                on_delta=on_delta,
-                client=model_client,
-                cfg=model_cfg,
+            text = await asyncio.wait_for(
+                generate_utterance(
+                    runtime=self.runtime,
+                    registry=registry,
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    cancellation_token=token,
+                    on_delta=on_delta,
+                    client=model_client,
+                    cfg=model_cfg,
+                ),
+                timeout=PODCAST_UTTERANCE_TIMEOUT_SECONDS,
             )
+        except asyncio.TimeoutError:
+            text = "".join(partial_chunks).strip()
+            log.warning(
+                "backend.podcast.utterance.timeout",
+                (
+                    f"run={run_id} round={round_index} phase={phase} "
+                    f"sequence={sequence} role={role} timeout={PODCAST_UTTERANCE_TIMEOUT_SECONDS}s"
+                ),
+            )
+            if not text:
+                EmbeddedBackend._emit_podcast_sequence_skipped(
+                    self,
+                    run_id=run_id,
+                    session=session,
+                    round_index=round_index,
+                    phase=phase,
+                    sequence=sequence,
+                    agent_id=agent_id,
+                    role=role,
+                    voice_id=voice_id,
+                    voice_label=voice_label,
+                    model_ref=model_ref,
+                    generation=generation,
+                )
+                return ""
         except Exception:
             EmbeddedBackend._emit_podcast_sequence_skipped(
                 self,

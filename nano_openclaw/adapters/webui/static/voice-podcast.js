@@ -443,7 +443,7 @@
     return await res.json();
   }
   async function loadVoiceConfig() {
-    if (podcast.voiceCfg) return podcast.voiceCfg;
+    if (podcast.voiceCfg && (selectedOut() === "local" || aliyunTtsUsable())) return podcast.voiceCfg;
     try {
       if (typeof root.api === "function") podcast.voiceCfg = await root.api("/api/voice/config");
       else {
@@ -451,7 +451,7 @@
         podcast.voiceCfg = res.ok ? await res.json() : {};
       }
     } catch (_) {
-      podcast.voiceCfg = {};
+      return podcast.voiceCfg || {};
     }
     return podcast.voiceCfg;
   }
