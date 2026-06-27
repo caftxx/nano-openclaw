@@ -138,6 +138,7 @@ def assign_agents(
     excluded_voice_id: str | None = HOST_VOICE_ID,
     model_refs: list[str] | None = None,
     model_labels: dict[str, str] | None = None,
+    existing_roles: list[str] | None = None,
     rng: random.Random | None = None,
 ) -> list[PodcastAgent]:
     raw_agent_list = list(raw_agents or [{"role": "自动"}, {"role": "自动"}])
@@ -148,15 +149,22 @@ def assign_agents(
     )
     assigned_model_refs = _assigned_model_refs(len(raw_agent_list), model_refs or [], rng=rng)
     model_labels = model_labels or {}
+    local_rng = rng or random
     agents: list[PodcastAgent] = []
     auto_roles = _auto_role_candidates(topic)
-    used_roles: set[str] = set()
+    used_roles: set[str] = {
+        role for role in (existing_roles or [])
+        if role in AGENT_ROLES and role != "自动"
+    }
     auto_index = 0
     for idx, raw in enumerate(raw_agent_list):
         requested = str(raw.get("role") or "自动").strip() or "自动"
         normalized_requested = requested if requested in AGENT_ROLES else "自动"
         if normalized_requested == "自动":
-            role = _next_distinct_auto_role(auto_roles, used_roles, auto_index)
+            if existing_roles is None:
+                role = _next_distinct_auto_role(auto_roles, used_roles, auto_index)
+            else:
+                role = _random_unused_auto_role(auto_roles, used_roles, auto_index, local_rng)
             auto_index += 1
         else:
             role = resolve_role(requested, topic, idx)
@@ -183,6 +191,18 @@ def _next_distinct_auto_role(candidates: list[str], used_roles: set[str], index:
     for role in candidates:
         if role not in used_roles:
             return role
+    return candidates[index % len(candidates)]
+
+
+def _random_unused_auto_role(
+    candidates: list[str],
+    used_roles: set[str],
+    index: int,
+    rng: random.Random,
+) -> str:
+    unused = [role for role in candidates if role not in used_roles]
+    if unused:
+        return rng.choice(unused)
     return candidates[index % len(candidates)]
 
 

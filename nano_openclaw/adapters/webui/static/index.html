@@ -13,7 +13,7 @@
         document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260626-agent-hit-no-bg" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260627-agent-editor-disabled" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -118,7 +118,7 @@
       <div class="voice-stage-head">
         <button id="voiceExitBtn" class="voice-exit" type="button" aria-label="退出语音">✕</button>
         <div id="groupParticipants" class="group-participants" aria-label="群聊成员"></div>
-        <select id="voiceVoice" class="voice-voice-select" aria-label="音色" title="音色">
+        <select id="voiceVoice" class="voice-voice-select" aria-label="音色" title="音色" hidden>
           <option value="">🗣 系统默认</option>
         </select>
       </div>
@@ -218,9 +218,10 @@
           <span>模型</span>
           <select id="agentEditorModel" aria-label="更换模型"></select>
         </label>
+        <p id="agentEditorHint" class="agent-editor-hint"></p>
         <div class="agent-editor-actions">
           <button id="agentEditorCancelBtn" type="button" class="podcast-secondary">取消</button>
-          <button id="agentEditorDoneBtn" type="button" class="podcast-primary">确认</button>
+          <button id="agentEditorDoneBtn" type="button" class="podcast-primary">保存</button>
         </div>
       </div>
     </div>
@@ -254,6 +255,6 @@
     <script src="/static/voice-speaker-provider.js?v=20260613-talk-provider"></script>
     <script src="/static/voice-view.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-shell.js?v=20260613-provider"></script>
-    <script src="/static/voice-podcast.js?v=20260626-agent-hit-no-bg"></script>
+    <script src="/static/voice-podcast.js?v=20260627-agent-editor-disabled"></script>
   </body>
 </html>

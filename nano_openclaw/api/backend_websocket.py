@@ -801,6 +801,8 @@ class WebSocketBackend(Backend):
         rounds: int = 20,
         host_voice_id: str = "",
         host_voice_label: str = "",
+        host_model_ref: str = "",
+        host_model_label: str = "",
     ) -> dict[str, Any]:
         return await self._call("podcast.start", {
             "session_key": session_key,
@@ -809,6 +811,8 @@ class WebSocketBackend(Backend):
             "rounds": rounds,
             "host_voice_id": host_voice_id,
             "host_voice_label": host_voice_label,
+            "host_model_ref": host_model_ref,
+            "host_model_label": host_model_label,
         }) or {}
 
     async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
@@ -825,6 +829,23 @@ class WebSocketBackend(Backend):
 
     async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
         return await self._call("podcast.update_agent", {"run_id": run_id, "agent": agent}) or {}
+
+    async def podcast_update_host(
+        self,
+        *,
+        run_id: str,
+        host_voice_id: str = "",
+        host_voice_label: str = "",
+        model_ref: str = "",
+        model_label: str = "",
+    ) -> dict[str, Any]:
+        return await self._call("podcast.update_host", {
+            "run_id": run_id,
+            "host_voice_id": host_voice_id,
+            "host_voice_label": host_voice_label,
+            "model_ref": model_ref,
+            "model_label": model_label,
+        }) or {}
 
     # ─── Push event subscription ───
 

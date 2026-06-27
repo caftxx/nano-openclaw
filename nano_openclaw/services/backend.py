@@ -346,6 +346,8 @@ class Backend(Protocol):
         rounds: int = 20,
         host_voice_id: str = "",
         host_voice_label: str = "",
+        host_model_ref: str = "",
+        host_model_label: str = "",
     ) -> dict[str, Any]:
         """Start a background AI podcast run for the given WebUI session."""
         ...
@@ -368,6 +370,18 @@ class Backend(Protocol):
 
     async def podcast_update_agent(self, *, run_id: str, agent: dict[str, Any]) -> dict[str, Any]:
         """Update one speaker in an active podcast run and regenerate affected output."""
+        ...
+
+    async def podcast_update_host(
+        self,
+        *,
+        run_id: str,
+        host_voice_id: str = "",
+        host_voice_label: str = "",
+        model_ref: str = "",
+        model_label: str = "",
+    ) -> dict[str, Any]:
+        """Update host voice/model for subsequent podcast host utterances."""
         ...
 
     # ─── Sessions ───

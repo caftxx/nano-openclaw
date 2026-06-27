@@ -133,6 +133,9 @@
             var data = await resp.json();
             var abJson = base64ToArrayBuffer(data && data.audioBase64);
             if (aborted || myGen !== generation) return;
+            if (!abJson || !abJson.byteLength) {
+              throw new Error("empty audio");
+            }
             onAudio(abJson);
           } else if (resp.body && typeof resp.body.getReader === "function") {
             var reader = resp.body.getReader();

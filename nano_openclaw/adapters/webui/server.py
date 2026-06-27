@@ -94,6 +94,8 @@ class PodcastStartRequest(BaseModel):
     rounds: int = 20
     host_voice_id: str = ""
     host_voice_label: str = ""
+    host_model_ref: str = ""
+    host_model_label: str = ""
 
 
 class PodcastInputRequest(BaseModel):
@@ -118,6 +120,14 @@ class PodcastAddAgentRequest(BaseModel):
 class PodcastUpdateAgentRequest(BaseModel):
     run_id: str
     agent: PodcastAgentRequest
+
+
+class PodcastUpdateHostRequest(BaseModel):
+    run_id: str
+    host_voice_id: str = ""
+    host_voice_label: str = ""
+    model_ref: str = ""
+    model_label: str = ""
 
 
 def create_app(
@@ -214,6 +224,8 @@ def create_app(
                 rounds=req.rounds,
                 host_voice_id=req.host_voice_id,
                 host_voice_label=req.host_voice_label,
+                host_model_ref=req.host_model_ref,
+                host_model_label=req.host_model_label,
             )
         except BackendError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -247,6 +259,19 @@ def create_app(
     async def podcast_update_agent(req: PodcastUpdateAgentRequest) -> dict[str, Any]:
         try:
             return await app.state.backend.podcast_update_agent(run_id=req.run_id, agent=req.agent.model_dump())
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/voice/podcast/update_host", dependencies=[Depends(require_http_token)])
+    async def podcast_update_host(req: PodcastUpdateHostRequest) -> dict[str, Any]:
+        try:
+            return await app.state.backend.podcast_update_host(
+                run_id=req.run_id,
+                host_voice_id=req.host_voice_id,
+                host_voice_label=req.host_voice_label,
+                model_ref=req.model_ref,
+                model_label=req.model_label,
+            )
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

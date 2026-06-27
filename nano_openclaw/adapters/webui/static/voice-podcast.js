@@ -26,6 +26,7 @@
   var RUN_KEY = "nanoPodcastRunId";
   var AGENTS_KEY = "nanoGroupAgents";
   var TOPIC_KEY = "nanoGroupTopic";
+  var HOST_MODEL_KEY = "nanoGroupHostModel";
   var MAX_GROUP_AGENTS = 9;
   var CLOUD_TTS_MAX_CONCURRENCY = 2;
   var CLOUD_TTS_MAX_ATTEMPTS = 3;
@@ -55,6 +56,8 @@
     lastTopic: "",
     removedAgentIds: [],
     removedSpeakerRoles: [],
+    hostModelRef: "",
+    hostModelLabel: "",
     utterances: new Map(),
     currentSpeaker: null,
     currentSpeakerResolve: null,
@@ -63,6 +66,7 @@
     currentPlaySeq: 0,
     inputRecognizer: null,
     topicRecognizer: null,
+    sessionId: "",
     synthJobs: new Map(),
     speechJobVersions: new Map(),
     synthEngines: new Set(),
@@ -101,18 +105,32 @@
   function localGet(key) {
     try { return root.localStorage.getItem(key) || ""; } catch (_) { return ""; }
   }
-  function sessionGet(key) {
-    try { return root.sessionStorage.getItem(key) || ""; } catch (_) { return ""; }
+  function storageSessionId(sessionId) {
+    return String(sessionId || podcast.sessionId || currentSessionId() || "");
   }
-  function sessionSet(key, value) {
-    try { root.sessionStorage.setItem(key, String(value || "")); } catch (_) {}
+  function scopedStorageKey(key, sessionId) {
+    var sid = storageSessionId(sessionId);
+    return sid ? key + ":" + sid : "";
   }
-  function sessionRemove(key) {
-    try { root.sessionStorage.removeItem(key); } catch (_) {}
+  function sessionGet(key, sessionId) {
+    var scoped = scopedStorageKey(key, sessionId);
+    if (!scoped) return "";
+    try { return root.sessionStorage.getItem(scoped) || ""; } catch (_) { return ""; }
   }
-  function sessionGetJson(key, fallback) {
+  function sessionSet(key, value, sessionId) {
+    var scoped = scopedStorageKey(key, sessionId);
+    if (!scoped) return;
+    try { root.sessionStorage.setItem(scoped, String(value || "")); } catch (_) {}
+  }
+  function sessionRemove(key, sessionId) {
+    var scoped = scopedStorageKey(key, sessionId);
+    if (!scoped) return;
+    try { root.sessionStorage.removeItem(scoped); } catch (_) {}
+  }
+  function sessionGetJson(key, fallback, sessionId) {
     try {
-      var raw = root.sessionStorage.getItem(key);
+      var scoped = scopedStorageKey(key, sessionId);
+      var raw = scoped ? root.sessionStorage.getItem(scoped) : "";
       return raw ? JSON.parse(raw) : fallback;
     } catch (_) {
       return fallback;
@@ -160,29 +178,106 @@
     podcast.nextAgentId = Math.max(podcast.nextAgentId, maxId + 1, normalized.length + 1);
     return normalized;
   }
-  function savePodcastState() {
+  function savePodcastState(sessionId) {
+    var sid = storageSessionId(sessionId);
+    if (!sid) return;
     if (podcast.mode || podcast.runId || podcast.topicCaptureArmed) {
-      sessionSet(MODE_KEY, "1");
-      if (podcast.runId) sessionSet(RUN_KEY, podcast.runId);
-      else sessionRemove(RUN_KEY);
-      sessionSet(AGENTS_KEY, JSON.stringify(podcast.agents || []));
-      if (podcast.lastTopic) sessionSet(TOPIC_KEY, podcast.lastTopic);
-      else sessionRemove(TOPIC_KEY);
+      sessionSet(MODE_KEY, "1", sid);
+      if (podcast.runId) sessionSet(RUN_KEY, podcast.runId, sid);
+      else sessionRemove(RUN_KEY, sid);
+      sessionSet(AGENTS_KEY, JSON.stringify(podcast.agents || []), sid);
+      if (podcast.lastTopic) sessionSet(TOPIC_KEY, podcast.lastTopic, sid);
+      else sessionRemove(TOPIC_KEY, sid);
+      if (podcast.hostModelRef) sessionSet(HOST_MODEL_KEY, JSON.stringify({ ref: podcast.hostModelRef, label: podcast.hostModelLabel || "" }), sid);
+      else sessionRemove(HOST_MODEL_KEY, sid);
       return;
     }
-    sessionRemove(MODE_KEY);
-    sessionRemove(RUN_KEY);
-    sessionRemove(AGENTS_KEY);
-    sessionRemove(TOPIC_KEY);
+    sessionRemove(MODE_KEY, sid);
+    sessionRemove(RUN_KEY, sid);
+    sessionRemove(AGENTS_KEY, sid);
+    sessionRemove(TOPIC_KEY, sid);
+    sessionRemove(HOST_MODEL_KEY, sid);
   }
-  function restorePodcastSurface() {
-    if (!podcast.agents.length) podcast.agents = normalizeAgents(sessionGetJson(AGENTS_KEY, []));
-    if (!podcast.lastTopic) podcast.lastTopic = sessionGet(TOPIC_KEY);
-    if (!sessionGet(MODE_KEY) && !podcast.mode && !podcast.runId && !podcast.agents.length) {
+  function hasPodcastState(sessionId) {
+    return Boolean(sessionGet(MODE_KEY, sessionId) || sessionGet(RUN_KEY, sessionId) || sessionGet(AGENTS_KEY, sessionId));
+  }
+  function resetPodcastRuntimeForSession(sessionId) {
+    stopInterjectionCapture();
+    stopTopicCapture();
+    invalidatePlaybackWork();
+    stopSpeech();
+    podcast.sessionId = String(sessionId || "");
+    podcast.runId = "";
+    podcast.agents = [];
+    podcast.topicCaptureArmed = false;
+    podcast.activeSpeakerKey = "";
+    podcast.activeSpeakerMode = "";
+    podcast.playingSpeakerKey = "";
+    podcast.lastTopic = "";
+    podcast.hostModelRef = "";
+    podcast.hostModelLabel = "";
+    podcast.removedAgentIds = [];
+    podcast.removedSpeakerRoles = [];
+    podcast.utterances.clear();
+    podcast.synthJobs.clear();
+    podcast.speechJobVersions.clear();
+    podcast.skippedSeqs.clear();
+    podcast.nextSeq = 1;
+    podcast.nextPlaySeq = 1;
+    podcast.currentPlaySeq = 0;
+    podcast.playPumpActive = false;
+    podcast.playbackStopped = false;
+    podcast.playbackPausedForInput = false;
+    podcast.prioritySpeechActive = false;
+    podcast.replayCurrentPlayback = false;
+    podcast.generationDone = false;
+    setPodcastMode(false, { save: false });
+    setActive(false);
+    setVoiceStatus("点击麦克风，开始连续语音对话");
+    renderAgents();
+    renderParticipants();
+    updatePodcastControl();
+  }
+  function handleSessionChanged(sessionId) {
+    var sid = String(sessionId || currentSessionId() || "");
+    if (!sid || podcast.sessionId === sid) return;
+    if (podcast.sessionId) savePodcastState(podcast.sessionId);
+    if (hasPodcastState(sid)) {
+      resetPodcastRuntimeForSession(sid);
+      restorePodcastSurface(sid);
+      return;
+    }
+    resetPodcastRuntimeForSession(sid);
+  }
+  function restorePodcastSurface(sessionId) {
+    var sid = storageSessionId(sessionId);
+    if (!sid) {
       renderParticipants();
       return;
     }
-    var savedRunId = sessionGet(RUN_KEY);
+    if (podcast.sessionId && podcast.sessionId !== sid) {
+      savePodcastState(podcast.sessionId);
+      resetPodcastRuntimeForSession(sid);
+    }
+    podcast.sessionId = sid;
+    if (!hasPodcastState(sid) && !podcast.mode && !podcast.runId && !podcast.agents.length) {
+      renderParticipants();
+      return;
+    }
+    if (!podcast.agents.length) podcast.agents = normalizeAgents(sessionGetJson(AGENTS_KEY, [], sid));
+    if (!podcast.lastTopic) podcast.lastTopic = sessionGet(TOPIC_KEY, sid);
+    if (!podcast.hostModelRef) {
+      var savedHostModel = sessionGetJson(HOST_MODEL_KEY, null, sid);
+      if (savedHostModel) {
+        podcast.hostModelRef = savedHostModel.ref || "";
+        podcast.hostModelLabel = savedHostModel.label || "";
+      }
+    }
+    if (!sessionGet(MODE_KEY, sid) && !podcast.mode && !podcast.runId && !podcast.agents.length) {
+      renderParticipants();
+      return;
+    }
+    var savedRunId = sessionGet(RUN_KEY, sid);
     if (!podcast.runId && savedRunId) {
       podcast.runId = savedRunId;
       podcast.playbackStopped = false;
@@ -224,6 +319,40 @@
       if (voices[i].value === voiceId) return voices[i].label || voiceId;
     }
     return voiceId || "";
+  }
+  function runtimeModelRef() {
+    try {
+      if (typeof state !== "undefined" && state.runtime) return state.runtime.modelRef || "";
+    } catch (_) {}
+    return "";
+  }
+  function runtimeModelOptions() {
+    try {
+      if (typeof state !== "undefined" && state.runtime && Array.isArray(state.runtime.modelOptions)) {
+        return state.runtime.modelOptions;
+      }
+    } catch (_) {}
+    return [];
+  }
+  function modelOptionLabel(ref) {
+    ref = String(ref || "");
+    if (!ref) return "";
+    var options = (podcast.modelOptions || []).concat(runtimeModelOptions());
+    for (var i = 0; i < options.length; i++) {
+      var model = options[i] || {};
+      var value = model.ref || model.value || model.id || "";
+      if (value === ref) return model.name || model.label || ref;
+    }
+    return ref;
+  }
+  function wsSendSafe(type, payload) {
+    try {
+      if (typeof root.send === "function") return root.send(type, payload || {});
+    } catch (_) {}
+    try {
+      if (typeof send === "function") return send(type, payload || {});
+    } catch (_) {}
+    return false;
   }
   function currentHostVoice() {
     var out = selectedOut();
@@ -391,7 +520,7 @@
     var btn = root.document.createElement("button");
     btn.type = "button";
     btn.className = "group-member-hit";
-    btn.setAttribute("aria-label", member.kind === "add" ? "添加群成员" : member.name);
+    btn.setAttribute("aria-label", member.kind === "add" ? "添加群成员" : member.kind === "host" ? "设置" + member.name : member.name);
     btn.innerHTML = '<span class="group-avatar"><span class="group-emoji">' + escapeHtml(member.emoji) + '</span>'
       + (isPlaying ? '<span class="group-speaker">🔊</span>' : "")
       + '</span>';
@@ -402,11 +531,17 @@
         openAddAgentEditor();
         return;
       }
+      if (member.kind === "host") {
+        closeMemberMenu();
+        openSystemVoiceEditor();
+        return;
+      }
       if (member.kind !== "agent") {
         closeMemberMenu();
         return;
       }
-      openMemberMenu(member, item);
+      closeMemberMenu();
+      openAgentEditor(member.id);
     };
     item.appendChild(btn);
     if (member.kind === "agent") {
@@ -461,6 +596,9 @@
     return null;
   }
   function voiceForSpeaker(speakerKey, event) {
+    if (speakerKey === "host") {
+      return currentHostVoice();
+    }
     var agent = findAgent(speakerKey);
     if (agent && agent.voiceId) {
       return {
@@ -528,6 +666,7 @@
       podcast.editingAgentId = "";
       podcast.editorMode = "";
       podcast.editorDraft = null;
+      updateAgentEditorActions();
     }
   }
   function agentDraft(agent) {
@@ -542,6 +681,34 @@
   function voiceOptions() {
     var voices = podcast.voiceCfg && podcast.voiceCfg.tts && podcast.voiceCfg.tts.voices || [];
     return Array.isArray(voices) ? voices : [];
+  }
+  function selectOptionsFrom(select) {
+    var out = [];
+    if (!select) return out;
+    for (var i = 0; i < select.options.length; i++) {
+      var opt = select.options[i];
+      out.push({ value: opt.value || "", label: String(opt.textContent || opt.value || "").replace(/^🗣\s*/, "").trim() });
+    }
+    return out;
+  }
+  function currentSystemVoiceDraft() {
+    var select = $("voiceVoice");
+    var modelRef = isGroupMode() ? (podcast.hostModelRef || runtimeModelRef()) : runtimeModelRef();
+    return {
+      role: systemParticipantName(),
+      voiceId: select ? select.value || "" : "",
+      voiceLabel: optionLabel(select),
+      modelRef: modelRef,
+      modelLabel: isGroupMode() ? (podcast.hostModelLabel || modelOptionLabel(modelRef)) : modelOptionLabel(modelRef),
+    };
+  }
+  function setAgentEditorFieldVisible(select, visible) {
+    var field = select && select.closest && select.closest(".agent-editor-field");
+    if (field) {
+      field.hidden = !visible;
+      field.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
+    if (select) select.disabled = !visible;
   }
   function selectAppend(select, value, label) {
     var opt = root.document.createElement("option");
@@ -560,8 +727,55 @@
     var avatar = $("agentEditorAvatar");
     var draft = podcast.editorDraft || agentDraft(null);
     var role = safeAgentRole(draft.role);
-    if (title) title.textContent = podcast.editorMode === "add" ? "添加角色" : (role === "自动" ? "成员设置" : role);
+    if (podcast.editorMode === "system") {
+      if (title) title.textContent = systemParticipantName() + "设置";
+      if (avatar) avatar.textContent = isGroupMode() ? "🎙️" : "🤖";
+      return;
+    }
+    if (title) title.textContent = podcast.editorMode === "add" ? "添加角色" : (role === "自动" ? "角色设置" : role);
     if (avatar) avatar.textContent = podcast.editorMode === "add" && role === "自动" ? "+" : (ROLE_EMOJIS[role] || "🧠");
+  }
+  function updateAgentEditorActions() {
+    var done = $("agentEditorDoneBtn");
+    var hint = $("agentEditorHint");
+    if (!done) return;
+    if (!podcast.editorDraft) {
+      done.disabled = false;
+      if (hint) hint.textContent = "";
+      return;
+    }
+    if (podcast.editorMode === "add") {
+      done.textContent = "确认";
+      done.disabled = false;
+      done.setAttribute("aria-disabled", "false");
+      if (hint) hint.textContent = podcast.runId ? "添加后会从下一轮开始参与，不会重启当前话题。" : "确认后加入群聊，可继续设置讨论话题。";
+      return;
+    }
+    if (podcast.editorMode === "system") {
+      done.textContent = "保存";
+      var current = currentSystemVoiceDraft();
+      var changedVoice = (current.voiceId || "") !== (podcast.editorDraft.voiceId || "");
+      var changedModel = (current.modelRef || "") !== (podcast.editorDraft.modelRef || "");
+      done.disabled = !(changedVoice || changedModel);
+      done.setAttribute("aria-disabled", done.disabled ? "true" : "false");
+      if (hint) {
+        if (!(changedVoice || changedModel)) hint.textContent = "当前没有修改。";
+        else if (changedVoice && !changedModel) hint.textContent = "保存后会用于后续语音播报。";
+        else hint.textContent = isGroupMode() ? "保存后主持人后续发言会使用新模型。" : "保存后 Assistant 后续回复会使用新模型。";
+      }
+      return;
+    }
+    done.textContent = "保存";
+    var agent = findAgent(podcast.editingAgentId);
+    var changes = agent ? agentEditChange(agent, podcast.editorDraft) : { role: false, voice: false, model: false };
+    var changed = changes.role || changes.voice || changes.model;
+    done.disabled = !changed;
+    done.setAttribute("aria-disabled", done.disabled ? "true" : "false");
+    if (hint) {
+      if (!changed) hint.textContent = "当前没有修改。";
+      else if (changes.voice && !changes.role && !changes.model) hint.textContent = "只会重新生成该角色语音，不会重启话题。";
+      else hint.textContent = podcast.runId ? "修改身份或模型会刷新该角色后续内容，不影响其他成员继续讨论。" : "保存后用于下一次群聊。";
+    }
   }
   function fillAgentEditor() {
     var roleSelect = $("agentEditorRole");
@@ -570,22 +784,33 @@
     var draft = podcast.editorDraft || agentDraft(null);
     if (!roleSelect || !voiceSelect || !modelSelect) return;
     updateAgentEditorHeader();
+    var systemMode = podcast.editorMode === "system";
+    setAgentEditorFieldVisible(roleSelect, !systemMode);
+    setAgentEditorFieldVisible(modelSelect, true);
     roleSelect.innerHTML = "";
     ROLES.forEach(function (role) { selectAppend(roleSelect, role, role); });
     roleSelect.value = draft.role || "自动";
     voiceSelect.innerHTML = "";
-    selectAppend(voiceSelect, "", "自动分配音色");
-    voiceOptions().forEach(function (voice) {
-      var value = voice && (voice.value || voice.id) || "";
-      if (!value) return;
-      selectAppend(voiceSelect, value, voice.label || value);
-    });
-    if (draft.voiceId && !selectHasValue(voiceSelect, draft.voiceId)) {
+    if (systemMode) {
+      selectOptionsFrom($("voiceVoice")).forEach(function (voice) {
+        selectAppend(voiceSelect, voice.value, voice.label || voice.value || "系统默认");
+      });
+    } else {
+      selectAppend(voiceSelect, "", "自动分配音色");
+      voiceOptions().forEach(function (voice) {
+        var value = voice && (voice.value || voice.id) || "";
+        if (!value) return;
+        selectAppend(voiceSelect, value, voice.label || value);
+      });
+    }
+    if (systemMode && !voiceSelect.options.length) selectAppend(voiceSelect, "", "系统默认");
+    if (!systemMode && draft.voiceId && !selectHasValue(voiceSelect, draft.voiceId)) {
+      selectAppend(voiceSelect, draft.voiceId, draft.voiceLabel || draft.voiceId);
+    } else if (systemMode && draft.voiceId && !selectHasValue(voiceSelect, draft.voiceId)) {
       selectAppend(voiceSelect, draft.voiceId, draft.voiceLabel || draft.voiceId);
     }
-    voiceSelect.value = draft.voiceId || "";
     modelSelect.innerHTML = "";
-    selectAppend(modelSelect, "", "自动分配模型");
+    if (!systemMode) selectAppend(modelSelect, "", "自动分配模型");
     (podcast.modelOptions || []).forEach(function (model) {
       var ref = model && (model.ref || model.value || model.id) || "";
       if (!ref) return;
@@ -595,6 +820,27 @@
       selectAppend(modelSelect, draft.modelRef, draft.modelLabel || draft.modelRef);
     }
     modelSelect.value = draft.modelRef || "";
+    voiceSelect.value = draft.voiceId || "";
+    roleSelect.value = draft.role || "自动";
+    if (systemMode) {
+      updateAgentEditorActions();
+      return;
+    }
+    updateAgentEditorActions();
+  }
+  async function openSystemVoiceEditor() {
+    podcast.editingAgentId = "host";
+    podcast.editorMode = "system";
+    podcast.editorDraft = currentSystemVoiceDraft();
+    setAgentEditor(true);
+    setAgentEditorFieldVisible($("agentEditorRole"), false);
+    setAgentEditorFieldVisible($("agentEditorModel"), true);
+    updateAgentEditorActions();
+    await loadVoiceConfig();
+    await loadModelOptions();
+    fillAgentEditor();
+    var target = $("agentEditorModel");
+    if (target && target.focus) target.focus();
   }
   async function openAgentEditor(agentId, focusField) {
     var agent = findAgent(agentId);
@@ -641,6 +887,7 @@
       draft.modelLabel = value ? (label || value) : "";
     }
     updateAgentEditorHeader();
+    updateAgentEditorActions();
   }
   function agentUpdatePayload(agent) {
     return {
@@ -707,7 +954,47 @@
       model: (agent.modelRef || "") !== (draft.modelRef || ""),
     };
   }
+  function applySystemVoiceDraft(draft) {
+    var select = $("voiceVoice");
+    if (!select || !draft) return false;
+    var changed = (select.value || "") !== (draft.voiceId || "");
+    if (!changed) return false;
+    if (draft.voiceId && !selectHasValue(select, draft.voiceId)) {
+      selectAppend(select, draft.voiceId, draft.voiceLabel || draft.voiceId);
+    }
+    select.value = draft.voiceId || "";
+    try { select.dispatchEvent(new Event("change", { bubbles: true })); } catch (_) {}
+    updateHostPreview();
+    refreshSystemSpeechVoice(draft.voiceId || "", draft.voiceLabel || "");
+    return true;
+  }
+  async function applySystemModelDraft(draft) {
+    if (!draft) return false;
+    var current = currentSystemVoiceDraft();
+    var changed = (current.modelRef || "") !== (draft.modelRef || "");
+    if (!changed) return false;
+    if (isGroupMode()) {
+      podcast.hostModelRef = draft.modelRef || "";
+      podcast.hostModelLabel = draft.modelLabel || modelOptionLabel(draft.modelRef) || "";
+      savePodcastState();
+      if (podcast.runId) {
+        await apiSafe("/api/voice/podcast/update_host", {
+          run_id: podcast.runId,
+          model_ref: podcast.hostModelRef,
+          model_label: podcast.hostModelLabel,
+        });
+      }
+      return true;
+    }
+    var sent = wsSendSafe("runtime.set", { model_ref: draft.modelRef || "" });
+    try {
+      if (typeof state !== "undefined" && state.runtime) state.runtime.modelRef = draft.modelRef || "";
+    } catch (_) {}
+    return sent;
+  }
   async function confirmAgentEditor() {
+    var done = $("agentEditorDoneBtn");
+    if (done && done.disabled) return;
     var draft = podcast.editorDraft;
     if (!draft) return;
     if (podcast.editorMode === "add") {
@@ -717,6 +1004,19 @@
         addGroupAgent(draft);
       }
       setAgentEditor(false);
+      return;
+    }
+    if (podcast.editorMode === "system") {
+      var changedSystemVoice = applySystemVoiceDraft(draft);
+      var changedSystemModel = await applySystemModelDraft(draft);
+      setAgentEditor(false);
+      if (changedSystemVoice || changedSystemModel) {
+        var changedText = [];
+        if (changedSystemVoice) changedText.push("音色");
+        if (changedSystemModel) changedText.push("模型");
+        setStatus(systemParticipantName() + changedText.join("和") + "已更新。");
+        setVoiceStatus(systemParticipantName() + changedText.join("和") + "已更新。");
+      }
       return;
     }
     var agent = findAgent(podcast.editingAgentId);
@@ -935,7 +1235,8 @@
     var podcastStatus = $("podcastModeStatus");
     if (podcastStatus) podcastStatus.textContent = text || "";
   }
-  function setPodcastMode(on) {
+  function setPodcastMode(on, options) {
+    options = options || {};
     if (on) suspendNormalVoiceMode();
     podcast.mode = Boolean(on);
     var overlay = $("voiceOverlay");
@@ -951,7 +1252,7 @@
     }
     updatePodcastControl();
     renderParticipants();
-    savePodcastState();
+    if (options.save !== false) savePodcastState();
   }
   function suspendNormalVoiceMode() {
     if (root.VoiceMode && typeof root.VoiceMode.suspendForPodcast === "function") {
@@ -1067,6 +1368,8 @@
         rounds: Number(roundsEl && roundsEl.value || 20),
         host_voice_id: hostVoice.id,
         host_voice_label: hostVoice.label,
+        host_model_ref: podcast.hostModelRef || runtimeModelRef(),
+        host_model_label: podcast.hostModelLabel || modelOptionLabel(podcast.hostModelRef || runtimeModelRef()),
         agents: podcast.agents.map(function (agent) {
           return {
             id: agent.id,
@@ -1132,6 +1435,8 @@
     if (!payload) return;
     var agents = payload.agents || [];
     var host = payload.host || {};
+    podcast.hostModelRef = host.model_ref || podcast.hostModelRef || "";
+    podcast.hostModelLabel = host.model_label || podcast.hostModelLabel || "";
     var byId = {};
     agents.forEach(function (a) { if (a && a.id) byId[a.id] = a; });
     podcast.agents.forEach(function (agent) {
@@ -1148,7 +1453,8 @@
     savePodcastState();
     if (!el) return;
     el.hidden = false;
-    el.innerHTML = "主持人：" + escapeHtml(host.voice_label || host.voice_id || "当前音色") + "<br>" + agents.map(function (a) {
+    var hostModel = podcast.hostModelLabel || podcast.hostModelRef || "";
+    el.innerHTML = "主持人：" + escapeHtml((host.voice_label || host.voice_id || "当前音色") + (hostModel ? " · " + hostModel : "")) + "<br>" + agents.map(function (a) {
       var model = a.model_label || a.model_ref || "";
       return escapeHtml(a.role + "：" + (a.voice_label || a.voice_id || "") + (model ? " · " + model : ""));
     }).join("<br>");
@@ -1247,7 +1553,14 @@
   }
 
   function onEvent(event) {
-    if (!event || typeof event.type !== "string" || !event.type.startsWith("podcast.")) return;
+    if (!event || typeof event.type !== "string") return;
+    if (event.type === "session.updated") {
+      handleSessionChanged(event.session && event.session.session_id || "");
+      return;
+    }
+    if (!event.type.startsWith("podcast.")) return;
+    var activeSessionId = currentSessionId();
+    if (event.session_id && activeSessionId && event.session_id !== activeSessionId) return;
     if (event.run_id && podcast.runId && event.run_id !== podcast.runId) return;
     if (event.type === "podcast.started") {
       setPodcastMode(true);
@@ -1262,6 +1575,14 @@
       setActive(true);
       setVoiceStatus("群聊已启动，正在生成主持人开场...");
       updatePodcastControl();
+      return;
+    }
+    if (event.type === "podcast.host.updated") {
+      var updatedHost = event.host || {};
+      podcast.hostModelRef = updatedHost.model_ref || podcast.hostModelRef || "";
+      podcast.hostModelLabel = updatedHost.model_label || podcast.hostModelLabel || "";
+      savePodcastState();
+      renderParticipants();
       return;
     }
     if (event.type === "podcast.input.accepted") {
@@ -1566,6 +1887,23 @@
       pumpPlayback();
     }
   }
+  function refreshSystemSpeechVoice(voiceId, voiceLabel) {
+    var refreshed = 0;
+    podcast.utterances.forEach(function (entry) {
+      if (!entry || entry.speakerKey !== "host" || !entry.seq || !entry.finalText) return;
+      entry.voiceId = voiceId || entry.voiceId || "";
+      entry.voiceLabel = voiceLabel || entry.voiceLabel || entry.voiceId || "系统默认";
+      entry.speaker = entry.speaker ? entry.speaker.replace(/ · .*/, " · " + (entry.voiceLabel || entry.voiceId || "系统默认")) : "";
+      updateBubbleSpeaker(entry, entry.speaker);
+      if (entry.seq < podcast.nextPlaySeq && entry.seq !== podcast.currentPlaySeq) return;
+      podcast.synthJobs.set(entry.seq, makeSpeechJob(entry.seq, entry.finalText, entry.voiceId, entry.label, entry.speakerKey));
+      refreshed++;
+    });
+    if (podcast.playingSpeakerKey === "host") {
+      stopCurrentPlayback(true);
+    }
+    if (refreshed) pumpPlayback();
+  }
 
   async function enqueuePrioritySpeech(text, voiceId, label, speakerKey) {
     text = String(text || "").trim();
@@ -1605,6 +1943,8 @@
 
   function skipSpeechSeq(seq) {
     if (!seq) return;
+    podcast.synthJobs.delete(seq);
+    podcast.speechJobVersions.delete(seq);
     podcast.skippedSeqs.add(seq);
     pumpPlayback();
   }
@@ -1632,10 +1972,20 @@
           break;
         }
         var prepared = await job;
-        if (!isCurrentPlaybackGeneration(generation) || prepared.kind === "stale") break;
+        if (!isCurrentPlaybackGeneration(generation)) break;
+        if (prepared.kind === "stale") {
+          if (podcast.synthJobs.get(podcast.nextPlaySeq) === job) {
+            podcast.synthJobs.delete(podcast.nextPlaySeq);
+            podcast.speechJobVersions.delete(podcast.nextPlaySeq);
+            podcast.nextPlaySeq++;
+            continue;
+          }
+          break;
+        }
         if (podcast.playbackStopped) break;
         if (isRemovedSpeakerKey(prepared.speakerKey)) {
           podcast.synthJobs.delete(podcast.nextPlaySeq);
+          podcast.speechJobVersions.delete(podcast.nextPlaySeq);
           podcast.nextPlaySeq++;
           continue;
         }
@@ -1651,6 +2001,7 @@
           break;
         }
         podcast.synthJobs.delete(podcast.nextPlaySeq);
+        podcast.speechJobVersions.delete(podcast.nextPlaySeq);
         podcast.nextPlaySeq++;
       }
     } finally {
@@ -1841,6 +2192,10 @@
           if (copy) chunks.push(copy);
         },
         onCompleted: function () {
+          if (!chunks.length) {
+            finish(null, new Error(engineName + " returned empty audio"));
+            return;
+          }
           finish({
             kind: "pcm",
             chunks: chunks,
@@ -2301,6 +2656,7 @@
 
   return {
     onEvent: onEvent,
+    onSessionChanged: handleSessionChanged,
     _helpers: {
       roles: ROLES,
       selectedOut: selectedOut,

@@ -1484,6 +1484,7 @@ $("newSessionNavBtn").onclick = async () => {
   state.sessions = data.sessions;
   state.currentSession = data.session;
   syncSessionActiveTurn(state.currentSession);
+  if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
   renderSessions();
   updateSendBtn();
   renderHistory();
