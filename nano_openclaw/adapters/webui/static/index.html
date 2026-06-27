@@ -13,7 +13,7 @@
         document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260627-group-session-update-ignore" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260627-session-topic-reset" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -124,14 +124,17 @@
       </div>
       <div id="groupMemberMenu" class="group-member-menu" role="menu" hidden></div>
       <div class="voice-stage">
-        <div class="voice-home-actions">
+        <div class="voice-stage-bar">
+          <div class="voice-stage-label">单聊</div>
+          <button id="voiceAddRoleBtn" class="voice-stage-add" type="button" aria-label="添加角色进入群聊">
+            <span class="voice-add-role-icon">+</span>
+            <span class="voice-add-role-text">角色</span>
+          </button>
+        </div>
+        <div class="voice-duo-grid" aria-label="单聊语音控制">
           <button id="voiceCircle" class="voice-circle off" type="button" aria-label="开始或暂停语音">
             <span class="voice-emoji">🎙️</span>
             <span class="voice-circle-label">点击开始</span>
-          </button>
-          <button id="voiceAddRoleBtn" class="voice-add-role-card" type="button" aria-label="添加角色进入群聊">
-            <span class="voice-add-role-icon">+</span>
-            <span class="voice-add-role-text">添加角色</span>
           </button>
         </div>
         <div id="voiceStatus" class="voice-status">点击麦克风，开始连续语音对话</div>
@@ -259,6 +262,6 @@
     <script src="/static/voice-speaker-provider.js?v=20260613-talk-provider"></script>
     <script src="/static/voice-view.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-shell.js?v=20260613-provider"></script>
-    <script src="/static/voice-podcast.js?v=20260627-group-session-update-ignore"></script>
+    <script src="/static/voice-podcast.js?v=20260627-session-topic-reset"></script>
   </body>
 </html>

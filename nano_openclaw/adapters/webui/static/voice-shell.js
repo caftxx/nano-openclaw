@@ -543,7 +543,7 @@
     // 手势解锁（primeAudio）也由核心作为命令发出，与 OPEN/TOGGLE 同一通道。
     if (els.overlay) els.overlay.addEventListener("click", (e) => {
       if (els.overlay.classList.contains("podcast-mode")) return;
-      if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-captions")) return;
+      if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-stage-bar, .voice-duo-grid, .voice-captions")) return;
       dispatch({ type: "TAP", externalTurnOpen: externalTurnOpen(), externalTurnId: state.activeTurnId || "" });
     });
 

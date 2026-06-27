@@ -138,6 +138,10 @@
       return fallback;
     }
   }
+  function setPodcastTopicInput(value) {
+    var topic = $("podcastTopic");
+    if (topic) topic.value = String(value || "");
+  }
   function safeAgentRole(role) {
     return ROLES.indexOf(role) >= 0 ? role : "自动";
   }
@@ -183,6 +187,7 @@
   function savePodcastState(sessionId) {
     var sid = storageSessionId(sessionId);
     if (!sid) return;
+    if (!sessionId && !podcast.sessionId) podcast.sessionId = sid;
     if (hasLocalPodcastState()) {
       sessionSet(MODE_KEY, "1", sid);
       if (podcast.runId) sessionSet(RUN_KEY, podcast.runId, sid);
@@ -221,6 +226,7 @@
     podcast.activeSpeakerMode = "";
     podcast.playingSpeakerKey = "";
     podcast.lastTopic = "";
+    setPodcastTopicInput("");
     podcast.hostModelRef = "";
     podcast.hostModelLabel = "";
     podcast.rounds = 20;
@@ -250,11 +256,6 @@
   function handleSessionChanged(sessionId) {
     var sid = String(sessionId || currentSessionId() || "");
     if (!sid || podcast.sessionId === sid) return;
-    if (!podcast.sessionId && hasLocalPodcastState()) {
-      podcast.sessionId = sid;
-      savePodcastState(sid);
-      return;
-    }
     if (podcast.sessionId) savePodcastState(podcast.sessionId);
     if (hasPodcastState(sid)) {
       resetPodcastRuntimeForSession(sid);
@@ -280,6 +281,7 @@
     }
     if (!podcast.agents.length) podcast.agents = normalizeAgents(sessionGetJson(AGENTS_KEY, [], sid));
     if (!podcast.lastTopic) podcast.lastTopic = sessionGet(TOPIC_KEY, sid);
+    setPodcastTopicInput(podcast.lastTopic || "");
     podcast.rounds = normalizeRounds(sessionGet(ROUNDS_KEY, sid) || podcast.rounds || 20);
     syncRoundInputs(podcast.rounds);
     if (!podcast.hostModelRef) {
