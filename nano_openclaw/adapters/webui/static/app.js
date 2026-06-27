@@ -60,6 +60,7 @@ const THEME_LABELS = {
   light: "Light",
 };
 const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+const PODCAST_RUN_KEY_PREFIX = "nanoPodcastRunId:";
 
 function resolvedTheme() {
   if (state.themePreference === "dark" || state.themePreference === "light") {
@@ -144,10 +145,9 @@ function connect() {
   };
 }
 
-async function createSessionAndRender() {
-  const data = await api("/api/sessions", { method: "POST", body: "{}" });
-  state.sessions = data.sessions;
-  state.currentSession = data.session;
+function applySessionPayload(data) {
+  state.sessions = data.sessions || state.sessions;
+  state.currentSession = data.session || state.currentSession;
   syncSessionActiveTurn(state.currentSession);
   if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
   renderSessions();
@@ -156,9 +156,43 @@ async function createSessionAndRender() {
   return state.currentSession;
 }
 
+async function createSessionAndRender() {
+  const data = await api("/api/sessions", { method: "POST", body: "{}" });
+  return applySessionPayload(data);
+}
+
+async function selectSessionAndRender(sessionId) {
+  const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/select`, {
+    method: "POST",
+    body: "{}",
+  });
+  return applySessionPayload(data);
+}
+
+function restorablePodcastSessionId() {
+  try {
+    for (let i = 0; i < sessionStorage.length; i += 1) {
+      const key = sessionStorage.key(i) || "";
+      if (!key.startsWith(PODCAST_RUN_KEY_PREFIX)) continue;
+      if (sessionStorage.getItem(key)) return key.slice(PODCAST_RUN_KEY_PREFIX.length);
+    }
+  } catch (_) {}
+  return "";
+}
+
 async function startWebClient() {
   try {
-    await createSessionAndRender();
+    const restoreSessionId = restorablePodcastSessionId();
+    if (restoreSessionId) {
+      try {
+        await selectSessionAndRender(restoreSessionId);
+      } catch (error) {
+        if (String(error?.message || error) === "unauthorized") throw error;
+        await createSessionAndRender();
+      }
+    } else {
+      await createSessionAndRender();
+    }
   } catch (error) {
     if (String(error?.message || error) !== "unauthorized") {
       addEvent("startup.error", String(error?.message || error), { type: "startup.error" });
@@ -232,6 +266,7 @@ function handleEvent(event) {
       state.sessions = event.sessions || state.sessions;
       state.currentSession = event.session || state.currentSession;
       syncSessionActiveTurn(state.currentSession);
+      if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
       renderSessions();
       updateSendBtn();
       if (event.history_changed || previousSessionId !== (state.currentSession?.session_id || null) || !$("messages").children.length) {

@@ -2575,11 +2575,12 @@
       return;
     }
     podcast.pendingInputText = text;
-    resetForUserInput(podcast.generation + 1);
     addBubble("you", text);
+    setVoiceStatus("正在发送你的插话...");
     try {
       await apiSafe("/api/voice/podcast/input", { run_id: podcast.runId, text: text });
     } catch (err) {
+      podcast.pendingInputText = "";
       podcast.playbackPausedForInput = false;
       setStatus("插话发送失败：" + (err && err.message || err));
       setVoiceStatus("插话发送失败，继续播放群聊。");
