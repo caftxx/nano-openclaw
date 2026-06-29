@@ -31,3 +31,15 @@ def test_podcast_interjection_waits_for_acceptance_before_generation_reset():
     assert "resetForUserInput(" not in body
     assert 'await apiSafe("/api/voice/podcast/input"' in body
     assert 'podcast.pendingInputText = "";' in body
+
+
+def test_podcast_recognition_uses_current_voice_provider():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    factory = _function_body(source, "function createPodcastRecognizer(callbacks)", "function startTopicCapture()")
+    topic_body = _function_body(source, "function startTopicCapture()", "function stopTopicCapture()")
+    input_body = _function_body(source, "function startInterjectionCapture()", "function stopInterjectionCapture()")
+
+    assert "root.VoiceMode.createRecognizer" in factory
+    assert "root.VoiceMode.ensureConfig" in factory
+    assert "new SR()" not in topic_body
+    assert "new SR()" not in input_body

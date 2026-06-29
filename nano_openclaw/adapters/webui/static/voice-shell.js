@@ -494,27 +494,46 @@
   }
 
   // ── 配置拉取（异步，不阻塞 init）─────────────────────────────────────────
+  let voiceConfigPromise = null;
   async function loadVoiceConfig() {
-    if (aliyunEnvOk) {
-      // api() 统一处理 401（弹 token 框）；断网/旧后端静默保持 null，阿里云视为不可用
-      try { voiceCfg = await api("/api/voice/config"); } catch (_) {}
-    }
-    configLoaded = true;   // 成功/失败/断网都算确定【B7】
-    // 存储的阿里云音色不在目录（未设/已下线）→ 此刻才允许降级到后端默认【B7】
-    const voices = (voiceCfg && voiceCfg.tts && voiceCfg.tts.voices) || [];
-    if (prefs.aliyunVoice && voices.length && !voices.some((v) => v.value === prefs.aliyunVoice)) {
-      prefs.aliyunVoice = "";
-    }
-    // 选了阿里云输出但确实不可用 → 落回本地（一旦 config 确定才动偏好）
-    if (prefs.outMode && prefs.outMode !== "local" && !aliyunTtsUsable()) {
-      prefs.outMode = "local";
-      store(OUTMODE_KEY, "local");
-    }
-    if (speaker) buildSpeaker();   // 已建过链（不太可能这么早）：按新配置重组
-    // 引擎选路可能随配置变化（webspeech→aliyun）：丢弃空闲的旧实例，下次开麦用新引擎
-    if (recognizer && recognizer.name !== activeEngineName() && !recognizer.busy()) dropRecognizer();
-    markControlsDirty();
-    renderAll();
+    if (voiceConfigPromise) return voiceConfigPromise;
+    voiceConfigPromise = (async () => {
+      if (aliyunEnvOk) {
+        // api() 统一处理 401（弹 token 框）；断网/旧后端静默保持 null，阿里云视为不可用
+        try { voiceCfg = await api("/api/voice/config"); } catch (_) {}
+      }
+      configLoaded = true;   // 成功/失败/断网都算确定【B7】
+      // 存储的阿里云音色不在目录（未设/已下线）→ 此刻才允许降级到后端默认【B7】
+      const voices = (voiceCfg && voiceCfg.tts && voiceCfg.tts.voices) || [];
+      if (prefs.aliyunVoice && voices.length && !voices.some((v) => v.value === prefs.aliyunVoice)) {
+        prefs.aliyunVoice = "";
+      }
+      // 选了阿里云输出但确实不可用 → 落回本地（一旦 config 确定才动偏好）
+      if (prefs.outMode && prefs.outMode !== "local" && !aliyunTtsUsable()) {
+        prefs.outMode = "local";
+        store(OUTMODE_KEY, "local");
+      }
+      if (speaker) buildSpeaker();   // 已建过链（不太可能这么早）：按新配置重组
+      // 引擎选路可能随配置变化（webspeech→aliyun）：丢弃空闲的旧实例，下次开麦用新引擎
+      if (recognizer && recognizer.name !== activeEngineName() && !recognizer.busy()) dropRecognizer();
+      markControlsDirty();
+      renderAll();
+      return voiceCfg;
+    })();
+    return voiceConfigPromise;
+  }
+
+  function createExternalRecognizer(callbacks, options) {
+    options = options || {};
+    const standby = Boolean(options.standby);
+    const engine = options.engine || (standby ? "webspeech" : activeEngineName());
+    const cbs = Object.assign({
+      log: (k, m) => console.warn("[voice] recog", k, m),
+    }, callbacks || {});
+    return ensureRecognizerProvider().create(engine, {
+      standby,
+      callbacks: cbs,
+    });
   }
 
   // ── 绑定 ─────────────────────────────────────────────────────────────────
@@ -631,6 +650,9 @@
     open: () => openOverlay(true),
     close: closeOverlay,
     suspendForPodcast: closeOverlay,
+    ensureConfig: loadVoiceConfig,
+    createRecognizer: createExternalRecognizer,
+    recognitionEngine: activeEngineName,
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();

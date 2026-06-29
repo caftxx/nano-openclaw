@@ -2407,11 +2407,118 @@
     startTopicCapture();
   }
 
+  function createPodcastRecognizer(callbacks) {
+    callbacks = callbacks || {};
+    if (root.VoiceMode && typeof root.VoiceMode.ensureConfig === "function") {
+      try { root.VoiceMode.ensureConfig(); } catch (_) {}
+    }
+    if (root.VoiceMode && typeof root.VoiceMode.createRecognizer === "function") {
+      try {
+        return root.VoiceMode.createRecognizer({
+          onStarted: callbacks.onStarted || function () {},
+          onInterim: callbacks.onInterim || function () {},
+          onFinal: callbacks.onFinal || function () {},
+          onError: callbacks.onError || function () {},
+          onEnded: callbacks.onEnded || function () {},
+          log: function (k, m) { try { console.warn("[podcast] recog", k, m); } catch (_) {} },
+        });
+      } catch (_) {}
+    }
+    var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
+    if (!SR) return null;
+    var rec = new SR();
+    var running = false;
+    rec.lang = "zh-CN";
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.onstart = function () {
+      running = true;
+      if (callbacks.onStarted) callbacks.onStarted();
+    };
+    rec.onresult = function (event) {
+      var text = "";
+      for (var i = 0; i < event.results.length; i++) {
+        text += event.results[i][0] && event.results[i][0].transcript || "";
+      }
+      if (callbacks.onFinal) callbacks.onFinal(text.trim());
+    };
+    rec.onerror = function (event) {
+      if (callbacks.onError) callbacks.onError(event && event.error || "error", event && event.error || "");
+    };
+    rec.onend = function () {
+      running = false;
+      if (callbacks.onEnded) callbacks.onEnded();
+    };
+    return {
+      name: "webspeech",
+      start: function () {
+        running = true;
+        rec.start();
+      },
+      stop: function () {
+        running = false;
+        try { rec.onresult = null; rec.onerror = null; rec.onend = null; } catch (_) {}
+        try { rec.stop(); } catch (_) {}
+        try { rec.abort && rec.abort(); } catch (_) {}
+      },
+      busy: function () { return running; },
+      flushNow: function () { return ""; },
+    };
+  }
+
   function startTopicCapture() {
     if (podcast.runId || podcast.starting || podcast.capturingTopic) return;
     if (!podcast.sessionId) podcast.sessionId = String(currentSessionId() || "");
-    var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
-    if (!SR) {
+    var submitted = false;
+    var rec = null;
+    rec = createPodcastRecognizer({
+      onFinal: function (text) {
+        text = String(text || "").trim();
+        submitted = Boolean(text);
+        stopTopicCapture();
+        if (!text) {
+          podcast.topicCaptureArmed = true;
+          if (podcast.agents.length) {
+            setDialog(false);
+            setPodcastMode(true);
+          }
+          setStatus("没有听清话题，点击屏幕可重试。");
+          setVoiceStatus("没有听清话题，点击屏幕可重新说。");
+          return;
+        }
+        var topic = $("podcastTopic");
+        if (topic) topic.value = text;
+        addBubble("you", "话题：" + text);
+        startPodcast(text);
+      },
+      onError: function () {
+        stopTopicCapture();
+        podcast.topicCaptureArmed = true;
+        if (podcast.agents.length) {
+          setDialog(false);
+          setPodcastMode(true);
+        }
+        setStatus("话题识别失败，点击屏幕可重试。");
+        setVoiceStatus("话题识别失败，点击屏幕可重新说。");
+        updatePodcastControl();
+      },
+      onEnded: function () {
+        if (podcast.topicRecognizer === rec) podcast.topicRecognizer = null;
+        podcast.capturingTopic = false;
+        setActive(Boolean(podcast.runId));
+        updatePodcastControl();
+        if (!submitted && !podcast.runId && !podcast.starting) {
+          podcast.topicCaptureArmed = true;
+          if (podcast.agents.length) {
+            setDialog(false);
+            setPodcastMode(true);
+          }
+          setStatus("点击屏幕空白处，说出群聊话题。");
+          setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+        }
+      },
+    });
+    if (!rec) {
       setDialog(true);
       setStatus("当前浏览器不支持语音输入，请手动输入话题。");
       setVoiceStatus("当前浏览器不支持语音话题输入。");
@@ -2424,61 +2531,7 @@
     setDialog(false);
     setStatus("请说出群聊要讨论的话题...");
     setVoiceStatus("正在收听群聊话题，说完后会自动开始。");
-    var rec = new SR();
     podcast.topicRecognizer = rec;
-    var submitted = false;
-    rec.lang = "zh-CN";
-    rec.interimResults = false;
-    rec.continuous = false;
-    rec.onresult = function (event) {
-      var text = "";
-      for (var i = 0; i < event.results.length; i++) {
-        text += event.results[i][0] && event.results[i][0].transcript || "";
-      }
-      text = text.trim();
-      submitted = Boolean(text);
-      stopTopicCapture();
-      if (!text) {
-        podcast.topicCaptureArmed = true;
-        if (podcast.agents.length) {
-          setDialog(false);
-          setPodcastMode(true);
-        }
-        setStatus("没有听清话题，点击屏幕可重试。");
-        setVoiceStatus("没有听清话题，点击屏幕可重新说。");
-        return;
-      }
-      var topic = $("podcastTopic");
-      if (topic) topic.value = text;
-      addBubble("you", "话题：" + text);
-      startPodcast(text);
-    };
-    rec.onerror = function () {
-      stopTopicCapture();
-      podcast.topicCaptureArmed = true;
-      if (podcast.agents.length) {
-        setDialog(false);
-        setPodcastMode(true);
-      }
-      setStatus("话题识别失败，点击屏幕可重试。");
-      setVoiceStatus("话题识别失败，点击屏幕可重新说。");
-      updatePodcastControl();
-    };
-    rec.onend = function () {
-      if (podcast.topicRecognizer === rec) podcast.topicRecognizer = null;
-      podcast.capturingTopic = false;
-      setActive(Boolean(podcast.runId));
-      updatePodcastControl();
-      if (!submitted && !podcast.runId && !podcast.starting) {
-        podcast.topicCaptureArmed = true;
-        if (podcast.agents.length) {
-          setDialog(false);
-          setPodcastMode(true);
-        }
-        setStatus("点击屏幕空白处，说出群聊话题。");
-        setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
-      }
-    };
     try { rec.start(); } catch (_) {
       stopTopicCapture();
       podcast.topicCaptureArmed = true;
@@ -2499,16 +2552,39 @@
     setActive(Boolean(podcast.runId));
     updatePodcastControl();
     if (!rec) return;
-    try { rec.onresult = null; rec.onerror = null; } catch (_) {}
     try { rec.stop(); } catch (_) {}
-    try { rec.abort && rec.abort(); } catch (_) {}
   }
 
   function startInterjectionCapture() {
     if (!podcast.runId || podcast.capturingInput) return;
-    var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
-    if (!SR) {
-      setStatus("当前浏览器不支持本地语音插话。");
+    var submitted = false;
+    var rec = null;
+    rec = createPodcastRecognizer({
+      onFinal: function (text) {
+        submitted = true;
+        stopInterjectionCapture();
+        submitInterjection(String(text || "").trim());
+      },
+      onError: function () {
+        stopInterjectionCapture();
+        podcast.playbackPausedForInput = false;
+        setStatus("插话识别失败。");
+        setVoiceStatus("插话识别失败，继续播放群聊。");
+        pumpPlayback();
+      },
+      onEnded: function () {
+        if (podcast.inputRecognizer === rec) podcast.inputRecognizer = null;
+        podcast.capturingInput = false;
+        if (!submitted) {
+          podcast.playbackPausedForInput = false;
+          pumpPlayback();
+        }
+        if (podcast.runId) setStatus("群聊进行中，点屏幕空白处可插话。");
+        updatePodcastControl();
+      },
+    });
+    if (!rec) {
+      setStatus("当前浏览器不支持语音插话。");
       return;
     }
     podcast.playbackPausedForInput = true;
@@ -2518,38 +2594,7 @@
     updatePodcastControl();
     setStatus("请说出你的观点或问题...");
     setVoiceStatus("正在收听你的插话，说完后会自动关闭麦克风...");
-    var rec = new SR();
     podcast.inputRecognizer = rec;
-    var submitted = false;
-    rec.lang = "zh-CN";
-    rec.interimResults = false;
-    rec.continuous = false;
-    rec.onresult = function (event) {
-      var text = "";
-      for (var i = 0; i < event.results.length; i++) {
-        text += event.results[i][0] && event.results[i][0].transcript || "";
-      }
-      submitted = true;
-      stopInterjectionCapture();
-      submitInterjection(text.trim());
-    };
-    rec.onerror = function () {
-      stopInterjectionCapture();
-      podcast.playbackPausedForInput = false;
-      setStatus("插话识别失败。");
-      setVoiceStatus("插话识别失败，继续播放群聊。");
-      pumpPlayback();
-    };
-    rec.onend = function () {
-      if (podcast.inputRecognizer === rec) podcast.inputRecognizer = null;
-      podcast.capturingInput = false;
-      if (!submitted) {
-        podcast.playbackPausedForInput = false;
-        pumpPlayback();
-      }
-      if (podcast.runId) setStatus("群聊进行中，点屏幕空白处可插话。");
-      updatePodcastControl();
-    };
     try { rec.start(); } catch (_) {
       stopInterjectionCapture();
       podcast.playbackPausedForInput = false;
@@ -2563,9 +2608,7 @@
     podcast.capturingInput = false;
     updatePodcastControl();
     if (!rec) return;
-    try { rec.onresult = null; rec.onerror = null; } catch (_) {}
     try { rec.stop(); } catch (_) {}
-    try { rec.abort && rec.abort(); } catch (_) {}
   }
 
   async function submitInterjection(text) {
