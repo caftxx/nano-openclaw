@@ -119,6 +119,18 @@
     return "silent-audio";
   }
 
+  function closeCommands() {
+    return [
+      { type: "stopMic" },
+      { type: "stopSpeech" },
+      { type: "clearTimer", tag: "start" },
+      { type: "clearTimer", tag: "cooldown" },
+      { type: "clearTimer", tag: "wakeIdle" },
+      { type: "wakeLock", on: false },
+      { type: "teardown" },
+    ];
+  }
+
   function createInitialModel() {
     return {
       state: "closed",
@@ -242,13 +254,7 @@
 
       case "CLOSE": {
         if (state === "closed") return res(state, ctx, cmds);
-        cmds.push({ type: "stopMic" });
-        cmds.push({ type: "stopSpeech" });
-        cmds.push({ type: "clearTimer", tag: "start" });
-        cmds.push({ type: "clearTimer", tag: "cooldown" });
-        cmds.push({ type: "clearTimer", tag: "wakeIdle" });
-        cmds.push({ type: "wakeLock", on: false });
-        cmds.push({ type: "teardown" });   // shell：dispose 播放器/合成链、释放焦点 guard
+        Array.prototype.push.apply(cmds, closeCommands());
         return res("closed", createInitialModel().ctx, cmds);
       }
 
@@ -608,5 +614,6 @@
     isActive: isActive,
     matchWake: matchWake,
     inStandby: inStandby,
+    closeCommands: closeCommands,
   };
 });

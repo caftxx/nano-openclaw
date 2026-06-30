@@ -189,10 +189,12 @@
     if (!sid) return;
     if (!sessionId && !podcast.sessionId) podcast.sessionId = sid;
     if (hasLocalPodcastState()) {
-      sessionSet(MODE_KEY, "1", sid);
+      if (podcast.mode || podcast.runId) sessionSet(MODE_KEY, "1", sid);
+      else sessionRemove(MODE_KEY, sid);
       if (podcast.runId) sessionSet(RUN_KEY, podcast.runId, sid);
       else sessionRemove(RUN_KEY, sid);
-      sessionSet(AGENTS_KEY, JSON.stringify(podcast.agents || []), sid);
+      if (podcast.agents.length) sessionSet(AGENTS_KEY, JSON.stringify(podcast.agents || []), sid);
+      else sessionRemove(AGENTS_KEY, sid);
       if (podcast.lastTopic) sessionSet(TOPIC_KEY, podcast.lastTopic, sid);
       else sessionRemove(TOPIC_KEY, sid);
       if (podcast.hostModelRef) sessionSet(HOST_MODEL_KEY, JSON.stringify({ ref: podcast.hostModelRef, label: podcast.hostModelLabel || "" }), sid);
@@ -301,18 +303,25 @@
       podcast.playbackStopped = false;
       podcast.generationDone = false;
     }
-    setPodcastMode(podcast.agents.length > 0 || Boolean(podcast.runId));
+    var savedMode = Boolean(sessionGet(MODE_KEY, sid));
     if (podcast.runId) {
+      setPodcastMode(true);
       setActive(true);
       if (!podcast.capturingInput && !podcast.capturingTopic) {
         setStatus("群聊进行中，点屏幕空白处可插话。");
         setVoiceStatus("群聊已恢复，等待后续内容...");
       }
-    } else if (podcast.agents.length) {
+    } else if (savedMode && podcast.agents.length) {
+      setPodcastMode(true);
       podcast.topicCaptureArmed = true;
       setActive(false);
       setStatus("点击屏幕空白处，说出群聊话题。");
       setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+    } else {
+      podcast.topicCaptureArmed = false;
+      setPodcastMode(false);
+      if (savedMode) sessionRemove(MODE_KEY, sid);
+      setActive(false);
     }
     renderAgents();
     renderParticipants();
@@ -469,10 +478,10 @@
   }
 
   function isGroupMode() {
-    return podcast.agents.length > 0 || podcast.mode || Boolean(podcast.runId);
+    return podcast.mode || Boolean(podcast.runId);
   }
   function systemParticipantName() {
-    return podcast.agents.length > 0 || podcast.mode || podcast.runId ? "主持人" : "Assistant";
+    return isGroupMode() ? "主持人" : "Assistant";
   }
   function participantColor(index) {
     return MEMBER_COLORS[index % MEMBER_COLORS.length];
@@ -1284,7 +1293,8 @@
   }
   function setPodcastMode(on, options) {
     options = options || {};
-    if (on) suspendNormalVoiceMode();
+    var entering = Boolean(on) && !podcast.mode;
+    if (entering) suspendNormalVoiceMode();
     podcast.mode = Boolean(on);
     var overlay = $("voiceOverlay");
     if (overlay) overlay.classList.toggle("podcast-mode", podcast.mode);
@@ -2407,10 +2417,10 @@
     startTopicCapture();
   }
 
-  function createPodcastRecognizer(callbacks) {
+  async function createPodcastRecognizer(callbacks) {
     callbacks = callbacks || {};
     if (root.VoiceMode && typeof root.VoiceMode.ensureConfig === "function") {
-      try { root.VoiceMode.ensureConfig(); } catch (_) {}
+      try { await root.VoiceMode.ensureConfig(); } catch (_) {}
     }
     if (root.VoiceMode && typeof root.VoiceMode.createRecognizer === "function") {
       try {
@@ -2426,7 +2436,8 @@
     }
     var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
     if (!SR) return null;
-    var rec = new SR();
+    var rec;
+    try { rec = new SR(); } catch (_) { return null; }
     var running = false;
     rec.lang = "zh-CN";
     rec.interimResults = false;
@@ -2466,12 +2477,20 @@
     };
   }
 
-  function startTopicCapture() {
+  async function startTopicCapture() {
     if (podcast.runId || podcast.starting || podcast.capturingTopic) return;
     if (!podcast.sessionId) podcast.sessionId = String(currentSessionId() || "");
+    podcast.topicCaptureArmed = true;
+    podcast.capturingTopic = true;
+    setPodcastMode(true);
+    setActive(false);
+    setDialog(false);
+    setStatus("正在准备语音输入...");
+    setVoiceStatus("正在准备语音输入...");
+    updatePodcastControl();
     var submitted = false;
     var rec = null;
-    rec = createPodcastRecognizer({
+    rec = await createPodcastRecognizer({
       onFinal: function (text) {
         text = String(text || "").trim();
         submitted = Boolean(text);
@@ -2518,17 +2537,20 @@
         }
       },
     });
+    if (!podcast.capturingTopic) {
+      if (rec) {
+        try { rec.stop(); } catch (_) {}
+      }
+      return;
+    }
     if (!rec) {
+      podcast.capturingTopic = false;
       setDialog(true);
       setStatus("当前浏览器不支持语音输入，请手动输入话题。");
       setVoiceStatus("当前浏览器不支持语音话题输入。");
+      updatePodcastControl();
       return;
     }
-    podcast.topicCaptureArmed = true;
-    podcast.capturingTopic = true;
-    setPodcastMode(true);
-    setActive(false);
-    setDialog(false);
     setStatus("请说出群聊要讨论的话题...");
     setVoiceStatus("正在收听群聊话题，说完后会自动开始。");
     podcast.topicRecognizer = rec;
@@ -2555,11 +2577,18 @@
     try { rec.stop(); } catch (_) {}
   }
 
-  function startInterjectionCapture() {
+  async function startInterjectionCapture() {
     if (!podcast.runId || podcast.capturingInput) return;
+    podcast.playbackPausedForInput = true;
+    stopCurrentPlayback(true);
+    podcast.capturingInput = true;
+    setPodcastMode(true);
+    updatePodcastControl();
+    setStatus("正在准备语音输入...");
+    setVoiceStatus("正在准备语音输入...");
     var submitted = false;
     var rec = null;
-    rec = createPodcastRecognizer({
+    rec = await createPodcastRecognizer({
       onFinal: function (text) {
         submitted = true;
         stopInterjectionCapture();
@@ -2583,15 +2612,21 @@
         updatePodcastControl();
       },
     });
-    if (!rec) {
-      setStatus("当前浏览器不支持语音插话。");
+    if (!podcast.capturingInput) {
+      if (rec) {
+        try { rec.stop(); } catch (_) {}
+      }
       return;
     }
-    podcast.playbackPausedForInput = true;
-    stopCurrentPlayback(true);
-    podcast.capturingInput = true;
-    setPodcastMode(true);
-    updatePodcastControl();
+    if (!rec) {
+      podcast.capturingInput = false;
+      podcast.playbackPausedForInput = false;
+      setStatus("当前浏览器不支持语音插话。");
+      setVoiceStatus("当前浏览器不支持语音插话，继续播放群聊。");
+      updatePodcastControl();
+      pumpPlayback();
+      return;
+    }
     setStatus("请说出你的观点或问题...");
     setVoiceStatus("正在收听你的插话，说完后会自动关闭麦克风...");
     podcast.inputRecognizer = rec;
@@ -2689,13 +2724,10 @@
     };
     var normalVoiceCircle = $("voiceCircle");
     if (normalVoiceCircle) normalVoiceCircle.addEventListener("click", function (event) {
-      if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed && !podcast.agents.length) return;
+      if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (!podcast.mode && podcast.agents.length) {
-        podcast.topicCaptureArmed = true;
-        setPodcastMode(true);
-      }
+      if (!podcast.mode && podcast.topicCaptureArmed) setPodcastMode(true);
       if (podcast.runId) startInterjectionCapture();
       else if (explicitTopicValue()) startPodcast();
       else startTopicCapture();
@@ -2726,7 +2758,7 @@
         setVoiceStatus("群聊进行中，请先点击停止。");
         return;
       }
-      if (podcast.agents.length) exitGroupChat();
+      if ((podcast.mode || podcast.topicCaptureArmed) && podcast.agents.length) exitGroupChat();
     }, true);
     var podcastCircle = $("podcastCircle");
     if (podcastCircle) podcastCircle.addEventListener("click", function (event) {
@@ -2743,10 +2775,6 @@
     }, true);
     var overlay = $("voiceOverlay");
     if (overlay) overlay.addEventListener("click", function (event) {
-      if (!podcast.mode && !podcast.runId && podcast.agents.length) {
-        podcast.topicCaptureArmed = true;
-        setPodcastMode(true);
-      }
       if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
       if (shouldIgnoreOverlayTap(event.target)) return;
       event.stopPropagation();

@@ -400,6 +400,9 @@
   // <select> 会被打闪/收起。
   let controlsDirty = true;
   function markControlsDirty() { controlsDirty = true; }
+  function podcastOwnsOverlay() {
+    return Boolean(view && view.els && view.els.overlay && view.els.overlay.classList.contains("podcast-mode"));
+  }
   function controlsState() {
     let systemVoices = [];
     try { systemVoices = (synth && synth.getVoices()) || []; } catch (_) {}
@@ -418,7 +421,7 @@
   }
   function renderAll() {
     if (!view) return;
-    view.render(model, { fallbackNotice });
+    if (!podcastOwnsOverlay()) view.render(model, { fallbackNotice });
     if (controlsDirty) {
       controlsDirty = false;
       view.renderControls(controlsState());
@@ -451,6 +454,11 @@
     });
   }
   function closeOverlay() { dispatch({ type: "CLOSE" }); }
+  function suspendForPodcast() {
+    if (model.state === "closed") return;
+    core.closeCommands().forEach(function (cmd) { exec(cmd); });
+    model = core.createInitialModel();
+  }
 
   // ── 来自 app.js handleEvent 的聊天事件【E3】──────────────────────────────
   function onEvent(event) {
@@ -649,7 +657,7 @@
     onEvent,
     open: () => openOverlay(true),
     close: closeOverlay,
-    suspendForPodcast: closeOverlay,
+    suspendForPodcast,
     ensureConfig: loadVoiceConfig,
     createRecognizer: createExternalRecognizer,
     recognitionEngine: activeEngineName,

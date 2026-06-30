@@ -69,6 +69,12 @@ test("CLOSE：全量清理 + teardown", () => {
   assert.ok(has(r.cmds, "teardown") && has(r.cmds, "stopMic") && has(r.cmds, "stopSpeech"));
 });
 
+test("closeCommands：导出给 shell 复用且与 CLOSE 命令保持一致", () => {
+  assert.strictEqual(typeof VoiceCore.closeCommands, "function");
+  const r = replay([...BOOT, { type: "CLOSE" }]);
+  assert.deepStrictEqual(r.cmds, VoiceCore.closeCommands());
+});
+
 // ── 一轮完整对话（happy path，覆盖 E1/D3）──────────────────────────────────
 test("完整一轮：说话→发送→流式分句朗读→done 读尾→drain→冷却 500ms→续听", () => {
   let r = replay([...BOOT, { type: "MIC_FINAL", text: "今天天气怎么样" }]);
