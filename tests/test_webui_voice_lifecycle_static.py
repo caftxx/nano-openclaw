@@ -24,6 +24,17 @@ def test_webui_startup_restores_active_podcast_session_before_creating_new_sessi
     assert "PodcastMode.onSessionChanged" in _function_body(source, 'case "session.updated":', 'case "chat.accepted":')
 
 
+def test_webui_rest_session_switch_syncs_websocket_current_session():
+    source = APP_JS.read_text(encoding="utf-8")
+    sync_body = _function_body(source, "function syncWebSocketSession(session)", "async function createSessionAndRender()")
+    create_body = _function_body(source, "async function createSessionAndRender()", "async function selectSessionAndRender")
+    select_body = _function_body(source, "async function selectSessionAndRender(sessionId)", "function restorablePodcastSessionId()")
+
+    assert 'send("session.select", { session_id: sessionId });' in sync_body
+    assert "syncWebSocketSession(session);" in create_body
+    assert "syncWebSocketSession(session);" in select_body
+
+
 def test_podcast_interjection_waits_for_acceptance_before_generation_reset():
     source = PODCAST_JS.read_text(encoding="utf-8")
     body = _function_body(source, "async function submitInterjection(text)", "function init()")
@@ -31,6 +42,28 @@ def test_podcast_interjection_waits_for_acceptance_before_generation_reset():
     assert "resetForUserInput(" not in body
     assert 'await apiSafe("/api/voice/podcast/input"' in body
     assert 'podcast.pendingInputText = "";' in body
+
+
+def test_podcast_start_resets_caption_timeline_for_new_run():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    reset_body = _function_body(source, "function resetCaptionsForRun(topic)", "function resetForUserInput")
+    start_body = _function_body(source, "async function startPodcast(topicOverride)", "async function stopPodcast")
+    event_body = _function_body(source, 'if (event.type === "podcast.started")', 'if (event.type === "podcast.host.updated")')
+
+    assert 'captions.querySelectorAll(".vbubble")' in reset_body
+    assert 'addBubble("you", "话题：" + topic);' in reset_body
+    assert "resetCaptionsForRun(podcast.lastTopic);" in start_body
+    assert "resetCaptionsForRun(event.topic || podcast.lastTopic);" in event_body
+
+
+def test_podcast_topic_capture_keeps_group_mode_while_starting():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    body = _function_body(source, "function startTopicCapture()", "function stopTopicCapture()")
+    ended_body = body[body.index("onEnded: function ()"):body.index("if (!submitted && !podcast.runId && !podcast.starting)")]
+
+    assert "submitted && (podcast.starting || podcast.runId || podcast.agents.length)" in ended_body
+    assert "setPodcastMode(true);" in ended_body
+    assert "setActive(Boolean(podcast.runId || podcast.starting));" in ended_body
 
 
 def test_podcast_recognition_uses_current_voice_provider():
@@ -81,6 +114,21 @@ def test_single_voice_clicks_are_not_intercepted_by_saved_group_agents():
     assert "podcast.topicCaptureArmed) setPodcastMode(true)" in normal_circle_body
     assert "if ((podcast.mode || podcast.topicCaptureArmed) && podcast.agents.length) exitGroupChat();" in exit_body
     assert "if (!podcast.mode && !podcast.runId && podcast.agents.length)" not in overlay_body
+
+
+def test_finished_podcast_ignores_ambient_clicks_without_disabling_restart_button():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    init_body = _function_body(source, "function init()", "if (document.readyState")
+    normal_circle_body = init_body[init_body.index('var normalVoiceCircle = $("voiceCircle");'):init_body.index('var start = $("podcastStartBtn");')]
+    podcast_circle_body = init_body[init_body.index('var podcastCircle = $("podcastCircle");'):init_body.index('var overlay = $("voiceOverlay");')]
+    overlay_body = init_body[init_body.index('var overlay = $("voiceOverlay");'):init_body.index("function restoreAndResumePodcast()")]
+
+    assert "function shouldIgnoreAmbientPodcastTap()" in source
+    assert "return !podcast.runId && podcast.generationDone;" in source
+    assert "if (shouldIgnoreAmbientPodcastTap()) return;" in normal_circle_body
+    assert "if (shouldIgnoreAmbientPodcastTap()) return;" in overlay_body
+    assert "shouldIgnoreAmbientPodcastTap" not in podcast_circle_body
+    assert "else if (explicitTopicValue()) startPodcast();" in podcast_circle_body
 
 
 def test_voice_render_does_not_touch_overlay_when_podcast_owns_it():

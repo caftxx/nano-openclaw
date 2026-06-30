@@ -156,9 +156,17 @@ function applySessionPayload(data) {
   return state.currentSession;
 }
 
+function syncWebSocketSession(session) {
+  const sessionId = session?.session_id;
+  if (!sessionId || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  send("session.select", { session_id: sessionId });
+}
+
 async function createSessionAndRender() {
   const data = await api("/api/sessions", { method: "POST", body: "{}" });
-  return applySessionPayload(data);
+  const session = applySessionPayload(data);
+  syncWebSocketSession(session);
+  return session;
 }
 
 async function selectSessionAndRender(sessionId) {
@@ -166,7 +174,9 @@ async function selectSessionAndRender(sessionId) {
     method: "POST",
     body: "{}",
   });
-  return applySessionPayload(data);
+  const session = applySessionPayload(data);
+  syncWebSocketSession(session);
+  return session;
 }
 
 function restorablePodcastSessionId() {

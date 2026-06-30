@@ -1445,6 +1445,7 @@
       podcast.generationDone = false;
       savePodcastState();
       resetPlaybackState();
+      resetCaptionsForRun(podcast.lastTopic);
       primePlayback();
       renderAssignments(payload);
       setStatus("群聊进行中，点屏幕空白处可插话。");
@@ -1555,6 +1556,15 @@
     nodes.forEach(function (node) { node.remove(); });
   }
 
+  function resetCaptionsForRun(topic) {
+    var captions = $("voiceCaptions");
+    if (!captions) return;
+    var nodes = captions.querySelectorAll(".vbubble");
+    nodes.forEach(function (node) { node.remove(); });
+    topic = String(topic || "").trim();
+    if (topic) addBubble("you", "话题：" + topic);
+  }
+
   function resetForUserInput(generation) {
     if (Number.isFinite(Number(generation))) podcast.generation = Number(generation);
     invalidatePlaybackWork();
@@ -1628,6 +1638,7 @@
       podcast.generationDone = false;
       savePodcastState();
       resetPlaybackState();
+      resetCaptionsForRun(event.topic || podcast.lastTopic);
       primePlayback();
       renderAssignments(event);
       setActive(true);
@@ -2408,6 +2419,10 @@
     );
   }
 
+  function shouldIgnoreAmbientPodcastTap() {
+    return !podcast.runId && podcast.generationDone;
+  }
+
   function startPodcastFromUi() {
     if (!podcast.agents.length) addGroupAgent();
     if (explicitTopicValue()) {
@@ -2524,7 +2539,11 @@
       onEnded: function () {
         if (podcast.topicRecognizer === rec) podcast.topicRecognizer = null;
         podcast.capturingTopic = false;
-        setActive(Boolean(podcast.runId));
+        if (submitted && (podcast.starting || podcast.runId || podcast.agents.length)) {
+          setDialog(false);
+          setPodcastMode(true);
+        }
+        setActive(Boolean(podcast.runId || podcast.starting));
         updatePodcastControl();
         if (!submitted && !podcast.runId && !podcast.starting) {
           podcast.topicCaptureArmed = true;
@@ -2725,6 +2744,7 @@
     var normalVoiceCircle = $("voiceCircle");
     if (normalVoiceCircle) normalVoiceCircle.addEventListener("click", function (event) {
       if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
+      if (shouldIgnoreAmbientPodcastTap()) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (!podcast.mode && podcast.topicCaptureArmed) setPodcastMode(true);
@@ -2777,6 +2797,7 @@
     if (overlay) overlay.addEventListener("click", function (event) {
       if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
       if (shouldIgnoreOverlayTap(event.target)) return;
+      if (shouldIgnoreAmbientPodcastTap()) return;
       event.stopPropagation();
       event.preventDefault();
       if (podcast.runId) startInterjectionCapture();
