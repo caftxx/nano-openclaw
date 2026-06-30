@@ -2228,6 +2228,10 @@ body.voice-open { overflow: hidden; }
   border-color: color-mix(in oklch, #2d7ff9 58%, var(--line));
   background: color-mix(in oklch, #2d7ff9 14%, var(--surface-raised));
 }
+.podcast-action-chip.done {
+  border-color: color-mix(in oklch, #0f9f8f 55%, var(--line));
+  background: color-mix(in oklch, #0f9f8f 14%, var(--surface-raised));
+}
 .podcast-action-chip.error {
   border-color: color-mix(in oklch, #ef4444 55%, var(--line));
   background: color-mix(in oklch, #ef4444 14%, var(--surface-raised));
@@ -2585,6 +2589,23 @@ body.voice-open { overflow: hidden; }
   box-shadow: none;
   transform: none;
   pointer-events: none;
+}
+.podcast-notice {
+  min-height: 28px;
+  max-width: min(460px, calc(100vw - 40px));
+  padding: 5px 12px;
+  border: 1px solid color-mix(in oklch, #0f9f8f 34%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in oklch, #0f9f8f 10%, var(--surface-raised));
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 10px 24px rgba(0,0,0,.08);
+}
+.podcast-notice[hidden] {
+  display: none;
 }
 .podcast-assigned,
 .podcast-status {

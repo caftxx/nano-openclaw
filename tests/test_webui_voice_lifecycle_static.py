@@ -6,6 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APP_JS = ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "app.js"
 PODCAST_JS = ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-podcast.js"
+INDEX_HTML = ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "index.html"
+STYLES_CSS = ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "styles.css"
 
 
 def _function_body(source: str, signature: str, next_signature: str) -> str:
@@ -129,6 +131,42 @@ def test_finished_podcast_ignores_ambient_clicks_without_disabling_restart_butto
     assert "if (shouldIgnoreAmbientPodcastTap()) return;" in overlay_body
     assert "shouldIgnoreAmbientPodcastTap" not in podcast_circle_body
     assert "else if (explicitTopicValue()) startPodcast();" in podcast_circle_body
+
+
+def test_podcast_completion_state_has_clear_restart_action():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    control_body = _function_body(source, "function updatePodcastControl()", "function phaseLabel")
+    done_body = _function_body(source, 'if (event.type === "podcast.done")', 'if (event.type === "podcast.stopped")')
+    pump_body = _function_body(source, "async function pumpPlayback()", "async function synthSpeech")
+
+    assert 'setPodcastControl("speaking", "✦", "播放中")' in control_body
+    assert 'setPodcastControl("done", "✓", "重新开始")' in control_body
+    assert 'setStatus("群聊已完成。");' in done_body
+    assert 'setVoiceStatus("群聊已完成，正在播放剩余语音...");' in done_body
+    assert 'setVoiceStatus("群聊已完成。");' in pump_body
+    assert ".podcast-action-chip.done" in styles
+
+
+def test_podcast_operation_notice_is_separate_from_flow_status():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    idle_add_body = _function_body(source, "function addGroupAgent(config)", "async function addGroupAgentDuringRun")
+    add_body = _function_body(source, "async function addGroupAgentDuringRun(config)", "async function removeGroupAgent")
+    remove_body = _function_body(source, "async function removeGroupAgent(agentId)", "function exitGroupChat")
+    notice_body = _function_body(source, "function showPodcastNotice(text, options)", "function setPodcastMode")
+
+    assert 'id="podcastNotice"' in html
+    assert ".podcast-notice" in styles
+    assert 'var el = $("podcastNotice");' in notice_body
+    assert "if (podcast.generationDone)" in idle_add_body
+    assert 'showPodcastNotice(hasPendingPlayback() ? "已添加群成员，重新开始后参与。" : "已添加群成员，可点击重新开始。");' in idle_add_body
+    assert 'showPodcastNotice("正在添加群成员...");' in add_body
+    assert 'showPodcastNotice("已添加群成员，下一轮开始参与。");' in add_body
+    assert 'setVoiceStatus("已添加群成员，下一轮开始参与。")' not in add_body
+    assert 'showPodcastNotice("已踢出群成员，当前话题继续。");' in remove_body
+    assert 'setVoiceStatus("已踢出群成员，其他成员继续讨论。")' not in remove_body
 
 
 def test_voice_render_does_not_touch_overlay_when_podcast_owns_it():

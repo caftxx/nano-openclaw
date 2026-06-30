@@ -96,6 +96,7 @@
     prioritySpeechActive: false,
     replayCurrentPlayback: false,
     generationDone: false,
+    noticeTimer: null,
   };
 
   function $(id) { return root.document && root.document.getElementById(id); }
@@ -1128,8 +1129,12 @@
     podcast.agents.push(agent);
     setPodcastMode(true);
     podcast.topicCaptureArmed = true;
-    setStatus("已添加群成员，可开始群聊。");
-    setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+    if (podcast.generationDone) {
+      showPodcastNotice(hasPendingPlayback() ? "已添加群成员，重新开始后参与。" : "已添加群成员，可点击重新开始。");
+    } else {
+      setStatus("已添加群成员，可开始群聊。");
+      setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+    }
     renderAgents();
     renderParticipants();
     savePodcastState();
@@ -1137,14 +1142,12 @@
   }
   async function addGroupAgentDuringRun(config) {
     if (podcast.agents.length >= MAX_GROUP_AGENTS) {
-      setStatus("群聊最多支持 9 个角色。");
-      setVoiceStatus("群聊最多支持 9 个角色。");
+      showPodcastNotice("群聊最多支持 9 个角色。");
       updatePodcastControl();
       return;
     }
     var agent = agentFromDraft(config);
-    setStatus("正在添加群成员...");
-    setVoiceStatus("新成员会从下一轮开始参与。");
+    showPodcastNotice("正在添加群成员...");
     try {
       var payload = await apiSafe("/api/voice/podcast/add_agent", {
         run_id: podcast.runId,
@@ -1155,11 +1158,9 @@
       renderAgents();
       renderParticipants();
       savePodcastState();
-      setStatus("已添加群成员，下一轮开始参与。");
-      setVoiceStatus("已添加群成员，下一轮开始参与。");
+      showPodcastNotice("已添加群成员，下一轮开始参与。");
     } catch (err) {
-      setStatus("添加群成员失败：" + (err && err.message || err));
-      setVoiceStatus("添加群成员失败。");
+      showPodcastNotice("添加群成员失败：" + (err && err.message || err), { timeoutMs: 7000 });
     }
   }
   async function removeGroupAgent(agentId) {
@@ -1193,10 +1194,9 @@
       var runId = podcast.runId;
       try {
         await apiSafe("/api/voice/podcast/remove_agent", { run_id: runId, agent_id: agentId });
-        setStatus("已踢出群成员，当前话题继续。");
-        setVoiceStatus("已踢出群成员，其他成员继续讨论。");
+        showPodcastNotice("已踢出群成员，当前话题继续。");
       } catch (err) {
-        setStatus("踢出已在本机生效，通知后端失败：" + (err && err.message || err));
+        showPodcastNotice("踢出已在本机生效，通知后端失败：" + (err && err.message || err), { timeoutMs: 7000 });
       }
     }
   }
@@ -1291,6 +1291,32 @@
     var podcastStatus = $("podcastModeStatus");
     if (podcastStatus) podcastStatus.textContent = text || "";
   }
+  function showPodcastNotice(text, options) {
+    options = options || {};
+    var el = $("podcastNotice");
+    if (!el) return;
+    if (podcast.noticeTimer) {
+      (root.clearTimeout || clearTimeout)(podcast.noticeTimer);
+      podcast.noticeTimer = null;
+    }
+    text = String(text || "").trim();
+    if (!text) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.textContent = text;
+    el.hidden = false;
+    var timeout = Number(options.timeoutMs);
+    if (!Number.isFinite(timeout)) timeout = 4500;
+    if (timeout > 0) {
+      podcast.noticeTimer = (root.setTimeout || setTimeout)(function () {
+        el.hidden = true;
+        el.textContent = "";
+        podcast.noticeTimer = null;
+      }, timeout);
+    }
+  }
   function setPodcastMode(on, options) {
     options = options || {};
     var entering = Boolean(on) && !podcast.mode;
@@ -1329,6 +1355,15 @@
     if (iconEl) iconEl.textContent = icon || "◎";
     if (labelEl) labelEl.textContent = label || "点击说话题";
   }
+  function hasPendingPlayback() {
+    return Boolean(
+      podcast.playPumpActive
+      || podcast.currentSpeaker
+      || podcast.currentSpeakerResolve
+      || podcast.currentPcmResolve
+      || podcast.synthJobs.size
+    );
+  }
   function updatePodcastControl() {
     var circle = $("podcastCircle");
     if (circle) circle.disabled = Boolean(podcast.starting);
@@ -1342,6 +1377,11 @@
     }
     if (podcast.starting) {
       setPodcastControl("generating", "◌", "启动中");
+      return;
+    }
+    if (!podcast.runId && podcast.generationDone) {
+      if (hasPendingPlayback()) setPodcastControl("speaking", "✦", "播放中");
+      else setPodcastControl("done", "✓", "重新开始");
       return;
     }
     if (podcast.runId) {
@@ -1446,6 +1486,7 @@
       savePodcastState();
       resetPlaybackState();
       resetCaptionsForRun(podcast.lastTopic);
+      showPodcastNotice("");
       primePlayback();
       renderAssignments(payload);
       setStatus("群聊进行中，点屏幕空白处可插话。");
@@ -1639,6 +1680,7 @@
       savePodcastState();
       resetPlaybackState();
       resetCaptionsForRun(event.topic || podcast.lastTopic);
+      showPodcastNotice("");
       primePlayback();
       renderAssignments(event);
       setActive(true);
@@ -1678,7 +1720,7 @@
       renderAgents();
       renderParticipants();
       savePodcastState();
-      setVoiceStatus("新群成员已加入，下一轮开始参与。");
+      showPodcastNotice("新群成员已加入，下一轮开始参与。");
       return;
     }
     if (!isCurrentGenerationEvent(event)) return;
@@ -1698,7 +1740,7 @@
     }
     if (event.type === "podcast.agent.removed") {
       if (event.agent_id && podcast.removedAgentIds.indexOf(event.agent_id) < 0) podcast.removedAgentIds.push(event.agent_id);
-      setVoiceStatus("群成员已踢出，其他成员继续讨论。");
+      showPodcastNotice("群成员已踢出，其他成员继续讨论。");
       return;
     }
     if (event.type === "podcast.utterance.skipped") {
@@ -1786,8 +1828,8 @@
       podcast.generationDone = true;
       savePodcastState();
       setActive(false);
-      setStatus("群聊内容已生成完成。");
-      setVoiceStatus("群聊内容已生成完成，继续播放剩余语音...");
+      setStatus("群聊已完成。");
+      setVoiceStatus("群聊已完成，正在播放剩余语音...");
       pumpPlayback();
       updatePodcastControl();
       return;
@@ -2080,7 +2122,7 @@
       if (!podcast.playbackStopped && podcast.synthJobs.has(podcast.nextPlaySeq)) pumpPlayback();
       else if (!podcast.playbackStopped && podcast.generationDone && !podcast.synthJobs.size) {
         setPlayingSpeaker("");
-        setVoiceStatus("群聊播放完成。");
+        setVoiceStatus("群聊已完成。");
       }
       updatePodcastControl();
     }
@@ -2414,7 +2456,7 @@
   function shouldIgnoreOverlayTap(target) {
     if (!target || typeof target.closest !== "function") return false;
     return Boolean(
-      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-round-control, .podcast-action-chip, .group-member-menu, .group-participant, .group-agent-grid")
+      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-round-control, .podcast-action-chip, .podcast-notice, .group-member-menu, .group-participant, .group-agent-grid")
       || target.closest(".voice-circle")
     );
   }
