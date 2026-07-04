@@ -24,6 +24,7 @@ from nano_openclaw.adapters.webui.server import (
     _model_options,
     _read_assistant_name,
     _read_user_name,
+    _session_page,
     _session_payload,
     _is_replayable_activity_payload,
     _webui_payloads_from_push,
@@ -892,6 +893,40 @@ def test_web_session_list_sorts_by_creation_time_not_completion_time():
 
         assert [item["session_id"] for item in listed] == [newer.session_id, older.session_id]
         assert [item["created_at"] for item in listed] == [200, 100]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_web_session_page_limits_payload_and_supports_search():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(session_dir=session_dir, store_path=store_path, model="model")
+
+        for index, title in enumerate(["alpha topic", "beta topic", "gamma note"]):
+            session = manager.create()
+            session.created_at = 100 + index
+            session.history.extend([
+                _message("user", title),
+                _message("assistant", f"reply {index}"),
+            ])
+            for message in session.history:
+                session.writer.append_message(message)
+            manager.save_metadata(session)
+
+        page = _session_page(manager, offset=0, limit=2)
+
+        assert len(page["sessions"]) == 2
+        assert page["session_page"]["total"] == 3
+        assert page["session_page"]["next_offset"] == 2
+        assert page["session_page"]["has_more"] is True
+        assert all("search_text" not in session for session in page["sessions"])
+
+        filtered = _session_page(manager, query="beta", offset=0, limit=50)
+
+        assert filtered["session_page"]["total"] == 1
+        assert filtered["sessions"][0]["title"] == "beta topic"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

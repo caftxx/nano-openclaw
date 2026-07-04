@@ -8,7 +8,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -34,6 +34,8 @@ from nano_openclaw.services.agent_session import BackendSessionManager, display_
 
 SESSION_PAYLOAD_HISTORY_LIMIT = 80
 SESSION_PAYLOAD_ACTIVITY_LIMIT = 120
+SESSION_LIST_PAGE_SIZE = 50
+SESSION_LIST_MAX_PAGE_SIZE = 100
 
 class ChatRequest(BaseModel):
     session_id: str | None = None
@@ -276,20 +278,24 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/sessions", dependencies=[Depends(require_http_token)])
-    async def sessions() -> dict[str, Any]:
+    async def sessions(
+        q: str = "",
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=SESSION_LIST_PAGE_SIZE, ge=1, le=SESSION_LIST_MAX_PAGE_SIZE),
+    ) -> dict[str, Any]:
         manager: BackendSessionManager = app.state.backend.manager
         current = manager.get_or_load(None)
         return {
-            "sessions": manager.list(),
             "current_session_id": current.session_id,
             "history": manager.history_json(current),
+            **_session_page(manager, query=q, offset=offset, limit=limit),
         }
 
     @app.post("/api/sessions", dependencies=[Depends(require_http_token)])
     async def create_session() -> dict[str, Any]:
         manager: BackendSessionManager = app.state.backend.manager
         session = manager.create()
-        return {"session": _session_payload(manager, session), "sessions": manager.list()}
+        return {"session": _session_payload(manager, session), **_session_page(manager)}
 
     @app.post("/api/sessions/{session_id}/select", dependencies=[Depends(require_http_token)])
     async def select_session(session_id: str) -> dict[str, Any]:
@@ -298,7 +304,7 @@ def create_app(
             session = manager.select(session_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"session": _session_payload(manager, session), "sessions": manager.list()}
+        return {"session": _session_payload(manager, session), **_session_page(manager)}
 
     @app.post("/api/sessions/{session_id}/clear", dependencies=[Depends(require_http_token)])
     async def clear_session(session_id: str) -> dict[str, Any]:
@@ -307,7 +313,7 @@ def create_app(
             session = await manager.clear(session_id)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"session": _session_payload(manager, session), "sessions": manager.list()}
+        return {"session": _session_payload(manager, session), **_session_page(manager)}
 
     @app.post("/api/sessions/{session_id}/compact", dependencies=[Depends(require_http_token)])
     async def compact_session(session_id: str) -> dict[str, Any]:
@@ -368,7 +374,7 @@ def create_app(
             else:
                 current = manager.get_or_load(None)
             current_session_id = current.session_id
-            await emit({"type": "session.updated", "session": _session_payload(manager, current), "sessions": manager.list()})
+            await emit({"type": "session.updated", "session": _session_payload(manager, current), **_session_page(manager)})
             while True:
                 message = await websocket.receive_json()
                 msg_type = message.get("type")
@@ -421,7 +427,7 @@ def create_app(
                     try:
                         session = manager.select(req.session_id)
                     except KeyError as exc:
-                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
+                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), **_session_page(manager)})
                         continue
                     current_session_id = session.session_id
                     await emit({"type": "session.updated", "session": _session_payload(manager, session)})
@@ -448,10 +454,10 @@ def create_app(
                         })
                         continue
                     except BusyError as exc:
-                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
+                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), **_session_page(manager)})
                         continue
                     except NotFoundError as exc:
-                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), "sessions": manager.list()})
+                        await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), **_session_page(manager)})
                         continue
                     session = manager.get_or_load(None)
                     if req.session_id == current_session_id:
@@ -459,7 +465,7 @@ def create_app(
                     await emit({
                         "type": "session.updated",
                         "session": _session_payload(manager, session),
-                        "sessions": manager.list(),
+                        **_session_page(manager),
                         "deleted_session_id": req.session_id,
                     })
                 elif msg_type == "thinking.set":
@@ -550,7 +556,7 @@ def create_app(
                             await emit({
                                 "type": "session.updated",
                                 "session": _session_payload(manager, refreshed),
-                                "sessions": manager.list(),
+                                **_session_page(manager),
                             })
                         continue
 
@@ -573,7 +579,7 @@ def create_app(
                         session = manager.get_or_load(None)
                     current_session_id = session.session_id
                     await emit({"type": "state.updated", **await backend.webui_state()})
-                    await emit({"type": "session.updated", "session": _session_payload(manager, session), "sessions": manager.list()})
+                    await emit({"type": "session.updated", "session": _session_payload(manager, session), **_session_page(manager)})
                 else:
                     await emit({"type": "turn.error", "message": f"unknown message type: {msg_type}"})
         except WebSocketDisconnect:
@@ -610,7 +616,7 @@ def _webui_payloads_from_push(
             try:
                 session = manager.get_or_load(session_id)
                 payload["session"] = _session_payload(manager, session)
-                payload["sessions"] = manager.list()
+                payload.update(_session_page(manager))
             except KeyError:
                 pass
         return [payload]
@@ -635,12 +641,12 @@ def _webui_payloads_from_push(
         return [{
             "type": "session.updated",
             "session": _session_payload(manager, session),
-            "sessions": manager.list(),
+            **_session_page(manager),
             "history_changed": bool(event.payload.get("history_changed")),
         }]
 
     if event.event == "gap":
-        return [{"type": "session.error", "message": "event stream lagged; refreshing session", "sessions": manager.list()}]
+        return [{"type": "session.error", "message": "event stream lagged; refreshing session", **_session_page(manager)}]
 
     if event.event == "podcast.event":
         return [dict(event.payload)]
@@ -673,6 +679,47 @@ def _session_payload(manager: BackendSessionManager, session: Any) -> dict[str, 
         "activities": payload_activities,
         "preview": message_text(visible_history[-1])[:160] if visible_history else "",
     }
+
+
+def _session_page(
+    manager: BackendSessionManager,
+    *,
+    query: str = "",
+    offset: int = 0,
+    limit: int = SESSION_LIST_PAGE_SIZE,
+) -> dict[str, Any]:
+    clean_query = " ".join(str(query or "").lower().split())
+    safe_offset = max(0, int(offset or 0))
+    safe_limit = min(SESSION_LIST_MAX_PAGE_SIZE, max(1, int(limit or SESSION_LIST_PAGE_SIZE)))
+    sessions = manager.list()
+    if clean_query:
+        sessions = [session for session in sessions if _session_summary_matches(session, clean_query)]
+    total = len(sessions)
+    page = sessions[safe_offset : safe_offset + safe_limit]
+    next_offset = safe_offset + len(page)
+    return {
+        "sessions": [_public_session_summary(session) for session in page],
+        "session_page": {
+            "query": clean_query,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "count": len(page),
+            "total": total,
+            "next_offset": next_offset,
+            "has_more": next_offset < total,
+        },
+    }
+
+
+def _session_summary_matches(session: dict[str, Any], query: str) -> bool:
+    return any(
+        query in str(session.get(field) or "").lower()
+        for field in ("session_id", "title", "preview", "search_text", "model")
+    )
+
+
+def _public_session_summary(session: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in session.items() if key != "search_text"}
 
 
 def _recent_activity_json(manager: BackendSessionManager, session: Any, history_offset: int) -> list[dict[str, Any]]:

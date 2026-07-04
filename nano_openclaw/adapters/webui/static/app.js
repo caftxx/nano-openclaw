@@ -4,6 +4,16 @@ const state = {
   ws: null,
   reconnectDelay: 1200,
   sessions: [],
+  sessionPaging: {
+    query: "",
+    offset: 0,
+    nextOffset: 0,
+    total: 0,
+    hasMore: false,
+    loading: false,
+    pendingReset: false,
+  },
+  sessionSearchTimer: null,
   currentSession: null,
   activeTurnId: null,
   activeTurnsBySession: new Map(),
@@ -44,6 +54,7 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const SESSION_PAGE_LIMIT = 50;
 const MAX_ATTACHMENTS = 5;
 const MAX_NON_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -146,7 +157,7 @@ function connect() {
 }
 
 function applySessionPayload(data) {
-  state.sessions = data.sessions || state.sessions;
+  applySessionPageFromPayload(data);
   state.currentSession = data.session || state.currentSession;
   syncSessionActiveTurn(state.currentSession);
   if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
@@ -273,7 +284,7 @@ function handleEvent(event) {
       break;
     case "session.updated":
       const previousSessionId = state.currentSession?.session_id || null;
-      state.sessions = event.sessions || state.sessions;
+      applySessionPageFromPayload(event);
       state.currentSession = event.session || state.currentSession;
       syncSessionActiveTurn(state.currentSession);
       if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");
@@ -370,11 +381,12 @@ function handleEvent(event) {
         renderHistory();
         updateSendBtn();
       }
-      state.sessions = event.sessions || state.sessions;
+      applySessionPageFromPayload(event);
       renderSessions();
       break;
     case "turn.cancelled":
       setSessionActiveTurn(event.session_id || state.sessionByTurn.get(event.turn_id), null);
+      applySessionPageFromPayload(event);
       renderSessions();
       if (isCurrentSessionEvent(event)) {
         finishActivity();
@@ -386,6 +398,7 @@ function handleEvent(event) {
       break;
     case "turn.error":
       if (event.session_id) setSessionActiveTurn(event.session_id, null);
+      applySessionPageFromPayload(event);
       renderSessions();
       if (isCurrentSessionEvent(event)) {
         finishActivity();
@@ -395,7 +408,7 @@ function handleEvent(event) {
       }
       break;
     case "session.error":
-      state.sessions = event.sessions || state.sessions;
+      applySessionPageFromPayload(event);
       renderSessions();
       addActivity(event.type, event.message || "session unavailable", event);
       break;
@@ -576,11 +589,76 @@ function closeRuntimeMenus() {
   state.runtime.openMenu = "";
 }
 
+function applySessionPageFromPayload(payload, { append = false } = {}) {
+  if (!payload || !Array.isArray(payload.sessions)) return;
+  const page = payload.session_page || {};
+  const activeQuery = $("sessionSearch")?.value.trim().toLowerCase() || "";
+  const incomingQuery = String(page.query || "").trim().toLowerCase();
+  if (activeQuery && incomingQuery !== activeQuery) {
+    scheduleSessionSearch(0);
+    return;
+  }
+  if (append) {
+    const seen = new Set(state.sessions.map((session) => session.session_id));
+    state.sessions = [
+      ...state.sessions,
+      ...payload.sessions.filter((session) => !seen.has(session.session_id)),
+    ];
+  } else {
+    state.sessions = payload.sessions;
+  }
+  state.sessionPaging = {
+    query: incomingQuery,
+    offset: Number(page.offset || 0),
+    nextOffset: Number(page.next_offset ?? payload.sessions.length),
+    total: Number(page.total ?? payload.sessions.length),
+    hasMore: Boolean(page.has_more),
+    loading: false,
+    pendingReset: state.sessionPaging.pendingReset,
+  };
+}
+
+async function loadSessions({ reset = false } = {}) {
+  if (state.sessionPaging.loading) {
+    if (reset) state.sessionPaging.pendingReset = true;
+    return;
+  }
+  if (!reset && !state.sessionPaging.hasMore) return;
+  const query = $("sessionSearch").value.trim();
+  const offset = reset ? 0 : state.sessionPaging.nextOffset;
+  state.sessionPaging.loading = true;
+  renderSessions();
+  try {
+    const params = new URLSearchParams({
+      q: query,
+      offset: String(offset),
+      limit: String(SESSION_PAGE_LIMIT),
+    });
+    const data = await api(`/api/sessions?${params.toString()}`);
+    applySessionPageFromPayload(data, { append: !reset });
+  } catch (error) {
+    addActivity("session.error", String(error?.message || error), { type: "session.error" });
+    state.sessionPaging.loading = false;
+  }
+  renderSessions();
+  if (state.sessionPaging.pendingReset) {
+    state.sessionPaging.pendingReset = false;
+    loadSessions({ reset: true });
+  }
+}
+
+function scheduleSessionSearch(delay = 180) {
+  if (state.sessionSearchTimer) clearTimeout(state.sessionSearchTimer);
+  state.sessionSearchTimer = setTimeout(() => {
+    state.sessionSearchTimer = null;
+    loadSessions({ reset: true });
+  }, delay);
+}
+
 function renderSessions() {
-  const query = $("sessionSearch").value.toLowerCase();
-  $("sessionList").innerHTML = "";
+  const list = $("sessionList");
+  list.innerHTML = "";
   state.sessions
-    .filter((s) => !query || sessionMatches(s, query))
     .forEach((session) => {
       const isRunning = Boolean(state.activeTurnsBySession.get(session.session_id) || session.active_turn_id);
       const item = document.createElement("div");
@@ -613,8 +691,27 @@ function renderSessions() {
         event.stopPropagation();
         send("session.delete", { session_id: session.session_id });
       };
-      $("sessionList").appendChild(item);
+      list.appendChild(item);
     });
+  if (!state.sessions.length && !state.sessionPaging.loading) {
+    const empty = document.createElement("div");
+    empty.className = "session-empty";
+    empty.textContent = $("sessionSearch").value.trim() ? "No matching sessions" : "No sessions";
+    list.appendChild(empty);
+  }
+  if (state.sessionPaging.loading) {
+    const loading = document.createElement("div");
+    loading.className = "session-empty";
+    loading.textContent = "Loading…";
+    list.appendChild(loading);
+  } else if (state.sessionPaging.hasMore) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "session-load-more";
+    more.textContent = `Load more (${state.sessions.length}/${state.sessionPaging.total})`;
+    more.onclick = () => loadSessions();
+    list.appendChild(more);
+  }
 }
 
 function sessionMatches(session, query) {
@@ -1558,7 +1655,11 @@ $("newSessionNavBtn").onclick = async () => {
   if (isMobileViewport()) closeDrawers();
 };
 
-$("sessionSearch").oninput = renderSessions;
+$("sessionSearch").oninput = () => scheduleSessionSearch();
+$("sessionList").addEventListener("scroll", () => {
+  const list = $("sessionList");
+  if (list.scrollHeight - list.scrollTop - list.clientHeight < 120) loadSessions();
+});
 $("prompt").oninput = resizePrompt;
 $("attachmentInput").onchange = (event) => {
   addAttachmentFiles(Array.from(event.target.files || []));

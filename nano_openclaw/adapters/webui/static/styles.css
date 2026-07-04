@@ -260,6 +260,30 @@ textarea::placeholder {
   background: var(--sidebar-hover);
 }
 
+.session-empty,
+.session-load-more {
+  width: calc(100% - 16px);
+  min-height: 34px;
+  margin: 4px 8px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--subtle);
+  font-size: 12px;
+}
+
+.session-load-more {
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-load-more:hover,
+.session-load-more:focus-visible {
+  background: var(--sidebar-hover);
+  color: var(--ink);
+}
+
 .session-content {
   display: block;
   min-width: 0;
