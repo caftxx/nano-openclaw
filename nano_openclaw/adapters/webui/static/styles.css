@@ -568,6 +568,25 @@ html[data-theme="dark"] .appearance-options {
   line-height: 1.48;
 }
 
+.message.user.pending-user .bubble {
+  opacity: .72;
+}
+
+.message.user.send-error .bubble {
+  outline: 1px solid color-mix(in oklch, var(--danger) 45%, transparent);
+}
+
+.message-status {
+  margin-right: 10px;
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.message.send-error .message-status {
+  color: var(--danger);
+}
+
 .message.assistant .bubble {
   width: 100%;
 }

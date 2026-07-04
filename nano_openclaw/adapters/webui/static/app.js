@@ -51,6 +51,7 @@ const state = {
   },
   attachments: [],
   submittedAttachmentIds: new Set(),
+  pendingUserMessage: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -308,7 +309,10 @@ function handleEvent(event) {
       state._pendingTextLen = 0;
       state._assistantRawText = "";
       document.querySelectorAll(".message.turn-event, .message.approval-card").forEach((el) => el.remove());
-      appendMessage("user", formatAcceptedUserText(event));
+      const acceptedUserText = formatAcceptedUserText(event);
+      if (!confirmPendingUserMessage(event.session_id, acceptedUserText)) {
+        appendMessage("user", acceptedUserText);
+      }
       state.activityNode = appendActivitySummary();
       if (state.submittedAttachmentIds.size) {
         state.attachments = state.attachments.filter((item) => !state.submittedAttachmentIds.has(item.id));
@@ -404,6 +408,7 @@ function handleEvent(event) {
         finishActivity();
         updateSendBtn();
         state.submittedAttachmentIds.clear();
+        failPendingUserMessage(event.session_id);
         addActivity(event.type, event.message || "unknown error", event);
       }
       break;
@@ -764,6 +769,42 @@ function appendMessage(role, text) {
   $("messages").appendChild(wrap);
   scrollMessages();
   return bubble;
+}
+
+function appendPendingUserMessage(sessionId, text) {
+  const bubble = appendMessage("user", text);
+  const wrap = bubble.closest(".message");
+  if (!wrap) return null;
+  wrap.classList.add("pending-user");
+  wrap.dataset.sessionId = sessionId;
+  const status = document.createElement("div");
+  status.className = "message-status";
+  status.textContent = "Sending…";
+  wrap.appendChild(status);
+  state.pendingUserMessage = { sessionId, text, bubble, wrap, status };
+  scrollMessages(true);
+  return state.pendingUserMessage;
+}
+
+function confirmPendingUserMessage(sessionId, acceptedText) {
+  const pending = state.pendingUserMessage;
+  if (!pending || pending.sessionId !== sessionId) return false;
+  pending.bubble.textContent = acceptedText || pending.text;
+  pending.wrap.classList.remove("pending-user", "send-error");
+  pending.status?.remove();
+  state.pendingUserMessage = null;
+  scrollMessages(true);
+  return true;
+}
+
+function failPendingUserMessage(sessionId) {
+  const pending = state.pendingUserMessage;
+  if (!pending || (sessionId && pending.sessionId !== sessionId)) return false;
+  pending.wrap.classList.remove("pending-user");
+  pending.wrap.classList.add("send-error");
+  if (pending.status) pending.status.textContent = "Failed";
+  state.pendingUserMessage = null;
+  return true;
 }
 
 function appendSlashResult(command, text) {
@@ -1355,6 +1396,13 @@ function formatAcceptedUserText(event) {
   return text ? `${text}\n\nAttached: ${names}` : `Attached: ${names}`;
 }
 
+function formatSubmittedUserText(text, attachments) {
+  const cleanText = String(text || "").trim();
+  if (!attachments.length) return cleanText;
+  const names = attachments.map((item) => `${item.file.name} (${formatBytes(item.file.size || 0)})`).join(", ");
+  return cleanText ? `${cleanText}\n\nAttached: ${names}` : `Attached: ${names}`;
+}
+
 function isMobileViewport() {
   return window.innerWidth <= 720;
 }
@@ -1639,8 +1687,14 @@ $("composer").onsubmit = async (event) => {
 
   const didSend = send("chat.send", { session_id: state.currentSession.session_id, text, attachments });
   if (!didSend) return;
+  appendPendingUserMessage(state.currentSession.session_id, formatSubmittedUserText(text, submittedAttachments));
   $("prompt").value = "";
   state.submittedAttachmentIds = submittedAttachmentIds;
+  if (state.submittedAttachmentIds.size) {
+    state.attachments = state.attachments.filter((item) => !state.submittedAttachmentIds.has(item.id));
+    validateAttachmentSet();
+    renderAttachments();
+  }
   resizePrompt();
 };
 
