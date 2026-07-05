@@ -8,7 +8,113 @@
 payload.voice 取值，label 为「中文名·类型」展示。
 """
 
-ALIYUN_TTS_VOICES = [
+ALIYUN_TTS_VOICE_SCORES = {
+    "abin": 1,
+    "zhixiaobai": 4,
+    "zhixiaoxia": 5,
+    "zhixiaomei": 5,
+    "zhigui": 5,
+    "zhishuo": 5,
+    "aixia": 3,
+    "zhifeng_emo": 2,
+    "zhibing_emo": 2,
+    "zhimiao_emo": 5,
+    "zhimi_emo": 3,
+    "zhiyan_emo": 3,
+    "zhibei_emo": 4,
+    "zhitian_emo": 1,
+    "xiaoyun": 1,
+    "xiaogang": 1,
+    "ruoxi": 4,
+    "siqi": 1,
+    "sijia": 1,
+    "sicheng": 1,
+    "aiqi": 1,
+    "aijia": 1,
+    "aicheng": 1,
+    "aida": 1,
+    "ninger": 4,
+    "ruilin": 3,
+    "siyue": 2,
+    "aiya": 4,
+    "aimei": 1,
+    "aiyu": 1,
+    "aiyue": 1,
+    "aijing": 3,
+    "xiaomei": 1,
+    "aina": 1,
+    "yina": 1,
+    "sijing": 3,
+    "sitong": 2,
+    "xiaobei": 1,
+    "aitong": 3,
+    "aiwei": 3,
+    "aibao": 2,
+    "shanshan": 1,
+    "aiyuan": 3,
+    "aiying": 3,
+    "aixiang": 5,
+    "aimo": 3,
+    "aiye": 2,
+    "aiting": 1,
+    "aifan": 2,
+    "chuangirl": 1,
+    "aishuo": 1,
+    "qingqing": 2,
+    "cuijie": 2,
+    "xiaoze": 1,
+    "ainan": 1,
+    "aihao": 2,
+    "aiming": 2,
+    "aixiao": 1,
+    "aichu": 1,
+    "aiqian": 1,
+    "aishu": 1,
+    "airu": 1,
+    "jiajia": 1,
+    "taozi": 1,
+    "guijie": 3,
+    "stella": 1,
+    "stanley": 1,
+    "kenny": 2,
+    "rosa": 3,
+    "mashu": 1,
+    "zhiqi": 1,
+    "zhichu": 1,
+    "xiaoxian": 5,
+    "yuer": 1,
+    "maoxiaomei": 3,
+    "zhixiang": 3,
+    "zhijia": 1,
+    "zhinan": 2,
+    "zhiqian": 1,
+    "zhiru": 1,
+    "zhide": 1,
+    "zhifei": 3,
+    "aifei": 3,
+    "yaqun": 1,
+    "qiaowei": 1,
+    "dahu": 2,
+    "zhilun": 2,
+    "ailun": 2,
+    "jielidou": 1,
+    "zhiwei": 1,
+    "laotie": 2,
+    "laomei": 4,
+    "aikan": 1,
+    "zhitian": 1,
+    "zhiqing": 2,
+    "zhimao": 4,
+    "zhiyuan": 1,
+    "zhiya": 5,
+    "zhiyue": 1,
+    "zhida": 1,
+    "zhistella": 3,
+    "kelly": 1,
+}
+
+
+_ALIYUN_TTS_VOICE_CATALOG = [
     {"value": "abin", "label": "阿斌·广东普通话"},
     {"value": "zhixiaobai", "label": "知小白·普通话女声"},
     {"value": "zhixiaoxia", "label": "知小夏·普通话女声"},
@@ -111,6 +217,31 @@ ALIYUN_TTS_VOICES = [
     {"value": "zhida", "label": "知达·普通话男声"},
     {"value": "zhistella", "label": "知莎·普通话女声"},
     {"value": "kelly", "label": "Kelly·香港粤语女声"},
+]
+
+
+def voice_score(voice_id: str | None) -> int:
+    return ALIYUN_TTS_VOICE_SCORES.get(str(voice_id or ""), 0)
+
+
+def _with_score_and_order(item: dict[str, str], index: int) -> dict[str, str | int]:
+    voice_id = str(item.get("value") or "")
+    return {
+        **item,
+        "score": voice_score(voice_id),
+        "_catalog_order": index,
+    }
+
+
+ALIYUN_TTS_VOICES = [
+    {key: value for key, value in item.items() if key != "_catalog_order"}
+    for item in sorted(
+        (
+            _with_score_and_order(item, index)
+            for index, item in enumerate(_ALIYUN_TTS_VOICE_CATALOG)
+        ),
+        key=lambda item: (-int(item.get("score") or 0), int(item.get("_catalog_order") or 0)),
+    )
 ]
 
 

@@ -359,7 +359,7 @@
   function optionLabel(select) {
     if (!select || select.selectedIndex < 0) return "";
     var opt = select.options[select.selectedIndex];
-    return opt ? String(opt.textContent || "").replace(/^🗣\s*/, "").trim() : "";
+    return opt ? String(opt.dataset.label || opt.textContent || "").replace(/^🗣\s*/, "").trim() : "";
   }
   function selectedOut() {
     var outSelect = $("voiceTtsVoice");
@@ -743,7 +743,7 @@
     if (!select) return out;
     for (var i = 0; i < select.options.length; i++) {
       var opt = select.options[i];
-      out.push({ value: opt.value || "", label: String(opt.textContent || opt.value || "").replace(/^🗣\s*/, "").trim() });
+      out.push({ value: opt.value || "", label: String(opt.dataset.label || opt.textContent || opt.value || "").replace(/^🗣\s*/, "").trim() });
     }
     return out;
   }
@@ -766,11 +766,17 @@
     }
     if (select) select.disabled = !visible;
   }
-  function selectAppend(select, value, label) {
+  function selectAppend(select, value, label, displayLabel) {
     var opt = root.document.createElement("option");
     opt.value = value || "";
-    opt.textContent = label || value || "";
+    opt.dataset.label = label || value || "";
+    opt.textContent = displayLabel || label || value || "";
     select.appendChild(opt);
+  }
+  function voiceDisplayLabel(voice) {
+    var label = voice && voice.label || voice && voice.value || "";
+    var score = Number(voice && voice.score);
+    return label + (score > 0 ? " · " + score + "分" : "");
   }
   function selectHasValue(select, value) {
     for (var i = 0; i < select.options.length; i++) {
@@ -856,7 +862,7 @@
       voiceOptions().forEach(function (voice) {
         var value = voice && (voice.value || voice.id) || "";
         if (!value) return;
-        selectAppend(voiceSelect, value, voice.label || value);
+        selectAppend(voiceSelect, value, voice.label || value, voiceDisplayLabel(voice));
       });
     }
     if (systemMode && !voiceSelect.options.length) selectAppend(voiceSelect, "", "系统默认");

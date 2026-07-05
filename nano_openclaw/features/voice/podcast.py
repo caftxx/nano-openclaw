@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from nano_openclaw.features.voice.voice_catalog import ALIYUN_TTS_VOICES
+from nano_openclaw.features.voice.voice_catalog import ALIYUN_TTS_VOICES, voice_score
 
 
 HOST_ROLE = "主持人"
@@ -32,24 +32,6 @@ AGENT_ROLES = [
     "云计算架构师",
     "高性能网络协议设计师",
     "硬件工程师",
-]
-
-PREFERRED_SPEAKER_VOICES = [
-    "zhishuo",
-    "xiaogang",
-    "sicheng",
-    "aicheng",
-    "aida",
-    "aixiang",
-    "aimo",
-    "aiye",
-    "aishuo",
-    "stanley",
-    "kenny",
-    "zhixiang",
-    "zhide",
-    "zhifeng_emo",
-    "zhibing_emo",
 ]
 
 ROLE_PROMPTS = {
@@ -249,12 +231,9 @@ def _balanced_speaker_voice_ids(
 ) -> list[str]:
     local_rng = rng or random
     pool = _speaker_voice_pool(excluded_voice_id=excluded_voice_id)
-    male = [voice_id for voice_id in pool if _voice_gender(voice_id) == "male"]
-    female = [voice_id for voice_id in pool if _voice_gender(voice_id) == "female"]
-    neutral = [voice_id for voice_id in pool if _voice_gender(voice_id) == "neutral"]
-    local_rng.shuffle(male)
-    local_rng.shuffle(female)
-    local_rng.shuffle(neutral)
+    male = _ranked_voice_ids([voice_id for voice_id in pool if _voice_gender(voice_id) == "male"], rng=local_rng)
+    female = _ranked_voice_ids([voice_id for voice_id in pool if _voice_gender(voice_id) == "female"], rng=local_rng)
+    neutral = _ranked_voice_ids([voice_id for voice_id in pool if _voice_gender(voice_id) == "neutral"], rng=local_rng)
 
     male_target = count // 2
     female_target = count // 2
@@ -290,9 +269,19 @@ def _voice_gender(voice_id: str) -> str:
 def _speaker_voice_pool(*, excluded_voice_id: str | None = HOST_VOICE_ID) -> list[str]:
     catalog_values = [str(item.get("value")) for item in ALIYUN_TTS_VOICES if item.get("value")]
     excluded = str(excluded_voice_id or "")
-    preferred = [v for v in PREFERRED_SPEAKER_VOICES if v in catalog_values and v != excluded]
-    rest = [v for v in catalog_values if v != excluded and v not in preferred]
-    return preferred + rest
+    return [v for v in catalog_values if v != excluded]
+
+
+def _ranked_voice_ids(voice_ids: list[str], *, rng: random.Random) -> list[str]:
+    by_score: dict[int, list[str]] = {}
+    for voice_id in voice_ids:
+        by_score.setdefault(voice_score(voice_id), []).append(voice_id)
+    ranked: list[str] = []
+    for score in sorted(by_score.keys(), reverse=True):
+        group = list(by_score[score])
+        rng.shuffle(group)
+        ranked.extend(group)
+    return ranked
 
 
 def choose_speakers(agents: list[PodcastAgent], round_index: int, rng: random.Random) -> list[PodcastAgent]:

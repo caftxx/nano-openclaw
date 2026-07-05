@@ -25,6 +25,7 @@ from nano_openclaw.features.voice.podcast import (
     normalize_rounds,
     podcast_model_options,
 )
+from nano_openclaw.features.voice.voice_catalog import voice_score
 from nano_openclaw.services.backend import PushEvent
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
 
@@ -143,6 +144,30 @@ def test_podcast_voice_assignment_balances_male_and_female_voices():
 
     assert genders.count("male") == 3
     assert genders.count("female") == 3
+
+
+def test_podcast_voice_assignment_prefers_high_rated_voices():
+    agents = assign_agents(
+        [
+            {"id": "a1", "role": "作家"},
+            {"id": "a2", "role": "云计算架构师"},
+            {"id": "a3", "role": "AI Agent研发工程师"},
+            {"id": "a4", "role": "硬件工程师"},
+        ],
+        "AI 播客",
+        rng=random.Random("score-priority"),
+    )
+
+    assert [voice_score(agent.voice_id) for agent in agents] == [5, 5, 5, 5]
+    assert {agent.voice_id for agent in agents} <= {
+        "zhishuo",
+        "aixiang",
+        "zhixiaoxia",
+        "zhixiaomei",
+        "zhigui",
+        "zhimiao_emo",
+        "zhiya",
+    }
 
 
 def test_podcast_hardware_engineer_role_is_selectable_and_auto_matched():

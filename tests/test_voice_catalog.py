@@ -7,8 +7,10 @@
 
 from nano_openclaw.features.voice.voice_catalog import (
     ALIYUN_TTS_VOICES,
+    ALIYUN_TTS_VOICE_SCORES,
     emotion_categories_for_voice,
     is_emotion_voice,
+    voice_score,
 )
 
 
@@ -19,11 +21,20 @@ def test_catalog_non_empty_and_well_formed():
         assert isinstance(item, dict)
         assert item.get("value")
         assert item.get("label")
+        assert item.get("score") in {1, 2, 3, 4, 5}
 
 
 def test_catalog_values_unique():
     values = [x["value"] for x in ALIYUN_TTS_VOICES]
     assert len(values) == len(set(values))
+
+
+def test_catalog_is_sorted_by_user_rating_descending():
+    scores = [int(x["score"]) for x in ALIYUN_TTS_VOICES]
+    assert scores == sorted(scores, reverse=True)
+    assert all(voice_score(value) == score for value, score in ALIYUN_TTS_VOICE_SCORES.items())
+    assert ALIYUN_TTS_VOICES[0]["score"] == 5
+    assert ALIYUN_TTS_VOICES[-1]["score"] == 1
 
 
 def test_catalog_contains_expected_chinese_voices():

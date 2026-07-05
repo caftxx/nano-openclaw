@@ -227,7 +227,8 @@
         for (var i = 0; i < voices.length; i++) {
           var o = doc.createElement("option");
           o.value = voices[i].value;
-          o.textContent = "🗣 " + voices[i].label;
+          o.dataset.label = voices[i].label || voices[i].value || "";
+          o.textContent = "🗣 " + voiceDisplayLabel(voices[i]);
           els.timbre.appendChild(o);
         }
         els.timbre.value = vs.aliyunVoice || (voices[0] ? voices[0].value : "");
@@ -247,6 +248,12 @@
         els.timbre.appendChild(so);
       }
       els.timbre.value = list.some(function (v) { return v.voiceURI === vs.voiceURI; }) ? vs.voiceURI : "";
+    }
+
+    function voiceDisplayLabel(voice) {
+      var label = voice && voice.label || "";
+      var score = Number(voice && voice.score);
+      return label + (score > 0 ? " · " + score + "分" : "");
     }
 
     return {

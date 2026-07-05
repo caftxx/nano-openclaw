@@ -1218,6 +1218,7 @@ def test_voice_config_configured_reports_available_without_secrets():
     assert tts["sample_rate"] == 16000
     voices = tts["voices"]
     assert isinstance(voices, list) and len(voices) > 50
+    assert [item["score"] for item in voices] == sorted([item["score"] for item in voices], reverse=True)
     values = [x["value"] for x in voices]
     assert "xiaoyun" in values
     # 音色目录只含中文音色，不混入外语音色
