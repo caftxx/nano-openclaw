@@ -1886,6 +1886,20 @@
     updatePodcastControl();
   }
 
+  function stopPodcastLocalPlayback() {
+    podcast.playbackStopped = true;
+    podcast.playbackPausedForInput = false;
+    podcast.prioritySpeechActive = false;
+    podcast.replayCurrentPlayback = false;
+    invalidatePlaybackWork();
+    podcast.synthJobs.clear();
+    podcast.speechJobVersions.clear();
+    podcast.skippedSeqs.clear();
+    podcast.playPumpActive = false;
+    podcast.currentPlaySeq = 0;
+    stopSpeech();
+  }
+
   function stalePlaybackError() {
     return new Error("stale podcast playback generation");
   }
@@ -2826,6 +2840,7 @@
         setVoiceStatus("群聊进行中，请先点击停止。");
         return;
       }
+      if (podcast.mode || podcast.topicCaptureArmed || podcast.generationDone) stopPodcastLocalPlayback();
       if ((podcast.mode || podcast.topicCaptureArmed) && podcast.agents.length) exitGroupChat();
     }, true);
     var podcastCircle = $("podcastCircle");

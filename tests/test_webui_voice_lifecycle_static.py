@@ -148,6 +148,21 @@ def test_podcast_completion_state_has_clear_restart_action():
     assert ".podcast-action-chip.done" in styles
 
 
+def test_voice_exit_stops_finished_podcast_playback_before_closing_overlay():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    playback_body = _function_body(source, "function stopPodcastLocalPlayback()", "function stalePlaybackError()")
+    init_body = _function_body(source, "function init()", "if (document.readyState")
+    exit_body = init_body[init_body.index('var exit = $("voiceExitBtn");'):init_body.index('var podcastCircle = $("podcastCircle");')]
+
+    assert "podcast.playbackStopped = true;" in playback_body
+    assert "invalidatePlaybackWork();" in playback_body
+    assert "podcast.synthJobs.clear();" in playback_body
+    assert "podcast.playPumpActive = false;" in playback_body
+    assert "stopSpeech();" in playback_body
+    assert "if (podcast.mode || podcast.topicCaptureArmed || podcast.generationDone) stopPodcastLocalPlayback();" in exit_body
+    assert exit_body.index("stopPodcastLocalPlayback();") < exit_body.index("exitGroupChat();")
+
+
 def test_podcast_operation_notice_is_separate_from_flow_status():
     source = PODCAST_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
