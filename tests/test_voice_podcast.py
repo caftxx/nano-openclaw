@@ -18,6 +18,7 @@ from nano_openclaw.features.voice.podcast import (
     _voice_gender,
     assign_agents,
     build_host_prompt,
+    build_discussion_context,
     build_speaker_prompt,
     build_start_summary,
     choose_speakers,
@@ -258,6 +259,21 @@ def test_speaker_prompt_consumes_subagent_research_result():
     assert "说人话" in prompt
     assert "少用黑话" in prompt
     assert "短比喻、小例子或轻微幽默" in prompt
+
+
+def test_discussion_context_keeps_original_anchor_when_long():
+    entries = [f"主持人: 最初提出主题里的关键约束 {idx}" for idx in range(4)]
+    entries.extend(f"中段角色{idx}: 中段展开观点 {idx}" for idx in range(20))
+    entries.extend(f"最近角色{idx}: 最新推进观点 {idx}" for idx in range(12))
+
+    context = build_discussion_context(topic="最初主题：群聊不要忘记原始探讨方向", entries=entries)
+
+    assert "讨论主题锚点：最初主题：群聊不要忘记原始探讨方向" in context
+    assert "最初讨论锚点" in context
+    assert "主持人: 最初提出主题里的关键约束 0" in context
+    assert "中间讨论已压缩：省略 20 条发言" in context
+    assert "最近角色11: 最新推进观点 11" in context
+    assert "中段展开观点 19" not in context
 
 
 def test_host_prompt_prevents_mid_run_closing_and_allows_final_closing():
@@ -919,6 +935,69 @@ def test_podcast_run_syncs_generation_after_live_agent_update():
     assert any(event.get("type") == "podcast.round.started" and event.get("generation") == 1 for event in backend.events)
     assert backend.events[-1]["type"] == "podcast.done"
     assert backend.events[-1]["generation"] == 1
+
+
+def test_podcast_run_passes_context_with_opening_anchor_after_many_rounds():
+    class Guard:
+        def reader(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(runtime_guard=Guard())
+            self.events = []
+            self.speaker_contexts = []
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+        async def _append_podcast_message(self, *args, **kwargs):
+            return None
+
+        async def _generate_podcast_utterance(self, **kwargs):
+            return f"{kwargs['phase']} round {kwargs['round_index']}"
+
+        async def _run_podcast_speaker_turn(self, **kwargs):
+            self.speaker_contexts.append(kwargs["context"])
+            return kwargs["agent"], f"speaker round {kwargs['round_index']}"
+
+        def _drain_podcast_inputs(self, queue):
+            return EmbeddedBackend._drain_podcast_inputs(self, queue)
+
+    backend = Backend()
+    agent = assign_agents([{"id": "agent-1", "role": "作家"}], "长期群聊主题")[0]
+
+    asyncio.run(
+        EmbeddedBackend._run_podcast(
+            backend,
+            run_id="run-1",
+            session=SimpleNamespace(session_id="session-1"),
+            topic="长期群聊主题",
+            agents=[agent],
+            rounds=10,
+            host_voice_id="xiaoxian",
+            host_voice_label="小仙",
+            host_model_ref="p/m",
+            host_model_label="m",
+            token=SimpleNamespace(is_cancelled=False),
+            input_queue=asyncio.Queue(),
+            run_state={"generation": 0, "removed_agent_ids": set()},
+        )
+    )
+
+    late_context = backend.speaker_contexts[-1]
+    assert "讨论主题锚点：长期群聊主题" in late_context
+    assert "最初讨论锚点" in late_context
+    assert "主持人: opening round 0" in late_context
+    assert "中间讨论已压缩" in late_context
+    assert "主持人: summary round 9" in late_context
+    assert backend.events[-1]["type"] == "podcast.done"
 
 
 def test_podcast_speaker_generation_cancels_when_agent_removed():

@@ -2167,8 +2167,8 @@ class EmbeddedBackend(Backend):
 
         from nano_openclaw.features.voice.podcast import (
             HOST_ROLE,
+            build_discussion_context,
             build_host_prompt,
-            build_speaker_prompt,
             choose_speakers,
         )
 
@@ -2202,11 +2202,10 @@ class EmbeddedBackend(Backend):
             return str(run_state.get("host_model_ref") or host_model_ref or "")
 
         def reset_generation(next_generation: int) -> None:
-            nonlocal active_generation, context, completed_rounds
+            nonlocal active_generation, completed_rounds
             if next_generation == active_generation:
                 return
             active_generation = next_generation
-            context = []
             completed_rounds = 0
 
         try:
@@ -2244,7 +2243,6 @@ class EmbeddedBackend(Backend):
                     pending_inputs = self._drain_podcast_inputs(input_queue)
                     if pending_inputs:
                         reset_generation(current_generation())
-                        context = []
                         completed_rounds = 0
                         for item in pending_inputs:
                             context.append(f"用户插话: {item}")
@@ -2306,7 +2304,7 @@ class EmbeddedBackend(Backend):
                         "speaker_count": len(speakers),
                         "generation": active_generation,
                     })
-                    round_context = "\n".join(context[-10:])
+                    round_context = build_discussion_context(topic=topic, entries=context)
                     speaker_tasks = [
                         asyncio.create_task(
                             self._run_podcast_speaker_turn(

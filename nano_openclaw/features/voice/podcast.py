@@ -20,6 +20,10 @@ HOST_VOICE_ID = "xiaoxian"
 HOST_VOICE_LABEL = "小仙·亲切女声"
 DEFAULT_ROUNDS = 20
 MAX_UTTERANCE_CHARS = 200
+PODCAST_CONTEXT_ANCHOR_ENTRIES = 4
+PODCAST_CONTEXT_RECENT_ENTRIES = 12
+PODCAST_CONTEXT_MAX_CHARS = 3600
+PODCAST_CONTEXT_LINE_MAX_CHARS = 280
 
 AGENT_ROLES = [
     "自动",
@@ -313,6 +317,82 @@ def build_start_summary(
         model = f"，模型：{agent.model_label or agent.model_ref}" if agent.model_ref else ""
         lines.append(f"- {agent.role}（{agent.voice_label} / {agent.voice_id}{model}）")
     return "\n".join(lines)
+
+
+def build_discussion_context(
+    *,
+    topic: str,
+    entries: list[str],
+    anchor_entries: int = PODCAST_CONTEXT_ANCHOR_ENTRIES,
+    recent_entries: int = PODCAST_CONTEXT_RECENT_ENTRIES,
+    max_chars: int = PODCAST_CONTEXT_MAX_CHARS,
+) -> str:
+    """Build a bounded podcast context without dropping the original anchor.
+
+    Speaker prompts need enough recent detail to avoid repetition, but long
+    group chats also need a stable reminder of what the conversation started
+    from. Keep the opening entries and the latest entries, and make any middle
+    truncation explicit.
+    """
+    cleaned = [_compact_context_line(item) for item in entries if str(item or "").strip()]
+    lines = [f"讨论主题锚点：{topic.strip() or '自由讨论'}"]
+    if not cleaned:
+        return "\n".join(lines)
+
+    anchor_count = max(0, min(anchor_entries, len(cleaned)))
+    recent_count = max(0, min(recent_entries, len(cleaned) - anchor_count))
+    anchors = cleaned[:anchor_count]
+    recents = cleaned[len(cleaned) - recent_count:] if recent_count else []
+    omitted = cleaned[anchor_count:len(cleaned) - recent_count if recent_count else len(cleaned)]
+
+    if anchors:
+        lines.append("最初讨论锚点：")
+        lines.extend(f"- {line}" for line in anchors)
+    if omitted:
+        speaker_names = _context_speaker_names(omitted)
+        suffix = f"；涉及：{'、'.join(speaker_names)}" if speaker_names else ""
+        lines.append(f"中间讨论已压缩：省略 {len(omitted)} 条发言{suffix}。")
+    if recents:
+        lines.append("最近讨论：")
+        lines.extend(f"- {line}" for line in recents)
+    return _fit_context_chars(lines, max_chars)
+
+
+def _compact_context_line(value: str) -> str:
+    line = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(line) <= PODCAST_CONTEXT_LINE_MAX_CHARS:
+        return line
+    return line[:PODCAST_CONTEXT_LINE_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _context_speaker_names(lines: list[str]) -> list[str]:
+    names: list[str] = []
+    for line in lines:
+        name = line.split(":", 1)[0].strip()
+        if name and len(name) <= 20 and name not in names:
+            names.append(name)
+        if len(names) >= 6:
+            break
+    return names
+
+
+def _fit_context_chars(lines: list[str], max_chars: int) -> str:
+    text = "\n".join(lines)
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    kept: list[str] = []
+    remaining = max_chars
+    for line in lines:
+        if remaining <= 1:
+            break
+        if len(line) + 1 <= remaining:
+            kept.append(line)
+            remaining -= len(line) + 1
+            continue
+        if remaining > 20:
+            kept.append(line[:remaining - 1].rstrip() + "…")
+        break
+    return "\n".join(kept)
 
 
 def build_host_prompt(
