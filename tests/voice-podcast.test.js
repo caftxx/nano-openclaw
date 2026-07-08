@@ -31,6 +31,46 @@ test("podcast cloud synthesis timeout is capped", () => {
   assert.strictEqual(PodcastMode._helpers.synthTimeoutMs("x".repeat(1000)), 30000);
 });
 
+function pcmBuffer(samples) {
+  const bytes = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(bytes);
+  samples.forEach((sample, index) => view.setInt16(index * 2, sample, true));
+  return bytes;
+}
+
+function pcmRms(buf) {
+  const view = new DataView(buf);
+  let sum = 0;
+  for (let i = 0; i < view.byteLength / 2; i++) {
+    const value = view.getInt16(i * 2, true) / 32768;
+    sum += value * value;
+  }
+  return Math.sqrt(sum / (view.byteLength / 2));
+}
+
+function pcmPeak(buf) {
+  const view = new DataView(buf);
+  let peak = 0;
+  for (let i = 0; i < view.byteLength / 2; i++) {
+    peak = Math.max(peak, Math.abs(view.getInt16(i * 2, true)) / 32768);
+  }
+  return peak;
+}
+
+test("podcast normalizes quiet and loud PCM voices toward common loudness", () => {
+  const quiet = pcmBuffer(Array.from({ length: 400 }, (_, i) => (i % 2 ? -1200 : 1200)));
+  const loud = pcmBuffer(Array.from({ length: 400 }, (_, i) => (i % 2 ? -12000 : 12000)));
+
+  const quietOut = PodcastMode._helpers.normalizePcmChunks([quiet])[0];
+  const loudOut = PodcastMode._helpers.normalizePcmChunks([loud])[0];
+
+  assert.ok(pcmRms(quietOut) > pcmRms(quiet), "quiet voice should be amplified");
+  assert.ok(pcmRms(loudOut) < pcmRms(loud), "loud voice should be attenuated");
+  assert.ok(Math.abs(pcmRms(quietOut) - pcmRms(loudOut)) < 0.015);
+  assert.ok(pcmPeak(quietOut) <= 0.95);
+  assert.ok(pcmPeak(loudOut) <= 0.95);
+});
+
 test("podcast retries transient Aliyun TTS failures", () => {
   assert.strictEqual(PodcastMode._helpers.cloudTtsRetryDelayMs(1), 600);
   assert.strictEqual(PodcastMode._helpers.cloudTtsRetryDelayMs(3), 2400);

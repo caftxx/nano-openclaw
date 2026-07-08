@@ -31,6 +31,12 @@
   var MAX_GROUP_AGENTS = 9;
   var CLOUD_TTS_MAX_CONCURRENCY = 2;
   var CLOUD_TTS_MAX_ATTEMPTS = 3;
+  var PCM_NORMALIZE_TARGET_RMS = 0.1; // ~ -20 dBFS, leaves room for phone volume control.
+  var PCM_NORMALIZE_MIN_GAIN = 0.25;
+  var PCM_NORMALIZE_MAX_GAIN = 2.4;
+  var PCM_NORMALIZE_PEAK = 0.95;
+  var PCM_NORMALIZE_SILENCE = 0.003;
+  var PCM_NORMALIZE_MIN_SAMPLES = 160;
   var MEMBER_COLORS = ["#0f9f8f", "#2d7ff9", "#d49300", "#8b5cf6", "#e0527d", "#3ca65c", "#d76035", "#6475e8"];
   var MEMBER_EMOJIS = ["🦊", "🐼", "🐯", "🐧", "✍️", "🧑‍💻", "🧠", "🛠️"];
   var ROLE_EMOJIS = {
@@ -2363,6 +2369,57 @@
     return null;
   }
 
+  function normalizePcmChunks(chunks) {
+    chunks = Array.isArray(chunks) ? chunks : [];
+    var totalBytes = 0;
+    for (var i = 0; i < chunks.length; i++) {
+      totalBytes += chunks[i] && chunks[i].byteLength || 0;
+    }
+    if (totalBytes < 2 || totalBytes % 2 !== 0) return chunks;
+    var bytes = new Uint8Array(totalBytes);
+    var offset = 0;
+    for (var j = 0; j < chunks.length; j++) {
+      var copy = copyAudioBuffer(chunks[j]);
+      if (!copy) continue;
+      bytes.set(new Uint8Array(copy), offset);
+      offset += copy.byteLength;
+    }
+    if (offset !== totalBytes) return chunks;
+
+    var view = new DataView(bytes.buffer);
+    var samples = totalBytes / 2;
+    var sumSq = 0;
+    var voiced = 0;
+    var peak = 0;
+    for (var k = 0; k < samples; k++) {
+      var sample = view.getInt16(k * 2, true);
+      var level = Math.abs(sample) / 32768;
+      if (level > peak) peak = level;
+      if (level >= PCM_NORMALIZE_SILENCE) {
+        sumSq += level * level;
+        voiced++;
+      }
+    }
+    if (voiced < PCM_NORMALIZE_MIN_SAMPLES || peak <= 0) return chunks;
+
+    var rms = Math.sqrt(sumSq / voiced);
+    if (!Number.isFinite(rms) || rms <= 0) return chunks;
+    var gain = PCM_NORMALIZE_TARGET_RMS / rms;
+    gain = Math.max(PCM_NORMALIZE_MIN_GAIN, Math.min(PCM_NORMALIZE_MAX_GAIN, gain));
+    gain = Math.min(gain, PCM_NORMALIZE_PEAK / peak);
+    if (!Number.isFinite(gain) || Math.abs(gain - 1) < 0.03) return chunks;
+
+    var out = new Uint8Array(totalBytes);
+    var outView = new DataView(out.buffer);
+    for (var n = 0; n < samples; n++) {
+      var scaled = Math.round(view.getInt16(n * 2, true) * gain);
+      if (scaled > 32767) scaled = 32767;
+      else if (scaled < -32768) scaled = -32768;
+      outView.setInt16(n * 2, scaled, true);
+    }
+    return [out.buffer];
+  }
+
   function playPrepared(prepared) {
     if (!prepared) return Promise.resolve();
     if (prepared.kind === "pcm") return playPcm(prepared);
@@ -2398,7 +2455,7 @@
       try {
         player.stop();
         player.unlock();
-        var chunks = prepared.chunks || [];
+        var chunks = normalizePcmChunks(prepared.chunks || []);
         if (!chunks.length) {
           podcast.currentPcmResolve = null;
           resolve();
@@ -2916,6 +2973,7 @@
       cloudTtsRetryDelayMs: cloudTtsRetryDelayMs,
       isRetryableCloudTtsError: isRetryableCloudTtsError,
       finalUtteranceText: finalUtteranceText,
+      normalizePcmChunks: normalizePcmChunks,
       shouldIgnoreOverlayTap: shouldIgnoreOverlayTap,
     },
   };
