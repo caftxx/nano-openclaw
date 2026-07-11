@@ -144,6 +144,7 @@
       if (role === "ai") setNodeMarkdown(div, text);
       else div.textContent = text || "";
       els.captions.appendChild(div);
+      if (els.overlay) els.overlay.classList.add("voice-has-captions");
       els.captions.scrollTop = els.captions.scrollHeight;
       return div;
     }
@@ -151,6 +152,7 @@
     function seedCaptions(history, extractText) {
       if (!els.captions) return;
       els.captions.innerHTML = "";
+      if (els.overlay) els.overlay.classList.remove("voice-has-captions");
       aiNode = null;
       var hist = history || [];
       for (var i = Math.max(0, hist.length - 8); i < hist.length; i++) {

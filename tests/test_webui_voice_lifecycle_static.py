@@ -429,6 +429,41 @@ def test_single_and_group_share_one_compact_stage_and_composer():
     assert '.voice-overlay.podcast-mode .voice-stage' not in styles
 
 
+def test_empty_state_artwork_cannot_shrink_into_the_title():
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    mark_rules = _function_body(styles, ".podcast-empty-mark {", ".podcast-empty-mark span {")
+
+    assert ".podcast-empty-state > * { flex-shrink: 0; }" in styles
+    assert "flex-basis: 60px;" in mark_rules
+    assert "min-height: 60px;" in mark_rules
+
+
+def test_single_mode_compacts_empty_state_when_captions_exist():
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    view = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-view.js").read_text(encoding="utf-8")
+
+    assert 'els.overlay.classList.add("voice-has-captions")' in view
+    assert 'els.overlay.classList.remove("voice-has-captions")' in view
+    assert ".voice-overlay.is-single.voice-has-captions .podcast-stage" in styles
+    assert ".voice-overlay.is-single.voice-has-captions .podcast-empty-mark" in styles
+    assert ".voice-overlay.is-single.voice-has-captions .podcast-empty-title" in styles
+
+
+def test_short_landscape_keeps_voice_footer_inside_the_viewport():
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    landscape_rules = _function_body(
+        styles,
+        "@media (max-height: 480px) and (orientation: landscape) {",
+        "\n\n.voice-captions {",
+    )
+
+    assert ".voice-overlay.is-single.voice-has-captions .podcast-stage" in landscape_rules
+    assert "min-height: 42px;" in landscape_rules
+    assert ".group-member-name { display: none; }" in landscape_rules
+    assert "min-height: 60px;" in landscape_rules
+    assert ".podcast-compose-meta { display: none; }" in landscape_rules
+
+
 def test_single_composer_routes_text_and_attachments_to_voice_mode():
     source = PODCAST_JS.read_text(encoding="utf-8")
     shell = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-shell.js").read_text(encoding="utf-8")
