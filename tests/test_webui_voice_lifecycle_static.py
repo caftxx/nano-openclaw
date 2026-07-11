@@ -429,6 +429,26 @@ def test_single_and_group_share_one_compact_stage_and_composer():
     assert '.voice-overlay.podcast-mode .voice-stage' not in styles
 
 
+def test_group_member_remove_button_is_a_plain_x_without_a_badge():
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    start = styles.rindex(".group-stage-participant .group-member-remove {")
+    end = styles.index(".group-stage-participant .group-member-remove::before,", start)
+    remove_rules = styles[start:end]
+
+    assert "width: 32px;" in remove_rules
+    assert "height: 32px;" in remove_rules
+    assert "background: transparent;" in remove_rules
+    assert "box-shadow: none;" in remove_rules
+    assert "opacity: .82;" in remove_rules
+    assert "border-radius: 50%;" not in remove_rules
+
+    icon_start = styles.index(".group-stage-participant .group-member-remove::before,", start)
+    icon_end = styles.index("\n}", icon_start)
+    icon_rules = styles[icon_start:icon_end]
+    assert "width: 13px;" in icon_rules
+    assert "height: 2px;" in icon_rules
+
+
 def test_empty_state_artwork_cannot_shrink_into_the_title():
     styles = STYLES_CSS.read_text(encoding="utf-8")
     mark_rules = _function_body(styles, ".podcast-empty-mark {", ".podcast-empty-mark span {")

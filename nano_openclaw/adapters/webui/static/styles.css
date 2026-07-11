@@ -2519,18 +2519,22 @@ body.voice-open { overflow: hidden; }
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--member-color, #0f9f8f) 20%, transparent);
 }
 .group-stage-participant .group-member-remove {
-  top: -5px;
-  right: -2px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--surface);
-  box-shadow: 0 1px 5px rgba(0, 0, 0, .12);
+  top: -7px;
+  right: -5px;
+  width: 32px;
+  height: 32px;
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in oklch, var(--ink) 82%, var(--member-color, #0f9f8f));
+  opacity: .82;
+  box-shadow: none;
 }
 .group-stage-participant .group-member-remove::before,
 .group-stage-participant .group-member-remove::after {
-  top: 13px;
+  top: 15px;
   right: 9px;
+  width: 13px;
+  height: 2px;
 }
 
 .podcast-empty-state {
