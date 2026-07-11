@@ -8,23 +8,34 @@ from nano_openclaw.api.context import GatewayContext
 
 
 async def podcast_start(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
-    return await ctx.backend.podcast_start(
-        session_key=str(params.get("session_key") or params.get("session_id") or ""),
-        topic=str(params.get("topic") or ""),
-        agents=list(params.get("agents") or []),
-        rounds=int(params.get("rounds") or 20),
-        host_voice_id=str(params.get("host_voice_id") or params.get("hostVoiceId") or ""),
-        host_voice_label=str(params.get("host_voice_label") or params.get("hostVoiceLabel") or ""),
-        host_model_ref=str(params.get("host_model_ref") or params.get("hostModelRef") or ""),
-        host_model_label=str(params.get("host_model_label") or params.get("hostModelLabel") or ""),
-    )
+    kwargs = {
+        "session_key": str(params.get("session_key") or params.get("session_id") or ""),
+        "topic": str(params.get("topic") or ""),
+        "agents": list(params.get("agents") or []),
+        "rounds": int(params.get("rounds") or 20),
+        "host_voice_id": str(params.get("host_voice_id") or params.get("hostVoiceId") or ""),
+        "host_voice_label": str(params.get("host_voice_label") or params.get("hostVoiceLabel") or ""),
+        "host_model_ref": str(params.get("host_model_ref") or params.get("hostModelRef") or ""),
+        "host_model_label": str(params.get("host_model_label") or params.get("hostModelLabel") or ""),
+    }
+    initial_context = str(params.get("initial_context") or params.get("initialContext") or "")
+    if initial_context:
+        kwargs["initial_context"] = initial_context
+    attachments = list(params.get("attachments") or [])
+    if attachments:
+        kwargs["attachments"] = attachments
+    return await ctx.backend.podcast_start(**kwargs)
 
 
 async def podcast_input(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:
-    return await ctx.backend.podcast_input(
+    kwargs = dict(
         run_id=str(params.get("run_id") or params.get("runId") or ""),
         text=str(params.get("text") or ""),
     )
+    attachments = list(params.get("attachments") or [])
+    if attachments:
+        kwargs["attachments"] = attachments
+    return await ctx.backend.podcast_input(**kwargs)
 
 
 async def podcast_stop(ctx: GatewayContext, params: dict[str, Any]) -> dict[str, Any]:

@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 
 MAX_ATTACHMENTS_PER_TURN = 5
-MAX_NON_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+MAX_TOTAL_ATTACHMENT_BYTES = 250 * 1024 * 1024
 
 IMAGE_MIME_TYPES = frozenset({
     "image/png",
@@ -25,6 +28,16 @@ IMAGE_MIME_TYPES = frozenset({
     "image/gif",
     "image/webp",
 })
+
+DOCUMENT_TEXT_MIME_TYPES = frozenset({
+    "application/json",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/csv",
+    "text/markdown",
+    "text/plain",
+})
+DOCUMENT_TEXT_SUFFIXES = frozenset({".csv", ".json", ".md", ".txt"})
+MAX_EXTRACTED_DOCUMENT_CHARS = 12_000
 
 
 @dataclass
@@ -85,9 +98,9 @@ def decode_attachment_payloads(raw_items: list[Any]) -> list[PromptAttachment]:
             )
         if actual_size <= 0:
             raise ValueError(f"attachment {name!r} is empty")
-        if not is_image_mime(mime) and actual_size > MAX_NON_IMAGE_BYTES:
+        if actual_size > MAX_ATTACHMENT_BYTES:
             raise ValueError(
-                f"attachment {name!r} is too large: {actual_size} > {MAX_NON_IMAGE_BYTES}"
+                f"attachment {name!r} is too large: {actual_size} > {MAX_ATTACHMENT_BYTES}"
             )
 
         total_size += actual_size
@@ -103,6 +116,86 @@ def decode_attachment_payloads(raw_items: list[Any]) -> list[PromptAttachment]:
 
 def is_image_mime(mime: str) -> bool:
     return _normalise_mime(mime) in IMAGE_MIME_TYPES
+
+
+def extract_document_text(attachment: PromptAttachment) -> str:
+    """Extract bounded plain text from a document uploaded to group chat."""
+    mime = _normalise_mime(attachment.mime)
+    suffix = Path(attachment.name).suffix.lower()
+    if mime == "application/pdf" or suffix == ".pdf":
+        text = _extract_pdf_text(attachment.data)
+    elif (
+        mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        or suffix == ".docx"
+    ):
+        text = _extract_docx_text(attachment.data)
+    elif mime in DOCUMENT_TEXT_MIME_TYPES or suffix in DOCUMENT_TEXT_SUFFIXES:
+        text = _decode_text_document(attachment.data)
+    else:
+        raise ValueError(f"unsupported group-chat document type: {attachment.name}")
+
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text:
+        raise ValueError(f"no readable text found in document: {attachment.name}")
+    if len(text) > MAX_EXTRACTED_DOCUMENT_CHARS:
+        text = text[:MAX_EXTRACTED_DOCUMENT_CHARS].rstrip() + "\n[文档内容已截断]"
+    return text
+
+
+def document_context_text(text: str, attachments: list[PromptAttachment]) -> str:
+    """Combine typed input and extracted documents into podcast context."""
+    parts: list[str] = []
+    clean_text = text.strip()
+    if clean_text:
+        parts.append(clean_text)
+    per_document_chars = max(600, MAX_EXTRACTED_DOCUMENT_CHARS // max(1, len(attachments)))
+    for attachment in attachments:
+        extracted = extract_document_text(attachment)
+        if len(extracted) > per_document_chars:
+            extracted = extracted[:per_document_chars].rstrip() + "\n[文档内容已截断]"
+        parts.append(f"[参考文档：{attachment.name}]\n{extracted}")
+    return "\n\n".join(parts)
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("could not read PDF document") from exc
+
+
+def _extract_docx_text(data: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            document_xml = archive.read("word/document.xml")
+    except (KeyError, OSError, zipfile.BadZipFile) as exc:
+        raise ValueError("could not read DOCX document") from exc
+
+    try:
+        root = ElementTree.fromstring(document_xml)
+    except ElementTree.ParseError as exc:
+        raise ValueError("could not parse DOCX document") from exc
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    paragraphs: list[str] = []
+    for paragraph in root.iter(f"{namespace}p"):
+        value = "".join(node.text or "" for node in paragraph.iter(f"{namespace}t")).strip()
+        if value:
+            paragraphs.append(value)
+    return "\n".join(paragraphs)
+
+
+def _decode_text_document(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-16", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("could not decode text document")
 
 
 def save_non_image_attachment(

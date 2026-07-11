@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import random
 from types import SimpleNamespace
 
@@ -29,6 +30,75 @@ from nano_openclaw.features.voice.podcast import (
 from nano_openclaw.features.voice.voice_catalog import voice_score
 from nano_openclaw.services.backend import PushEvent
 from nano_openclaw.services.backend_embedded import EmbeddedBackend
+
+
+def test_podcast_attachment_context_describes_uploaded_image(monkeypatch):
+    calls = []
+
+    async def fake_describe_image(b64, mime, **kwargs):
+        calls.append({"b64": b64, "mime": mime, **kwargs})
+        return "一张蓝色产品发布计划图"
+
+    monkeypatch.setattr("nano_openclaw.core.images.describe_image", fake_describe_image)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    )
+    backend = SimpleNamespace(runtime=SimpleNamespace(
+        cfg=SimpleNamespace(image_model="vision-model", model_input=("text",), api="openai"),
+        client=object(),
+        model_id="main-model",
+    ))
+
+    result = asyncio.run(EmbeddedBackend._podcast_attachment_context(
+        backend,
+        "请分析",
+        [{
+            "name": "plan.png",
+            "mime": "image/png",
+            "size": len(png),
+            "data": base64.b64encode(png).decode(),
+        }],
+    ))
+
+    assert result == "请分析\n\n[参考图片：plan.png]\n一张蓝色产品发布计划图"
+    assert calls[0]["model"] == "vision-model"
+    assert calls[0]["mime"] == "image/png"
+
+
+def test_podcast_attachment_context_times_out_image_description(monkeypatch):
+    async def stalled_describe_image(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("nano_openclaw.core.images.describe_image", stalled_describe_image)
+    monkeypatch.setattr(
+        "nano_openclaw.services.backend_embedded.PODCAST_ATTACHMENT_TIMEOUT_SECONDS",
+        0.01,
+    )
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    )
+    backend = SimpleNamespace(runtime=SimpleNamespace(
+        cfg=SimpleNamespace(image_model="vision-model", model_input=("text",), api="openai"),
+        client=object(),
+        model_id="main-model",
+    ))
+
+    try:
+        asyncio.run(EmbeddedBackend._podcast_attachment_context(
+            backend,
+            "",
+            [{
+                "name": "stalled.png",
+                "mime": "image/png",
+                "size": len(png),
+                "data": base64.b64encode(png).decode(),
+            }],
+        ))
+    except ValueError as exc:
+        assert "图片理解超时" in str(exc)
+        assert "stalled.png" in str(exc)
+    else:
+        raise AssertionError("stalled image description should time out")
 
 
 def test_podcast_assigns_distinct_speaker_voices_and_excludes_host_voice():

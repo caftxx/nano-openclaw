@@ -803,6 +803,8 @@ class WebSocketBackend(Backend):
         host_voice_label: str = "",
         host_model_ref: str = "",
         host_model_label: str = "",
+        initial_context: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return await self._call("podcast.start", {
             "session_key": session_key,
@@ -813,10 +815,22 @@ class WebSocketBackend(Backend):
             "host_voice_label": host_voice_label,
             "host_model_ref": host_model_ref,
             "host_model_label": host_model_label,
+            "initial_context": initial_context,
+            "attachments": attachments or [],
         }) or {}
 
-    async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
-        return await self._call("podcast.input", {"run_id": run_id, "text": text}) or {}
+    async def podcast_input(
+        self,
+        *,
+        run_id: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return await self._call("podcast.input", {
+            "run_id": run_id,
+            "text": text,
+            "attachments": attachments or [],
+        }) or {}
 
     async def podcast_stop(self, *, run_id: str) -> dict[str, Any]:
         return await self._call("podcast.stop", {"run_id": run_id}) or {}

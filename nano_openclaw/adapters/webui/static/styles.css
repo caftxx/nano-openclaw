@@ -671,7 +671,7 @@ html[data-theme="dark"] .appearance-options {
   padding: 10px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: end;
   gap: 6px;
   border: 0;
   border-radius: 28px;
@@ -775,7 +775,7 @@ textarea:focus {
 
 #sendBtn,
 .composer-tool {
-  align-self: center;
+  align-self: end;
   border-radius: 999px;
 }
 
@@ -1469,7 +1469,7 @@ textarea:focus {
     position: relative;
     grid-template-columns: 48px minmax(0, 1fr) auto 44px;
     border-radius: 0;
-    align-items: center;
+    align-items: end;
     column-gap: 10px;
     row-gap: 8px;
     background: transparent;
@@ -1623,8 +1623,11 @@ textarea:focus {
 
 /* composer：attach | textarea | mic | send 四列，两个断点都用显式列位，
    避免 auto-flow 把按钮换行/挤出屏幕（手机端见下方 max-width:720 区块）。 */
+.composer-attach::before,
+.composer-attach::after,
 .composer-mic::before,
-.composer-mic::after { content: none; }        /* 去掉 .composer-tool 的 + 图标横竖条 */
+.composer-mic::after { content: none; }        /* 内嵌 SVG 的工具按钮不显示默认 + 图标 */
+.composer-attach svg,
 .composer-mic svg { width: 20px; height: 20px; display: block; }  /* ChatGPT 风格听写图标 */
 @media (min-width: 721px) {
   .composer { grid-template-columns: auto minmax(0, 1fr) auto auto; }
@@ -2365,6 +2368,143 @@ body.voice-open { overflow: hidden; }
   font-size: 15px;
   line-height: 1.45;
   text-align: center;
+}
+.podcast-composer {
+  width: min(820px, calc(100vw - 48px));
+  min-height: 60px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 0;
+  border-radius: 28px;
+  background: var(--surface-raised);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .04), 0 9px 30px rgba(0, 0, 0, .18);
+  overflow: hidden;
+}
+.podcast-attachment-input { display: none; }
+.podcast-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 2px 2px;
+}
+.podcast-attachment-list[hidden] { display: none; }
+.podcast-document-chip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(260px, 100%);
+  min-height: 30px;
+  padding: 4px 5px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+}
+.podcast-document-chip.is-error {
+  border-color: color-mix(in oklch, var(--danger) 62%, #484848);
+  color: #ffc4c4;
+}
+.podcast-document-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.podcast-document-meta { color: var(--subtle); white-space: nowrap; }
+.podcast-document-remove {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.podcast-compose-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  align-items: end;
+  gap: 6px;
+}
+.podcast-compose-tool,
+.podcast-compose-send {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  transition: background .14s ease, transform .14s ease;
+}
+.podcast-compose-tool {
+  background: transparent;
+  color: var(--button-secondary-ink);
+}
+.podcast-compose-send {
+  background: var(--button-primary-bg);
+  color: var(--button-primary-ink);
+}
+.podcast-compose-tool:hover,
+.podcast-compose-tool:focus-visible { background: var(--button-secondary-bg); transform: translateY(-1px); }
+.podcast-compose-send:hover,
+.podcast-compose-send:focus-visible { background: var(--button-primary-hover); transform: translateY(-1px); }
+.podcast-compose-tool:active,
+.podcast-compose-send:active { transform: translateY(0); }
+.composer-attach svg,
+.podcast-compose-tool svg,
+.podcast-compose-send svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.podcast-composer textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 40px;
+  min-height: 40px;
+  max-height: 112px;
+  resize: none;
+  overflow-y: hidden;
+  padding: 9px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.45;
+  box-shadow: none;
+}
+.podcast-composer textarea:focus { outline: none; box-shadow: none; }
+.podcast-input-hint {
+  display: none;
+  padding: 0 6px 2px 46px;
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.podcast-input-hint.is-error { display: block; color: var(--danger); }
+.podcast-composer.is-sending { opacity: .72; }
+.podcast-composer.is-sending button,
+.podcast-composer.is-sending textarea { cursor: wait; }
+@media (max-width: 520px) {
+  .podcast-composer { width: calc(100vw - 24px); border-radius: 24px; }
+  .podcast-compose-row { min-width: 0; }
+  .podcast-composer textarea { font-size: 15px; }
+  .podcast-input-hint { padding-left: 4px; }
 }
 
 .voice-captions {

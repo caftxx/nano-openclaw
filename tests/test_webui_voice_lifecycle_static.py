@@ -46,6 +46,59 @@ def test_podcast_interjection_waits_for_acceptance_before_generation_reset():
     assert 'podcast.pendingInputText = "";' in body
 
 
+def test_group_chat_composer_supports_typed_text_and_documents():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    submit_body = _function_body(source, "async function submitPodcastComposer(event)", "async function submitInterjection(text)")
+
+    assert 'id="podcastTextInput"' in html
+    assert 'id="podcastAttachmentInput"' in html
+    assert ".pdf,.docx,.txt,.md,.csv,.json" in html
+    assert ".png,.jpg,.jpeg,.gif,.webp" in html
+    assert "支持图片、PDF、Word 和文本文件，单个不超过 50 MB" in html
+    assert 'await submitInterjection(' in submit_body
+    assert 'await startPodcast(topic, attachments);' in submit_body
+    assert 'attachments: attachments || []' in source
+    assert ".podcast-composer" in styles
+
+
+def test_group_chat_composer_uses_compact_mobile_placeholder_without_overflow():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    composer_body = _function_body(source, "function updatePodcastComposer()", "function resizePodcastTextInput()")
+    textarea_rules = _function_body(styles, ".podcast-composer textarea {", ".podcast-composer textarea:focus")
+
+    assert 'root.matchMedia("(max-width: 520px)").matches' in composer_body
+    assert 'compact ? "输入话题或附件"' in composer_body
+    assert 'compact ? "输入观点或问题"' in composer_body
+    assert "min-width: 0;" in textarea_rules
+    assert "max-width: 100%;" in textarea_rules
+
+
+def test_group_chat_image_start_returns_before_visual_processing_finishes():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    start_body = _function_body(source, "async function startPodcast(topicOverride)", "async function stopPodcast")
+    event_body = _function_body(source, "function onEvent(event)", "function stopSpeech()")
+    api_body = _function_body(source, "async function apiSafe(path, body, timeoutMs)", "async function apiGetSafe(path)")
+
+    assert "payload.processing_attachments" in start_body
+    assert 'event.type === "podcast.attachments.processing"' in event_body
+    assert 'event.type === "podcast.attachments.ready"' in event_body
+    assert "new AbortController()" in api_body
+    assert 'throw new Error("请求超时，请重试")' in api_body
+
+
+def test_web_composer_actions_bottom_align_with_multiline_input():
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    composer = _function_body(styles, ".composer {", ".attachment-input {")
+    mobile = styles[styles.index("@media (max-width: 720px)"):styles.index("/* ── Voice mode")]
+
+    assert "align-items: end;" in composer
+    assert "#sendBtn,\n.composer-tool {\n  align-self: end;" in styles
+    assert "align-items: end;" in mobile
+
+
 def test_podcast_start_resets_caption_timeline_for_new_run():
     source = PODCAST_JS.read_text(encoding="utf-8")
     reset_body = _function_body(source, "function resetCaptionsForRun(topic)", "function resetForUserInput")

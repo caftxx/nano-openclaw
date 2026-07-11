@@ -348,11 +348,19 @@ class Backend(Protocol):
         host_voice_label: str = "",
         host_model_ref: str = "",
         host_model_label: str = "",
+        initial_context: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Start a background AI podcast run for the given WebUI session."""
         ...
 
-    async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
+    async def podcast_input(
+        self,
+        *,
+        run_id: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Queue a user interjection for an active podcast run."""
         ...
 

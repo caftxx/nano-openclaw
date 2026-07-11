@@ -22,7 +22,12 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-from nano_openclaw.core.attachments import PromptAttachment
+from nano_openclaw.core.attachments import (
+    PromptAttachment,
+    decode_attachment_payloads,
+    document_context_text,
+    is_image_mime,
+)
 from nano_openclaw.services.event_payload import (
     event_to_payload,
     is_replayable_activity_payload,
@@ -79,6 +84,7 @@ log = get_logger(__name__)
 SUBSCRIBER_QUEUE_MAX = 256
 SUBSCRIBER_GAP_DROP = 5
 PODCAST_UTTERANCE_TIMEOUT_SECONDS = 120
+PODCAST_ATTACHMENT_TIMEOUT_SECONDS = 60
 
 
 def _new_runtime_guard():
@@ -1779,6 +1785,8 @@ class EmbeddedBackend(Backend):
         host_voice_label: str = "",
         host_model_ref: str = "",
         host_model_label: str = "",
+        initial_context: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         from nano_openclaw.features.voice.podcast import (
             HOST_ROLE,
@@ -1791,6 +1799,7 @@ class EmbeddedBackend(Backend):
             voice_label,
         )
 
+        initial_context = initial_context.strip()
         session = self._resolve_session(session_key)
         topic = topic.strip() or "自由讨论"
         rounds = normalize_rounds(rounds)
@@ -1849,6 +1858,8 @@ class EmbeddedBackend(Backend):
                 token=token,
                 input_queue=input_queue,
                 run_state=run_state,
+                initial_context=initial_context,
+                attachments=attachments,
             ),
             name=f"backend.voice_podcast:{run_id}",
         )
@@ -1864,6 +1875,7 @@ class EmbeddedBackend(Backend):
             "host_voice_label": host_voice_label,
             "host_model_ref": host_model_ref,
             "host_model_label": host_model_label,
+            "initial_context": initial_context,
         }
         task.add_done_callback(lambda _task, rid=run_id: self._podcast_runs.pop(rid, None))
 
@@ -1872,6 +1884,7 @@ class EmbeddedBackend(Backend):
             "session_id": session.session_id,
             "topic": topic,
             "rounds": rounds,
+            "processing_attachments": bool(attachments),
             "host": {
                 "role": HOST_ROLE,
                 "voice_id": host_voice_id,
@@ -1895,10 +1908,17 @@ class EmbeddedBackend(Backend):
         self._emit_podcast({"type": "podcast.started", **payload})
         return payload
 
-    async def podcast_input(self, *, run_id: str, text: str) -> dict[str, Any]:
+    async def podcast_input(
+        self,
+        *,
+        run_id: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         run = self._podcast_runs.get(run_id)
         if run is None:
             raise NotFoundError(f"podcast run not found: {run_id}")
+        text = await self._podcast_attachment_context(text, attachments)
         text = text.strip()
         if not text:
             return {"ok": False, "reason": "empty input"}
@@ -2162,6 +2182,8 @@ class EmbeddedBackend(Backend):
         token: CancellationToken,
         input_queue: asyncio.Queue[str],
         run_state: dict[str, Any],
+        initial_context: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         import random
 
@@ -2173,6 +2195,7 @@ class EmbeddedBackend(Backend):
         )
 
         rng = random.Random(run_id)
+        initial_context = str(initial_context or "").strip()
         context: list[str] = []
         research_cache: dict[str, str] = {}
         next_utterance_sequence = 1
@@ -2209,6 +2232,29 @@ class EmbeddedBackend(Backend):
             completed_rounds = 0
 
         try:
+            if attachments:
+                self._emit_podcast({
+                    "type": "podcast.attachments.processing",
+                    "run_id": run_id,
+                    "session_id": session.session_id,
+                })
+                attachment_context = await self._podcast_attachment_context("", attachments)
+                initial_context = "\n\n".join(
+                    item for item in (initial_context, attachment_context) if item
+                )
+                run_state["initial_context"] = initial_context
+                self._emit_podcast({
+                    "type": "podcast.attachments.ready",
+                    "run_id": run_id,
+                    "session_id": session.session_id,
+                })
+            context.extend(
+                f"用户提供的背景材料（第 {index + 1} 段）: {chunk}"
+                for index, chunk in enumerate(
+                    initial_context[start:start + 900]
+                    for start in range(0, len(initial_context), 900)
+                )
+            )
             async with self.runtime.runtime_guard.reader():
                 first_speaker = rng.choice(agents) if agents else None
                 if first_speaker is not None:
@@ -2244,6 +2290,7 @@ class EmbeddedBackend(Backend):
                     if pending_inputs:
                         reset_generation(current_generation())
                         completed_rounds = 0
+                        research_cache.clear()
                         for item in pending_inputs:
                             context.append(f"用户插话: {item}")
                     else:
@@ -2320,6 +2367,9 @@ class EmbeddedBackend(Backend):
                                 generation=active_generation,
                                 is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
                                 is_agent_active=agent_is_active,
+                                reference_context="\n\n".join(
+                                    item for item in (initial_context, *pending_inputs) if item
+                                ),
                             ),
                             name=f"backend.voice_podcast.speaker:{run_id}:{round_index}:{idx}",
                         )
@@ -2561,6 +2611,7 @@ class EmbeddedBackend(Backend):
         generation: int,
         is_generation_current: Any,
         is_agent_active: Any,
+        reference_context: str = "",
     ) -> tuple[Any, str]:
         from nano_openclaw.features.voice.podcast import build_speaker_prompt
 
@@ -2581,6 +2632,12 @@ class EmbeddedBackend(Backend):
         if not is_agent_active(agent):
             emit_skipped()
             return agent, ""
+        model_context = context
+        if reference_context.strip():
+            model_context = (
+                f"用户提供的参考材料：\n{reference_context.strip()}\n\n"
+                f"近期讨论上下文：\n{context}"
+            )
         cache_key = ":".join([
             str(getattr(agent, "id", "") or ""),
             str(getattr(agent, "role", "") or ""),
@@ -2595,7 +2652,7 @@ class EmbeddedBackend(Backend):
                     topic=topic,
                     agent=agent,
                     round_index=round_index,
-                    context=context,
+                    context=model_context,
                     token=token,
                 ),
                 name=f"backend.voice_podcast.research:{run_id}:{round_index}:{getattr(agent, 'id', '')}",
@@ -2640,7 +2697,7 @@ class EmbeddedBackend(Backend):
                     topic=topic,
                     agent=agent,
                     round_index=round_index,
-                    context=context,
+                    context=model_context,
                     research=research_text,
                 ),
                 user_text="请基于你的身份、首次 research 摘要和当前讨论上下文，给出本轮观点。",
@@ -2712,6 +2769,54 @@ class EmbeddedBackend(Backend):
                 items.append(queue.get_nowait())
             except asyncio.QueueEmpty:
                 return items
+
+    async def _podcast_attachment_context(
+        self,
+        text: str,
+        raw_attachments: list[dict[str, Any]] | None,
+    ) -> str:
+        attachments = decode_attachment_payloads(list(raw_attachments or []))
+        documents = [item for item in attachments if not is_image_mime(item.mime)]
+        parts: list[str] = []
+        document_text = document_context_text(text, documents)
+        if document_text:
+            parts.append(document_text)
+
+        images = [item for item in attachments if is_image_mime(item.mime)]
+        if not images:
+            return "\n\n".join(parts)
+
+        from nano_openclaw.core.images import describe_image, load_image_bytes
+
+        cfg = self.runtime.cfg
+        image_model = str(cfg.image_model or "").strip()
+        if not image_model and "image" in tuple(cfg.model_input or ()):
+            image_model = self.runtime.model_id
+        if not image_model:
+            raise ValueError("当前未配置可理解图片的模型，请先在 Runtime 中选择 ImageModel")
+
+        for attachment in images:
+            b64, mime = load_image_bytes(attachment.data, attachment.mime)
+            try:
+                description = await asyncio.wait_for(
+                    describe_image(
+                        b64,
+                        mime,
+                        client=self.runtime.client,
+                        model=image_model,
+                        api=cfg.api,
+                    ),
+                    timeout=PODCAST_ATTACHMENT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError as exc:
+                raise ValueError(
+                    f"图片理解超时（{PODCAST_ATTACHMENT_TIMEOUT_SECONDS} 秒）：{attachment.name}"
+                ) from exc
+            description = description.strip()
+            if not description:
+                raise ValueError(f"图片未返回可用描述：{attachment.name}")
+            parts.append(f"[参考图片：{attachment.name}]\n{description}")
+        return "\n\n".join(parts)
 
     def _podcast_model_runtime(self, model_ref: str) -> tuple[Any, Any, bool]:
         model_ref = str(model_ref or "").strip()

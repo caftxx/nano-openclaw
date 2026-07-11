@@ -40,6 +40,7 @@ dependencies = [
     "websockets>=14",
     "cryptography>=42.0",
     "qrcode>=7.0",
+    "pypdf>=5.0",
 ]
 
 [project.optional-dependencies]

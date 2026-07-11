@@ -98,11 +98,13 @@ class PodcastStartRequest(BaseModel):
     host_voice_label: str = ""
     host_model_ref: str = ""
     host_model_label: str = ""
+    attachments: list[dict[str, Any]] = []
 
 
 class PodcastInputRequest(BaseModel):
     run_id: str
     text: str
+    attachments: list[dict[str, Any]] = []
 
 
 class PodcastStopRequest(BaseModel):
@@ -219,7 +221,8 @@ def create_app(
     @app.post("/api/voice/podcast/start", dependencies=[Depends(require_http_token)])
     async def podcast_start(req: PodcastStartRequest) -> dict[str, Any]:
         try:
-            return await app.state.backend.podcast_start(
+            decode_attachment_payloads(req.attachments)
+            kwargs = dict(
                 session_key=req.session_id,
                 topic=req.topic,
                 agents=[agent.model_dump() for agent in req.agents],
@@ -229,15 +232,28 @@ def create_app(
                 host_model_ref=req.host_model_ref,
                 host_model_label=req.host_model_label,
             )
+            if req.attachments:
+                kwargs["attachments"] = req.attachments
+            return await app.state.backend.podcast_start(**kwargs)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except BackendError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/voice/podcast/input", dependencies=[Depends(require_http_token)])
     async def podcast_input(req: PodcastInputRequest) -> dict[str, Any]:
         try:
-            return await app.state.backend.podcast_input(run_id=req.run_id, text=req.text)
+            decode_attachment_payloads(req.attachments)
+            kwargs = {"run_id": req.run_id, "text": req.text}
+            if req.attachments:
+                kwargs["attachments"] = req.attachments
+            return await app.state.backend.podcast_input(**kwargs)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BackendError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/voice/podcast/stop", dependencies=[Depends(require_http_token)])
     async def podcast_stop(req: PodcastStopRequest) -> dict[str, Any]:

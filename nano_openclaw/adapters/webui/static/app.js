@@ -57,8 +57,8 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const SESSION_PAGE_LIMIT = 50;
 const MAX_ATTACHMENTS = 5;
-const MAX_NON_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const MAX_TOTAL_ATTACHMENT_BYTES = 250 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -1457,8 +1457,8 @@ function validateAttachment(file) {
   if (!ALLOWED_ATTACHMENT_TYPES.has(file.type)) {
     return "不支持的类型";
   }
-  if (!file.type.startsWith("image/") && file.size > MAX_NON_IMAGE_BYTES) {
-    return `超过 ${formatBytes(MAX_NON_IMAGE_BYTES)}`;
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    return `超过 ${formatBytes(MAX_ATTACHMENT_BYTES)}`;
   }
   if (file.size <= 0) {
     return "空文件";
@@ -1719,7 +1719,7 @@ $("attachmentInput").onchange = (event) => {
   addAttachmentFiles(Array.from(event.target.files || []));
   event.target.value = "";
 };
-document.querySelector(".composer-tool").onclick = () => $("attachmentInput").click();
+document.querySelector(".composer-attach").onclick = () => $("attachmentInput").click();
 $("thinkingToggle").onclick = () => {
   const nextLevel = state.thinkingLevel === "off" ? state.lastThinkingLevel : "off";
   state.thinkingLevel = nextLevel;

@@ -13,7 +13,7 @@
         document.documentElement.dataset.themePreference = ["system", "dark", "light"].includes(preference) ? preference : "system";
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260704-send-optimistic" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260711-mobile-placeholder" />
   </head>
   <body>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
@@ -84,7 +84,9 @@
         <form id="composer" class="composer">
           <input id="attachmentInput" class="attachment-input" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" />
           <div id="attachmentList" class="attachment-list" hidden></div>
-          <button type="button" class="composer-tool" title="Attach" aria-label="Attach"></button>
+          <button type="button" class="composer-tool composer-attach" title="上传附件" aria-label="上传附件">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 14.8 6.2a3 3 0 0 1 4.2 4.2l-8.2 8.2a5 5 0 0 1-7.1-7.1l8-8"></path></svg>
+          </button>
           <textarea id="prompt" rows="1" placeholder="有问题，尽管问"></textarea>
           <button id="voiceMicBtn" type="button" class="composer-tool composer-mic" title="语音模式" aria-label="语音模式">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" class="icon" aria-hidden="true" fill="currentColor">
@@ -155,6 +157,20 @@
           <span id="podcastCircleLabel" class="podcast-circle-label">点击说话题</span>
         </button>
         <div id="podcastModeStatus" class="podcast-mode-status">群聊会自动讨论，点击屏幕可插话</div>
+        <form id="podcastComposer" class="podcast-composer">
+          <input id="podcastAttachmentInput" class="podcast-attachment-input" type="file" multiple accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,text/csv,application/json,image/png,image/jpeg,image/gif,image/webp" />
+          <div id="podcastAttachmentList" class="podcast-attachment-list" hidden></div>
+          <div class="podcast-compose-row">
+            <button id="podcastAttachBtn" class="podcast-compose-tool" type="button" title="上传附件" aria-label="上传附件">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 14.8 6.2a3 3 0 0 1 4.2 4.2l-8.2 8.2a5 5 0 0 1-7.1-7.1l8-8"></path></svg>
+            </button>
+            <textarea id="podcastTextInput" rows="1" placeholder="输入话题，或上传图片/文档开始群聊" aria-label="群聊文字输入"></textarea>
+            <button id="podcastSendInputBtn" class="podcast-compose-send" type="submit" title="发送" aria-label="发送到群聊">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5M5 12l7-7 7 7"></path></svg>
+            </button>
+          </div>
+          <div id="podcastInputHint" class="podcast-input-hint">支持图片、PDF、Word 和文本文件，单个不超过 50 MB</div>
+        </form>
         <div id="podcastNotice" class="podcast-notice" role="status" aria-live="polite" hidden></div>
       </div>
       <div id="voiceCaptions" class="voice-captions"></div>
@@ -244,7 +260,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="/static/app.js?v=20260704-send-optimistic"></script>
+    <script src="/static/app.js?v=20260711-attachment-50mb"></script>
     <script src="/static/voice-wav.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-nls.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-pinyin.js?v=20260606-rewrite10"></script>
@@ -263,6 +279,6 @@
     <script src="/static/voice-speaker-provider.js?v=20260613-talk-provider"></script>
     <script src="/static/voice-view.js?v=20260606-rewrite10"></script>
     <script src="/static/voice-shell.js?v=20260630-close-cmds"></script>
-    <script src="/static/voice-podcast.js?v=20260630-close-cmds"></script>
+    <script src="/static/voice-podcast.js?v=20260711-mobile-placeholder"></script>
   </body>
 </html>

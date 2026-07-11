@@ -29,6 +29,10 @@
   var HOST_MODEL_KEY = "nanoGroupHostModel";
   var ROUNDS_KEY = "nanoGroupRounds";
   var MAX_GROUP_AGENTS = 9;
+  var MAX_GROUP_DOCUMENTS = 5;
+  var MAX_GROUP_DOCUMENT_BYTES = 50 * 1024 * 1024;
+  var MAX_GROUP_DOCUMENT_TOTAL_BYTES = 250 * 1024 * 1024;
+  var GROUP_DOCUMENT_SUFFIXES = [".pdf", ".docx", ".txt", ".md", ".csv", ".json", ".png", ".jpg", ".jpeg", ".gif", ".webp"];
   var CLOUD_TTS_MAX_CONCURRENCY = 2;
   var CLOUD_TTS_MAX_ATTEMPTS = 3;
   var PCM_NORMALIZE_TARGET_RMS = 0.1; // ~ -20 dBFS, leaves room for phone volume control.
@@ -103,6 +107,8 @@
     replayCurrentPlayback: false,
     generationDone: false,
     noticeTimer: null,
+    documents: [],
+    inputSending: false,
   };
 
   function $(id) { return root.document && root.document.getElementById(id); }
@@ -442,17 +448,27 @@
   function authHeadersSafe() {
     return typeof root.authHeaders === "function" ? root.authHeaders() : {};
   }
-  async function apiSafe(path, body) {
-    if (typeof root.api === "function") {
-      return await root.api(path, { method: "POST", body: JSON.stringify(body || {}) });
-    }
-    var res = await fetch(path, {
+  async function apiSafe(path, body, timeoutMs) {
+    var timeout = Number(timeoutMs) || 75000;
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, timeout) : null;
+    var options = {
       method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, authHeadersSafe()),
       body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    return await res.json();
+    };
+    if (controller) options.signal = controller.signal;
+    try {
+      if (typeof root.api === "function") return await root.api(path, options);
+      options.headers = Object.assign({ "Content-Type": "application/json" }, authHeadersSafe());
+      var res = await fetch(path, options);
+      if (!res.ok) throw new Error(String(res.status));
+      return await res.json();
+    } catch (err) {
+      if (controller && controller.signal.aborted) throw new Error("请求超时，请重试");
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
   async function apiGetSafe(path) {
     if (typeof root.api === "function") return await root.api(path);
@@ -1346,6 +1362,7 @@
       btn.title = podcast.mode ? "切换到语音" : "切换到群聊";
     }
     updatePodcastControl();
+    updatePodcastComposer();
     renderParticipants();
     if (options.save !== false) savePodcastState();
   }
@@ -1406,6 +1423,31 @@
     }
     setPodcastControl("idle", "◎", "点击说话题");
   }
+  function updatePodcastComposer() {
+    var form = $("podcastComposer");
+    var input = $("podcastTextInput");
+    var send = $("podcastSendInputBtn");
+    var attach = $("podcastAttachBtn");
+    if (form) form.classList.toggle("is-sending", podcast.inputSending);
+    if (input) {
+      input.disabled = podcast.inputSending;
+      var compact = Boolean(root.matchMedia && root.matchMedia("(max-width: 520px)").matches);
+      input.placeholder = podcast.runId
+        ? (compact ? "输入观点或问题" : "输入观点或问题，发送到群聊")
+        : (compact ? "输入话题或附件" : "输入话题，或上传图片/文档开始群聊");
+    }
+    if (send) send.disabled = podcast.inputSending || podcast.starting;
+    if (attach) attach.disabled = podcast.inputSending || podcast.starting;
+  }
+  function resizePodcastTextInput() {
+    var input = $("podcastTextInput");
+    if (!input) return;
+    var maxHeight = 112;
+    input.style.height = "40px";
+    var nextHeight = Math.min(Math.max(input.scrollHeight, 40), maxHeight);
+    input.style.height = nextHeight + "px";
+    input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
   function phaseLabel(event) {
     if (event.phase === "opening") return "主持人开场";
     if (event.phase === "interjection") return "主持人回应插话";
@@ -1457,10 +1499,12 @@
   }
 
   async function startPodcast(topicOverride) {
+    var attachments = arguments[1] || [];
     if (podcast.active || podcast.starting) return;
     if (!podcast.agents.length) addGroupAgent();
     if (!podcast.sessionId) podcast.sessionId = String(currentSessionId() || "");
     podcast.starting = true;
+    updatePodcastComposer();
     podcast.topicCaptureArmed = false;
     setPodcastMode(true);
     setActive(false);
@@ -1481,6 +1525,7 @@
         host_voice_label: hostVoice.label,
         host_model_ref: podcast.hostModelRef || runtimeModelRef(),
         host_model_label: podcast.hostModelLabel || modelOptionLabel(podcast.hostModelRef || runtimeModelRef()),
+        attachments: attachments || [],
         agents: podcast.agents.map(function (agent) {
           return {
             id: agent.id,
@@ -1502,16 +1547,20 @@
       primePlayback();
       renderAssignments(payload);
       setStatus("群聊进行中，点屏幕空白处可插话。");
-      setVoiceStatus("群聊已启动，正在生成主持人开场...");
+      setVoiceStatus(payload.processing_attachments
+        ? "群聊已启动，正在理解图片内容..."
+        : "群聊已启动，正在生成主持人开场...");
       setDialog(false);
       setPodcastMode(true);
       setActive(true);
+      clearPodcastDocuments();
     } catch (err) {
       setStatus("启动失败：" + (err && err.message || err));
       podcast.topicCaptureArmed = true;
     } finally {
       podcast.starting = false;
       setActive(Boolean(podcast.runId));
+      updatePodcastComposer();
     }
   }
 
@@ -1696,8 +1745,20 @@
       primePlayback();
       renderAssignments(event);
       setActive(true);
-      setVoiceStatus("群聊已启动，正在生成主持人开场...");
+      setVoiceStatus(event.processing_attachments
+        ? "群聊已启动，正在理解图片内容..."
+        : "群聊已启动，正在生成主持人开场...");
       updatePodcastControl();
+      return;
+    }
+    if (event.type === "podcast.attachments.processing") {
+      setStatus("群聊已启动，正在理解附件内容。");
+      setVoiceStatus("正在理解图片内容，请稍候...");
+      return;
+    }
+    if (event.type === "podcast.attachments.ready") {
+      setStatus("群聊进行中，点屏幕空白处可插话。");
+      setVoiceStatus("图片理解完成，正在生成主持人开场...");
       return;
     }
     if (event.type === "podcast.host.updated") {
@@ -1710,7 +1771,7 @@
     }
     if (event.type === "podcast.input.accepted") {
       resetForUserInput(eventGeneration(event));
-      if (event.text && event.text !== podcast.pendingInputText) addBubble("you", event.text || "");
+      if (event.text && !podcast.pendingInputText) addBubble("you", event.text || "");
       podcast.pendingInputText = "";
       setVoiceStatus("已收到你的插话，主持人准备回应...");
       return;
@@ -2533,7 +2594,7 @@
   function shouldIgnoreOverlayTap(target) {
     if (!target || typeof target.closest !== "function") return false;
     return Boolean(
-      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-round-control, .podcast-action-chip, .podcast-notice, .group-member-menu, .group-participant, .group-agent-grid")
+      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-round-control, .podcast-action-chip, .podcast-composer, .podcast-notice, .group-member-menu, .group-participant, .group-agent-grid")
       || target.closest(".voice-circle")
     );
   }
@@ -2784,27 +2845,200 @@
     try { rec.stop(); } catch (_) {}
   }
 
+  function podcastDocumentError(file) {
+    var name = String(file && file.name || "").toLowerCase();
+    var supported = GROUP_DOCUMENT_SUFFIXES.some(function (suffix) { return name.endsWith(suffix); });
+    if (!supported) return "仅支持图片、PDF、Word、TXT、Markdown、CSV 和 JSON";
+    if (!file.size) return "文件为空";
+    if (file.size > MAX_GROUP_DOCUMENT_BYTES) return "单个文件不能超过 50 MB";
+    return "";
+  }
+
+  function setPodcastInputHint(message, isError) {
+    var hint = $("podcastInputHint");
+    if (!hint) return;
+    hint.textContent = message || "支持图片、PDF、Word 和文本文件，单个不超过 50 MB";
+    hint.classList.toggle("is-error", Boolean(isError));
+  }
+
+  function renderPodcastDocuments() {
+    var list = $("podcastAttachmentList");
+    if (!list) return;
+    list.innerHTML = "";
+    list.hidden = podcast.documents.length === 0;
+    podcast.documents.forEach(function (item) {
+      var chip = root.document.createElement("div");
+      chip.className = "podcast-document-chip" + (item.error ? " is-error" : "");
+      chip.innerHTML = '<span class="podcast-document-name">' + escapeHtml(item.file.name) + '</span>'
+        + '<span class="podcast-document-meta">' + escapeHtml(item.error || formatPodcastBytes(item.file.size)) + '</span>'
+        + '<button class="podcast-document-remove" type="button" aria-label="移除 ' + escapeHtml(item.file.name) + '">×</button>';
+      chip.querySelector("button").onclick = function () {
+        podcast.documents = podcast.documents.filter(function (candidate) { return candidate.id !== item.id; });
+        validatePodcastDocumentSet();
+        renderPodcastDocuments();
+      };
+      list.appendChild(chip);
+    });
+  }
+
+  function addPodcastDocuments(files) {
+    Array.prototype.forEach.call(files || [], function (file) {
+      if (podcast.documents.length >= MAX_GROUP_DOCUMENTS) {
+        setPodcastInputHint("每次最多上传 5 个附件", true);
+        return;
+      }
+      podcast.documents.push({
+        id: String(Date.now()) + "-" + Math.random().toString(16).slice(2),
+        file: file,
+        error: podcastDocumentError(file),
+      });
+    });
+    validatePodcastDocumentSet();
+    renderPodcastDocuments();
+  }
+
+  function validatePodcastDocumentSet() {
+    var total = podcast.documents.reduce(function (sum, item) { return sum + item.file.size; }, 0);
+    podcast.documents.forEach(function (item) {
+      item.error = podcastDocumentError(item.file);
+      if (!item.error && total > MAX_GROUP_DOCUMENT_TOTAL_BYTES) item.error = "附件总大小超过 250 MB";
+    });
+    var firstError = podcast.documents.find(function (item) { return item.error; });
+    setPodcastInputHint(firstError ? firstError.error : "", Boolean(firstError));
+  }
+
+  function formatPodcastBytes(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function podcastFileToBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var value = String(reader.result || "");
+        resolve(value.indexOf(",") >= 0 ? value.split(",", 2)[1] : value);
+      };
+      reader.onerror = function () { reject(reader.error || new Error("读取附件失败")); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function buildPodcastDocumentPayloads() {
+    var payloads = [];
+    for (var index = 0; index < podcast.documents.length; index++) {
+      var file = podcast.documents[index].file;
+      payloads.push({
+        name: file.name,
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        data: await podcastFileToBase64(file),
+      });
+    }
+    return payloads;
+  }
+
+  function clearPodcastDocuments() {
+    podcast.documents = [];
+    var picker = $("podcastAttachmentInput");
+    if (picker) picker.value = "";
+    renderPodcastDocuments();
+    setPodcastInputHint("", false);
+  }
+
+  function clearPodcastComposer() {
+    var input = $("podcastTextInput");
+    if (input) input.value = "";
+    resizePodcastTextInput();
+    clearPodcastDocuments();
+  }
+
+  async function submitPodcastComposer(event) {
+    if (event) event.preventDefault();
+    if (podcast.inputSending || podcast.starting) return;
+    var input = $("podcastTextInput");
+    var text = String(input && input.value || "").trim();
+    if (!text && !podcast.documents.length) return;
+    validatePodcastDocumentSet();
+    if (podcast.documents.some(function (item) { return item.error; })) return;
+    podcast.inputSending = true;
+    updatePodcastComposer();
+    try {
+      var attachments = await buildPodcastDocumentPayloads();
+      var names = podcast.documents.map(function (item) { return item.file.name; });
+      if (podcast.runId) {
+        podcast.playbackPausedForInput = true;
+        stopCurrentPlayback(true);
+        var submitted = await submitInterjection(
+          text || "请结合上传的附件继续讨论。",
+          attachments,
+          text + (names.length ? (text ? "\n\n" : "") + "附件：" + names.join("、") : "")
+        );
+        if (submitted) clearPodcastComposer();
+      } else {
+        var topic = text || "请围绕上传的附件展开讨论";
+        var topicInput = $("podcastTopic");
+        if (topicInput) topicInput.value = topic;
+        await startPodcast(topic, attachments);
+        if (podcast.runId) clearPodcastComposer();
+      }
+    } catch (err) {
+      setPodcastInputHint("发送失败：" + (err && err.message || err), true);
+    } finally {
+      podcast.inputSending = false;
+      updatePodcastComposer();
+    }
+  }
+
   async function submitInterjection(text) {
+    var attachments = arguments[1] || [];
+    var displayText = arguments[2] || "";
     if (!text || !podcast.runId) {
       podcast.playbackPausedForInput = false;
       pumpPlayback();
-      return;
+      return false;
     }
     podcast.pendingInputText = text;
-    addBubble("you", text);
+    addBubble("you", displayText || text);
     setVoiceStatus("正在发送你的插话...");
     try {
-      await apiSafe("/api/voice/podcast/input", { run_id: podcast.runId, text: text });
+      await apiSafe("/api/voice/podcast/input", { run_id: podcast.runId, text: text, attachments: attachments || [] });
+      return true;
     } catch (err) {
       podcast.pendingInputText = "";
       podcast.playbackPausedForInput = false;
       setStatus("插话发送失败：" + (err && err.message || err));
       setVoiceStatus("插话发送失败，继续播放群聊。");
       pumpPlayback();
+      return false;
     }
   }
 
   function init() {
+    var podcastComposer = $("podcastComposer");
+    if (podcastComposer) podcastComposer.addEventListener("submit", submitPodcastComposer);
+    var podcastAttach = $("podcastAttachBtn");
+    if (podcastAttach) podcastAttach.onclick = function () {
+      var picker = $("podcastAttachmentInput");
+      if (picker) picker.click();
+    };
+    var podcastPicker = $("podcastAttachmentInput");
+    if (podcastPicker) podcastPicker.onchange = function () {
+      addPodcastDocuments(podcastPicker.files);
+      podcastPicker.value = "";
+    };
+    var podcastTextInput = $("podcastTextInput");
+    if (podcastTextInput) {
+      podcastTextInput.addEventListener("input", resizePodcastTextInput);
+      podcastTextInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          submitPodcastComposer();
+        }
+      });
+      resizePodcastTextInput();
+    }
     var btn = $("voicePodcastBtn");
     if (btn) btn.onclick = function () {
       if (podcast.mode) {
@@ -2934,6 +3168,7 @@
     renderAgents();
     renderParticipants();
     restorePodcastSurface();
+    if (root.addEventListener) root.addEventListener("resize", updatePodcastComposer);
     if (root.document) {
       root.document.addEventListener("visibilitychange", function () {
         if (root.document.visibilityState === "visible") restoreAndResumePodcast();
