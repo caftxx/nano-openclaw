@@ -86,7 +86,8 @@ def test_group_chat_voice_action_is_integrated_into_the_composer():
     assert 'id="podcastCircle"' in composer
     assert '文字 · 附件 · 语音' in composer
     assert 'class="podcast-topic-suggestion"' in html
-    assert 'var gridMembers = [systemParticipants()[0]].concat(agentParticipants());' in source
+    assert 'var gridMembers = [systemParticipants()[1]].concat(agentParticipants());' in source
+    assert 'id="podcastMemberCount">1</strong>' in html
     assert 'className = "group-participant group-stage-participant group-empty"' not in source
     assert "grid-template-columns: 44px minmax(0, 1fr) 44px 44px;" in styles
 
@@ -197,6 +198,34 @@ def test_group_voice_uses_the_composer_button_without_ambient_overlay_clicks():
     assert "shouldIgnoreAmbientPodcastTap" not in podcast_circle_body
     assert "else if (explicitTopicValue()) startPodcast();" in podcast_circle_body
     assert 'var overlay = $("voiceOverlay");' not in init_body
+
+
+def test_group_stage_renders_host_and_all_agent_roles():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    body = _function_body(source, "function renderParticipants()", "function closeMemberMenu()")
+
+    assert "var gridMembers = [systemParticipants()[1]].concat(agentParticipants());" in body
+    assert "var gridMembers = [systemParticipants()[0]].concat(agentParticipants());" not in body
+    assert "var gridContent = root.document.createDocumentFragment();" in body
+    assert "renderMemberButton(gridContent, member, { stage: true });" in body
+    assert "gridEl.replaceChildren(gridContent);" in body
+    assert 'member.kind !== "add"' in body
+
+
+def test_group_voice_button_toggles_active_capture_off():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    cancel_body = _function_body(source, "function cancelPodcastCapture()", "function podcastDocumentError")
+    init_body = _function_body(source, "function init()", "if (document.readyState")
+    circle_body = init_body[init_body.index('var podcastCircle = $("podcastCircle");'):init_body.index("function restoreAndResumePodcast()")]
+
+    assert "if (podcast.capturingTopic)" in cancel_body
+    assert "stopTopicCapture();" in cancel_body
+    assert "if (podcast.capturingInput)" in cancel_body
+    assert "stopInterjectionCapture();" in cancel_body
+    assert "podcast.playbackPausedForInput = false;" in cancel_body
+    assert "pumpPlayback();" in cancel_body
+    assert "if (cancelPodcastCapture()) return;" in circle_body
+    assert circle_body.index("if (cancelPodcastCapture()) return;") < circle_body.index("if (podcast.runId) startInterjectionCapture();")
 
 
 def test_podcast_completion_state_has_clear_restart_action():

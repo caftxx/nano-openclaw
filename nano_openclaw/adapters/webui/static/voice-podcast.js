@@ -648,13 +648,14 @@
       });
     }
     if (!gridEl) return;
-    gridEl.innerHTML = "";
-    var gridMembers = [systemParticipants()[0]].concat(agentParticipants());
+    var gridMembers = [systemParticipants()[1]].concat(agentParticipants());
+    var gridContent = root.document.createDocumentFragment();
     gridMembers.forEach(function (member) {
-      renderMemberButton(gridEl, member, { stage: true });
+      renderMemberButton(gridContent, member, { stage: true });
     });
+    gridEl.replaceChildren(gridContent);
     var count = $("podcastMemberCount");
-    if (count) count.textContent = String(podcast.agents.length + 1);
+    if (count) count.textContent = String(gridMembers.filter(function (member) { return member.kind !== "add"; }).length);
   }
   function closeMemberMenu() {
     var menu = $("groupMemberMenu");
@@ -2859,6 +2860,25 @@
     try { rec.stop(); } catch (_) {}
   }
 
+  function cancelPodcastCapture() {
+    if (podcast.capturingTopic) {
+      stopTopicCapture();
+      podcast.topicCaptureArmed = true;
+      setStatus("已退出语音输入，可输入话题或再次点击麦克风。");
+      setVoiceStatus("支持文字、附件，或点击麦克风说话。");
+      return true;
+    }
+    if (podcast.capturingInput) {
+      stopInterjectionCapture();
+      podcast.playbackPausedForInput = false;
+      setStatus("已退出语音输入，群聊继续。");
+      setVoiceStatus("群聊进行中，可输入观点或点击麦克风插话。");
+      pumpPlayback();
+      return true;
+    }
+    return false;
+  }
+
   function podcastDocumentError(file) {
     var name = String(file && file.name || "").toLowerCase();
     var supported = GROUP_DOCUMENT_SUFFIXES.some(function (suffix) { return name.endsWith(suffix); });
@@ -3175,6 +3195,7 @@
       if (!podcast.mode) return;
       event.stopPropagation();
       event.preventDefault();
+      if (cancelPodcastCapture()) return;
       if (podcast.runId) startInterjectionCapture();
       else if (explicitTopicValue()) startPodcast();
       else startTopicCapture();
