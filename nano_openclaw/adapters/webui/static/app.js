@@ -262,6 +262,14 @@ function isCurrentSessionEvent(event) {
   return !event.session_id || event.session_id === currentSessionId();
 }
 
+function sessionUpdateCanActivate(event) {
+  const incomingSessionId = event.session?.session_id || null;
+  const currentId = currentSessionId();
+  if (!incomingSessionId || !currentId || incomingSessionId === currentId) return true;
+  if (event.activate === true) return true;
+  return event.deleted_session_id === currentId;
+}
+
 function updateSendBtn() {
   const btn = $("sendBtn");
   state.activeTurnId = activeTurnIdForCurrentSession();
@@ -286,6 +294,12 @@ function handleEvent(event) {
     case "session.updated":
       const previousSessionId = state.currentSession?.session_id || null;
       applySessionPageFromPayload(event);
+      if (!sessionUpdateCanActivate(event)) {
+        syncSessionActiveTurn(event.session);
+        renderSessions();
+        updateSendBtn();
+        break;
+      }
       state.currentSession = event.session || state.currentSession;
       syncSessionActiveTurn(state.currentSession);
       if (window.PodcastMode) window.PodcastMode.onSessionChanged(state.currentSession?.session_id || "");

@@ -413,6 +413,7 @@ def test_webui_push_adapter_maps_session_changed_to_session_updated():
 
         assert payloads[0]["type"] == "session.updated"
         assert payloads[0]["session"]["session_id"] == session.session_id
+        assert payloads[0]["activate"] is False
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -439,6 +440,7 @@ def test_webui_push_adapter_keeps_current_session_on_foreign_session_changed():
 
         assert payloads[0]["type"] == "session.updated"
         assert payloads[0]["session"]["session_id"] == current.session_id
+        assert payloads[0]["activate"] is False
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -712,6 +714,7 @@ def test_webui_session_delete_aborts_active_turn_before_delete(tmp_path):
     assert backend.aborted == ["turn-1"]
     assert backend.deleted == [session.session_id]
     assert updated["type"] == "session.updated"
+    assert updated["activate"] is True
 
 
 def test_web_session_select_uses_store_id_not_transcript_header_id():

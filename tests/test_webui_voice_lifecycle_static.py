@@ -37,6 +37,20 @@ def test_webui_rest_session_switch_syncs_websocket_current_session():
     assert "syncWebSocketSession(session);" in select_body
 
 
+def test_foreign_session_update_does_not_replace_this_clients_current_session():
+    source = APP_JS.read_text(encoding="utf-8")
+    guard = _function_body(source, "function sessionUpdateCanActivate(event)", "function updateSendBtn()")
+    update = _function_body(source, 'case "session.updated":', 'case "chat.accepted":')
+
+    assert "incomingSessionId === currentId" in guard
+    assert "event.activate === true" in guard
+    assert "event.deleted_session_id === currentId" in guard
+    assert "if (!sessionUpdateCanActivate(event))" in update
+    assert update.index("if (!sessionUpdateCanActivate(event))") < update.index("state.currentSession = event.session")
+    assert "syncSessionActiveTurn(event.session);" in update
+    assert "PodcastMode.onSessionChanged" not in update.split("break;", 1)[0]
+
+
 def test_podcast_interjection_waits_for_acceptance_before_generation_reset():
     source = PODCAST_JS.read_text(encoding="utf-8")
     body = _function_body(source, "async function submitInterjection(text, attachments, displayText, requestContext)", "function init()")

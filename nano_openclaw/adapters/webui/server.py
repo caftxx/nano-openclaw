@@ -390,7 +390,7 @@ def create_app(
             else:
                 current = manager.get_or_load(None)
             current_session_id = current.session_id
-            await emit({"type": "session.updated", "session": _session_payload(manager, current), **_session_page(manager)})
+            await emit({"type": "session.updated", "session": _session_payload(manager, current), "activate": True, **_session_page(manager)})
             while True:
                 message = await websocket.receive_json()
                 msg_type = message.get("type")
@@ -446,7 +446,7 @@ def create_app(
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), **_session_page(manager)})
                         continue
                     current_session_id = session.session_id
-                    await emit({"type": "session.updated", "session": _session_payload(manager, session)})
+                    await emit({"type": "session.updated", "session": _session_payload(manager, session), "activate": True})
                 elif msg_type == "session.delete":
                     req = SessionSelectRequest(**message)
                     try:
@@ -475,12 +475,14 @@ def create_app(
                     except NotFoundError as exc:
                         await emit({"type": "session.error", "session_id": req.session_id, "message": str(exc), **_session_page(manager)})
                         continue
+                    deleted_current_session = req.session_id == current_session_id
                     session = manager.get_or_load(None)
-                    if req.session_id == current_session_id:
+                    if deleted_current_session:
                         current_session_id = session.session_id
                     await emit({
                         "type": "session.updated",
                         "session": _session_payload(manager, session),
+                        "activate": deleted_current_session,
                         **_session_page(manager),
                         "deleted_session_id": req.session_id,
                     })
@@ -572,6 +574,7 @@ def create_app(
                             await emit({
                                 "type": "session.updated",
                                 "session": _session_payload(manager, refreshed),
+                                "activate": True,
                                 **_session_page(manager),
                             })
                         continue
@@ -595,7 +598,7 @@ def create_app(
                         session = manager.get_or_load(None)
                     current_session_id = session.session_id
                     await emit({"type": "state.updated", **await backend.webui_state()})
-                    await emit({"type": "session.updated", "session": _session_payload(manager, session), **_session_page(manager)})
+                    await emit({"type": "session.updated", "session": _session_payload(manager, session), "activate": True, **_session_page(manager)})
                 else:
                     await emit({"type": "turn.error", "message": f"unknown message type: {msg_type}"})
         except WebSocketDisconnect:
@@ -657,6 +660,7 @@ def _webui_payloads_from_push(
         return [{
             "type": "session.updated",
             "session": _session_payload(manager, session),
+            "activate": False,
             **_session_page(manager),
             "history_changed": bool(event.payload.get("history_changed")),
         }]
