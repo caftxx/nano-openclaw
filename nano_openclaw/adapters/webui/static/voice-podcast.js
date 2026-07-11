@@ -109,6 +109,8 @@
     noticeTimer: null,
     documents: [],
     inputSending: false,
+    composerEpoch: 0,
+    startFailures: new Map(),
   };
 
   function $(id) { return root.document && root.document.getElementById(id); }
@@ -229,6 +231,11 @@
     return Boolean(podcast.mode || podcast.runId || podcast.topicCaptureArmed || podcast.agents.length || podcast.starting || podcast.capturingTopic);
   }
   function resetPodcastRuntimeForSession(sessionId) {
+    podcast.composerEpoch++;
+    podcast.inputSending = false;
+    podcast.starting = false;
+    podcast.pendingInputText = "";
+    clearPodcastComposer();
     stopInterjectionCapture();
     stopTopicCapture();
     invalidatePlaybackWork();
@@ -1513,9 +1520,36 @@
     return "自由讨论";
   }
 
-  async function startPodcast(topicOverride) {
-    var attachments = arguments[1] || [];
+  function podcastRequestContext(runId) {
+    return {
+      epoch: podcast.composerEpoch,
+      sessionId: String(currentSessionId() || podcast.sessionId || ""),
+      runId: String(runId == null ? podcast.runId : runId),
+    };
+  }
+
+  function isPodcastRequestCurrent(context) {
+    return Boolean(
+      context
+      && context.epoch === podcast.composerEpoch
+      && context.sessionId === String(currentSessionId() || podcast.sessionId || "")
+    );
+  }
+
+  function rememberPodcastStartFailure(event) {
+    var runId = String(event && event.run_id || "");
+    if (!runId || !podcast.starting) return;
+    podcast.startFailures.set(runId, String(event.message || "群聊启动失败"));
+    if (podcast.startFailures.size > 20) {
+      podcast.startFailures.delete(podcast.startFailures.keys().next().value);
+    }
+  }
+
+  async function startPodcast(topicOverride, attachments, requestContext) {
+    attachments = attachments || [];
+    requestContext = requestContext || podcastRequestContext("");
     if (podcast.active || podcast.starting) return;
+    if (!isPodcastRequestCurrent(requestContext)) return false;
     if (!podcast.agents.length) addGroupAgent();
     if (!podcast.sessionId) podcast.sessionId = String(currentSessionId() || "");
     podcast.starting = true;
@@ -1527,13 +1561,14 @@
     setVoiceStatus("群聊正在启动...");
     try {
       await loadVoiceConfig();
+      if (!isPodcastRequestCurrent(requestContext)) return false;
       var hostVoice = currentHostVoice();
       podcast.lastTopic = topicValue(topicOverride);
       podcast.rounds = currentPodcastRounds();
       podcast.removedAgentIds = [];
       podcast.removedSpeakerRoles = [];
       var payload = await apiSafe("/api/voice/podcast/start", {
-        session_id: currentSessionId(),
+        session_id: requestContext.sessionId,
         topic: podcast.lastTopic,
         rounds: podcast.rounds,
         host_voice_id: hostVoice.id,
@@ -1551,7 +1586,18 @@
             model_label: agent.modelLabel || "",
           };
         }),
-      });
+      }, attachments.length ? 360000 : 75000);
+      var startFailure = podcast.startFailures.get(String(payload.run_id || ""));
+      podcast.startFailures.delete(String(payload.run_id || ""));
+      if (startFailure) throw new Error(startFailure);
+      if (!isPodcastRequestCurrent(requestContext)) {
+        if (payload.run_id) {
+          try {
+            await apiSafe("/api/voice/podcast/stop", { run_id: payload.run_id }, 75000);
+          } catch (_) {}
+        }
+        return false;
+      }
       podcast.runId = payload.run_id || "";
       podcast.playbackStopped = false;
       podcast.generationDone = false;
@@ -1569,13 +1615,19 @@
       setPodcastMode(true);
       setActive(true);
       clearPodcastDocuments();
+      return true;
     } catch (err) {
-      setStatus("启动失败：" + (err && err.message || err));
-      podcast.topicCaptureArmed = true;
+      if (isPodcastRequestCurrent(requestContext)) {
+        setStatus("启动失败：" + (err && err.message || err));
+        podcast.topicCaptureArmed = true;
+      }
+      return false;
     } finally {
-      podcast.starting = false;
-      setActive(Boolean(podcast.runId));
-      updatePodcastComposer();
+      if (isPodcastRequestCurrent(requestContext)) {
+        podcast.starting = false;
+        setActive(Boolean(podcast.runId));
+        updatePodcastComposer();
+      }
     }
   }
 
@@ -1942,6 +1994,7 @@
       return;
     }
     if (event.type === "podcast.error") {
+      rememberPodcastStartFailure(event);
       podcast.runId = "";
       podcast.generationDone = true;
       podcast.playbackStopped = true;
@@ -2998,37 +3051,45 @@
     if (podcast.documents.some(function (item) { return item.error; })) return;
     podcast.inputSending = true;
     updatePodcastComposer();
+    var requestContext = podcastRequestContext(podcast.runId);
     try {
       var attachments = await buildPodcastDocumentPayloads();
+      if (!isPodcastRequestCurrent(requestContext)) return;
       var names = podcast.documents.map(function (item) { return item.file.name; });
-      if (podcast.runId) {
+      if (requestContext.runId) {
         podcast.playbackPausedForInput = true;
         stopCurrentPlayback(true);
         var submitted = await submitInterjection(
           text || "请结合上传的附件继续讨论。",
           attachments,
-          text + (names.length ? (text ? "\n\n" : "") + "附件：" + names.join("、") : "")
+          text + (names.length ? (text ? "\n\n" : "") + "附件：" + names.join("、") : ""),
+          requestContext
         );
-        if (submitted) clearPodcastComposer();
+        if (submitted && isPodcastRequestCurrent(requestContext)) clearPodcastComposer();
       } else {
         var topic = text || "请围绕上传的附件展开讨论";
         var topicInput = $("podcastTopic");
         if (topicInput) topicInput.value = topic;
-        await startPodcast(topic, attachments);
-        if (podcast.runId) clearPodcastComposer();
+        var started = await startPodcast(topic, attachments, requestContext);
+        if (started && isPodcastRequestCurrent(requestContext)) clearPodcastComposer();
       }
     } catch (err) {
-      setPodcastInputHint("发送失败：" + (err && err.message || err), true);
+      if (isPodcastRequestCurrent(requestContext)) {
+        setPodcastInputHint("发送失败：" + (err && err.message || err), true);
+      }
     } finally {
-      podcast.inputSending = false;
-      updatePodcastComposer();
+      if (isPodcastRequestCurrent(requestContext)) {
+        podcast.inputSending = false;
+        updatePodcastComposer();
+      }
     }
   }
 
-  async function submitInterjection(text) {
-    var attachments = arguments[1] || [];
-    var displayText = arguments[2] || "";
-    if (!text || !podcast.runId) {
+  async function submitInterjection(text, attachments, displayText, requestContext) {
+    attachments = attachments || [];
+    displayText = displayText || "";
+    requestContext = requestContext || podcastRequestContext(podcast.runId);
+    if (!text || !requestContext.runId || !isPodcastRequestCurrent(requestContext)) {
       podcast.playbackPausedForInput = false;
       pumpPlayback();
       return false;
@@ -3037,9 +3098,14 @@
     addBubble("you", displayText || text);
     setVoiceStatus("正在发送你的插话...");
     try {
-      await apiSafe("/api/voice/podcast/input", { run_id: podcast.runId, text: text, attachments: attachments || [] });
+      await apiSafe(
+        "/api/voice/podcast/input",
+        { run_id: requestContext.runId, text: text, attachments: attachments || [] },
+        attachments.length ? 360000 : 75000
+      );
       return true;
     } catch (err) {
+      if (!isPodcastRequestCurrent(requestContext)) return false;
       podcast.pendingInputText = "";
       podcast.playbackPausedForInput = false;
       setStatus("插话发送失败：" + (err && err.message || err));

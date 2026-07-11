@@ -65,6 +65,76 @@ def test_podcast_attachment_context_describes_uploaded_image(monkeypatch):
     assert calls[0]["mime"] == "image/png"
 
 
+def test_podcast_attachment_context_infers_image_mime_from_suffix(monkeypatch):
+    calls = []
+
+    async def fake_describe_image(b64, mime, **kwargs):
+        calls.append((b64, mime))
+        return "一张图片"
+
+    monkeypatch.setattr("nano_openclaw.core.images.describe_image", fake_describe_image)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    )
+    backend = SimpleNamespace(runtime=SimpleNamespace(
+        cfg=SimpleNamespace(image_model="vision-model", model_input=("text",), api="openai"),
+        client=object(),
+        model_id="main-model",
+    ))
+
+    result = asyncio.run(EmbeddedBackend._podcast_attachment_context(
+        backend,
+        "",
+        [{
+            "name": "photo.png",
+            "mime": "application/octet-stream",
+            "size": len(png),
+            "data": base64.b64encode(png).decode(),
+        }],
+    ))
+
+    assert result == "[参考图片：photo.png]\n一张图片"
+    assert calls[0][1] == "image/png"
+
+
+def test_podcast_attachment_context_describes_images_concurrently(monkeypatch):
+    calls = []
+
+    async def fake_describe_image(*args, **kwargs):
+        calls.append(args)
+        while len(calls) < 2:
+            await asyncio.sleep(0.001)
+        return "图片描述"
+
+    monkeypatch.setattr("nano_openclaw.core.images.describe_image", fake_describe_image)
+    monkeypatch.setattr(
+        "nano_openclaw.services.backend_embedded.PODCAST_ATTACHMENT_TIMEOUT_SECONDS",
+        0.2,
+    )
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    )
+    encoded = base64.b64encode(png).decode()
+    backend = SimpleNamespace(runtime=SimpleNamespace(
+        cfg=SimpleNamespace(image_model="vision-model", model_input=("text",), api="openai"),
+        client=object(),
+        model_id="main-model",
+    ))
+
+    result = asyncio.run(EmbeddedBackend._podcast_attachment_context(
+        backend,
+        "",
+        [
+            {"name": "one.png", "mime": "image/png", "size": len(png), "data": encoded},
+            {"name": "two.png", "mime": "image/png", "size": len(png), "data": encoded},
+        ],
+    ))
+
+    assert len(calls) == 2
+    assert "[参考图片：one.png]" in result
+    assert "[参考图片：two.png]" in result
+
+
 def test_podcast_attachment_context_times_out_image_description(monkeypatch):
     async def stalled_describe_image(*args, **kwargs):
         await asyncio.Event().wait()

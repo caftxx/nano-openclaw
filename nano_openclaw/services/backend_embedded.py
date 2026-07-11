@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Any
 
 from nano_openclaw.core.attachments import (
     PromptAttachment,
+    attachment_image_mime,
     decode_attachment_payloads,
     document_context_text,
-    is_image_mime,
 )
 from nano_openclaw.services.event_payload import (
     event_to_payload,
@@ -2776,14 +2776,15 @@ class EmbeddedBackend(Backend):
         raw_attachments: list[dict[str, Any]] | None,
     ) -> str:
         attachments = decode_attachment_payloads(list(raw_attachments or []))
-        documents = [item for item in attachments if not is_image_mime(item.mime)]
+        classified = [(item, attachment_image_mime(item)) for item in attachments]
+        image_attachments = [(item, mime) for item, mime in classified if mime is not None]
+        documents = [item for item, mime in classified if mime is None]
         parts: list[str] = []
         document_text = document_context_text(text, documents)
         if document_text:
             parts.append(document_text)
 
-        images = [item for item in attachments if is_image_mime(item.mime)]
-        if not images:
+        if not image_attachments:
             return "\n\n".join(parts)
 
         from nano_openclaw.core.images import describe_image, load_image_bytes
@@ -2795,27 +2796,34 @@ class EmbeddedBackend(Backend):
         if not image_model:
             raise ValueError("当前未配置可理解图片的模型，请先在 Runtime 中选择 ImageModel")
 
-        for attachment in images:
-            b64, mime = load_image_bytes(attachment.data, attachment.mime)
-            try:
-                description = await asyncio.wait_for(
-                    describe_image(
-                        b64,
-                        mime,
-                        client=self.runtime.client,
-                        model=image_model,
-                        api=cfg.api,
-                    ),
-                    timeout=PODCAST_ATTACHMENT_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError as exc:
-                raise ValueError(
-                    f"图片理解超时（{PODCAST_ATTACHMENT_TIMEOUT_SECONDS} 秒）：{attachment.name}"
-                ) from exc
+        async def describe_attachment(attachment: PromptAttachment, inferred_mime: str) -> str:
+            b64, mime = load_image_bytes(attachment.data, inferred_mime)
+            description = await describe_image(
+                b64,
+                mime,
+                client=self.runtime.client,
+                model=image_model,
+                api=cfg.api,
+            )
             description = description.strip()
             if not description:
                 raise ValueError(f"图片未返回可用描述：{attachment.name}")
-            parts.append(f"[参考图片：{attachment.name}]\n{description}")
+            return f"[参考图片：{attachment.name}]\n{description}"
+
+        try:
+            image_parts = await asyncio.wait_for(
+                asyncio.gather(*(
+                    describe_attachment(attachment, mime)
+                    for attachment, mime in image_attachments
+                )),
+                timeout=PODCAST_ATTACHMENT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            names = "、".join(attachment.name for attachment, _mime in image_attachments)
+            raise ValueError(
+                f"图片理解超时（总计 {PODCAST_ATTACHMENT_TIMEOUT_SECONDS} 秒）：{names}"
+            ) from exc
+        parts.extend(image_parts)
         return "\n\n".join(parts)
 
     def _podcast_model_runtime(self, model_ref: str) -> tuple[Any, Any, bool]:

@@ -39,10 +39,10 @@ def test_webui_rest_session_switch_syncs_websocket_current_session():
 
 def test_podcast_interjection_waits_for_acceptance_before_generation_reset():
     source = PODCAST_JS.read_text(encoding="utf-8")
-    body = _function_body(source, "async function submitInterjection(text)", "function init()")
+    body = _function_body(source, "async function submitInterjection(text, attachments, displayText, requestContext)", "function init()")
 
     assert "resetForUserInput(" not in body
-    assert 'await apiSafe("/api/voice/podcast/input"' in body
+    assert '"/api/voice/podcast/input"' in body
     assert 'podcast.pendingInputText = "";' in body
 
 
@@ -50,7 +50,11 @@ def test_group_chat_composer_supports_typed_text_and_documents():
     source = PODCAST_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    submit_body = _function_body(source, "async function submitPodcastComposer(event)", "async function submitInterjection(text)")
+    submit_body = _function_body(
+        source,
+        "async function submitPodcastComposer(event)",
+        "async function submitInterjection(text, attachments, displayText, requestContext)",
+    )
 
     assert 'id="podcastTextInput"' in html
     assert 'id="podcastAttachmentInput"' in html
@@ -58,7 +62,7 @@ def test_group_chat_composer_supports_typed_text_and_documents():
     assert ".png,.jpg,.jpeg,.gif,.webp" in html
     assert "支持图片、PDF、Word 和文本文件，单个不超过 50 MB" in html
     assert 'await submitInterjection(' in submit_body
-    assert 'await startPodcast(topic, attachments);' in submit_body
+    assert "await startPodcast(topic, attachments, requestContext);" in submit_body
     assert 'attachments: attachments || []' in source
     assert ".podcast-composer" in styles
 
@@ -94,7 +98,11 @@ def test_group_chat_voice_action_is_integrated_into_the_composer():
 
 def test_group_chat_image_start_returns_before_visual_processing_finishes():
     source = PODCAST_JS.read_text(encoding="utf-8")
-    start_body = _function_body(source, "async function startPodcast(topicOverride)", "async function stopPodcast")
+    start_body = _function_body(
+        source,
+        "async function startPodcast(topicOverride, attachments, requestContext)",
+        "async function stopPodcast",
+    )
     event_body = _function_body(source, "function onEvent(event)", "function stopSpeech()")
     api_body = _function_body(source, "async function apiSafe(path, body, timeoutMs)", "async function apiGetSafe(path)")
 
@@ -103,6 +111,63 @@ def test_group_chat_image_start_returns_before_visual_processing_finishes():
     assert 'event.type === "podcast.attachments.ready"' in event_body
     assert "new AbortController()" in api_body
     assert 'throw new Error("请求超时，请重试")' in api_body
+
+
+def test_group_chat_session_switch_invalidates_pending_attachment_submission():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    reset_body = _function_body(
+        source,
+        "function resetPodcastRuntimeForSession(sessionId)",
+        "function handleSessionChanged(sessionId)",
+    )
+    submit_body = _function_body(
+        source,
+        "async function submitPodcastComposer(event)",
+        "async function submitInterjection(text, attachments, displayText, requestContext)",
+    )
+
+    assert "podcast.composerEpoch++;" in reset_body
+    assert "podcast.inputSending = false;" in reset_body
+    assert "clearPodcastComposer();" in reset_body
+    assert "var requestContext = podcastRequestContext(podcast.runId);" in submit_body
+    assert "if (!isPodcastRequestCurrent(requestContext)) return;" in submit_body
+    assert "requestContext.runId" in submit_body
+
+
+def test_group_chat_attachment_requests_cover_backend_processing_deadline():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    start_body = _function_body(
+        source,
+        "async function startPodcast(topicOverride, attachments, requestContext)",
+        "async function stopPodcast",
+    )
+    input_body = _function_body(
+        source,
+        "async function submitInterjection(text, attachments, displayText, requestContext)",
+        "function init()",
+    )
+
+    assert "attachments.length ? 360000 : 75000" in start_body
+    assert "attachments.length ? 360000 : 75000" in input_body
+
+
+def test_group_chat_start_response_cannot_revive_failed_background_run():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    start_body = _function_body(
+        source,
+        "async function startPodcast(topicOverride, attachments, requestContext)",
+        "async function stopPodcast",
+    )
+    error_body = _function_body(
+        source,
+        'if (event.type === "podcast.error")',
+        "function stopSpeech()",
+    )
+
+    assert "podcast.startFailures.get" in start_body
+    assert "if (startFailure) throw new Error(startFailure);" in start_body
+    assert 'await apiSafe("/api/voice/podcast/stop", { run_id: payload.run_id }, 75000);' in start_body
+    assert "rememberPodcastStartFailure(event);" in error_body
 
 
 def test_web_composer_actions_bottom_align_with_multiline_input():
@@ -118,7 +183,11 @@ def test_web_composer_actions_bottom_align_with_multiline_input():
 def test_podcast_start_resets_caption_timeline_for_new_run():
     source = PODCAST_JS.read_text(encoding="utf-8")
     reset_body = _function_body(source, "function resetCaptionsForRun(topic)", "function resetForUserInput")
-    start_body = _function_body(source, "async function startPodcast(topicOverride)", "async function stopPodcast")
+    start_body = _function_body(
+        source,
+        "async function startPodcast(topicOverride, attachments, requestContext)",
+        "async function stopPodcast",
+    )
     event_body = _function_body(source, 'if (event.type === "podcast.started")', 'if (event.type === "podcast.host.updated")')
 
     assert 'captions.querySelectorAll(".vbubble")' in reset_body

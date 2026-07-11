@@ -80,6 +80,31 @@ def test_extract_docx_document_for_group_chat():
     )) == "Product brief\nLaunch in July"
 
 
+def test_extract_docx_rejects_oversized_document_xml(monkeypatch):
+    monkeypatch.setattr(
+        "nano_openclaw.core.attachments.MAX_DOCX_DOCUMENT_XML_BYTES",
+        100,
+    )
+    xml = (
+        b'<?xml version="1.0"?><w:document '
+        b'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        + b"<w:p><w:r><w:t>content</w:t></w:r></w:p>" * 20
+        + b"</w:document>"
+    )
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", xml)
+    data = buffer.getvalue()
+
+    with pytest.raises(ValueError, match="DOCX document XML is too large"):
+        extract_document_text(PromptAttachment(
+            "oversized.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            len(data),
+            data,
+        ))
+
+
 def test_image_attachment_describe_error_keeps_visible_context(monkeypatch):
     async def fail_describe(*_args, **_kwargs):
         raise RuntimeError("vision service rejected image")

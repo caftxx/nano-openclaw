@@ -28,6 +28,13 @@ IMAGE_MIME_TYPES = frozenset({
     "image/gif",
     "image/webp",
 })
+IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 DOCUMENT_TEXT_MIME_TYPES = frozenset({
     "application/json",
@@ -38,6 +45,7 @@ DOCUMENT_TEXT_MIME_TYPES = frozenset({
 })
 DOCUMENT_TEXT_SUFFIXES = frozenset({".csv", ".json", ".md", ".txt"})
 MAX_EXTRACTED_DOCUMENT_CHARS = 12_000
+MAX_DOCX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
 
 
 @dataclass
@@ -118,6 +126,14 @@ def is_image_mime(mime: str) -> bool:
     return _normalise_mime(mime) in IMAGE_MIME_TYPES
 
 
+def attachment_image_mime(attachment: PromptAttachment) -> str | None:
+    """Return a supported image MIME, falling back to the safe filename suffix."""
+    mime = _normalise_mime(attachment.mime)
+    if mime in IMAGE_MIME_TYPES:
+        return mime
+    return IMAGE_MIME_BY_SUFFIX.get(Path(attachment.name).suffix.lower())
+
+
 def extract_document_text(attachment: PromptAttachment) -> str:
     """Extract bounded plain text from a document uploaded to group chat."""
     mime = _normalise_mime(attachment.mime)
@@ -172,7 +188,21 @@ def _extract_pdf_text(data: bytes) -> str:
 def _extract_docx_text(data: bytes) -> str:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            document_xml = archive.read("word/document.xml")
+            info = archive.getinfo("word/document.xml")
+            if info.file_size > MAX_DOCX_DOCUMENT_XML_BYTES:
+                raise ValueError(
+                    "DOCX document XML is too large: "
+                    f"{info.file_size} > {MAX_DOCX_DOCUMENT_XML_BYTES}"
+                )
+            with archive.open(info) as document:
+                document_xml = document.read(MAX_DOCX_DOCUMENT_XML_BYTES + 1)
+            if len(document_xml) > MAX_DOCX_DOCUMENT_XML_BYTES:
+                raise ValueError(
+                    "DOCX document XML is too large: "
+                    f"> {MAX_DOCX_DOCUMENT_XML_BYTES}"
+                )
+    except ValueError:
+        raise
     except (KeyError, OSError, zipfile.BadZipFile) as exc:
         raise ValueError("could not read DOCX document") from exc
 
