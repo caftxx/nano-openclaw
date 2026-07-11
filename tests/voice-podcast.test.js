@@ -92,23 +92,3 @@ test("podcast done text falls back to streamed deltas", () => {
     "最终观点",
   );
 });
-
-test("podcast overlay taps allow captions but ignore controls", () => {
-  function target(matchedSelector) {
-    return {
-      closest(selector) {
-        return selector.split(",").map((item) => item.trim()).includes(matchedSelector) ? {} : null;
-      },
-    };
-  }
-
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".voice-captions")), false);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".podcast-stage-stop")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".voice-footer")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".voice-circle")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".group-participant")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".group-member-menu")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".group-agent-grid")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".podcast-action-chip")), true);
-  assert.strictEqual(PodcastMode._helpers.shouldIgnoreOverlayTap(target(".podcast-notice")), true);
-});

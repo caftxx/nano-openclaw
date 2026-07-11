@@ -180,6 +180,34 @@ test("MIC_FINAL 空文本：原地继续聆听不发送", () => {
   assert.ok(!has(r.cmds, "chatSend"));
 });
 
+test("统一提交：暂停态文字和附件进入语音回复生命周期", () => {
+  const attachments = [{ name: "brief.pdf", mime: "application/pdf", data: "AA==" }];
+  const r = replay([
+    { type: "OPEN", autoStart: false },
+    { type: "SUBMIT_MESSAGE", text: "总结附件", attachments },
+  ]);
+  assert.strictEqual(r.model.state, "thinking");
+  assert.ok(has(r.cmds, "primeAudio"));
+  assert.ok(has(r.cmds, "stopMic"));
+  const sent = get(r.cmds, "chatSend");
+  assert.strictEqual(sent.text, "总结附件");
+  assert.deepStrictEqual(sent.attachments, attachments);
+});
+
+test("模式切换：取消活动 turn、停止麦克风和朗读并停在暂停态", () => {
+  const r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "你好" },
+    { type: "CHAT_ACCEPTED", turnId: "turn-1" },
+    { type: "TEXT_DELTA", text: "你好，" },
+    { type: "CANCEL_AND_PAUSE", externalTurnOpen: true, externalTurnId: "turn-1" },
+  ]);
+  assert.strictEqual(r.model.state, "paused");
+  assert.strictEqual(get(r.cmds, "cancelTurn").turnId, "turn-1");
+  assert.ok(has(r.cmds, "stopMic"));
+  assert.ok(has(r.cmds, "stopSpeech"));
+});
+
 test("MIC_INTERIM / FLUSH_EMPTY：仅更新状态行文案", () => {
   let r = replay([...BOOT, { type: "MIC_INTERIM", text: "导航去" }]);
   assert.strictEqual(r.model.ctx.statusOverride, "识别中：导航去");

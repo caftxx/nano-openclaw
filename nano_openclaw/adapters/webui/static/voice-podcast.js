@@ -204,8 +204,8 @@
     if (!sid) return;
     if (!sessionId && !podcast.sessionId) podcast.sessionId = sid;
     if (hasLocalPodcastState()) {
-      if (podcast.mode || podcast.runId) sessionSet(MODE_KEY, "1", sid);
-      else sessionRemove(MODE_KEY, sid);
+      // MODE_KEY is migration-only. Membership/run state is the canonical mode signal.
+      sessionRemove(MODE_KEY, sid);
       if (podcast.runId) sessionSet(RUN_KEY, podcast.runId, sid);
       else sessionRemove(RUN_KEY, sid);
       if (podcast.agents.length) sessionSet(AGENTS_KEY, JSON.stringify(podcast.agents || []), sid);
@@ -228,7 +228,7 @@
     return Boolean(sessionGet(MODE_KEY, sessionId) || sessionGet(RUN_KEY, sessionId) || sessionGet(AGENTS_KEY, sessionId));
   }
   function hasLocalPodcastState() {
-    return Boolean(podcast.mode || podcast.runId || podcast.topicCaptureArmed || podcast.agents.length || podcast.starting || podcast.capturingTopic);
+    return Boolean(podcast.runId || podcast.topicCaptureArmed || podcast.agents.length || podcast.starting || podcast.capturingTopic);
   }
   function resetPodcastRuntimeForSession(sessionId) {
     podcast.composerEpoch++;
@@ -269,7 +269,7 @@
     podcast.generationDone = false;
     setPodcastMode(false, { save: false });
     setActive(false);
-    setVoiceStatus("点击麦克风，开始连续语音对话");
+    setVoiceStatus("支持文字、附件，或点击麦克风连续对话");
     renderAgents();
     renderParticipants();
     updatePodcastControl();
@@ -278,6 +278,9 @@
   function handleSessionChanged(sessionId) {
     var sid = String(sessionId || currentSessionId() || "");
     if (!sid || podcast.sessionId === sid) return;
+    if (root.VoiceMode && typeof root.VoiceMode.onSessionChanged === "function") {
+      try { root.VoiceMode.onSessionChanged(sid); } catch (_) {}
+    }
     if (podcast.sessionId) savePodcastState(podcast.sessionId);
     if (hasPodcastState(sid)) {
       resetPodcastRuntimeForSession(sid);
@@ -313,8 +316,10 @@
         podcast.hostModelLabel = savedHostModel.label || "";
       }
     }
-    if (!sessionGet(MODE_KEY, sid) && !podcast.mode && !podcast.runId && !podcast.agents.length) {
+    if (!podcast.runId && !podcast.agents.length) {
+      sessionRemove(MODE_KEY, sid);
       renderParticipants();
+      setPodcastMode(false);
       return;
     }
     var savedRunId = sessionGet(RUN_KEY, sid);
@@ -323,7 +328,6 @@
       podcast.playbackStopped = false;
       podcast.generationDone = false;
     }
-    var savedMode = Boolean(sessionGet(MODE_KEY, sid));
     if (podcast.runId) {
       setPodcastMode(true);
       setActive(true);
@@ -331,7 +335,7 @@
         setStatus("群聊进行中，可在输入框发言或点击麦克风插话。");
         setVoiceStatus("群聊已恢复，等待后续内容...");
       }
-    } else if (savedMode && podcast.agents.length) {
+    } else if (podcast.agents.length) {
       setPodcastMode(true);
       podcast.topicCaptureArmed = true;
       setActive(false);
@@ -340,9 +344,9 @@
     } else {
       podcast.topicCaptureArmed = false;
       setPodcastMode(false);
-      if (savedMode) sessionRemove(MODE_KEY, sid);
       setActive(false);
     }
+    sessionRemove(MODE_KEY, sid);
     renderAgents();
     renderParticipants();
     syncRoundInputs(podcast.rounds);
@@ -508,7 +512,7 @@
   }
 
   function isGroupMode() {
-    return podcast.mode || Boolean(podcast.runId);
+    return Boolean(podcast.agents.length || podcast.runId);
   }
   function systemParticipantName() {
     return isGroupMode() ? "主持人" : "Assistant";
@@ -1241,8 +1245,11 @@
     setAgentEditor(false);
     setDialog(false);
     setPodcastMode(false);
+    if (root.VoiceMode && typeof root.VoiceMode.openPaused === "function") {
+      try { root.VoiceMode.openPaused(); } catch (_) {}
+    }
     setStatus("");
-    setVoiceStatus("点击麦克风，开始连续语音对话");
+    setVoiceStatus("支持文字、附件，或点击麦克风连续对话");
     renderAgents();
     renderParticipants();
     savePodcastState();
@@ -1318,8 +1325,6 @@
     if (el) el.textContent = text || "";
   }
   function setVoiceStatus(text) {
-    var el = $("voiceStatus");
-    if (el) el.textContent = text || "";
     var podcastStatus = $("podcastModeStatus");
     if (podcastStatus) podcastStatus.textContent = text || "";
   }
@@ -1351,13 +1356,24 @@
   }
   function setPodcastMode(on, options) {
     options = options || {};
-    var entering = Boolean(on) && !podcast.mode;
-    if (entering) suspendNormalVoiceMode();
-    podcast.mode = Boolean(on);
+    var nextMode = Boolean(on) && isGroupMode();
+    var entering = nextMode && !podcast.mode;
+    if (entering && root.VoiceMode && typeof root.VoiceMode.cancelAndPause === "function") {
+      try { root.VoiceMode.cancelAndPause(); } catch (_) {}
+    }
+    podcast.mode = nextMode;
     var overlay = $("voiceOverlay");
-    if (overlay) overlay.classList.toggle("podcast-mode", podcast.mode);
+    if (overlay) {
+      overlay.classList.toggle("podcast-mode", podcast.mode);
+      overlay.classList.toggle("is-group", podcast.mode);
+      overlay.classList.toggle("is-single", !podcast.mode);
+    }
     var stage = $("podcastStage");
-    if (stage) stage.hidden = !podcast.mode;
+    if (stage) {
+      stage.hidden = false;
+      stage.classList.toggle("is-group", podcast.mode);
+      stage.classList.toggle("is-single", !podcast.mode);
+    }
     var btn = $("voicePodcastBtn");
     if (btn) {
       btn.classList.toggle("is-active", podcast.mode);
@@ -1365,20 +1381,46 @@
       btn.setAttribute("aria-label", podcast.mode ? "切换到语音" : "切换到群聊");
       btn.title = podcast.mode ? "切换到语音" : "切换到群聊";
     }
-    updatePodcastControl();
+    updateConversationSurface();
+    if (podcast.mode) updatePodcastControl();
     updatePodcastComposer();
     renderParticipants();
     if (options.save !== false) savePodcastState();
   }
-  function suspendNormalVoiceMode() {
-    if (root.VoiceMode && typeof root.VoiceMode.suspendForPodcast === "function") {
-      try { root.VoiceMode.suspendForPodcast(); } catch (_) {}
-    } else if (root.VoiceMode && typeof root.VoiceMode.close === "function") {
-      try { root.VoiceMode.close(); } catch (_) {}
+  function updateConversationSurface() {
+    var group = isGroupMode();
+    var title = $("conversationModeTitle");
+    var emptyTitle = $("conversationEmptyTitle");
+    var settings = $("podcastSettingsBtn");
+    var roundControl = root.document && root.document.querySelector(".podcast-round-control");
+    var stop = $("podcastStageStopBtn");
+    if (title) title.textContent = group ? "群聊" : "单聊";
+    if (emptyTitle) emptyTitle.textContent = group ? "说点什么，成员会围绕它展开讨论" : "和 Assistant 聊点什么";
+    if (settings) {
+      settings.setAttribute("aria-label", group ? "群聊设置" : "Assistant 设置");
+      settings.title = group ? "群聊设置" : "Assistant 设置";
     }
-    var overlay = $("voiceOverlay");
-    if (overlay) overlay.hidden = false;
-    if (root.document && root.document.body) root.document.body.classList.add("voice-open");
+    if (roundControl) roundControl.hidden = !group;
+    if (stop) {
+      if (group) {
+        stop.hidden = false;
+        stop.textContent = "停止";
+        stop.disabled = !podcast.runId;
+      } else {
+        var voiceState = root.VoiceMode && typeof root.VoiceMode.stateSnapshot === "function"
+          ? root.VoiceMode.stateSnapshot() : null;
+        stop.hidden = !(voiceState && voiceState.turnActive);
+        stop.textContent = "停止回复";
+        stop.disabled = !(voiceState && voiceState.turnActive);
+      }
+    }
+    if (!group && $("podcastModeStatus")) {
+      var current = root.VoiceMode && typeof root.VoiceMode.stateSnapshot === "function"
+        ? root.VoiceMode.stateSnapshot() : null;
+      if (!current || current.state === "paused" || current.state === "closed") {
+        $("podcastModeStatus").textContent = "支持文字、附件，或点击麦克风连续对话";
+      }
+    }
   }
   function setPodcastControl(cls, icon, label) {
     var circle = $("podcastCircle");
@@ -1454,7 +1496,9 @@
     if (input) {
       input.disabled = podcast.inputSending;
       var narrow = Boolean(root.matchMedia && root.matchMedia("(max-width: 360px)").matches);
-      input.placeholder = podcast.runId
+      input.placeholder = !isGroupMode()
+        ? "输入消息或点击说话"
+        : podcast.runId
         ? (narrow ? "输入观点" : "输入观点或点击说话")
         : (narrow ? "输入话题" : "输入话题或点击说话");
     }
@@ -1494,7 +1538,8 @@
     if (stageStop) stageStop.disabled = !podcast.runId;
     if (add) add.disabled = podcast.agents.length >= MAX_GROUP_AGENTS || Boolean(podcast.starting);
     syncRoundInputs(podcast.rounds);
-    updatePodcastControl();
+    updateConversationSurface();
+    if (isGroupMode()) updatePodcastControl();
   }
 
   function explicitTopicValue() {
@@ -1648,8 +1693,8 @@
     setActive(false);
     stopInterjectionCapture();
     stopTopicCapture();
-    invalidatePlaybackWork();
-    stopSpeech();
+    stopPodcastLocalPlayback();
+    updatePodcastControl();
     setStatus("正在停止...");
     setVoiceStatus("群聊正在停止...");
     try { await apiSafe("/api/voice/podcast/stop", { run_id: runId }); } catch (_) {}
@@ -1983,8 +2028,7 @@
       podcast.topicCaptureArmed = podcast.agents.length > 0;
       setActiveSpeaker("", "");
       setPlayingSpeaker("");
-      invalidatePlaybackWork();
-      stopSpeech();
+      stopPodcastLocalPlayback();
       savePodcastState();
       setActive(false);
       stopInterjectionCapture();
@@ -2659,18 +2703,6 @@
     return null;
   }
 
-  function shouldIgnoreOverlayTap(target) {
-    if (!target || typeof target.closest !== "function") return false;
-    return Boolean(
-      target.closest(".voice-stage-head, .voice-footer, .podcast-dialog, .podcast-stage-stop, .podcast-round-control, .podcast-action-chip, .podcast-composer, .podcast-notice, .group-member-menu, .group-participant, .group-agent-grid")
-      || target.closest(".voice-circle")
-    );
-  }
-
-  function shouldIgnoreAmbientPodcastTap() {
-    return !podcast.runId && podcast.generationDone;
-  }
-
   function startPodcastFromUi() {
     if (!podcast.agents.length) addGroupAgent();
     if (explicitTopicValue()) {
@@ -3056,7 +3088,15 @@
       var attachments = await buildPodcastDocumentPayloads();
       if (!isPodcastRequestCurrent(requestContext)) return;
       var names = podcast.documents.map(function (item) { return item.file.name; });
-      if (requestContext.runId) {
+      if (!isGroupMode()) {
+        var sent = root.VoiceMode && typeof root.VoiceMode.submitMessage === "function"
+          && root.VoiceMode.submitMessage({
+            text: text || (names.length ? "请结合上传的附件回答。" : ""),
+            attachments: attachments,
+          });
+        if (!sent) throw new Error("没有可用会话或语音模块未就绪");
+        if (isPodcastRequestCurrent(requestContext)) clearPodcastComposer();
+      } else if (requestContext.runId) {
         podcast.playbackPausedForInput = true;
         stopCurrentPlayback(true);
         var submitted = await submitInterjection(
@@ -3142,7 +3182,8 @@
     var podcastSettings = $("podcastSettingsBtn");
     if (podcastSettings) podcastSettings.onclick = function (event) {
       event.stopPropagation();
-      setDialog(true);
+      if (isGroupMode()) setDialog(true);
+      else openSystemVoiceEditor();
     };
     if (root.document) {
       root.document.querySelectorAll(".podcast-topic-suggestion").forEach(function (suggestion) {
@@ -3207,22 +3248,6 @@
     if (add) add.onclick = function () {
       openAddAgentEditor();
     };
-    var voiceAdd = $("voiceAddRoleBtn");
-    if (voiceAdd) voiceAdd.onclick = function (event) {
-      event.stopPropagation();
-      openAddAgentEditor();
-    };
-    var normalVoiceCircle = $("voiceCircle");
-    if (normalVoiceCircle) normalVoiceCircle.addEventListener("click", function (event) {
-      if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
-      if (shouldIgnoreAmbientPodcastTap()) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (!podcast.mode && podcast.topicCaptureArmed) setPodcastMode(true);
-      if (podcast.runId) startInterjectionCapture();
-      else if (explicitTopicValue()) startPodcast();
-      else startTopicCapture();
-    }, true);
     var start = $("podcastStartBtn");
     if (start) start.onclick = startPodcastFromUi;
     var stop = $("podcastStopBtn");
@@ -3230,7 +3255,8 @@
     var stageStop = $("podcastStageStopBtn");
     if (stageStop) stageStop.onclick = function (event) {
       event.stopPropagation();
-      stopPodcast();
+      if (isGroupMode()) stopPodcast();
+      else if (root.VoiceMode && typeof root.VoiceMode.cancelAndPause === "function") root.VoiceMode.cancelAndPause();
     };
     ["podcastRounds", "podcastStageRounds"].forEach(function (id) {
       var input = $(id);
@@ -3245,21 +3271,17 @@
       if (podcast.runId || podcast.starting || podcast.capturingTopic || podcast.capturingInput) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        setStatus("群聊进行中，请先点击停止。");
-        setVoiceStatus("群聊进行中，请先点击停止。");
+        stopPodcast({ keepGroup: true }).then(function () {
+          if (root.VoiceMode && typeof root.VoiceMode.close === "function") root.VoiceMode.close();
+        });
         return;
       }
       if (podcast.mode || podcast.topicCaptureArmed || podcast.generationDone) stopPodcastLocalPlayback();
-      if ((podcast.mode || podcast.topicCaptureArmed) && podcast.agents.length) exitGroupChat();
     }, true);
     var podcastCircle = $("podcastCircle");
     if (podcastCircle) podcastCircle.addEventListener("click", function (event) {
-      if (!podcast.mode && podcast.agents.length) {
-        podcast.topicCaptureArmed = true;
-        setPodcastMode(true);
-      }
-      if (!podcast.mode) return;
-      event.stopPropagation();
+      if (!isGroupMode()) return;
+      event.stopImmediatePropagation();
       event.preventDefault();
       if (cancelPodcastCapture()) return;
       if (podcast.runId) startInterjectionCapture();
@@ -3268,7 +3290,7 @@
     }, true);
     function restoreAndResumePodcast() {
       restorePodcastSurface();
-      if (podcast.mode || podcast.runId) {
+      if (isGroupMode()) {
         primePlayback();
         if (!podcast.playbackStopped) pumpPlayback();
       }
@@ -3304,9 +3326,35 @@
     else init();
   }
 
+  function submitMessage(message) {
+    message = message || {};
+    if (!isGroupMode()) return false;
+    var text = String(message.text || "").trim();
+    var attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    if (podcast.runId) return submitInterjection(text, attachments, text);
+    return startPodcast(text, attachments);
+  }
+  function toggleCapture() {
+    if (!isGroupMode()) return false;
+    if (cancelPodcastCapture()) return true;
+    if (podcast.runId) startInterjectionCapture();
+    else startTopicCapture();
+    return true;
+  }
+  function stopForModeChange() {
+    cancelPodcastCapture();
+    stopPodcastLocalPlayback();
+    if (podcast.runId || podcast.starting) return stopPodcast({ keepGroup: false });
+    return Promise.resolve();
+  }
+
   return {
     onEvent: onEvent,
     onSessionChanged: handleSessionChanged,
+    submitMessage: submitMessage,
+    toggleCapture: toggleCapture,
+    stopForModeChange: stopForModeChange,
+    refreshSurface: updateConversationSurface,
     _helpers: {
       roles: ROLES,
       selectedOut: selectedOut,
@@ -3317,7 +3365,6 @@
       isRetryableCloudTtsError: isRetryableCloudTtsError,
       finalUtteranceText: finalUtteranceText,
       normalizePcmChunks: normalizePcmChunks,
-      shouldIgnoreOverlayTap: shouldIgnoreOverlayTap,
     },
   };
 });

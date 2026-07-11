@@ -220,51 +220,50 @@ def test_podcast_recognition_uses_current_voice_provider():
     assert "rec = await createPodcastRecognizer(" in input_body
 
 
-def test_podcast_mode_only_suspends_voice_when_entering_group_mode():
+def test_group_transition_cancels_and_pauses_single_voice_once():
     source = PODCAST_JS.read_text(encoding="utf-8")
-    body = _function_body(source, "function setPodcastMode(on, options)", "function suspendNormalVoiceMode()")
+    body = _function_body(source, "function setPodcastMode(on, options)", "function setPodcastControl")
 
-    assert "var entering = Boolean(on) && !podcast.mode;" in body
-    assert "if (entering) suspendNormalVoiceMode();" in body
-    assert "if (on) suspendNormalVoiceMode();" not in body
+    assert "var nextMode = Boolean(on) && isGroupMode();" in body
+    assert "var entering = nextMode && !podcast.mode;" in body
+    assert "if (entering && root.VoiceMode" in body
+    assert "root.VoiceMode.cancelAndPause();" in body
 
 
-def test_podcast_mode_persistence_is_separate_from_saved_agents():
+def test_group_mode_is_derived_from_membership_or_active_run():
     source = PODCAST_JS.read_text(encoding="utf-8")
     save_body = _function_body(source, "function savePodcastState(sessionId)", "function hasPodcastState")
     restore_body = _function_body(source, "function restorePodcastSurface(sessionId)", "function normalizeRounds")
     mode_body = _function_body(source, "function isGroupMode()", "function participantColor")
 
-    assert 'if (podcast.mode || podcast.runId) sessionSet(MODE_KEY, "1", sid);' in save_body
-    assert "else sessionRemove(MODE_KEY, sid);" in save_body
-    assert "var savedMode = Boolean(sessionGet(MODE_KEY, sid));" in restore_body
+    assert 'sessionSet(MODE_KEY, "1", sid)' not in save_body
+    assert "sessionRemove(MODE_KEY, sid);" in save_body
+    assert "var savedMode" not in restore_body
     assert "setPodcastMode(true);" in restore_body
-    assert "return podcast.mode || Boolean(podcast.runId);" in mode_body
+    assert "return Boolean(podcast.agents.length || podcast.runId);" in mode_body
 
 
-def test_single_voice_clicks_are_not_intercepted_by_saved_group_agents():
+def test_single_voice_uses_the_shared_composer_microphone():
     source = PODCAST_JS.read_text(encoding="utf-8")
+    shell = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-shell.js").read_text(encoding="utf-8")
     init_body = _function_body(source, "function init()", "if (document.readyState")
-    normal_circle_body = init_body[init_body.index('var normalVoiceCircle = $("voiceCircle");'):init_body.index('var start = $("podcastStartBtn");')]
-    exit_body = init_body[init_body.index('var exit = $("voiceExitBtn");'):init_body.index('var podcastCircle = $("podcastCircle");')]
+    podcast_circle_body = init_body[init_body.index('var podcastCircle = $("podcastCircle");'):init_body.index("function restoreAndResumePodcast()")]
 
-    assert "&& !podcast.agents.length" not in normal_circle_body
-    assert "if (!podcast.mode && podcast.agents.length)" not in normal_circle_body
-    assert "podcast.topicCaptureArmed) setPodcastMode(true)" in normal_circle_body
-    assert "if ((podcast.mode || podcast.topicCaptureArmed) && podcast.agents.length) exitGroupChat();" in exit_body
-    assert 'var overlay = $("voiceOverlay");' not in init_body
+    assert 'circle: $("podcastCircle")' in (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-view.js").read_text(encoding="utf-8")
+    assert "if (!isGroupMode()) return;" in podcast_circle_body
+    assert 'if (els.circle) els.circle.onclick' in shell
+    assert '$("voiceCircle")' not in source
 
 
 def test_group_voice_uses_the_composer_button_without_ambient_overlay_clicks():
     source = PODCAST_JS.read_text(encoding="utf-8")
     init_body = _function_body(source, "function init()", "if (document.readyState")
-    normal_circle_body = init_body[init_body.index('var normalVoiceCircle = $("voiceCircle");'):init_body.index('var start = $("podcastStartBtn");')]
     podcast_circle_body = init_body[init_body.index('var podcastCircle = $("podcastCircle");'):init_body.index("function restoreAndResumePodcast()")]
 
-    assert "function shouldIgnoreAmbientPodcastTap()" in source
-    assert "return !podcast.runId && podcast.generationDone;" in source
-    assert "if (shouldIgnoreAmbientPodcastTap()) return;" in normal_circle_body
+    assert "function shouldIgnoreAmbientPodcastTap()" not in source
     assert "shouldIgnoreAmbientPodcastTap" not in podcast_circle_body
+    assert "if (!isGroupMode()) return;" in podcast_circle_body
+    assert "event.stopImmediatePropagation();" in podcast_circle_body
     assert "else if (explicitTopicValue()) startPodcast();" in podcast_circle_body
     assert 'var overlay = $("voiceOverlay");' not in init_body
 
@@ -324,7 +323,7 @@ def test_voice_exit_stops_finished_podcast_playback_before_closing_overlay():
     assert "podcast.playPumpActive = false;" in playback_body
     assert "stopSpeech();" in playback_body
     assert "if (podcast.mode || podcast.topicCaptureArmed || podcast.generationDone) stopPodcastLocalPlayback();" in exit_body
-    assert exit_body.index("stopPodcastLocalPlayback();") < exit_body.index("exitGroupChat();")
+    assert "exitGroupChat();" not in exit_body
 
 
 def test_podcast_operation_notice_is_separate_from_flow_status():
@@ -355,16 +354,37 @@ def test_voice_render_does_not_touch_overlay_when_podcast_owns_it():
     assert "if (!podcastOwnsOverlay()) view.render(model, { fallbackNotice });" in body
 
 
-def test_podcast_suspend_releases_voice_without_closing_overlay():
+def test_shared_overlay_visibility_is_independent_of_engine_rendering():
     source = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-shell.js").read_text(encoding="utf-8")
-    body = _function_body(source, "function suspendForPodcast()", "// ── 来自 app.js handleEvent")
+    visibility_body = _function_body(source, "function setOverlayVisible(visible)", "function openOverlay(autoStart)")
+    open_body = _function_body(source, "function openOverlay(autoStart)", "function closeOverlay()")
+    close_body = _function_body(source, "function closeOverlay()", "function submitMessage(message)")
 
-    assert 'if (model.state === "closed") return;' in body
-    assert "core.closeCommands()" in body
-    assert "model = core.createInitialModel();" in body
-    assert "closeOverlay();" not in body
-    assert "suspendForPodcast: closeOverlay" not in source
-    assert "lastFocusMode" not in body
+    assert "view.els.overlay.hidden = !visible;" in visibility_body
+    assert 'document.body.classList.toggle("voice-open", Boolean(visible));' in visibility_body
+    assert "setOverlayVisible(true);" in open_body
+    assert "setOverlayVisible(false);" in close_body
+
+
+def test_stopping_group_clears_all_playback_before_rendering_done_state():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    stop_body = _function_body(source, "async function stopPodcast(options)", "function renderAssignments")
+    stopped_event = _function_body(source, 'if (event.type === "podcast.stopped")', 'if (event.type === "podcast.error")')
+
+    assert "stopPodcastLocalPlayback();" in stop_body
+    assert stop_body.index("stopPodcastLocalPlayback();") < stop_body.index("updatePodcastControl();")
+    assert "stopPodcastLocalPlayback();" in stopped_event
+    assert stopped_event.index("stopPodcastLocalPlayback();") < stopped_event.index("updatePodcastControl();")
+
+
+def test_voice_mode_exposes_unified_execution_interface():
+    source = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-shell.js").read_text(encoding="utf-8")
+
+    assert "submitMessage," in source
+    assert "toggleCapture," in source
+    assert "cancelAndPause," in source
+    assert "stateSnapshot," in source
+    assert "suspendForPodcast" not in source
 
 
 def test_webspeech_constructor_is_wrapped_in_try_catch():
@@ -374,7 +394,7 @@ def test_webspeech_constructor_is_wrapped_in_try_catch():
     assert "try { rec = new SR(); } catch (_) { return null; }" in body
 
 
-def test_close_commands_shared_between_core_and_shell():
+def test_close_commands_are_centralized_in_voice_core():
     core_source = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-core.js").read_text(encoding="utf-8")
     shell_source = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-shell.js").read_text(encoding="utf-8")
 
@@ -382,12 +402,41 @@ def test_close_commands_shared_between_core_and_shell():
     assert "closeCommands: closeCommands," in core_source
     close_body = _function_body(core_source, 'case "CLOSE":', "// ── 点圆")
     assert "closeCommands()" in close_body
-    assert "core.closeCommands()" in shell_source
+    assert 'dispatch({ type: "CLOSE" })' in shell_source
 
 
 def test_restore_clears_stale_mode_key_when_no_agents():
     source = PODCAST_JS.read_text(encoding="utf-8")
     body = _function_body(source, "function restorePodcastSurface(sessionId)", "function normalizeRounds")
 
-    assert "if (savedMode) sessionRemove(MODE_KEY, sid);" in body
+    assert "sessionRemove(MODE_KEY, sid);" in body
     assert "setPodcastMode(false);" in body
+
+
+def test_single_and_group_share_one_compact_stage_and_composer():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert html.count('id="podcastStage"') == 1
+    assert html.count('id="groupAgentGrid"') == 1
+    assert html.count('id="podcastComposer"') == 1
+    assert html.count('id="podcastCircle"') == 1
+    assert 'id="voiceCircle"' not in html
+    assert 'class="voice-stage"' not in html
+    assert 'class="voice-duo-grid"' not in html
+    assert 'id="conversationModeTitle">单聊' in html
+    assert 'id="conversationEmptyTitle"' in html
+    assert '.voice-overlay.podcast-mode .voice-stage' not in styles
+
+
+def test_single_composer_routes_text_and_attachments_to_voice_mode():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    shell = (ROOT / "nano_openclaw" / "adapters" / "webui" / "static" / "voice-shell.js").read_text(encoding="utf-8")
+    submit_body = _function_body(source, "async function submitPodcastComposer(event)", "async function submitInterjection")
+    command_body = _function_body(shell, 'case "chatSend":', 'case "cancelTurn":')
+
+    assert "if (!isGroupMode())" in submit_body
+    assert "root.VoiceMode.submitMessage({" in submit_body
+    assert "attachments: attachments" in submit_body
+    assert 'response_style: "voice"' in command_body
+    assert "attachments: cmd.attachments || []" in command_body

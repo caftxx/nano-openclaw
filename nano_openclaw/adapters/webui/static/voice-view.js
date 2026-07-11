@@ -40,8 +40,8 @@
 
     var els = {
       overlay: $("voiceOverlay"),
-      circle: $("voiceCircle"),
-      status: $("voiceStatus"),
+      circle: $("podcastCircle"),
+      status: $("podcastModeStatus"),
       captions: $("voiceCaptions"),
       think: $("voiceThinkLevel"),
       unsupported: $("voiceUnsupported"),
@@ -50,9 +50,10 @@
       outMode: $("voiceTtsVoice"),
       exit: $("voiceExitBtn"),
       micBtn: $("voiceMicBtn"),
+      headerStatus: $("podcastHeaderStatus"),
     };
-    var elEmoji = els.circle && els.circle.querySelector(".voice-emoji");
-    var elLabel = els.circle && els.circle.querySelector(".voice-circle-label");
+    var elEmoji = $("podcastCircleIcon");
+    var elLabel = $("podcastCircleLabel");
 
     var aiNode = null;          // 当前 turn 的 AI 字幕节点
     var thinkOptionsKey = "";
@@ -78,12 +79,21 @@
         };
       }
       if (els.circle) {
-        els.circle.className = "voice-circle " + ui.cls;
+        els.circle.className = "podcast-action-chip " + ui.cls;
         els.circle.disabled = Boolean(model.ctx.hardBlock);
+        els.circle.setAttribute("aria-label", ui.label);
+        els.circle.title = ui.label;
       }
       if (elEmoji) elEmoji.textContent = ui.emoji;
       if (elLabel) elLabel.textContent = ui.label;
       if (els.status) els.status.textContent = model.ctx.statusOverride || ui.status;
+      if (els.headerStatus) {
+        var headerStatus = {
+          paused: "未开始", starting: "正在聆听", capturing: "正在聆听",
+          cooldown: "正在聆听", thinking: "思考中", speaking: "朗读中", error: "需重试",
+        };
+        els.headerStatus.textContent = headerStatus[model.state] || "未开始";
+      }
 
       // 提示横幅：硬阻断（HTTPS/不支持）优先；其次 TTS 回退原因【B6】
       if (els.unsupported) {

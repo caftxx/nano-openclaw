@@ -307,7 +307,7 @@
         if (!send("chat.send", {
           session_id: sid,
           text: cmd.text,
-          attachments: [],
+          attachments: cmd.attachments || [],
           response_style: "voice",
           voiceId: currentAliyunVoice(),
           voiceOutput: effectiveOut || selectedOut(),
@@ -426,6 +426,9 @@
       controlsDirty = false;
       view.renderControls(controlsState());
     }
+    if (window.PodcastMode && typeof window.PodcastMode.refreshSurface === "function") {
+      window.PodcastMode.refreshSurface();
+    }
   }
 
   // ── 打开/关闭 ────────────────────────────────────────────────────────────
@@ -436,6 +439,11 @@
     if (!secureOk) return "https";
     if (resolvedEngine() !== "aliyun" && !SR) return "no-sr";
     return null;
+  }
+  function setOverlayVisible(visible) {
+    if (!view || !view.els || !view.els.overlay) return;
+    view.els.overlay.hidden = !visible;
+    document.body.classList.toggle("voice-open", Boolean(visible));
   }
   function openOverlay(autoStart) {
     if (model.state === "closed" && view) {
@@ -452,14 +460,61 @@
       hidden: document.visibilityState !== "visible",
       wakeKeyword: wakeKeyword(),
     });
+    // PodcastMode owns the shared controls while in group mode, so voice-view
+    // intentionally skips rendering there. Overlay visibility is stage-level
+    // state and must not depend on which execution engine owns the controls.
+    setOverlayVisible(true);
   }
-  function closeOverlay() { dispatch({ type: "CLOSE" }); }
-  function suspendForPodcast() {
+  function closeOverlay() {
+    dispatch({ type: "CLOSE" });
+    setOverlayVisible(false);
+  }
+  function submitMessage(message) {
+    message = message || {};
+    const sid = state.currentSession && state.currentSession.session_id;
+    if (!sid) return false;
+    if (model.state === "closed") openOverlay(false);
+    dispatch({
+      type: "SUBMIT_MESSAGE",
+      text: message.text || "",
+      attachments: message.attachments || [],
+      externalTurnOpen: externalTurnOpen(),
+      externalTurnId: state.activeTurnId || "",
+    });
+    return true;
+  }
+  function toggleCapture() {
+    if (model.state === "closed") openOverlay(false);
+    dispatch({ type: "TOGGLE", externalTurnOpen: externalTurnOpen(), wakeKeyword: wakeKeyword() });
+  }
+  function cancelAndPause() {
     if (model.state === "closed") return;
-    core.closeCommands().forEach(function (cmd) { exec(cmd); });
-    model = core.createInitialModel();
+    dispatch({
+      type: "CANCEL_AND_PAUSE",
+      externalTurnOpen: externalTurnOpen(),
+      externalTurnId: state.activeTurnId || "",
+    });
   }
-
+  function openPaused() { openOverlay(false); }
+  function stateSnapshot() {
+    return {
+      state: model.state,
+      active: model.state !== "closed" && model.state !== "paused" && model.state !== "error",
+      turnActive: Boolean((model.ctx.turn && model.ctx.turn.open) || externalTurnOpen()),
+    };
+  }
+  function onSessionChanged() {
+    if (model.state === "closed") return;
+    // state.currentSession already points at the destination session here; only cancel
+    // a turn tracked by this voice model, never the destination session's active turn.
+    dispatch({ type: "CANCEL_AND_PAUSE", externalTurnOpen: false, externalTurnId: "" });
+    if (view) {
+      view.seedCaptions(
+        (state.currentSession && state.currentSession.history) || [],
+        typeof extractText === "function" ? extractText : null
+      );
+    }
+  }
   // ── 来自 app.js handleEvent 的聊天事件【E3】──────────────────────────────
   function onEvent(event) {
     // thinking 下拉始终跟随后端（即使浮层没开，下次开时也是对的）
@@ -570,7 +625,7 @@
     // 手势解锁（primeAudio）也由核心作为命令发出，与 OPEN/TOGGLE 同一通道。
     if (els.overlay) els.overlay.addEventListener("click", (e) => {
       if (els.overlay.classList.contains("podcast-mode")) return;
-      if (e.target.closest(".voice-circle, .voice-footer, .voice-stage-head, .voice-stage-bar, .voice-duo-grid, .voice-captions")) return;
+      if (e.target.closest(".podcast-action-chip, .podcast-stage-bar, .group-agent-grid, .podcast-empty-state, .podcast-composer, .voice-footer, .voice-stage-head, .voice-captions")) return;
       dispatch({ type: "TAP", externalTurnOpen: externalTurnOpen(), externalTurnId: state.activeTurnId || "" });
     });
 
@@ -655,9 +710,14 @@
 
   window.VoiceMode = {
     onEvent,
-    open: () => openOverlay(true),
+    open: () => openOverlay(!podcastOwnsOverlay()),
     close: closeOverlay,
-    suspendForPodcast,
+    submitMessage,
+    toggleCapture,
+    cancelAndPause,
+    openPaused,
+    stateSnapshot,
+    onSessionChanged,
     ensureConfig: loadVoiceConfig,
     createRecognizer: createExternalRecognizer,
     recognitionEngine: activeEngineName,

@@ -285,6 +285,51 @@
         return res("paused", ctx, cmds);
       }
 
+      // 文字、附件和语音转写共用同一条提交生命周期。即使当前连续识别已暂停，
+      // 显式发送也会激活本轮语音回复，随后按 speaking → cooldown/listening 续接。
+      case "SUBMIT_MESSAGE": {
+        if (state === "closed" || ctx.hardBlock) return res(state, ctx, cmds);
+        var submittedText = String(event.text || "").trim();
+        var submittedAttachments = Array.isArray(event.attachments) ? event.attachments : [];
+        if (!submittedText && !submittedAttachments.length) return res(state, ctx, cmds);
+        if (turn && turn.open && !turn.cancelRequested) {
+          turn.cancelRequested = true;
+          turn.muted = true;
+          cmds.push({ type: "cancelTurn", turnId: turn.id || event.externalTurnId || "" });
+        }
+        cmds.push({ type: "primeAudio" });
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "stopSpeech" });
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "clearTimer", tag: "cooldown" });
+        cmds.push({ type: "clearTimer", tag: "wakeIdle" });
+        cmds.push({ type: "wakeLock", on: true });
+        cmds.push({ type: "chatSend", text: submittedText, attachments: submittedAttachments });
+        ctx.statusOverride = "已发送，等待回复…";
+        return res("thinking", ctx, cmds);
+      }
+
+      case "CANCEL_AND_PAUSE": {
+        if (state === "closed") return res(state, ctx, cmds);
+        if (turn) {
+          turn.muted = true;
+          if (turn.open && !turn.cancelRequested) {
+            turn.cancelRequested = true;
+            cmds.push({ type: "cancelTurn", turnId: turn.id || event.externalTurnId || "" });
+          }
+        } else if (event.externalTurnOpen) {
+          cmds.push({ type: "cancelTurn", turnId: event.externalTurnId || "" });
+        }
+        cmds.push({ type: "stopMic" });
+        cmds.push({ type: "stopSpeech" });
+        cmds.push({ type: "clearTimer", tag: "start" });
+        cmds.push({ type: "clearTimer", tag: "cooldown" });
+        cmds.push({ type: "clearTimer", tag: "wakeIdle" });
+        cmds.push({ type: "wakeLock", on: false });
+        ctx.statusOverride = "已暂停，点击麦克风继续";
+        return res("paused", ctx, cmds);
+      }
+
       // ── 点屏空白处（手势意图按状态路由，吸收旧 resolveTapAction）──────────
       case "TAP": {
         // 点屏是用户手势：无论路由到哪个分支，先顺手解锁静音保持音/播放器 ctx 的
