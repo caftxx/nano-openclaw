@@ -321,15 +321,15 @@
       setPodcastMode(true);
       setActive(true);
       if (!podcast.capturingInput && !podcast.capturingTopic) {
-        setStatus("群聊进行中，点屏幕空白处可插话。");
+        setStatus("群聊进行中，可在输入框发言或点击麦克风插话。");
         setVoiceStatus("群聊已恢复，等待后续内容...");
       }
     } else if (savedMode && podcast.agents.length) {
       setPodcastMode(true);
       podcast.topicCaptureArmed = true;
       setActive(false);
-      setStatus("点击屏幕空白处，说出群聊话题。");
-      setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+      setStatus("输入话题，或点击输入框内的麦克风说话。");
+      setVoiceStatus("支持文字、附件，或点击麦克风说话。");
     } else {
       podcast.topicCaptureArmed = false;
       setPodcastMode(false);
@@ -601,7 +601,8 @@
     btn.setAttribute("aria-label", member.kind === "add" ? "添加群成员" : member.kind === "host" ? "设置" + member.name : member.name);
     btn.innerHTML = '<span class="group-avatar"><span class="group-emoji">' + escapeHtml(member.emoji) + '</span>'
       + (isPlaying ? '<span class="group-speaker">🔊</span>' : "")
-      + '</span>';
+      + '</span>'
+      + (options.stage ? '<span class="group-member-name">' + escapeHtml(member.name) + '</span>' : '');
     btn.onclick = function (event) {
       event.stopPropagation();
       if (btn.blur) btn.blur();
@@ -648,17 +649,12 @@
     }
     if (!gridEl) return;
     gridEl.innerHTML = "";
-    var gridMembers = agentParticipants().slice(0, MAX_GROUP_AGENTS);
+    var gridMembers = [systemParticipants()[0]].concat(agentParticipants());
     gridMembers.forEach(function (member) {
       renderMemberButton(gridEl, member, { stage: true });
     });
-    for (var i = gridMembers.length; i < MAX_GROUP_AGENTS; i++) {
-      var empty = root.document.createElement("div");
-      empty.className = "group-participant group-stage-participant group-empty";
-      empty.setAttribute("aria-hidden", "true");
-      empty.innerHTML = '<span class="group-avatar"></span>';
-      gridEl.appendChild(empty);
-    }
+    var count = $("podcastMemberCount");
+    if (count) count.textContent = String(podcast.agents.length + 1);
   }
   function closeMemberMenu() {
     var menu = $("groupMemberMenu");
@@ -1161,7 +1157,7 @@
       showPodcastNotice(hasPendingPlayback() ? "已添加群成员，重新开始后参与。" : "已添加群成员，可点击重新开始。");
     } else {
       setStatus("已添加群成员，可开始群聊。");
-      setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+      setVoiceStatus("支持文字、附件，或点击麦克风说话。");
     }
     renderAgents();
     renderParticipants();
@@ -1306,7 +1302,7 @@
       updateHostPreview();
       loadVoiceConfig().then(updateHostPreview).catch(function () {});
       setStatus("可输入话题，或直接点击开始群聊。");
-      setVoiceStatus("群聊待启动，配置后可点击屏幕说出讨论话题。");
+      setVoiceStatus("配置完成后，可输入话题或点击麦克风说话。");
     }
   }
   function setStatus(text) {
@@ -1383,6 +1379,24 @@
     if (circle) circle.className = "podcast-action-chip " + (cls || "idle");
     if (iconEl) iconEl.textContent = icon || "◎";
     if (labelEl) labelEl.textContent = label || "点击说话题";
+    if (circle) {
+      circle.setAttribute("aria-label", label || "点击说话题");
+      circle.title = label || "点击说话题";
+    }
+    var headerStatus = $("podcastHeaderStatus");
+    var statusByState = {
+      idle: "未开始",
+      listening: "聆听中",
+      generating: "处理中",
+      speaking: "讨论中",
+      done: "已结束",
+      error: "需重试",
+    };
+    if (headerStatus) headerStatus.textContent = statusByState[cls] || "未开始";
+    var stage = $("podcastStage");
+    if (stage) stage.classList.toggle("has-conversation", Boolean(cls && cls !== "idle"));
+    var overlay = $("voiceOverlay");
+    if (overlay) overlay.classList.toggle("podcast-has-conversation", Boolean(cls && cls !== "idle"));
   }
   function hasPendingPlayback() {
     return Boolean(
@@ -1421,7 +1435,7 @@
       }
       return;
     }
-    setPodcastControl("idle", "◎", "点击说话题");
+    setPodcastControl("idle", "🎙", "点击说话题");
   }
   function updatePodcastComposer() {
     var form = $("podcastComposer");
@@ -1431,10 +1445,10 @@
     if (form) form.classList.toggle("is-sending", podcast.inputSending);
     if (input) {
       input.disabled = podcast.inputSending;
-      var compact = Boolean(root.matchMedia && root.matchMedia("(max-width: 520px)").matches);
+      var narrow = Boolean(root.matchMedia && root.matchMedia("(max-width: 360px)").matches);
       input.placeholder = podcast.runId
-        ? (compact ? "输入观点或问题" : "输入观点或问题，发送到群聊")
-        : (compact ? "输入话题或附件" : "输入话题，或上传图片/文档开始群聊");
+        ? (narrow ? "输入观点" : "输入观点或点击说话")
+        : (narrow ? "输入话题" : "输入话题或点击说话");
     }
     if (send) send.disabled = podcast.inputSending || podcast.starting;
     if (attach) attach.disabled = podcast.inputSending || podcast.starting;
@@ -1546,7 +1560,7 @@
       showPodcastNotice("");
       primePlayback();
       renderAssignments(payload);
-      setStatus("群聊进行中，点屏幕空白处可插话。");
+      setStatus("群聊进行中，可在输入框发言或点击麦克风插话。");
       setVoiceStatus(payload.processing_attachments
         ? "群聊已启动，正在理解图片内容..."
         : "群聊已启动，正在生成主持人开场...");
@@ -1757,7 +1771,7 @@
       return;
     }
     if (event.type === "podcast.attachments.ready") {
-      setStatus("群聊进行中，点屏幕空白处可插话。");
+      setStatus("群聊进行中，可在输入框发言或点击麦克风插话。");
       setVoiceStatus("图片理解完成，正在生成主持人开场...");
       return;
     }
@@ -2696,8 +2710,8 @@
             setDialog(false);
             setPodcastMode(true);
           }
-          setStatus("没有听清话题，点击屏幕可重试。");
-          setVoiceStatus("没有听清话题，点击屏幕可重新说。");
+          setStatus("没有听清话题，请点击麦克风重试。");
+          setVoiceStatus("没有听清话题，请点击麦克风重新说。");
           return;
         }
         var topic = $("podcastTopic");
@@ -2712,8 +2726,8 @@
           setDialog(false);
           setPodcastMode(true);
         }
-        setStatus("话题识别失败，点击屏幕可重试。");
-        setVoiceStatus("话题识别失败，点击屏幕可重新说。");
+        setStatus("话题识别失败，请点击麦克风重试。");
+        setVoiceStatus("话题识别失败，请点击麦克风重新说。");
         updatePodcastControl();
       },
       onEnded: function () {
@@ -2731,8 +2745,8 @@
             setDialog(false);
             setPodcastMode(true);
           }
-          setStatus("点击屏幕空白处，说出群聊话题。");
-          setVoiceStatus("群聊待启动，点击屏幕说出讨论话题。");
+          setStatus("输入话题，或点击麦克风说话。");
+          setVoiceStatus("支持文字、附件，或点击麦克风说话。");
         }
       },
     });
@@ -2760,7 +2774,7 @@
         setDialog(false);
         setPodcastMode(true);
       }
-      setStatus("话题识别启动失败，点击屏幕可重试。");
+      setStatus("话题识别启动失败，请点击麦克风重试。");
       setVoiceStatus("话题识别启动失败。");
       updatePodcastControl();
     }
@@ -2807,7 +2821,7 @@
           podcast.playbackPausedForInput = false;
           pumpPlayback();
         }
-        if (podcast.runId) setStatus("群聊进行中，点屏幕空白处可插话。");
+        if (podcast.runId) setStatus("群聊进行中，可在输入框发言或点击麦克风插话。");
         updatePodcastControl();
       },
     });
@@ -3039,6 +3053,24 @@
       });
       resizePodcastTextInput();
     }
+    var podcastSettings = $("podcastSettingsBtn");
+    if (podcastSettings) podcastSettings.onclick = function (event) {
+      event.stopPropagation();
+      setDialog(true);
+    };
+    if (root.document) {
+      root.document.querySelectorAll(".podcast-topic-suggestion").forEach(function (suggestion) {
+        suggestion.addEventListener("click", function (event) {
+          event.stopPropagation();
+          var input = $("podcastTextInput");
+          if (!input) return;
+          input.value = String(suggestion.getAttribute("data-topic") || suggestion.textContent || "").trim();
+          resizePodcastTextInput();
+          updatePodcastComposer();
+          if (input.focus) input.focus();
+        });
+      });
+    }
     var btn = $("voicePodcastBtn");
     if (btn) btn.onclick = function () {
       if (podcast.mode) {
@@ -3141,17 +3173,6 @@
         setPodcastMode(true);
       }
       if (!podcast.mode) return;
-      event.stopPropagation();
-      event.preventDefault();
-      if (podcast.runId) startInterjectionCapture();
-      else if (explicitTopicValue()) startPodcast();
-      else startTopicCapture();
-    }, true);
-    var overlay = $("voiceOverlay");
-    if (overlay) overlay.addEventListener("click", function (event) {
-      if (!podcast.mode && !podcast.runId && !podcast.topicCaptureArmed) return;
-      if (shouldIgnoreOverlayTap(event.target)) return;
-      if (shouldIgnoreAmbientPodcastTap()) return;
       event.stopPropagation();
       event.preventDefault();
       if (podcast.runId) startInterjectionCapture();

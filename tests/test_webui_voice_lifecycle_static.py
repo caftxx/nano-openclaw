@@ -69,11 +69,26 @@ def test_group_chat_composer_uses_compact_mobile_placeholder_without_overflow():
     composer_body = _function_body(source, "function updatePodcastComposer()", "function resizePodcastTextInput()")
     textarea_rules = _function_body(styles, ".podcast-composer textarea {", ".podcast-composer textarea:focus")
 
-    assert 'root.matchMedia("(max-width: 520px)").matches' in composer_body
-    assert 'compact ? "输入话题或附件"' in composer_body
-    assert 'compact ? "输入观点或问题"' in composer_body
+    assert 'root.matchMedia("(max-width: 360px)").matches' in composer_body
+    assert 'narrow ? "输入话题"' in composer_body
+    assert 'narrow ? "输入观点"' in composer_body
+    assert '"输入话题或点击说话"' in composer_body
     assert "min-width: 0;" in textarea_rules
     assert "max-width: 100%;" in textarea_rules
+
+
+def test_group_chat_voice_action_is_integrated_into_the_composer():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    composer = html[html.index('<form id="podcastComposer"'):html.index('</form>', html.index('<form id="podcastComposer"'))]
+
+    assert 'id="podcastCircle"' in composer
+    assert '文字 · 附件 · 语音' in composer
+    assert 'class="podcast-topic-suggestion"' in html
+    assert 'var gridMembers = [systemParticipants()[0]].concat(agentParticipants());' in source
+    assert 'className = "group-participant group-stage-participant group-empty"' not in source
+    assert "grid-template-columns: 44px minmax(0, 1fr) 44px 44px;" in styles
 
 
 def test_group_chat_image_start_returns_before_visual_processing_finishes():
@@ -162,28 +177,26 @@ def test_single_voice_clicks_are_not_intercepted_by_saved_group_agents():
     init_body = _function_body(source, "function init()", "if (document.readyState")
     normal_circle_body = init_body[init_body.index('var normalVoiceCircle = $("voiceCircle");'):init_body.index('var start = $("podcastStartBtn");')]
     exit_body = init_body[init_body.index('var exit = $("voiceExitBtn");'):init_body.index('var podcastCircle = $("podcastCircle");')]
-    overlay_body = init_body[init_body.index('var overlay = $("voiceOverlay");'):init_body.index("function restoreAndResumePodcast()")]
 
     assert "&& !podcast.agents.length" not in normal_circle_body
     assert "if (!podcast.mode && podcast.agents.length)" not in normal_circle_body
     assert "podcast.topicCaptureArmed) setPodcastMode(true)" in normal_circle_body
     assert "if ((podcast.mode || podcast.topicCaptureArmed) && podcast.agents.length) exitGroupChat();" in exit_body
-    assert "if (!podcast.mode && !podcast.runId && podcast.agents.length)" not in overlay_body
+    assert 'var overlay = $("voiceOverlay");' not in init_body
 
 
-def test_finished_podcast_ignores_ambient_clicks_without_disabling_restart_button():
+def test_group_voice_uses_the_composer_button_without_ambient_overlay_clicks():
     source = PODCAST_JS.read_text(encoding="utf-8")
     init_body = _function_body(source, "function init()", "if (document.readyState")
     normal_circle_body = init_body[init_body.index('var normalVoiceCircle = $("voiceCircle");'):init_body.index('var start = $("podcastStartBtn");')]
-    podcast_circle_body = init_body[init_body.index('var podcastCircle = $("podcastCircle");'):init_body.index('var overlay = $("voiceOverlay");')]
-    overlay_body = init_body[init_body.index('var overlay = $("voiceOverlay");'):init_body.index("function restoreAndResumePodcast()")]
+    podcast_circle_body = init_body[init_body.index('var podcastCircle = $("podcastCircle");'):init_body.index("function restoreAndResumePodcast()")]
 
     assert "function shouldIgnoreAmbientPodcastTap()" in source
     assert "return !podcast.runId && podcast.generationDone;" in source
     assert "if (shouldIgnoreAmbientPodcastTap()) return;" in normal_circle_body
-    assert "if (shouldIgnoreAmbientPodcastTap()) return;" in overlay_body
     assert "shouldIgnoreAmbientPodcastTap" not in podcast_circle_body
     assert "else if (explicitTopicValue()) startPodcast();" in podcast_circle_body
+    assert 'var overlay = $("voiceOverlay");' not in init_body
 
 
 def test_podcast_completion_state_has_clear_restart_action():
