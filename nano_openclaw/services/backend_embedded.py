@@ -2475,6 +2475,7 @@ class EmbeddedBackend(Backend):
         context: str,
         token: CancellationToken,
     ) -> str:
+        from nano_openclaw.features.voice.podcast import build_research_prompt
         from nano_openclaw.features.subagents import (
             SpawnParams,
             SubagentCleanupMode,
@@ -2484,20 +2485,12 @@ class EmbeddedBackend(Backend):
 
         if token.is_cancelled:
             raise asyncio.CancelledError()
-        task = f"""\
-你是 AI 播客主讲人「{agent.role}」的 research 子 Agent。
-
-播客主题：{topic}
-当前轮次：{round_index}
-近期讨论上下文：
-{context or "暂无。"}
-
-请围绕该身份做深入但聚焦的 research：
-- 优先使用 web_search / web_fetch 等工具查找主流、被认可、可验证的信息。
-- 只总结和本身份相关的关键事实、共识观点、重要争议边界。
-- 不要写播客发言稿；只输出供主讲人使用的研究摘要。
-- 输出控制在 500 中文字以内。
-"""
+        task = build_research_prompt(
+            topic=topic,
+            agent=agent,
+            round_index=round_index,
+            context=context,
+        )
         self._emit_podcast({
             "type": "podcast.research.started",
             "run_id": run_id,

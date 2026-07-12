@@ -20,6 +20,7 @@ from nano_openclaw.features.voice.podcast import (
     assign_agents,
     build_host_prompt,
     build_discussion_context,
+    build_research_prompt,
     build_speaker_prompt,
     build_start_summary,
     choose_speakers,
@@ -399,6 +400,42 @@ def test_speaker_prompt_consumes_subagent_research_result():
     assert "说人话" in prompt
     assert "少用黑话" in prompt
     assert "短比喻、小例子或轻微幽默" in prompt
+
+
+def test_podcast_prompts_keep_original_topic_primary_over_role_metaphors():
+    topic = "只讨论城市屋顶花园如何通过蒸腾、遮阴和基质热容量降低室温"
+    agent = assign_agents([{"role": "AI Agent研发工程师"}], topic)[0]
+
+    host_prompt = build_host_prompt(
+        topic=topic,
+        round_index=4,
+        total_rounds=10,
+        speakers=[agent],
+    )
+    speaker_prompt = build_speaker_prompt(
+        topic=topic,
+        agent=agent,
+        round_index=4,
+        context="主持人: 上一轮把遮阴比作 Agent 工具调用。",
+        research="遮阴减少屋面吸收的太阳辐射。",
+    )
+    research_prompt = build_research_prompt(
+        topic=topic,
+        agent=agent,
+        round_index=1,
+        context="主持人开场",
+    )
+
+    assert "下一问必须直接拉回原始问题" in host_prompt
+    assert "不要继续追问该类比" in host_prompt
+    assert "身份只是观察角度" in speaker_prompt
+    assert "不能把话题改写成你的职业问题" in speaker_prompt
+    assert "最多使用一个简短类比" in speaker_prompt
+    assert "播客主题是研究对象" in research_prompt
+    assert "不得把研究对象替换成该身份所在行业的问题" in research_prompt
+    assert topic in host_prompt
+    assert topic in speaker_prompt
+    assert topic in research_prompt
 
 
 def test_discussion_context_keeps_original_anchor_when_long():
