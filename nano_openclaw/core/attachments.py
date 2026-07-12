@@ -44,7 +44,11 @@ DOCUMENT_TEXT_MIME_TYPES = frozenset({
     "text/plain",
 })
 DOCUMENT_TEXT_SUFFIXES = frozenset({".csv", ".json", ".md", ".txt"})
-MAX_EXTRACTED_DOCUMENT_CHARS = 12_000
+# Keep enough extracted text for long academic papers while still bounding the
+# aggregate document context.  Podcast paper mode retrieves a small evidence
+# window per round, so retaining the full extraction here does not mean sending
+# all of it to the model on every turn.
+MAX_EXTRACTED_DOCUMENT_CHARS = 400_000
 MAX_DOCX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
 
 
@@ -180,7 +184,12 @@ def _extract_pdf_text(data: bytes) -> str:
 
     try:
         reader = PdfReader(io.BytesIO(data))
-        return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages)
+        pages: list[str] = []
+        for index, page in enumerate(reader.pages, start=1):
+            text = (page.extract_text() or "").strip()
+            if text:
+                pages.append(f"[第 {index} 页]\n{text}")
+        return "\n\n".join(pages)
     except Exception as exc:  # noqa: BLE001
         raise ValueError("could not read PDF document") from exc
 

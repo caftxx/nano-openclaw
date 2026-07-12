@@ -15,6 +15,7 @@ import asyncio
 import base64
 import contextlib
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -1794,6 +1795,7 @@ class EmbeddedBackend(Backend):
             HOST_VOICE_LABEL,
             assign_agents,
             build_start_summary,
+            discussion_mode_for_attachments,
             normalize_rounds,
             podcast_model_options,
             voice_label,
@@ -1815,6 +1817,7 @@ class EmbeddedBackend(Backend):
         if host_model_ref not in model_refs:
             host_model_ref = self.runtime.model_ref
         host_model_label = host_model_label.strip() or model_labels.get(host_model_ref, host_model_ref)
+        discussion_mode = discussion_mode_for_attachments(topic, attachments)
         assigned = assign_agents(
             agents,
             topic,
@@ -1830,6 +1833,7 @@ class EmbeddedBackend(Backend):
             "removed_agent_ids": set(),
             "host_model_ref": host_model_ref,
             "host_model_label": host_model_label,
+            "discussion_mode": discussion_mode,
         }
 
         await self._append_podcast_message(
@@ -1860,6 +1864,7 @@ class EmbeddedBackend(Backend):
                 run_state=run_state,
                 initial_context=initial_context,
                 attachments=attachments,
+                discussion_mode=discussion_mode,
             ),
             name=f"backend.voice_podcast:{run_id}",
         )
@@ -1876,6 +1881,7 @@ class EmbeddedBackend(Backend):
             "host_model_ref": host_model_ref,
             "host_model_label": host_model_label,
             "initial_context": initial_context,
+            "discussion_mode": discussion_mode,
         }
         task.add_done_callback(lambda _task, rid=run_id: self._podcast_runs.pop(rid, None))
 
@@ -1885,6 +1891,7 @@ class EmbeddedBackend(Backend):
             "topic": topic,
             "rounds": rounds,
             "processing_attachments": bool(attachments),
+            "discussion_mode": discussion_mode,
             "host": {
                 "role": HOST_ROLE,
                 "voice_id": host_voice_id,
@@ -1918,6 +1925,9 @@ class EmbeddedBackend(Backend):
         run = self._podcast_runs.get(run_id)
         if run is None:
             raise NotFoundError(f"podcast run not found: {run_id}")
+        from nano_openclaw.features.voice.podcast import discussion_mode_for_attachments
+
+        next_mode = discussion_mode_for_attachments(text, attachments)
         text = await self._podcast_attachment_context(text, attachments)
         text = text.strip()
         if not text:
@@ -1926,6 +1936,15 @@ class EmbeddedBackend(Backend):
         if isinstance(run_state, dict):
             run_state["generation"] = int(run_state.get("generation", 0)) + 1
             generation = int(run_state["generation"])
+            if next_mode == "paper" and run_state.get("discussion_mode") != "paper":
+                run_state["discussion_mode"] = "paper"
+                run["discussion_mode"] = "paper"
+                self._emit_podcast({
+                    "type": "podcast.discussion.mode.changed",
+                    "run_id": run_id,
+                    "session_id": run.get("session_id"),
+                    "discussion_mode": "paper",
+                })
         else:
             generation = 0
         await run["input_queue"].put(text)
@@ -2184,6 +2203,7 @@ class EmbeddedBackend(Backend):
         run_state: dict[str, Any],
         initial_context: str = "",
         attachments: list[dict[str, Any]] | None = None,
+        discussion_mode: str = "group",
     ) -> None:
         import random
 
@@ -2192,6 +2212,8 @@ class EmbeddedBackend(Backend):
             build_discussion_context,
             build_host_prompt,
             choose_speakers,
+            has_document_reference,
+            reference_document_names,
         )
 
         rng = random.Random(run_id)
@@ -2224,6 +2246,9 @@ class EmbeddedBackend(Backend):
         def current_host_model_ref() -> str:
             return str(run_state.get("host_model_ref") or host_model_ref or "")
 
+        def current_discussion_mode() -> str:
+            return "paper" if run_state.get("discussion_mode") == "paper" else discussion_mode
+
         def reset_generation(next_generation: int) -> None:
             nonlocal active_generation, completed_rounds
             if next_generation == active_generation:
@@ -2248,13 +2273,19 @@ class EmbeddedBackend(Backend):
                     "run_id": run_id,
                     "session_id": session.session_id,
                 })
-            context.extend(
-                f"用户提供的背景材料（第 {index + 1} 段）: {chunk}"
-                for index, chunk in enumerate(
-                    initial_context[start:start + 900]
-                    for start in range(0, len(initial_context), 900)
+            if has_document_reference(initial_context):
+                names = "、".join(reference_document_names(initial_context))
+                context.append(
+                    f"用户提供了参考文档：{names}。论文内容按轮次检索，发言必须引用本轮依据位置。"
                 )
-            )
+            else:
+                context.extend(
+                    f"用户提供的背景材料（第 {index + 1} 段）: {chunk}"
+                    for index, chunk in enumerate(
+                        initial_context[start:start + 900]
+                        for start in range(0, len(initial_context), 900)
+                    )
+                )
             async with self.runtime.runtime_guard.reader():
                 first_speaker = rng.choice(agents) if agents else None
                 if first_speaker is not None:
@@ -2273,6 +2304,7 @@ class EmbeddedBackend(Backend):
                             speakers=[first_speaker],
                             total_rounds=rounds,
                             user_input="",
+                            discussion_mode=current_discussion_mode(),
                         ),
                         user_text=f"请先做一段精简开场白，然后自然 cue {first_speaker.role} 作为第一位主讲人开始。",
                         token=token,
@@ -2286,13 +2318,26 @@ class EmbeddedBackend(Backend):
                 while completed_rounds < rounds:
                     if token.is_cancelled:
                         break
-                    pending_inputs = self._drain_podcast_inputs(input_queue)
-                    if pending_inputs:
+                    queued_inputs = self._drain_podcast_inputs(input_queue)
+                    pending_inputs: list[str] = []
+                    if queued_inputs:
                         reset_generation(current_generation())
                         completed_rounds = 0
                         research_cache.clear()
-                        for item in pending_inputs:
-                            context.append(f"用户插话: {item}")
+                        for item in queued_inputs:
+                            if has_document_reference(item):
+                                initial_context = "\n\n".join(
+                                    value for value in (initial_context, item) if value
+                                )
+                                run_state["initial_context"] = initial_context
+                                names = "、".join(reference_document_names(item))
+                                typed_input = item.split("[参考文档：", 1)[0].strip()
+                                notice = f"已加载论文文档：{names}，后续各轮按议程检索原文。"
+                                pending_inputs.append(typed_input or notice)
+                                context.append(f"用户插话: {typed_input or notice}")
+                            else:
+                                pending_inputs.append(item)
+                                context.append(f"用户插话: {item}")
                     else:
                         reset_generation(current_generation())
                     active_agents = [agent for agent in agents if agent_is_active(agent)]
@@ -2332,6 +2377,7 @@ class EmbeddedBackend(Backend):
                                 speakers=speakers,
                                 total_rounds=rounds,
                                 user_input=user_input,
+                                discussion_mode=current_discussion_mode(),
                             ),
                             user_text="请回应用户插话，并自然引出本轮主讲人。",
                             token=token,
@@ -2367,9 +2413,8 @@ class EmbeddedBackend(Backend):
                                 generation=active_generation,
                                 is_generation_current=lambda gen: gen == int(run_state.get("generation", 0)),
                                 is_agent_active=agent_is_active,
-                                reference_context="\n\n".join(
-                                    item for item in (initial_context, *pending_inputs) if item
-                                ),
+                                reference_context=initial_context,
+                                total_rounds=rounds,
                             ),
                             name=f"backend.voice_podcast.speaker:{run_id}:{round_index}:{idx}",
                         )
@@ -2409,6 +2454,7 @@ class EmbeddedBackend(Backend):
                         speakers=speakers,
                         total_rounds=rounds,
                         user_input="",
+                        discussion_mode=current_discussion_mode(),
                     )
                     if round_index >= rounds:
                         summary_prompt += "\n请用一句话精简总结刚才主讲人的观点，并做最终收束。"
@@ -2475,7 +2521,10 @@ class EmbeddedBackend(Backend):
         context: str,
         token: CancellationToken,
     ) -> str:
-        from nano_openclaw.features.voice.podcast import build_research_prompt
+        from nano_openclaw.features.voice.podcast import (
+            build_research_prompt,
+            has_document_reference,
+        )
         from nano_openclaw.features.subagents import (
             SpawnParams,
             SubagentCleanupMode,
@@ -2519,19 +2568,22 @@ class EmbeddedBackend(Backend):
                         payload[name] = getattr(event, name)
                 self._emit_podcast(payload)
 
+        research_exclude = {
+            "write_file",
+            "apply_patch",
+            "bash",
+            "skill_install",
+            "sessions_spawn",
+            "subagents",
+            "cron_create",
+            "cron_delete",
+            "schedule_wakeup",
+            "todo",
+        }
+        if has_document_reference(context):
+            research_exclude.update({"web_search", "web_fetch", "read_file", "list_dir", "memory_search", "memory_get"})
         parent_registry = self.runtime.registry.clone(
-            exclude={
-                "write_file",
-                "apply_patch",
-                "bash",
-                "skill_install",
-                "sessions_spawn",
-                "subagents",
-                "cron_create",
-                "cron_delete",
-                "schedule_wakeup",
-                "todo",
-            },
+            exclude=research_exclude,
             console=None,
             approval_handler=None,
         )
@@ -2605,8 +2657,17 @@ class EmbeddedBackend(Backend):
         is_generation_current: Any,
         is_agent_active: Any,
         reference_context: str = "",
+        total_rounds: int | None = None,
     ) -> tuple[Any, str]:
-        from nano_openclaw.features.voice.podcast import build_speaker_prompt
+        from nano_openclaw.features.voice.podcast import (
+            build_paper_fallback_utterance,
+            build_paper_reference_query,
+            build_speaker_prompt,
+            has_document_reference,
+            normalize_paper_scope_claims,
+            select_reference_context,
+            validate_paper_utterance,
+        )
 
         if token.is_cancelled:
             raise asyncio.CancelledError()
@@ -2625,10 +2686,23 @@ class EmbeddedBackend(Backend):
         if not is_agent_active(agent):
             emit_skipped()
             return agent, ""
+        reference_query = f"{topic}\n{context}"
+        if has_document_reference(reference_context):
+            reference_query = build_paper_reference_query(
+                topic=topic,
+                context=context,
+                round_index=round_index,
+                total_rounds=total_rounds,
+            )
+        focused_reference = select_reference_context(
+            reference_context,
+            query=reference_query,
+            round_index=round_index,
+        )
         model_context = context
-        if reference_context.strip():
+        if focused_reference.strip():
             model_context = (
-                f"用户提供的参考材料：\n{reference_context.strip()}\n\n"
+                f"用户提供的参考材料：\n{focused_reference.strip()}\n\n"
                 f"近期讨论上下文：\n{context}"
             )
         cache_key = ":".join([
@@ -2636,6 +2710,8 @@ class EmbeddedBackend(Backend):
             str(getattr(agent, "role", "") or ""),
             str(getattr(agent, "model_ref", "") or ""),
         ])
+        if has_document_reference(focused_reference):
+            cache_key += f":reference:{hash(focused_reference)}"
         research_text = research_cache.get(cache_key, "")
         if not research_text:
             research_task = asyncio.create_task(
@@ -2675,6 +2751,14 @@ class EmbeddedBackend(Backend):
         if not is_agent_active(agent):
             emit_skipped()
             return agent, ""
+        paper_turn = has_document_reference(focused_reference)
+        speaker_prompt = build_speaker_prompt(
+            topic=topic,
+            agent=agent,
+            round_index=round_index,
+            context=model_context,
+            research=research_text,
+        )
         speaker_task = asyncio.create_task(
             self._generate_podcast_utterance(
                 run_id=run_id,
@@ -2686,13 +2770,7 @@ class EmbeddedBackend(Backend):
                 role=agent.role,
                 voice_id=agent.voice_id,
                 voice_label=agent.voice_label,
-                system_prompt=build_speaker_prompt(
-                    topic=topic,
-                    agent=agent,
-                    round_index=round_index,
-                    context=model_context,
-                    research=research_text,
-                ),
+                system_prompt=speaker_prompt,
                 user_text="请基于你的身份、首次 research 摘要和当前讨论上下文，给出本轮观点。",
                 token=token,
                 generation=generation,
@@ -2700,6 +2778,7 @@ class EmbeddedBackend(Backend):
                 use_research_tools=False,
                 persist=False,
                 model_ref=getattr(agent, "model_ref", ""),
+                emit_events=not paper_turn,
             ),
             name=f"backend.voice_podcast.utterance:{run_id}:{round_index}:{getattr(agent, 'id', '')}",
         )
@@ -2724,10 +2803,113 @@ class EmbeddedBackend(Backend):
                 emit_skipped()
                 return agent, ""
         speaker_text = await speaker_task
+        if paper_turn:
+            speaker_text = normalize_paper_scope_claims(speaker_text)
+            valid, reason = validate_paper_utterance(speaker_text, focused_reference)
+            for _rewrite_attempt in range(2):
+                if valid:
+                    break
+                log.warning(
+                    "backend.podcast.paper_validation.retry",
+                    (
+                        f"run={run_id} round={round_index} role={agent.role} "
+                        f"attempt={_rewrite_attempt + 1} reason={reason}"
+                    ),
+                )
+                speaker_text = await self._generate_podcast_utterance(
+                    run_id=run_id,
+                    session=session,
+                    round_index=round_index,
+                    phase="speaker",
+                    sequence=sequence,
+                    agent_id=getattr(agent, "id", ""),
+                    role=agent.role,
+                    voice_id=agent.voice_id,
+                    voice_label=agent.voice_label,
+                    system_prompt=speaker_prompt,
+                    user_text=(
+                        f"上一版草稿未通过论文依据校验：{reason}。"
+                        "请只写两到三句并严格使用以下结构重写："
+                        "第一句以‘原文事实：第N页……’开头，只复述本轮页面直接支持的内容；"
+                        "第二句如需角色分析，必须以‘待验证的工程推断：’开头，并以"
+                        "‘这不是论文结论’结束；最后可用一句说明本轮证据边界。"
+                        "禁止任何类比，禁止声称整篇论文没有、没写、没解释或没验证某内容。"
+                    ),
+                    token=token,
+                    generation=generation,
+                    is_generation_current=is_generation_current,
+                    use_research_tools=False,
+                    persist=False,
+                    model_ref=getattr(agent, "model_ref", ""),
+                    emit_events=False,
+                    timeout_seconds=45,
+                )
+                speaker_text = normalize_paper_scope_claims(speaker_text)
+                valid, reason = validate_paper_utterance(speaker_text, focused_reference)
+            if not valid:
+                log.warning(
+                    "backend.podcast.paper_validation.fallback",
+                    f"run={run_id} round={round_index} role={agent.role} reason={reason}",
+                )
+                speaker_text = build_paper_fallback_utterance(
+                    topic=topic,
+                    role=agent.role,
+                    round_index=round_index,
+                    reference_context=focused_reference,
+                )
+            EmbeddedBackend._emit_podcast_completed_utterance(
+                self,
+                run_id=run_id,
+                session=session,
+                round_index=round_index,
+                phase="speaker",
+                sequence=sequence,
+                agent_id=getattr(agent, "id", ""),
+                role=agent.role,
+                voice_id=agent.voice_id,
+                voice_label=agent.voice_label,
+                model_ref=getattr(agent, "model_ref", ""),
+                text=speaker_text,
+                generation=generation,
+            )
         if not is_agent_active(agent):
             emit_skipped()
             return agent, ""
         return agent, speaker_text
+
+    def _emit_podcast_completed_utterance(
+        self,
+        *,
+        run_id: str,
+        session: AgentBackendSession,
+        round_index: int,
+        phase: str,
+        sequence: int,
+        agent_id: str,
+        role: str,
+        voice_id: str,
+        voice_label: str,
+        model_ref: str,
+        text: str,
+        generation: int,
+    ) -> None:
+        utterance_id = uuid.uuid4().hex
+        base = {
+            "run_id": run_id,
+            "utterance_id": utterance_id,
+            "session_id": session.session_id,
+            "round": round_index,
+            "phase": phase,
+            "sequence": sequence,
+            "agent_id": agent_id,
+            "role": role,
+            "voice_id": voice_id,
+            "voice_label": voice_label,
+            "model_ref": model_ref,
+            "generation": generation,
+        }
+        self._emit_podcast({"type": "podcast.utterance.started", **base})
+        self._emit_podcast({"type": "podcast.utterance.done", **base, "text": text})
 
     def _emit_podcast_utterance_skipped(
         self,
@@ -2889,47 +3071,51 @@ class EmbeddedBackend(Backend):
         persist: bool = True,
         model_ref: str = "",
         agent_id: str = "",
+        emit_events: bool = True,
+        timeout_seconds: float | None = None,
     ) -> str:
         from nano_openclaw.features.voice.podcast import generate_utterance
 
         utterance_id = uuid.uuid4().hex
         if is_generation_current is not None and not is_generation_current(generation):
             return ""
-        self._emit_podcast({
-            "type": "podcast.utterance.started",
-            "run_id": run_id,
-            "utterance_id": utterance_id,
-            "session_id": session.session_id,
-            "round": round_index,
-            "phase": phase,
-            "sequence": sequence,
-            "agent_id": agent_id,
-            "role": role,
-            "voice_id": voice_id,
-            "voice_label": voice_label,
-            "model_ref": model_ref,
-            "generation": generation,
-        })
+        if emit_events:
+            self._emit_podcast({
+                "type": "podcast.utterance.started",
+                "run_id": run_id,
+                "utterance_id": utterance_id,
+                "session_id": session.session_id,
+                "round": round_index,
+                "phase": phase,
+                "sequence": sequence,
+                "agent_id": agent_id,
+                "role": role,
+                "voice_id": voice_id,
+                "voice_label": voice_label,
+                "model_ref": model_ref,
+                "generation": generation,
+            })
 
         def on_delta(text: str) -> None:
             if text and (is_generation_current is None or is_generation_current(generation)):
                 partial_chunks.append(text)
-                self._emit_podcast({
-                    "type": "podcast.text.delta",
-                    "run_id": run_id,
-                    "utterance_id": utterance_id,
-                    "session_id": session.session_id,
-                    "round": round_index,
-                    "phase": phase,
-                    "sequence": sequence,
-                    "agent_id": agent_id,
-                    "role": role,
-                    "voice_id": voice_id,
-                    "voice_label": voice_label,
-                    "model_ref": model_ref,
-                    "text": text,
-                    "generation": generation,
-                })
+                if emit_events:
+                    self._emit_podcast({
+                        "type": "podcast.text.delta",
+                        "run_id": run_id,
+                        "utterance_id": utterance_id,
+                        "session_id": session.session_id,
+                        "round": round_index,
+                        "phase": phase,
+                        "sequence": sequence,
+                        "agent_id": agent_id,
+                        "role": role,
+                        "voice_id": voice_id,
+                        "voice_label": voice_label,
+                        "model_ref": model_ref,
+                        "text": text,
+                        "generation": generation,
+                    })
 
         partial_chunks: list[str] = []
         exclude = {
@@ -2948,6 +3134,7 @@ class EmbeddedBackend(Backend):
             exclude.update({"web_search", "web_fetch", "read_file", "list_dir", "memory_search", "memory_get"})
         registry = self.runtime.registry.clone(exclude=exclude, console=None, approval_handler=None)
         model_client, model_cfg, close_model_client = self._podcast_model_runtime(model_ref)
+        generation_timeout = float(timeout_seconds or PODCAST_UTTERANCE_TIMEOUT_SECONDS)
         try:
             text = await asyncio.wait_for(
                 generate_utterance(
@@ -2960,7 +3147,7 @@ class EmbeddedBackend(Backend):
                     client=model_client,
                     cfg=model_cfg,
                 ),
-                timeout=PODCAST_UTTERANCE_TIMEOUT_SECONDS,
+                timeout=generation_timeout,
             )
         except asyncio.TimeoutError:
             text = "".join(partial_chunks).strip()
@@ -2968,10 +3155,10 @@ class EmbeddedBackend(Backend):
                 "backend.podcast.utterance.timeout",
                 (
                     f"run={run_id} round={round_index} phase={phase} "
-                    f"sequence={sequence} role={role} timeout={PODCAST_UTTERANCE_TIMEOUT_SECONDS}s"
+                    f"sequence={sequence} role={role} timeout={generation_timeout}s"
                 ),
             )
-            if not text:
+            if not text and emit_events:
                 EmbeddedBackend._emit_podcast_sequence_skipped(
                     self,
                     run_id=run_id,
@@ -2988,58 +3175,61 @@ class EmbeddedBackend(Backend):
                 )
                 return ""
         except Exception:
-            EmbeddedBackend._emit_podcast_sequence_skipped(
-                self,
-                run_id=run_id,
-                session=session,
-                round_index=round_index,
-                phase=phase,
-                sequence=sequence,
-                agent_id=agent_id,
-                role=role,
-                voice_id=voice_id,
-                voice_label=voice_label,
-                model_ref=model_ref,
-                generation=generation,
-            )
+            if emit_events:
+                EmbeddedBackend._emit_podcast_sequence_skipped(
+                    self,
+                    run_id=run_id,
+                    session=session,
+                    round_index=round_index,
+                    phase=phase,
+                    sequence=sequence,
+                    agent_id=agent_id,
+                    role=role,
+                    voice_id=voice_id,
+                    voice_label=voice_label,
+                    model_ref=model_ref,
+                    generation=generation,
+                )
             raise
         finally:
             if close_model_client:
                 await self._close_podcast_model_client(model_client)
         if is_generation_current is not None and not is_generation_current(generation):
-            EmbeddedBackend._emit_podcast_sequence_skipped(
-                self,
-                run_id=run_id,
-                session=session,
-                round_index=round_index,
-                phase=phase,
-                sequence=sequence,
-                agent_id=agent_id,
-                role=role,
-                voice_id=voice_id,
-                voice_label=voice_label,
-                model_ref=model_ref,
-                generation=generation,
-            )
+            if emit_events:
+                EmbeddedBackend._emit_podcast_sequence_skipped(
+                    self,
+                    run_id=run_id,
+                    session=session,
+                    round_index=round_index,
+                    phase=phase,
+                    sequence=sequence,
+                    agent_id=agent_id,
+                    role=role,
+                    voice_id=voice_id,
+                    voice_label=voice_label,
+                    model_ref=model_ref,
+                    generation=generation,
+                )
             return ""
         if text and persist:
             await self._append_podcast_message(session, "assistant", f"【{role}｜{voice_label}】{text}")
-        self._emit_podcast({
-            "type": "podcast.utterance.done",
-            "run_id": run_id,
-            "utterance_id": utterance_id,
-            "session_id": session.session_id,
-            "round": round_index,
-            "phase": phase,
-            "sequence": sequence,
-            "agent_id": agent_id,
-            "role": role,
-            "voice_id": voice_id,
-            "voice_label": voice_label,
-            "model_ref": model_ref,
-            "text": text,
-            "generation": generation,
-        })
+        if emit_events:
+            self._emit_podcast({
+                "type": "podcast.utterance.done",
+                "run_id": run_id,
+                "utterance_id": utterance_id,
+                "session_id": session.session_id,
+                "round": round_index,
+                "phase": phase,
+                "sequence": sequence,
+                "agent_id": agent_id,
+                "role": role,
+                "voice_id": voice_id,
+                "voice_label": voice_label,
+                "model_ref": model_ref,
+                "text": text,
+                "generation": generation,
+            })
         return text
 
     def _emit_podcast_sequence_skipped(

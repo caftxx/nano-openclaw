@@ -127,6 +127,39 @@ def test_group_chat_image_start_returns_before_visual_processing_finishes():
     assert 'throw new Error("请求超时，请重试")' in api_body
 
 
+def test_pdf_upload_automatically_switches_to_visible_paper_discussion_mode():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    add_body = _function_body(source, "function addPodcastDocuments(files)", "function validatePodcastDocumentSet()")
+    surface_body = _function_body(source, "function updateConversationSurface()", "function setPodcastControl")
+    event_body = _function_body(source, "function onEvent(event)", "function stopSpeech()")
+
+    assert 'endsWith(".pdf")' in add_body
+    assert 'podcast.discussionMode = "paper"' in add_body
+    assert '"论文讨论"' in surface_body
+    assert 'event.type === "podcast.discussion.mode.changed"' in event_body
+    assert 'podcast.discussionMode = event.discussion_mode' in event_body
+
+
+def test_settings_and_voice_topic_start_paths_include_selected_documents():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    start_ui_body = _function_body(
+        source,
+        "async function startPodcastFromUi(topicOverride)",
+        "async function createPodcastRecognizer(callbacks)",
+    )
+    capture_body = _function_body(
+        source,
+        "async function startTopicCapture()",
+        "function stopTopicCapture()",
+    )
+
+    assert "await buildPodcastDocumentPayloads()" in start_ui_body
+    assert 'typeof topicOverride === "string"' in start_ui_body
+    assert "await startPodcast(topic, attachments, requestContext)" in start_ui_body
+    assert "clearPodcastDocuments()" in start_ui_body
+    assert "startPodcastFromUi(text)" in capture_body
+
+
 def test_group_chat_session_switch_invalidates_pending_attachment_submission():
     source = PODCAST_JS.read_text(encoding="utf-8")
     reset_body = _function_body(
@@ -278,7 +311,7 @@ def test_group_voice_uses_the_composer_button_without_ambient_overlay_clicks():
     assert "shouldIgnoreAmbientPodcastTap" not in podcast_circle_body
     assert "if (!isGroupMode()) return;" in podcast_circle_body
     assert "event.stopImmediatePropagation();" in podcast_circle_body
-    assert "else if (explicitTopicValue()) startPodcast();" in podcast_circle_body
+    assert "else if (explicitTopicValue()) startPodcastFromUi();" in podcast_circle_body
     assert 'var overlay = $("voiceOverlay");' not in init_body
 
 

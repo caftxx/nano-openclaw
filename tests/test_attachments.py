@@ -7,12 +7,14 @@ import uuid
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nano_openclaw.core.attachments import (
     AttachmentAttached,
     MAX_ATTACHMENT_BYTES,
+    MAX_EXTRACTED_DOCUMENT_CHARS,
     MAX_TOTAL_ATTACHMENT_BYTES,
     PromptAttachment,
     decode_attachment_payloads,
@@ -39,6 +41,7 @@ def test_decode_attachment_payloads_accepts_base64():
 def test_web_attachment_limits_allow_fifty_megabytes_per_file():
     assert MAX_ATTACHMENT_BYTES == 50 * 1024 * 1024
     assert MAX_TOTAL_ATTACHMENT_BYTES == 5 * MAX_ATTACHMENT_BYTES
+    assert MAX_EXTRACTED_DOCUMENT_CHARS == 400_000
 
 
 def test_decode_attachment_payloads_rejects_bad_base64():
@@ -78,6 +81,39 @@ def test_extract_docx_document_for_group_chat():
         len(data),
         data,
     )) == "Product brief\nLaunch in July"
+
+
+def test_extract_pdf_document_keeps_page_locators(monkeypatch):
+    pages = [
+        SimpleNamespace(extract_text=lambda: "Introduction"),
+        SimpleNamespace(extract_text=lambda: "Experiment results"),
+    ]
+    monkeypatch.setattr("pypdf.PdfReader", lambda _stream: SimpleNamespace(pages=pages))
+    data = b"fake pdf"
+
+    assert extract_document_text(PromptAttachment(
+        "paper.pdf",
+        "application/pdf",
+        len(data),
+        data,
+    )) == "[第 1 页]\nIntroduction\n\n[第 2 页]\nExperiment results"
+
+
+def test_extract_pdf_keeps_late_paper_sections_beyond_old_limit(monkeypatch):
+    pages = [SimpleNamespace(extract_text=lambda: "A" * 130_000)]
+    pages.extend(SimpleNamespace(extract_text=lambda: "short section") for _ in range(42))
+    pages.append(SimpleNamespace(extract_text=lambda: "Conclusion and Limitations"))
+    monkeypatch.setattr("pypdf.PdfReader", lambda _stream: SimpleNamespace(pages=pages))
+
+    text = extract_document_text(PromptAttachment(
+        "long-paper.pdf",
+        "application/pdf",
+        4,
+        b"%PDF",
+    ))
+
+    assert "[第 44 页]\nConclusion and Limitations" in text
+    assert "[文档内容已截断]" not in text
 
 
 def test_extract_docx_rejects_oversized_document_xml(monkeypatch):

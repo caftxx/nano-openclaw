@@ -28,6 +28,7 @@
   var TOPIC_KEY = "nanoGroupTopic";
   var HOST_MODEL_KEY = "nanoGroupHostModel";
   var ROUNDS_KEY = "nanoGroupRounds";
+  var DISCUSSION_MODE_KEY = "nanoGroupDiscussionMode";
   var MAX_GROUP_AGENTS = 9;
   var MAX_GROUP_DOCUMENTS = 5;
   var MAX_GROUP_DOCUMENT_BYTES = 50 * 1024 * 1024;
@@ -98,6 +99,7 @@
     cloudTtsActive: 0,
     cloudTtsQueue: [],
     mode: false,
+    discussionMode: "group",
     capturingInput: false,
     capturingTopic: false,
     topicCaptureArmed: false,
@@ -215,6 +217,7 @@
       if (podcast.hostModelRef) sessionSet(HOST_MODEL_KEY, JSON.stringify({ ref: podcast.hostModelRef, label: podcast.hostModelLabel || "" }), sid);
       else sessionRemove(HOST_MODEL_KEY, sid);
       sessionSet(ROUNDS_KEY, String(normalizeRounds(podcast.rounds)), sid);
+      sessionSet(DISCUSSION_MODE_KEY, podcast.discussionMode || "group", sid);
       return;
     }
     sessionRemove(MODE_KEY, sid);
@@ -223,6 +226,7 @@
     sessionRemove(TOPIC_KEY, sid);
     sessionRemove(HOST_MODEL_KEY, sid);
     sessionRemove(ROUNDS_KEY, sid);
+    sessionRemove(DISCUSSION_MODE_KEY, sid);
   }
   function hasPodcastState(sessionId) {
     return Boolean(sessionGet(MODE_KEY, sessionId) || sessionGet(RUN_KEY, sessionId) || sessionGet(AGENTS_KEY, sessionId));
@@ -252,6 +256,7 @@
     podcast.hostModelRef = "";
     podcast.hostModelLabel = "";
     podcast.rounds = 20;
+    podcast.discussionMode = "group";
     podcast.removedAgentIds = [];
     podcast.removedSpeakerRoles = [];
     podcast.utterances.clear();
@@ -308,6 +313,7 @@
     if (!podcast.lastTopic) podcast.lastTopic = sessionGet(TOPIC_KEY, sid);
     setPodcastTopicInput(podcast.lastTopic || "");
     podcast.rounds = normalizeRounds(sessionGet(ROUNDS_KEY, sid) || podcast.rounds || 20);
+    podcast.discussionMode = sessionGet(DISCUSSION_MODE_KEY, sid) || podcast.discussionMode || "group";
     syncRoundInputs(podcast.rounds);
     if (!podcast.hostModelRef) {
       var savedHostModel = sessionGetJson(HOST_MODEL_KEY, null, sid);
@@ -1389,16 +1395,19 @@
   }
   function updateConversationSurface() {
     var group = isGroupMode();
+    var paper = group && podcast.discussionMode === "paper";
     var title = $("conversationModeTitle");
     var emptyTitle = $("conversationEmptyTitle");
     var settings = $("podcastSettingsBtn");
     var roundControl = root.document && root.document.querySelector(".podcast-round-control");
     var stop = $("podcastStageStopBtn");
-    if (title) title.textContent = group ? "群聊" : "单聊";
-    if (emptyTitle) emptyTitle.textContent = group ? "说点什么，成员会围绕它展开讨论" : "和 Assistant 聊点什么";
+    if (title) title.textContent = paper ? "论文讨论" : (group ? "群聊" : "单聊");
+    if (emptyTitle) emptyTitle.textContent = paper
+      ? "围绕论文原文、方法、证据和局限逐轮深入讨论"
+      : (group ? "说点什么，成员会围绕它展开讨论" : "和 Assistant 聊点什么");
     if (settings) {
-      settings.setAttribute("aria-label", group ? "群聊设置" : "Assistant 设置");
-      settings.title = group ? "群聊设置" : "Assistant 设置";
+      settings.setAttribute("aria-label", paper ? "论文讨论设置" : (group ? "群聊设置" : "Assistant 设置"));
+      settings.title = paper ? "论文讨论设置" : (group ? "群聊设置" : "Assistant 设置");
     }
     if (roundControl) roundControl.hidden = !group;
     if (stop) {
@@ -1644,6 +1653,7 @@
         return false;
       }
       podcast.runId = payload.run_id || "";
+      podcast.discussionMode = payload.discussion_mode || podcast.discussionMode || "group";
       podcast.playbackStopped = false;
       podcast.generationDone = false;
       savePodcastState();
@@ -1652,12 +1662,15 @@
       showPodcastNotice("");
       primePlayback();
       renderAssignments(payload);
-      setStatus("群聊进行中，可在输入框发言或点击麦克风插话。");
+      setStatus(podcast.discussionMode === "paper"
+        ? "论文讨论进行中，每轮会按章节检索并核对原文依据。"
+        : "群聊进行中，可在输入框发言或点击麦克风插话。");
       setVoiceStatus(payload.processing_attachments
         ? "群聊已启动，正在理解图片内容..."
         : "群聊已启动，正在生成主持人开场...");
       setDialog(false);
       setPodcastMode(true);
+      updateConversationSurface();
       setActive(true);
       clearPodcastDocuments();
       return true;
@@ -1846,6 +1859,7 @@
     if (event.run_id && podcast.runId && event.run_id !== podcast.runId) return;
     if (event.type === "podcast.started") {
       setPodcastMode(true);
+      podcast.discussionMode = event.discussion_mode || podcast.discussionMode || "group";
       podcast.generation = Number(event.generation) || 0;
       podcast.runId = event.run_id || podcast.runId;
       podcast.playbackStopped = false;
@@ -1861,6 +1875,16 @@
         ? "群聊已启动，正在理解图片内容..."
         : "群聊已启动，正在生成主持人开场...");
       updatePodcastControl();
+      updateConversationSurface();
+      return;
+    }
+    if (event.type === "podcast.discussion.mode.changed") {
+      podcast.discussionMode = event.discussion_mode || "group";
+      savePodcastState();
+      updateConversationSurface();
+      setStatus(podcast.discussionMode === "paper"
+        ? "已自动切换到论文讨论模式。"
+        : "群聊进行中。");
       return;
     }
     if (event.type === "podcast.attachments.processing") {
@@ -2703,13 +2727,36 @@
     return null;
   }
 
-  function startPodcastFromUi() {
+  async function startPodcastFromUi(topicOverride) {
     if (!podcast.agents.length) addGroupAgent();
-    if (explicitTopicValue()) {
-      startPodcast();
-      return;
+    var explicitOverride = typeof topicOverride === "string" ? topicOverride : "";
+    var topic = String(explicitOverride || explicitTopicValue() || "").trim();
+    if (!topic) {
+      startTopicCapture();
+      return false;
     }
-    startTopicCapture();
+    validatePodcastDocumentSet();
+    if (podcast.documents.some(function (item) { return item.error; })) return false;
+    var requestContext = podcastRequestContext("");
+    podcast.inputSending = true;
+    updatePodcastComposer();
+    try {
+      var attachments = await buildPodcastDocumentPayloads();
+      if (!isPodcastRequestCurrent(requestContext)) return false;
+      var started = await startPodcast(topic, attachments, requestContext);
+      if (started && isPodcastRequestCurrent(requestContext)) clearPodcastDocuments();
+      return started;
+    } catch (err) {
+      if (isPodcastRequestCurrent(requestContext)) {
+        setPodcastInputHint("发送失败：" + (err && err.message || err), true);
+      }
+      return false;
+    } finally {
+      if (isPodcastRequestCurrent(requestContext)) {
+        podcast.inputSending = false;
+        updatePodcastComposer();
+      }
+    }
   }
 
   async function createPodcastRecognizer(callbacks) {
@@ -2803,7 +2850,7 @@
         var topic = $("podcastTopic");
         if (topic) topic.value = text;
         addBubble("you", "话题：" + text);
-        startPodcast(text);
+        startPodcastFromUi(text);
       },
       onError: function () {
         stopTopicCapture();
@@ -2993,6 +3040,12 @@
         + '<button class="podcast-document-remove" type="button" aria-label="移除 ' + escapeHtml(item.file.name) + '">×</button>';
       chip.querySelector("button").onclick = function () {
         podcast.documents = podcast.documents.filter(function (candidate) { return candidate.id !== item.id; });
+        if (!podcast.runId && !podcast.documents.some(function (candidate) {
+          return String(candidate.file && candidate.file.name || "").toLowerCase().endsWith(".pdf");
+        })) {
+          podcast.discussionMode = "group";
+          updateConversationSurface();
+        }
         validatePodcastDocumentSet();
         renderPodcastDocuments();
       };
@@ -3013,6 +3066,14 @@
       });
     });
     validatePodcastDocumentSet();
+    if (podcast.documents.some(function (item) {
+      return String(item.file && item.file.name || "").toLowerCase().endsWith(".pdf");
+    })) {
+      podcast.discussionMode = "paper";
+      setStatus("已识别论文 PDF，将自动进入论文讨论模式。");
+      setVoiceStatus("论文讨论会按轮次检索原文并引用页码。");
+      updateConversationSurface();
+    }
     renderPodcastDocuments();
   }
 
@@ -3285,7 +3346,7 @@
       event.preventDefault();
       if (cancelPodcastCapture()) return;
       if (podcast.runId) startInterjectionCapture();
-      else if (explicitTopicValue()) startPodcast();
+      else if (explicitTopicValue()) startPodcastFromUi();
       else startTopicCapture();
     }, true);
     function restoreAndResumePodcast() {

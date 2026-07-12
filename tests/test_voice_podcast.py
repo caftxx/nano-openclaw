@@ -18,15 +18,21 @@ from nano_openclaw.features.voice.podcast import (
     HOST_VOICE_ID,
     _voice_gender,
     assign_agents,
+    build_paper_fallback_utterance,
     build_host_prompt,
+    build_paper_reference_query,
     build_discussion_context,
     build_research_prompt,
     build_speaker_prompt,
     build_start_summary,
     choose_speakers,
+    discussion_mode_for_attachments,
+    normalize_paper_scope_claims,
     normalize_utterance,
     normalize_rounds,
     podcast_model_options,
+    select_reference_context,
+    validate_paper_utterance,
 )
 from nano_openclaw.features.voice.voice_catalog import voice_score
 from nano_openclaw.services.backend import PushEvent
@@ -436,6 +442,471 @@ def test_podcast_prompts_keep_original_topic_primary_over_role_metaphors():
     assert topic in host_prompt
     assert topic in speaker_prompt
     assert topic in research_prompt
+
+
+def test_paper_reference_selection_combines_relevance_with_round_coverage():
+    reference = "\n\n".join([
+        "[参考文档：paper.pdf]",
+        "[第 1 页]\n研究背景与问题定义。",
+        "[第 2 页]\n相关工作与理论基础。",
+        "[第 3 页]\n实验方法使用对照组和消融实验。",
+        "[第 4 页]\n数据集与评价指标。",
+        "[第 5 页]\n结果显示准确率显著提升。",
+    ])
+
+    first = select_reference_context(
+        reference,
+        query="实验方法和消融实验",
+        round_index=1,
+        max_chunks=2,
+    )
+    fourth = select_reference_context(
+        reference,
+        query="实验方法和消融实验",
+        round_index=4,
+        max_chunks=2,
+    )
+
+    assert "paper.pdf｜第 3 页" in first
+    assert "paper.pdf｜第 1 页" in first
+    assert "paper.pdf｜第 3 页" in fourth
+    assert "paper.pdf｜第 4 页" in fourth
+    assert first != fourth
+
+
+def test_paper_prompts_require_source_locations_and_fresh_analysis():
+    topic = "讨论论文的方法和实验结果"
+    agent = assign_agents([{"role": "作家"}], topic)[0]
+    context = "[本轮论文依据：第 2 轮]\n[参考文档：paper.pdf｜第 6 页]\n消融实验结果"
+
+    speaker = build_speaker_prompt(
+        topic=topic,
+        agent=agent,
+        round_index=2,
+        context=context,
+        research="第 6 页报告了消融实验。",
+    )
+    research = build_research_prompt(
+        topic=topic,
+        agent=agent,
+        round_index=2,
+        context=context,
+    )
+
+    assert "文档名及页码/片段" in speaker
+    assert "不得编造页码" in speaker
+    assert "当前轮次唯一议程" in speaker
+    assert "不得把模型训练 checkpoint 改写成多 Agent checkpoint" in speaker
+    assert "待验证的工程推断" in speaker
+    assert "这里只是类比，不是论文结论" in speaker
+    assert "本轮尚未讨论" in research
+    assert "当前轮次唯一议程" in research
+    assert "论文讨论模式禁止使用 Web" in research
+    assert "部署拓扑、显存容量、成本、延迟" in research
+
+
+def test_pdf_attachment_automatically_enables_paper_discussion_mode():
+    assert discussion_mode_for_attachments("自由讨论", [{
+        "name": "paper.pdf",
+        "mime": "application/pdf",
+    }]) == "paper"
+    assert discussion_mode_for_attachments("论文研讨", [{
+        "name": "draft.docx",
+        "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }]) == "paper"
+    assert discussion_mode_for_attachments("项目周报", [{
+        "name": "report.docx",
+        "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }]) == "group"
+
+
+def test_paper_round_agenda_drives_cross_language_section_retrieval():
+    topic = (
+        "第一轮分析总体架构；第二轮分析 CSA/HCA 的效率机制；"
+        "第三轮分析训练与推理基础设施；第四轮审视评测证据和局限"
+    )
+    reference = "\n\n".join([
+        "[参考文档：paper.pdf]",
+        "[第 2 页]\nContents\nArchitecture . . . 6\nInfrastructure . . . 15\nEvaluation . . . 36",
+        "[第 6 页]\nOverall architecture and residual connections.",
+        "[第 9 页]\nHybrid Attention with CSA and HCA improves efficiency.",
+        "[第 23 页]\nInference framework and on-disk KV cache storage.",
+        "[第 26 页]\nMitigating Training Instability.",
+        "[第 44 页]\nConclusion, Limitations, and Future Directions.",
+    ])
+
+    second_query = build_paper_reference_query(
+        topic=topic,
+        context="主持人：进入第二轮。",
+        round_index=2,
+        total_rounds=4,
+    )
+    third_query = build_paper_reference_query(
+        topic=topic,
+        context="主持人：进入第三轮。",
+        round_index=3,
+        total_rounds=4,
+    )
+    fourth_query = build_paper_reference_query(
+        topic=topic,
+        context="主持人：进入第四轮。",
+        round_index=4,
+        total_rounds=4,
+    )
+
+    second = select_reference_context(reference, query=second_query, round_index=2, max_chunks=1)
+    third = select_reference_context(reference, query=third_query, round_index=3, max_chunks=1)
+    fourth = select_reference_context(reference, query=fourth_query, round_index=4, max_chunks=1)
+
+    assert "第 9 页" in second
+    assert "第 23 页" in third or "第 26 页" in third
+    assert "第 44 页" in fourth
+    assert "Contents" not in second + third + fourth
+
+
+def test_paper_reference_query_does_not_reintroduce_later_agendas_from_anchor():
+    topic = (
+        "第一轮分析核心主张与总体架构；第二轮分析 CSA/HCA 的效率机制；"
+        "第三轮分析训练与推理基础设施；第四轮审视评测证据和局限"
+    )
+    context = build_discussion_context(
+        topic=topic,
+        entries=["主持人: 先讨论总体架构。"],
+    )
+
+    query = build_paper_reference_query(
+        topic=topic,
+        context=context,
+        round_index=1,
+        total_rounds=4,
+    )
+
+    assert "核心主张与总体架构" in query
+    assert "CSA/HCA" not in query
+    assert "训练与推理基础设施" not in query
+    assert "评测证据和局限" not in query
+
+
+def test_paper_reference_query_keeps_only_explicit_user_followup():
+    topic = "第一轮总体架构；第二轮效率机制"
+    context = build_discussion_context(
+        topic=topic,
+        entries=[
+            "主持人: 上一轮聊了架构。",
+            "用户插话: 请结合第9页解释 HCA。",
+        ],
+    )
+
+    query = build_paper_reference_query(
+        topic=topic,
+        context=context,
+        round_index=2,
+        total_rounds=2,
+    )
+
+    assert "请结合第9页解释 HCA" in query
+    assert "上一轮聊了架构" not in query
+
+
+def test_paper_reference_uses_top_level_toc_entry_without_dot_leaders():
+    reference = "\n\n".join([
+        "[参考文档：paper.pdf]",
+        (
+            "[第 2 页]\nContents\n"
+            "5.3 Standard Benchmark Evaluation . . . . . . 36\n"
+            "5.3.2 Evaluation Results . . . . . . 37\n"
+            "6 Conclusion, Limitations, and Future Directions 44"
+        ),
+        "[第 36 页]\nStandard benchmark evaluation setup.",
+        "[第 37 页]\nEvaluation results on standard benchmarks.",
+        "[第 44 页]\nConclusion, limitations, and future directions.",
+    ])
+
+    selected = select_reference_context(
+        reference,
+        query="评测证据、局限和仍未回答的问题",
+        round_index=4,
+        max_chunks=3,
+    )
+
+    assert "第 44 页" in selected
+    assert "Contents" not in selected
+
+
+def test_paper_reference_scans_all_chunks_from_a_detected_toc_page():
+    long_toc_prefix = "\n".join(
+        f"2.{index} Architecture Section . . . . . . {index + 3}"
+        for index in range(1, 45)
+    )
+    reference = "\n\n".join([
+        "[参考文档：paper.pdf]",
+        (
+            "[第 2 页]\nContents\n"
+            + long_toc_prefix
+            + "\n2.3.1 Compressed Sparse Attention . . . . . . 9"
+            + "\n2.3.2 Heavily Compressed Attention 11"
+            + "\n3.4.3 Contextual Parallelism for Long-Context Attention 20"
+        ),
+        "[第 9 页]\n" + ("Compressed Sparse Attention details. " * 80),
+        "[第 11 页]\nHeavily Compressed Attention details.",
+        "[第 20 页]\nTraining infrastructure for contextual parallelism.",
+    ])
+
+    selected = select_reference_context(
+        reference,
+        query="CSA HCA efficiency mechanism",
+        round_index=2,
+        max_chunks=3,
+    )
+
+    assert "第 9 页" in selected
+    assert "第 11 页" in selected
+    assert "第 20 页" not in selected
+
+
+def test_paper_reference_does_not_pull_conclusion_into_architecture_round():
+    reference = "\n\n".join([
+        "[参考文档：paper.pdf]",
+        "[第 2 页]\nContents\nOverall Architecture . . . . . . 6\nConclusion 44",
+        "[第 1 页]\nAbstract and core contribution summary.",
+        "[第 4 页]\nIntroduction and overall architecture contribution.",
+        "[第 6 页]\nOverall Architecture and model blocks.",
+        "[第 44 页]\nConclusion repeats the overall architecture and adds user limitations.",
+    ])
+
+    selected = select_reference_context(
+        reference,
+        query="核心主张与总体架构 architecture contribution",
+        round_index=1,
+        max_chunks=3,
+    )
+
+    assert "第 6 页" in selected
+    assert "第 4 页" in selected
+    assert "第 44 页" not in selected
+
+
+def test_page_range_in_latest_host_question_overrides_general_relevance():
+    reference = "\n\n".join([
+        "[参考文档：paper.pdf]",
+        "[第 1 页]\nHighly relevant architecture overview.",
+        "[第 4 页]\nResearch problem and introduction.",
+        "[第 5 页]\nContributions and scope.",
+    ])
+    selected = select_reference_context(
+        reference,
+        query="请回到第4到5页说明研究问题 architecture",
+        round_index=1,
+        max_chunks=2,
+    )
+
+    assert "第 4 页" in selected
+    assert "第 5 页" in selected
+    assert "第 1 页" not in selected
+
+
+def test_paper_utterance_validator_rejects_missing_evidence_and_false_absence():
+    reference = (
+        "[本轮论文依据]\n"
+        "[参考文档：paper.pdf｜第 1 页]\n"
+        "The model uses 27% FLOPs and 10% KV cache."
+    )
+
+    assert validate_paper_utterance("论文第1页报告使用27% FLOPs。", reference) == (True, "")
+    valid, reason = validate_paper_utterance("论文第23页介绍磁盘缓存。", reference)
+    assert valid is False
+    assert "未提供的页码" in reason
+    valid, reason = validate_paper_utterance("论文第1页查无出处。", reference)
+    assert valid is False
+    assert "不能根据局部检索" in reason
+    valid, reason = validate_paper_utterance("论文第1页之外原文没给具体数据。", reference)
+    assert valid is False
+    assert "不能根据局部检索" in reason
+    valid, reason = validate_paper_utterance("第1页之外论文没解释为什么。", reference)
+    assert valid is False
+    assert "不能根据局部检索" in reason
+    valid, reason = validate_paper_utterance("第1页之外论文没交代调用方式。", reference)
+    assert valid is False
+    assert "不能根据局部检索" in reason
+    valid, reason = validate_paper_utterance("论文第1页报告使用99% FLOPs。", reference)
+    assert valid is False
+    assert "不存在的量化值" in reason
+
+    valid, reason = validate_paper_utterance(
+        "第1页说明百万 token 的 KV Cache 轻松吃掉几百GB显存。",
+        reference,
+    )
+    assert valid is False
+    assert "估算量级" in reason
+
+    valid, reason = validate_paper_utterance(
+        "第1页的压缩比意味着可以直接改成单机多卡部署。",
+        reference,
+    )
+    assert valid is False
+    assert "工程外推" in reason
+
+    valid, reason = validate_paper_utterance(
+        "第1页的压缩方式在 Agent 系统里存在上下文丢失风险。",
+        reference,
+    )
+    assert valid is False
+    assert "工程外推" in reason
+
+    assert validate_paper_utterance(
+        "第1页给出压缩结果；单机多卡只是待验证的工程推断，不是论文结论。",
+        reference,
+    ) == (True, "")
+
+    valid, reason = validate_paper_utterance(
+        "第1页的 MoE 相当于只叫少数专家干活。",
+        reference,
+    )
+    assert valid is False
+    assert "角色类比" in reason
+
+    assert validate_paper_utterance(
+        "第1页的 MoE 好比只叫少数专家干活；这里只是类比，不是论文结论。",
+        reference,
+    ) == (True, "")
+
+    valid, reason = validate_paper_utterance(
+        "第1页的压缩设计像给注意力上了双保险。",
+        reference,
+    )
+    assert valid is False
+    assert "角色类比" in reason
+
+    valid, reason = validate_paper_utterance(
+        "第1页的索引器等于一个侦察兵负责选目标。",
+        reference,
+    )
+    assert valid is False
+    assert "角色类比" in reason
+
+
+def test_paper_scope_normalizer_keeps_absence_claims_local_to_evidence_window():
+    text = (
+        "论文没给延迟数据，原文没解释调度策略，"
+        "论文没验证多机恢复，论文没拆开测索引器。"
+    )
+
+    normalized = normalize_paper_scope_claims(text)
+
+    assert "论文没" not in normalized
+    assert "原文没" not in normalized
+    assert "本轮页面未给出延迟数据" in normalized
+    assert "本轮页面未解释调度策略" in normalized
+    assert normalized.count("本轮页面未显示相关验证") == 2
+
+
+def test_paper_fallback_remains_useful_and_role_specific():
+    reference = (
+        "[参考文档：paper.pdf｜第 19 页｜片段 2]\nTraining infrastructure.\n"
+        "[参考文档：paper.pdf｜第 21 页｜片段 3]\nInference infrastructure."
+    )
+    cloud = build_paper_fallback_utterance(
+        topic="第一轮分析训练与推理基础设施",
+        role="云计算架构师",
+        round_index=1,
+        reference_context=reference,
+    )
+    agent = build_paper_fallback_utterance(
+        topic="第一轮分析训练与推理基础设施",
+        role="AI Agent研发工程师",
+        round_index=1,
+        reference_context=reference,
+    )
+
+    assert "第19页、第21页" in cloud
+    assert "训练与推理基础设施" in cloud
+    assert "资源占用、并行效率与故障恢复稳定性" in cloud
+    assert "状态保持、检索准确性与工具调用一致性" in agent
+    assert cloud != agent
+    assert validate_paper_utterance(cloud, reference) == (True, "")
+    assert validate_paper_utterance(agent, reference) == (True, "")
+
+def test_paper_host_prompt_keeps_each_round_on_its_agenda():
+    topic = "第一轮分析架构；第二轮分析训练；第三轮分析评测和局限"
+    agent = assign_agents([{"role": "作家"}], topic)[0]
+    prompt = build_host_prompt(
+        topic=topic,
+        round_index=2,
+        total_rounds=3,
+        speakers=[agent],
+        discussion_mode="paper",
+    )
+
+    assert "当前轮次议程：分析训练" in prompt
+    assert "下一轮议程：分析评测和局限" in prompt
+    assert "不得因为上一位发言不完整" in prompt
+    assert "不要认可主讲人声称的“纠错”" in prompt
+    assert "不得把主讲人的工程猜测升级成论文事实" in prompt
+
+
+def test_paper_speaker_turn_refreshes_research_for_each_evidence_window():
+    class Backend:
+        def __init__(self):
+            self.research_contexts = []
+            self.speaker_prompts = []
+            self.speaker_requests = []
+
+        def _emit_podcast(self, _payload):
+            return None
+
+        async def _run_podcast_research_subagent(self, **kwargs):
+            self.research_contexts.append(kwargs["context"])
+            return f"research round {kwargs['round_index']}"
+
+        async def _generate_podcast_utterance(self, **kwargs):
+            self.speaker_prompts.append(kwargs["system_prompt"])
+            self.speaker_requests.append(kwargs["user_text"])
+            return f"speaker round {kwargs['round_index']}"
+
+    async def run_case():
+        backend = Backend()
+        agent = assign_agents(
+            [{"id": "agent-1", "role": "作家", "model_ref": "p/m"}],
+            "论文实验方法",
+        )[0]
+        cache = {}
+        reference = "\n\n".join([
+            "[参考文档：paper.pdf]",
+            "[第 1 页]\n研究背景。",
+            "[第 2 页]\n理论基础。",
+            "[第 3 页]\n实验方法。",
+            "[第 4 页]\n数据集。",
+            "[第 5 页]\n实验结果。",
+        ])
+        for round_index in (1, 2):
+            await EmbeddedBackend._run_podcast_speaker_turn(
+                backend,
+                run_id="run-1",
+                session=SimpleNamespace(session_id="session-1"),
+                topic="论文实验方法",
+                agent=agent,
+                round_index=round_index,
+                sequence=round_index,
+                context="讨论主题锚点：论文实验方法",
+                research_cache=cache,
+                token=SimpleNamespace(is_cancelled=False),
+                generation=0,
+                is_generation_current=lambda _generation: True,
+                is_agent_active=lambda _agent: True,
+                reference_context=reference,
+            )
+        return backend, cache
+
+    backend, cache = asyncio.run(run_case())
+
+    assert len(backend.research_contexts) == 2
+    assert backend.research_contexts[0] != backend.research_contexts[1]
+    assert "第 1 页" in backend.research_contexts[0]
+    assert "第 3 页" in backend.research_contexts[1]
+    assert all("文档名及页码/片段" in prompt for prompt in backend.speaker_prompts)
+    assert any("原文事实：第N页" in request for request in backend.speaker_requests)
+    assert any("待验证的工程推断：" in request for request in backend.speaker_requests)
+    assert len(cache) == 2
 
 
 def test_discussion_context_keeps_original_anchor_when_long():
@@ -1175,6 +1646,71 @@ def test_podcast_run_passes_context_with_opening_anchor_after_many_rounds():
     assert "中间讨论已压缩" in late_context
     assert "主持人: summary round 9" in late_context
     assert backend.events[-1]["type"] == "podcast.done"
+
+
+def test_podcast_run_persists_paper_uploaded_after_discussion_started():
+    class Guard:
+        def reader(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(runtime_guard=Guard())
+            self.events = []
+            self.references = []
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+        async def _append_podcast_message(self, *args, **kwargs):
+            return None
+
+        async def _generate_podcast_utterance(self, **kwargs):
+            return f"{kwargs['phase']} round {kwargs['round_index']}"
+
+        async def _run_podcast_speaker_turn(self, **kwargs):
+            self.references.append(kwargs["reference_context"])
+            return kwargs["agent"], f"speaker round {kwargs['round_index']}"
+
+        def _drain_podcast_inputs(self, queue):
+            return EmbeddedBackend._drain_podcast_inputs(self, queue)
+
+    backend = Backend()
+    agent = assign_agents([{"id": "agent-1", "role": "研究员"}], "论文研讨")[0]
+    queue = asyncio.Queue()
+    queue.put_nowait(
+        "请分析局限\n\n[参考文档：paper.pdf]\n"
+        "[第 1 页]\nArchitecture\n\n[第 44 页]\nConclusion and Limitations"
+    )
+    run_state = {"generation": 0, "removed_agent_ids": set(), "discussion_mode": "paper"}
+
+    asyncio.run(
+        EmbeddedBackend._run_podcast(
+            backend,
+            run_id="run-1",
+            session=SimpleNamespace(session_id="session-1"),
+            topic="论文研讨",
+            agents=[agent],
+            rounds=2,
+            host_voice_id="xiaoxian",
+            host_voice_label="小仙",
+            host_model_ref="p/m",
+            host_model_label="m",
+            token=SimpleNamespace(is_cancelled=False),
+            input_queue=queue,
+            run_state=run_state,
+        )
+    )
+
+    assert len(backend.references) == 2
+    assert all("[第 44 页]\nConclusion and Limitations" in item for item in backend.references)
+    assert "[第 44 页]\nConclusion and Limitations" in run_state["initial_context"]
 
 
 def test_podcast_speaker_generation_cancels_when_agent_removed():
