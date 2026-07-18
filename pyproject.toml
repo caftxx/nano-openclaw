@@ -44,6 +44,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+xiaozhi = [
+    "av>=14.0",
+    "opuslib-next>=1.1.5",
+    "python-multipart>=0.0.20",
+]
 zvec = [
     # Zvec 0.5.0 publishes wheels for Linux x86_64/aarch64, Windows amd64,
     # and macOS arm64. Unsupported arches keep the extra installable but no-op.

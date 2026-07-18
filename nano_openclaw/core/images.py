@@ -155,7 +155,15 @@ def to_anthropic_image_block(b64: str, mime: str) -> dict[str, Any]:
     }
 
 
-async def describe_image(b64: str, mime: str, *, client: Any, model: str, api: str) -> str:
+async def describe_image(
+    b64: str,
+    mime: str,
+    *,
+    client: Any,
+    model: str,
+    api: str,
+    prompt: str = "Describe this image concisely.",
+) -> str:
     """Call the image model to describe an image (Media Understanding path).
 
     Mirrors openclaw runner.entries.ts:528-564 describeImage call:
@@ -168,7 +176,7 @@ async def describe_image(b64: str, mime: str, *, client: Any, model: str, api: s
             "role": "user",
             "content": [
                 image_block,
-                {"type": "text", "text": "Describe this image concisely."},
+                {"type": "text", "text": prompt},
             ],
         }
     ]
@@ -192,7 +200,7 @@ async def describe_image(b64: str, mime: str, *, client: Any, model: str, api: s
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": data_url}},
-                    {"type": "text", "text": "Describe this image concisely."},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ]

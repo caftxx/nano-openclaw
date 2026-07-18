@@ -747,6 +747,36 @@ class VoiceConfig(BaseModel):
         return urlunsplit((scheme, parts.netloc, "/stream/v1/tts", "", ""))
 
 
+class XiaozhiConfig(BaseModel):
+    """xiaozhi-esp32 gateway adapter configuration."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(default=False, description="Enable the xiaozhi-esp32 adapter")
+    token: str = Field(default="", description="Bearer token returned by OTA and required by device endpoints")
+    websocketUrl: str = Field(
+        default="",
+        description="Public ws(s):// URL for the device; empty derives it from the OTA request host",
+    )
+    mcpTimeoutMs: int = Field(default=10000, ge=1000, le=120000)
+    maxPhotoBytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
+    ttsVoice: str = Field(
+        default="zhiqi",
+        min_length=1,
+        description="Aliyun voice used for xiaozhi playback; choose a voice supporting ttsSampleRate",
+    )
+    ttsSampleRate: Literal[16000, 24000] = Field(
+        default=24000,
+        description="Xiaozhi TTS and downlink Opus sample rate; 24 kHz matches LICHUANG_DEV_S3 output",
+    )
+    opusBitrate: int = Field(
+        default=64000,
+        ge=16000,
+        le=128000,
+        description="Xiaozhi downlink Opus bitrate in bits per second",
+    )
+
+
 # ============================================================================
 # Main Config (aligns with src/config/types.openclaw.ts OpenClawConfig)
 # ============================================================================
@@ -822,6 +852,10 @@ class NanoOpenClawConfig(BaseModel):
     voice: VoiceConfig = Field(
         default_factory=VoiceConfig,
         description="WebUI 语音识别（阿里云实时语音识别）配置；配齐三要素后 WebUI 语音模式优先用阿里云，否则回退浏览器 Web Speech API",
+    )
+    xiaozhi: XiaozhiConfig = Field(
+        default_factory=XiaozhiConfig,
+        description="xiaozhi-esp32 voice, vision, and device-MCP adapter",
     )
     logging: LoggingConfig = Field(
         default_factory=lambda: LoggingConfig(),

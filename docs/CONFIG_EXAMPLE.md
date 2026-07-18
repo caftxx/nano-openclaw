@@ -146,6 +146,48 @@ gateway: {
 }
 ```
 
+### xiaozhi — xiaozhi-esp32 原生接入
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | `false` | 是否启用 `xiaozhi/default` channel |
+| `token` | string | `""` | OTA、WebSocket 与拍照接口共用的 Bearer Token；建议写成 `${XIAOZHI_TOKEN}` |
+| `websocketUrl` | string | `""` | 设备连接地址；留空时从 OTA 请求地址推导，反向代理/公网部署应显式填写 `wss://.../xiaozhi/v1/` |
+| `mcpTimeoutMs` | number | `10000` | 调用设备 MCP 工具的超时毫秒数（1000–120000） |
+| `maxPhotoBytes` | number | `5242880` | 单张 JPEG 上限（1024–20971520 字节） |
+
+启用前安装可选依赖：`uv tool install "nano-openclaw[xiaozhi]"`；源码开发使用 `uv sync --extra xiaozhi`。小智需要独立 `imageModel`，并复用阿里云语音配置：
+
+```json5
+voice: {
+  provider: "aliyun",
+  appkey: "你的智能语音交互项目 Appkey",
+  accessKeyId: "${ALIYUN_AK_ID}",
+  accessKeySecret: "${ALIYUN_AK_SECRET}",
+  region: "cn-shanghai",
+  ttsEnabled: true,
+  ttsVoice: "xiaoxian",
+  ttsSampleRate: 16000,
+},
+
+xiaozhi: {
+  enabled: true,
+  token: "${XIAOZHI_TOKEN}",
+  websocketUrl: "",
+  mcpTimeoutMs: 10000,
+  maxPhotoBytes: 5242880,
+  ttsVoice: "zhiqi",       // 选择支持 ttsSampleRate 的阿里云音色
+  ttsSampleRate: 24000,    // 16000 | 24000；立创 S3 推荐 24000
+  opusBitrate: 64000,      // 16000..128000 bit/s
+}
+```
+
+gateway 需绑定设备可访问的地址，例如 `gateway.host: "0.0.0.0"`。在 xiaozhi-esp32 中运行 `idf.py menuconfig`，进入 `Xiaozhi Assistant → Default OTA URL`，填写 `http://<nano局域网IP>:5000/xiaozhi/ota/` 后重新刷机。首版仅支持 WebSocket v1（上行 16 kHz、下行默认 24 kHz、单声道、60 ms 裸 Opus），不支持 v2/v3、MQTT 或 UDP。上行固定为 16 kHz 供 ASR；下行独立合成和编码，立创 S3 推荐保持 `ttsSampleRate: 24000`，并搭配 `zhiqi`、`zhijia` 等支持 24 kHz 的音色。
+
+每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
+
+局域网接入点为 `/xiaozhi/ota/`、`/xiaozhi/v1/` 和 `/xiaozhi/vision/explain`。外网部署必须显式配置受信证书的 `wss` 地址，并在反向代理限制 OTA 接口访问；不要把 token 写进日志或提交到仓库。
+
 ### wechat — 没有 wechat 配置块
 
 WeChat 已经从 nano-openclaw.json5 里彻底移除。**唯一接入方式是扫码登录**：

@@ -43,6 +43,7 @@ from nano_openclaw.services.runtime_factory import build_agent_runtime
 # so the daemon can spawn it from config. Add similar lines as future
 # channels (telegram, slack, ...) come online.
 import nano_openclaw.adapters.channels.wechat  # noqa: F401
+import nano_openclaw.adapters.xiaozhi.channel  # noqa: F401
 
 if TYPE_CHECKING:
     from nano_openclaw.services.channels import ChannelAccount
@@ -158,6 +159,8 @@ async def run_daemon(
         # Mount the JSON-RPC WebSocket on the same FastAPI app — same port,
         # same lifespan as the WebUI, single ``Backend`` instance.
         register_ws_route(app, gateway_ctx)
+        from nano_openclaw.adapters.xiaozhi.routes import register_xiaozhi_routes
+        register_xiaozhi_routes(app, gateway_ctx)
 
         config = uvicorn.Config(
             app=app,
@@ -253,6 +256,23 @@ async def _start_configured_channels(
     """
     from nano_openclaw.services.channels import ChannelAccount
     from nano_openclaw.wechat.login_cli import discover_persisted_account_ids
+
+    if runtime.config.xiaozhi.enabled:
+        account = ChannelAccount(id="default", config={})
+        try:
+            instance = await registry.start("xiaozhi", account, runtime, gateway)
+            status = instance.status()
+            if status.state == "running":
+                started_channels.append(("xiaozhi", "default"))
+            else:
+                message = status.error or "unknown initialization error"
+                log.error("gateway.channel.start.error", f"xiaozhi/default: {message}")
+                console.print(f"[red]channel error:[/red] xiaozhi/default: {message}")
+        except Exception as exc:  # noqa: BLE001
+            log.error("gateway.channel.start.error", f"xiaozhi/default: {type(exc).__name__}: {exc}")
+            console.print(
+                f"[red]channel start failed:[/red] xiaozhi/default: {type(exc).__name__}: {exc}"
+            )
 
     # Wechat accounts are discovered purely from persisted login tokens —
     # there's no config-file accounts list any more. Run

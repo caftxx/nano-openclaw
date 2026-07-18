@@ -6,10 +6,12 @@ image reference extraction, and compression logic.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
@@ -202,6 +204,27 @@ def test_load_uploaded_image_bytes(sample_image_bytes):
     b64, mime = load_image_bytes(sample_image_bytes, "image/png")
     assert mime == "image/png"
     assert base64.b64decode(b64) == sample_image_bytes
+
+
+def test_describe_image_accepts_custom_prompt():
+    async def run():
+        response = MagicMock()
+        response.content = [SimpleNamespace(type="text", text="answer")]
+        client = MagicMock()
+        client.messages.create = AsyncMock(return_value=response)
+        result = await describe_image(
+            "ZmFrZQ==",
+            "image/jpeg",
+            client=client,
+            model="vision",
+            api="anthropic",
+            prompt="这是什么？",
+        )
+        assert result == "answer"
+        content = client.messages.create.await_args.kwargs["messages"][0]["content"]
+        assert content[1]["text"] == "这是什么？"
+
+    asyncio.run(run())
 
 
 def test_load_local_nonexistent():

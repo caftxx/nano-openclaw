@@ -121,6 +121,18 @@
     restart_strategy: "exec",  // exec（原地 re-exec）| exit（退出交给 systemd/docker 拉起）
   },
 
+  // xiaozhi-esp32 原生接入；需同时配置上方 imageModel 和阿里云 voice
+  xiaozhi: {
+    enabled: false,
+    token: "",                    // 启用时建议改成 ${XIAOZHI_TOKEN}
+    websocketUrl: "",       // 留空时根据 OTA 请求地址推导；公网部署请显式填写 wss://...
+    mcpTimeoutMs: 10000,
+    maxPhotoBytes: 5242880,
+    ttsVoice: "zhiqi",       // 小智专属音色；需支持下方采样率
+    ttsSampleRate: 24000,    // 上行 ASR 仍为 16 kHz；下行 24 kHz 匹配立创 S3
+    opusBitrate: 64000,
+  },
+
   logging: {
     level: "INFO"
   },

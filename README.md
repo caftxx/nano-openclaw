@@ -100,9 +100,9 @@ daemon / adapters / api
  config / session primitives / provider SDKs / filesystem
 ```
 
-`gateway run/start` 只负责进程生命周期和组装：WebUI/TUI/WeChat adapters、`/rpc` API、BackendService、runtime、scheduler。业务逻辑集中在 `services/` 和 `features/`，模型循环、provider、工具执行等纯 agent 内核在 `core/`。
+`gateway run/start` 只负责进程生命周期和组装：WebUI/TUI/WeChat/xiaozhi adapters、`/rpc` API、BackendService、runtime、scheduler。业务逻辑集中在 `services/` 和 `features/`，模型循环、provider、工具执行等纯 agent 内核在 `core/`。
 
-**接入方式**：daemon 起来后可被 TUI remote、WebUI/voice、WeChat channel 共享接入，详见下文 [接入方式](#接入方式) 章节。WebUI/TUI 是 frontend adapters，不算 `channels`；`/channels` 只列 WeChat 这类外部消息通道。
+**接入方式**：daemon 起来后可被 TUI remote、WebUI/voice、WeChat、xiaozhi-esp32 channel 共享接入，详见下文 [接入方式](#接入方式) 章节。WebUI/TUI 是 frontend adapters，不算 `channels`；`/channels` 只列 WeChat、xiaozhi 这类外部消息通道。
 
 ---
 
@@ -154,6 +154,7 @@ daemon 起来后，同一个 backend service 和同一份 session 列表可被�
 | --- | --- | --- |
 | **tui** | `nano-openclaw tui [--connect ws://host:5000/rpc]` | 终端 REPL；本机自动探测 daemon，或 `--connect` 接远程 |
 | **wechat** | `nano-openclaw wechat login` + `gateway start` | 微信扫码，每个 uid 一个持久 session |
+| **xiaozhi** | ESP32 OTA URL → `/xiaozhi/ota/` | 小智语音、拍照和设备 MCP；每个 Device-Id 一个持久 session |
 | **web_chat** | 浏览器 `http://host:5000/` | WebUI 聊天页：斜杠命令、thinking、附件、活动回放、主题、session 删除 |
 | **web_voice** | 浏览器 `https://host:5000/voice` | 聊天页内的开车免提语音模式（**手机需 HTTPS**） |
 
@@ -183,6 +184,55 @@ uv run nano-openclaw gateway status         # channels: 应列出所有登录的
 会话过期（iLink `errcode=-14`）时 daemon 不会疯狂重试，而是 long-poll 退避 5 分钟并在日志里高优先级提示重新运行 `wechat login`。再登录后 daemon 会自动捡起新 token，不需要重启。
 
 WeChat 作为 daemon 内的外部 ChannelAdapter 运行；每个 uid 自动绑定一个真实的持久化 session（与 tui / web_chat 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。WebUI/TUI 不属于 channel，所以只打开浏览器页面时 `/channels` 仍会显示 `(no channels running)`。
+
+### xiaozhi（ESP32 语音与拍照）
+
+首版原生支持 xiaozhi-esp32 WebSocket v1：设备裸 Opus 经阿里云 ASR 转文字，交给 nano agent，最终回答再经阿里云 TTS 和 Opus 播放。带摄像头的板卡可以调用 `self.camera.take_photo` 拍照识图；灯光、音量等设备 MCP 工具也会动态发现，但只注入当前设备发起的 turn。
+
+先安装 extra：
+
+```bash
+# 全局安装
+uv tool install "nano-openclaw[xiaozhi]"
+
+# 源码开发
+uv sync --extra xiaozhi
+```
+
+配置需同时具备独立 `agents.defaults.imageModel` 和阿里云 `voice` 三要素，并让 gateway 可从局域网访问：
+
+```json5
+gateway: { host: "0.0.0.0", port: 5000 },
+voice: {
+  provider: "aliyun",
+  appkey: "你的项目Appkey",
+  accessKeyId: "${ALIYUN_AK_ID}",
+  accessKeySecret: "${ALIYUN_AK_SECRET}",
+  region: "cn-shanghai",
+  ttsEnabled: true,
+  ttsVoice: "xiaoxian",
+},
+xiaozhi: {
+  enabled: true,
+  token: "${XIAOZHI_TOKEN}",
+  websocketUrl: "",       // 局域网直连可留空；公网/反代请填 wss://.../xiaozhi/v1/
+  mcpTimeoutMs: 10000,
+  maxPhotoBytes: 5242880,
+  ttsVoice: "zhiqi",       // 需选择支持 24 kHz 的阿里云音色
+  ttsSampleRate: 24000,    // 下行直出 24 kHz，匹配立创 S3 音频输出
+  opusBitrate: 64000,
+},
+```
+
+然后在 xiaozhi-esp32 源码运行 `idf.py menuconfig`，进入 `Xiaozhi Assistant → Default OTA URL`，填写：
+
+```text
+http://<运行 nano 的电脑局域网 IP>:5000/xiaozhi/ota/
+```
+
+保存、编译并刷机即可，不需要改固件协议源码或提交生成的 `sdkconfig`。每个 `Device-Id` 的 session 映射原子保存在 `state_dir/xiaozhi-sessions.json`，重连后继续原会话；照片不会作为附件或长期文件保存。WebUI 能查看同一 session 的文本历史，但不会获得该设备的硬件工具，避免跨入口误控。
+
+当前只支持 v1 的单声道/60 ms Opus：设备上行保持 16 kHz 供 ASR，TTS 下行默认使用 24 kHz/64 kbps Opus，避免立创 S3 播放前再做 16→24 kHz 重采样。`ttsVoice` 必须支持所选采样率；默认 `zhiqi` 支持 24 kHz。暂不支持 v2/v3、MQTT/UDP 或服务端 AEC。配置不完整只会把 `xiaozhi/default` 标为 `error`，不阻止 WebUI 启动。外网部署必须显式配置 `wss`、可信证书，并在反向代理限制 `/xiaozhi/ota/` 访问。完整字段见 [配置说明](docs/CONFIG_EXAMPLE.md#xiaozhi--xiaozhi-esp32-原生接入)。
 
 ### web_chat（WebUI 聊天页）
 

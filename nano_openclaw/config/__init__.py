@@ -22,6 +22,7 @@ from .types import (
     ModelsConfig,
     SessionConfig,
     SessionReset,
+    XiaozhiConfig,
     NanoOpenClawConfig,
 )
 from .env_substitution import (
@@ -64,6 +65,7 @@ __all__ = [
     "ModelsConfig",
     "SessionConfig",
     "SessionReset",
+    "XiaozhiConfig",
     "NanoOpenClawConfig",
     # Env substitution
     "MissingEnvVarError",
