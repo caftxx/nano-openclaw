@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -282,8 +284,15 @@ def _route_fixture(tmp_path: Path):
 def test_ota_and_websocket_auth_and_hello(tmp_path):
     app, _ = _route_fixture(tmp_path)
     client = TestClient(app)
+    before_ms = int(time.time() * 1000)
     ota = client.post("/xiaozhi/ota/", headers={"host": "192.168.1.8:5000"})
+    after_ms = int(time.time() * 1000)
     assert ota.status_code == 200
+    assert before_ms <= ota.json()["server_time"]["timestamp"] <= after_ms
+    utc_offset = datetime.now().astimezone().utcoffset()
+    assert ota.json()["server_time"]["timezone_offset"] == (
+        int(utc_offset.total_seconds() // 60) if utc_offset else 0
+    )
     assert ota.json()["websocket"] == {
         "url": "ws://192.168.1.8:5000/xiaozhi/v1/",
         "token": "secret",

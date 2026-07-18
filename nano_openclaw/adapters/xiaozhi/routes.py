@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -48,6 +49,16 @@ def _vision_url(ws_url: str) -> str:
     return urlunsplit((scheme, parts.netloc, "/xiaozhi/vision/explain", "", ""))
 
 
+def _server_time() -> dict[str, int]:
+    """Build the wall-clock payload expected by xiaozhi-esp32's OTA client."""
+    now = datetime.now().astimezone()
+    utc_offset = now.utcoffset()
+    return {
+        "timestamp": int(now.timestamp() * 1000),
+        "timezone_offset": int(utc_offset.total_seconds() // 60) if utc_offset else 0,
+    }
+
+
 def _websocket_public_url(websocket: WebSocket, configured: str) -> str:
     """Recover the public WS URL when firmware omits a non-default Host port.
 
@@ -81,6 +92,7 @@ def register_xiaozhi_routes(app: Any, ctx: Any) -> None:
             raise HTTPException(status_code=503, detail="xiaozhi adapter is not running")
         ws_url = _request_ws_url(request, adapter.config.websocketUrl)
         return {
+            "server_time": _server_time(),
             "websocket": {
                 "url": ws_url,
                 "token": adapter.config.token,
