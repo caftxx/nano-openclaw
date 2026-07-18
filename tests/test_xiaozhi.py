@@ -656,6 +656,43 @@ def test_local_speech_transcriber_realtime_protocol():
     asyncio.run(run())
 
 
+def test_local_speech_close_cancels_reader_before_websocket_close():
+    async def run():
+        reader_cancelled = asyncio.Event()
+
+        class CloseWaitsForReader:
+            def __init__(self):
+                self.closed = False
+
+            async def close(self):
+                await reader_cancelled.wait()
+                self.closed = True
+
+        async def reader():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                reader_cancelled.set()
+
+        ws = CloseWaitsForReader()
+        transcriber = LocalSpeechTranscriber(
+            url="ws://speech.local/v1/realtime",
+            api_key="",
+            model="paraformer-zh-streaming",
+            on_final=AsyncMock(),
+        )
+        transcriber._ws = ws
+        transcriber._reader = asyncio.create_task(reader())
+        await asyncio.sleep(0)
+
+        await asyncio.wait_for(transcriber.close(), timeout=0.2)
+
+        assert reader_cancelled.is_set()
+        assert ws.closed
+
+    asyncio.run(run())
+
+
 def test_connection_forwards_throttled_partial_stt(tmp_path):
     async def run():
         connection, ws, _ = _connection_fixture(tmp_path)
@@ -671,6 +708,33 @@ def test_connection_forwards_throttled_partial_stt(tmp_path):
 
         stt = [item for item in ws.json if item.get("type") == "stt"]
         assert [item["text"] for item in stt] == ["正在", "正在识别"]
+
+    asyncio.run(run())
+
+
+def test_final_stt_is_sent_before_asr_cleanup_finishes(tmp_path):
+    async def run():
+        connection, ws, _ = _connection_fixture(tmp_path)
+        cleanup_started = asyncio.Event()
+        allow_cleanup = asyncio.Event()
+
+        async def slow_cleanup():
+            cleanup_started.set()
+            await allow_cleanup.wait()
+
+        connection.mcp.ready.set()
+        connection._stop_asr = slow_cleanup
+        connection._collect_agent_reply = AsyncMock(return_value="")
+
+        turn = asyncio.create_task(connection._run_transcript("今晚还下雨吗？"))
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.2)
+
+        stt = [item for item in ws.json if item.get("type") == "stt"]
+        assert stt[-1]["text"] == "今晚还下雨吗？"
+        assert not turn.done()
+
+        allow_cleanup.set()
+        await turn
 
     asyncio.run(run())
 
@@ -721,6 +785,42 @@ def test_stopping_asr_pauses_no_voice_timeout(tmp_path):
 
         assert ws.close_calls == []
         assert connection._no_voice_task is None
+
+    asyncio.run(run())
+
+
+def test_local_asr_final_stops_no_voice_watcher_without_deadlock(tmp_path):
+    async def run():
+        connection, _, adapter = _connection_fixture(tmp_path)
+        adapter.config.noVoiceTimeoutSeconds = 0.2
+        connection._want_listening = True
+        connection._asr_generation = 1
+        connection.mcp.ready.set()
+        connection._collect_agent_reply = AsyncMock(return_value="")
+
+        ws = _FakeLocalSpeechWebSocket()
+        transcriber = LocalSpeechTranscriber(
+            url="ws://speech.local/v1/realtime",
+            api_key="",
+            model="paraformer-zh-streaming",
+            on_final=lambda text: connection._on_final_transcript(text, generation=1),
+        )
+        transcriber._ws = ws
+        transcriber._reader = asyncio.create_task(transcriber._read_loop())
+        transcriber._audio_sent = True
+        connection._asr = transcriber
+        connection._arm_no_voice_timeout()
+
+        await ws.events.put(json.dumps({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "今晚还下雨吗？",
+        }))
+        while connection._turn_task is None:
+            await asyncio.sleep(0)
+        await asyncio.wait_for(connection._turn_task, timeout=0.1)
+
+        assert connection._no_voice_task is None
+        assert transcriber._closed
 
     asyncio.run(run())
 

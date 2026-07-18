@@ -229,16 +229,22 @@ class XiaozhiConnection:
 
     async def _pause_no_voice_timeout(self) -> None:
         task, self._no_voice_task = self._no_voice_task, None
+        # Retire the watcher before waking it. Combining Event.set() with
+        # Task.cancel() here can leave Python 3.11's wait_for(Event.wait())
+        # pending until its original timeout.
         self._no_voice_activity.set()
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
     async def _watch_no_voice_timeout(self) -> None:
         current = asyncio.current_task()
         timeout = self.adapter.config.noVoiceTimeoutSeconds
         try:
-            while self._want_listening and not self._closed:
+            while (
+                self._no_voice_task is current
+                and self._want_listening
+                and not self._closed
+            ):
                 remaining = self._last_voice_activity_at + timeout - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     self._want_listening = False
@@ -285,13 +291,26 @@ class XiaozhiConnection:
 
     async def _on_final_transcript(self, text: str, *, generation: int | None = None) -> None:
         text = text.strip()
-        if (
-            not text
-            or self._closed
-            or self._turn_task is not None
-            or (generation is not None and generation != self._asr_generation)
-            or (generation is not None and generation == self._accepted_final_generation)
-        ):
+        drop_reason = ""
+        if not text:
+            drop_reason = "empty_text"
+        elif self._closed:
+            drop_reason = "connection_closed"
+        elif self._turn_task is not None:
+            drop_reason = "turn_active"
+        elif generation is not None and generation != self._asr_generation:
+            drop_reason = "stale_generation"
+        elif generation is not None and generation == self._accepted_final_generation:
+            drop_reason = "generation_already_accepted"
+        if drop_reason:
+            log.warning(
+                "xiaozhi.asr.final_dropped",
+                (
+                    f"device={self.device_id} reason={drop_reason} text_chars={len(text)} "
+                    f"generation={generation} current_generation={self._asr_generation} "
+                    f"accepted_generation={self._accepted_final_generation}"
+                ),
+            )
             return
         self._record_voice_activity()
         if generation is not None:
@@ -299,6 +318,10 @@ class XiaozhiConnection:
             # long utterance is being stopped. Exactly one final result from
             # each ASR instance is allowed to start an agent turn.
             self._accepted_final_generation = generation
+        log.info(
+            "xiaozhi.asr.final_accepted",
+            f"device={self.device_id} text_chars={len(text)} generation={generation}",
+        )
         self._turn_task = asyncio.create_task(
             self._run_transcript(text), name=f"xiaozhi-turn:{self.device_id}"
         )
@@ -307,8 +330,31 @@ class XiaozhiConnection:
         current = asyncio.current_task()
         try:
             log.info("xiaozhi.turn.started", f"device={self.device_id} text_chars={len(text)}")
-            await self._stop_asr()
+            # The final transcript is authoritative and must reach the device
+            # before transport cleanup. A slow WebSocket close must not leave
+            # the firmware displaying the last partial transcript forever.
             await self.send_json(envelope(self.session_id, "stt", text=text))
+            log.info(
+                "xiaozhi.asr.final_stt_sent",
+                f"device={self.device_id} text_chars={len(text)}",
+            )
+            log.info(
+                "xiaozhi.asr.final_cleanup_started",
+                f"device={self.device_id}",
+            )
+            try:
+                await self._stop_asr()
+            except Exception as exc:  # noqa: BLE001
+                # ASR has already been detached by _stop_asr. Cleanup failure
+                # is non-fatal and must not prevent the accepted turn.
+                log.warning(
+                    "xiaozhi.asr.final_cleanup_error",
+                    f"device={self.device_id}: {type(exc).__name__}: {exc}",
+                )
+            log.info(
+                "xiaozhi.asr.final_cleanup_done",
+                f"device={self.device_id}",
+            )
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self.mcp.ready.wait(), timeout=self.adapter.config.mcpTimeoutMs / 1000)
             reply = await self._collect_agent_reply(text)

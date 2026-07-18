@@ -9,6 +9,14 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 import httpx
 
+from nano_openclaw.logger import get_logger
+
+
+log = get_logger(__name__)
+
+
+ASR_CLOSE_TIMEOUT_SECONDS = 2.0
+
 
 FinalCallback = Callable[[str], Awaitable[None]]
 PartialCallback = Callable[[str], Awaitable[None]]
@@ -102,12 +110,23 @@ class LocalSpeechTranscriber:
             return
         self._closed = True
         ws, self._ws = self._ws, None
-        if ws is not None:
-            await ws.close()
         reader, self._reader = self._reader, None
         if reader is not None and reader is not asyncio.current_task():
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
+        if ws is not None:
+            try:
+                await asyncio.wait_for(ws.close(), timeout=ASR_CLOSE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "xiaozhi.local_asr.close_timeout",
+                    f"close exceeded {ASR_CLOSE_TIMEOUT_SECONDS:.1f}s; continuing turn",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "xiaozhi.local_asr.close_error",
+                    f"{type(exc).__name__}: {exc}",
+                )
 
     async def _read_loop(self) -> None:
         try:
@@ -133,15 +152,29 @@ class LocalSpeechTranscriber:
                     self._has_final = True
                     self._completed.set()
                     text = str(event.get("transcript") or "").strip()
+                    log.info(
+                        "xiaozhi.local_asr.completed_received",
+                        f"text_chars={len(text)} interim_chars={len(self.last_interim)}",
+                    )
                     self.last_interim = ""
                     if text:
                         await self.on_final(text)
+                    else:
+                        log.warning(
+                            "xiaozhi.local_asr.completed_empty",
+                            "speech gateway returned an empty final transcript",
+                        )
                 elif kind == "error":
                     error = event.get("error") or {}
                     raise RuntimeError(str(error.get("message") or "local ASR failed"))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if not self._closed:
+                log.warning(
+                    "xiaozhi.local_asr.reader_error",
+                    f"{type(exc).__name__}: {exc}",
+                )
             for future in (self._created, self._updated):
                 if future is not None and not future.done():
                     future.set_exception(exc)
