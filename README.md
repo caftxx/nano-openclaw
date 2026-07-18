@@ -419,7 +419,7 @@ NANO_LOG_LEVEL=DEBUG uv run nano-openclaw
 | `nano-openclaw.log` | 结构化 JSON Lines（自动轮转 + Gzip） |
 | `gateway.log` | daemon 进程的 stdout/stderr（仅 `gateway start` 后台启动时写入） |
 
-`nano-openclaw.log` 支持 JSON Lines、自动轮转（>10MB 滚动）、Gzip 压缩、上下文注入（session_id、run_id、tool_call_id）。日志等级：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`（默认 `WARNING`）。
+`nano-openclaw.log` 支持 JSON Lines、自动轮转（>10MB 滚动）、Gzip 压缩、上下文注入（session_id、run_id、tool_call_id）。日志等级：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`（默认 `INFO`）。
 
 ---
 

@@ -552,7 +552,7 @@ class LoggingConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     level: str = Field(
-        default="warning",
+        default="info",
         description="Log level: debug|info|warning|error|critical",
     )
 

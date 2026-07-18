@@ -176,21 +176,21 @@ def resolve_log_level(
     config_level: str | None = None,
     env: dict[str, str] | None = None,
 ) -> int:
-    """Resolve log level from env var, config, or default WARNING.
+    """Resolve log level from env var, config, or default INFO.
 
-    Priority: NANO_LOG_LEVEL env > config logging.level > WARNING
+    Priority: NANO_LOG_LEVEL env > config logging.level > INFO
     """
     raw = (env or os.environ).get("NANO_LOG_LEVEL")
     if raw:
         return LEVEL_MAP.get(raw.lower(), logging.WARNING)
     if config_level:
         return LEVEL_MAP.get(config_level.lower(), logging.WARNING)
-    return logging.WARNING
+    return logging.INFO
 
 
 def setup_logging(
     state_dir: Path,
-    level: int = logging.WARNING,
+    level: int = logging.INFO,
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int = DEFAULT_BACKUP_COUNT,
 ) -> None:
