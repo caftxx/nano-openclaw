@@ -1,6 +1,6 @@
 /* 语音合成 provider 工厂。
  *
- * 负责把 local / aliyun-flowing / aliyun-rest 三类 speaker 组装成
+ * 负责把 local / aliyun-flowing / aliyun-rest / openai-compatible speaker 组装成
  * FallbackSpeaker 所需的 levels，并集中创建共享 PCM player。
  */
 (function (root, factory) {
@@ -76,9 +76,16 @@
       };
     }
 
+    function openAILevel() {
+      var level = restLevel();
+      level.name = "openai-compatible";
+      return level;
+    }
+
     function levelsFor(output) {
       if (output === "aliyun-flowing") return [flowingLevel(), restLevel(), localLevel()];
       if (output === "aliyun-rest") return [restLevel(), localLevel()];
+      if (output === "openai-compatible") return [openAILevel(), localLevel()];
       return [localLevel()];
     }
 

@@ -396,7 +396,8 @@
     var pref = localGet("nanoTtsMode");
     if (pref) return pref;
     var cfg = podcast.voiceCfg;
-    return cfg && cfg.available && cfg.tts && cfg.tts.enabled ? "aliyun-flowing" : "local";
+    if (!(cfg && cfg.available && cfg.tts && cfg.tts.enabled)) return "local";
+    return cfg.provider === "openai-compatible" ? "openai-compatible" : "aliyun-flowing";
   }
   function voiceLabelFromConfig(voiceId) {
     var voices = podcast.voiceCfg && podcast.voiceCfg.tts && podcast.voiceCfg.tts.voices || [];
@@ -494,7 +495,7 @@
     return await res.json();
   }
   async function loadVoiceConfig() {
-    if (podcast.voiceCfg && (selectedOut() === "local" || aliyunTtsUsable())) return podcast.voiceCfg;
+    if (podcast.voiceCfg && (selectedOut() === "local" || ttsOutputUsable(selectedOut()))) return podcast.voiceCfg;
     try {
       if (typeof root.api === "function") podcast.voiceCfg = await root.api("/api/voice/config");
       else {
@@ -2355,13 +2356,17 @@
     await loadVoiceConfig();
     if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
     var out = selectedOut();
+    if (out === "openai-compatible" && openAITtsUsable()) {
+      try { return await synthRest(text, voiceId, playbackGeneration, "openai-compatible"); }
+      catch (localErr) { console.warn("[podcast] speech-gateway synth failed", localErr); }
+    }
     if (out === "aliyun-flowing" && aliyunTtsUsable()) {
       try { return await synthFlowing(text, voiceId, playbackGeneration); }
       catch (err) { console.warn("[podcast] flowing synth failed", err); }
     }
     if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
     if (out !== "local" && aliyunTtsUsable()) {
-      try { return await synthRest(text, voiceId, playbackGeneration); }
+      try { return await synthRest(text, voiceId, playbackGeneration, "aliyun-rest"); }
       catch (err2) { console.warn("[podcast] rest synth failed", err2); }
     }
     if (!isCurrentPlaybackGeneration(playbackGeneration)) throw stalePlaybackError();
@@ -2370,7 +2375,16 @@
 
   function aliyunTtsUsable() {
     var cfg = podcast.voiceCfg || {};
-    return Boolean(cfg.available && cfg.appkey && cfg.endpoint && cfg.tts && cfg.tts.enabled);
+    return Boolean(cfg.provider === "aliyun" && cfg.available && cfg.appkey && cfg.endpoint && cfg.tts && cfg.tts.enabled);
+  }
+
+  function openAITtsUsable() {
+    var cfg = podcast.voiceCfg || {};
+    return Boolean(cfg.provider === "openai-compatible" && cfg.available && cfg.tts && cfg.tts.enabled);
+  }
+
+  function ttsOutputUsable(output) {
+    return output === "openai-compatible" ? openAITtsUsable() : aliyunTtsUsable();
   }
 
   function synthFlowing(text, voiceId, playbackGeneration) {
@@ -2400,11 +2414,12 @@
     });
   }
 
-  function synthRest(text, voiceId, playbackGeneration) {
+  function synthRest(text, voiceId, playbackGeneration, engineName) {
     if (typeof root.createRestSpeaker !== "function") {
       return Promise.reject(new Error("rest speaker unavailable"));
     }
-    return synthCloudAudioWithRetry("aliyun-rest", playbackGeneration, function () {
+    engineName = engineName || "aliyun-rest";
+    return synthCloudAudioWithRetry(engineName, playbackGeneration, function () {
       return collectCloudAudio(function (callbacks) {
         return root.createRestSpeaker({
           url: "/api/talk/speak",
@@ -2417,7 +2432,7 @@
           onCompleted: callbacks.onCompleted,
           onError: callbacks.onError,
         });
-      }, text, voiceId, "aliyun-rest");
+      }, text, voiceId, engineName);
     });
   }
 

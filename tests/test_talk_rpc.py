@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 from nano_openclaw.config.types import VoiceConfig
 from nano_openclaw.api.methods.talk import talk_config, talk_speak
-from nano_openclaw.features.voice.talk import build_talk_config
+from nano_openclaw.features.voice.talk import (
+    build_talk_config,
+    discover_openai_compatible_voices,
+    synthesize_openai_compatible_speech,
+)
 from nano_openclaw.services.backend import VoiceError
 
 
@@ -69,3 +75,76 @@ def test_talk_speak_unconfigured_returns_fallback_eligible_error():
     assert payload["ok"] is False
     assert payload["reason"] == "talk_unconfigured"
     assert payload["fallbackEligible"] is True
+
+
+def test_openai_compatible_talk_config_and_pcm_synthesis():
+    voice = VoiceConfig(
+        provider="openai-compatible",
+        baseUrl="http://speech.local/v1",
+        realtimeUrl="ws://speech.local/v1/realtime",
+        apiKey="secret",
+        ttsVoice="nano",
+        ttsSampleRate=24000,
+    )
+    payload = build_talk_config(_Config(voice))
+    assert payload["available"] is True
+    assert payload["talk"]["provider"] == "openai-compatible"
+    assert payload["talk"]["resolved"]["config"]["tts_model"] == "fun-cosyvoice3-0.5b"
+    assert "secret" not in str(payload)
+
+    def post(url, **kwargs):
+        assert url == "http://speech.local/v1/audio/speech"
+        assert kwargs["headers"]["Authorization"] == "Bearer secret"
+        return httpx.Response(
+            200,
+            content=b"pcm",
+            headers={"x-audio-sample-rate": "24000"},
+            request=httpx.Request("POST", url),
+        )
+
+    assert synthesize_openai_compatible_speech(
+        base_url=voice.baseUrl,
+        api_key=voice.apiKey,
+        text="你好",
+        model=voice.ttsModel,
+        voice=voice.ttsVoice,
+        sample_rate=24000,
+        http_post=post,
+    ) == b"pcm"
+
+
+def test_openai_compatible_voice_discovery_and_config_catalog():
+    voice = VoiceConfig(
+        provider="openai-compatible",
+        baseUrl="http://speech.local/v1",
+        realtimeUrl="ws://speech.local/v1/realtime",
+        apiKey="secret",
+        ttsVoice="nano",
+    )
+
+    def get(url, **kwargs):
+        assert url == "http://speech.local/v1/audio/voices"
+        assert kwargs["headers"]["Authorization"] == "Bearer secret"
+        return httpx.Response(
+            200,
+            json={"data": [
+                {"id": "female", "name": "女声"},
+                {"id": "nano", "name": "默认音色"},
+                {"id": "female", "name": "重复项"},
+            ]},
+            request=httpx.Request("GET", url),
+        )
+
+    catalog = discover_openai_compatible_voices(
+        base_url=voice.baseUrl,
+        api_key=voice.apiKey,
+        default_voice=voice.ttsVoice,
+        http_get=get,
+    )
+    assert catalog == [
+        {"value": "nano", "label": "默认音色"},
+        {"value": "female", "label": "女声"},
+    ]
+    payload = build_talk_config(_Config(voice), voice_catalog=catalog)
+    assert payload["tts"]["voices"] == catalog
+    assert payload["talk"]["resolved"]["config"]["voices"] == catalog

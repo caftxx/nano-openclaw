@@ -31,13 +31,23 @@ class XiaozhiChannel(ChannelAdapter):
             if not self.config.token.strip() or contains_env_var_reference(self.config.token):
                 raise RuntimeError("xiaozhi.token is required when xiaozhi.enabled=true")
             voice = ctx.runtime.config.voice
-            voice_secrets = (voice.appkey, voice.accessKeyId, voice.accessKeySecret)
-            if (
-                not voice.available
-                or not voice.ttsEnabled
-                or any(contains_env_var_reference(value) for value in voice_secrets)
-            ):
-                raise RuntimeError("xiaozhi requires configured Aliyun ASR and TTS")
+            if voice.provider == "openai-compatible":
+                local_values = (voice.baseUrl, voice.realtimeUrl, voice.apiKey)
+                if (
+                    not voice.baseUrl.strip()
+                    or not voice.realtimeUrl.strip()
+                    or not voice.ttsEnabled
+                    or any(contains_env_var_reference(value) for value in local_values)
+                ):
+                    raise RuntimeError("xiaozhi requires configured local ASR and TTS")
+            else:
+                voice_secrets = (voice.appkey, voice.accessKeyId, voice.accessKeySecret)
+                if (
+                    not voice.available
+                    or not voice.ttsEnabled
+                    or any(contains_env_var_reference(value) for value in voice_secrets)
+                ):
+                    raise RuntimeError("xiaozhi requires configured Aliyun ASR and TTS")
             if not ctx.runtime.cfg.image_model:
                 raise RuntimeError("xiaozhi photo support requires a configured imageModel")
             OpusCodec(
@@ -54,11 +64,13 @@ class XiaozhiChannel(ChannelAdapter):
             self.sessions = DeviceSessionStore(
                 ctx.runtime.state_dir / "xiaozhi-sessions.json", ctx.backend
             )
-            self.token_provider = AliyunTokenProvider(
-                access_key_id=voice.accessKeyId,
-                access_key_secret=voice.accessKeySecret,
-                region_id=voice.region,
-            )
+            self.token_provider = None
+            if voice.provider == "aliyun":
+                self.token_provider = AliyunTokenProvider(
+                    access_key_id=voice.accessKeyId,
+                    access_key_secret=voice.accessKeySecret,
+                    region_id=voice.region,
+                )
         except Exception as exc:  # keep an inspectable error channel without blocking the gateway
             self._state = "error"
             self._error = str(exc) or f"{type(exc).__name__}: initialization failed"

@@ -12,9 +12,11 @@
   function createVoiceRecognizerProvider(opts) {
     opts = opts || {};
     var createAliyunRecognizer = opts.createAliyunRecognizer;
+    var createOpenAIRecognizer = opts.createOpenAIRecognizer;
     var createWebspeechRecognizer = opts.createWebspeechRecognizer;
     var getAliyunConfig = opts.getAliyunConfig || function () { return {}; };
     var getToken = opts.getToken;
+    var getOpenAIUrl = opts.getOpenAIUrl;
     var log = opts.log || function () {};
 
     function create(name, runtime) {
@@ -26,6 +28,10 @@
           getConfig: getAliyunConfig,
           getToken: getToken,
         }, cbs));
+      }
+      if (name === "openai-compatible") {
+        if (!createOpenAIRecognizer) throw new Error("OpenAI-compatible recognizer provider is unavailable");
+        return createOpenAIRecognizer(Object.assign({ getUrl: getOpenAIUrl }, cbs));
       }
       if (!createWebspeechRecognizer) throw new Error("WebSpeech recognizer provider is unavailable");
       var extra = runtime.standby ? { baseSilenceMs: 800, maxSilenceMs: 1600 } : {};

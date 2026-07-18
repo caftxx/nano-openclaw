@@ -9,6 +9,10 @@ from typing import Any
 
 from nano_openclaw.adapters.xiaozhi.aliyun_asr import AliyunTranscriber
 from nano_openclaw.adapters.xiaozhi.codec import OpusCodec
+from nano_openclaw.adapters.xiaozhi.local_speech import (
+    LocalSpeechTranscriber,
+    stream_local_speech,
+)
 from nano_openclaw.adapters.xiaozhi.mcp import DeviceMcpPeer
 from nano_openclaw.adapters.xiaozhi.protocol import (
     FRAME_DURATION_MS,
@@ -20,9 +24,16 @@ from nano_openclaw.adapters.xiaozhi.protocol import (
     validate_hello,
 )
 from nano_openclaw.logger import get_logger
+from nano_openclaw.services.backend import BusyError
 
 
 log = get_logger(__name__)
+
+
+PARTIAL_STT_INTERVAL_SECONDS = 0.12
+ABORT_TURN_RELEASE_TIMEOUT_SECONDS = 3.0
+BUSY_RETRY_TIMEOUT_SECONDS = 5.0
+TURN_RELEASE_POLL_SECONDS = 0.05
 
 
 class XiaozhiConnection:
@@ -47,12 +58,16 @@ class XiaozhiConnection:
             encode_bitrate=adapter.config.opusBitrate,
         )
         self._send_lock = asyncio.Lock()
-        self._asr: AliyunTranscriber | None = None
+        self._asr: Any | None = None
         self._turn_task: asyncio.Task[None] | None = None
         self._current_turn_id = ""
         self._closed = False
         self._listening_mode = "manual"
         self._want_listening = False
+        self._asr_generation = 0
+        self._accepted_final_generation = -1
+        self._last_partial_text = ""
+        self._last_partial_sent_at = 0.0
         self.mcp = DeviceMcpPeer(
             session_id=session_id,
             send_json=self.send_json,
@@ -146,13 +161,34 @@ class XiaozhiConnection:
     async def _start_asr(self) -> None:
         if self._closed or self._asr is not None or self._turn_task is not None:
             return
+        self._asr_generation += 1
+        generation = self._asr_generation
+        self._last_partial_text = ""
+        self._last_partial_sent_at = 0.0
+
+        async def on_partial(text: str) -> None:
+            await self._on_partial_transcript(text, generation=generation)
+
+        async def on_final(text: str) -> None:
+            await self._on_final_transcript(text, generation=generation)
+
         voice = self.adapter.runtime.config.voice
-        transcriber = AliyunTranscriber(
-            endpoint=voice.resolved_endpoint(),
-            appkey=voice.appkey,
-            token_provider=self.adapter.token_provider,
-            on_final=self._on_final_transcript,
-        )
+        if voice.provider == "openai-compatible":
+            transcriber = LocalSpeechTranscriber(
+                url=voice.realtimeUrl,
+                api_key=voice.apiKey,
+                model=voice.asrModel,
+                on_final=on_final,
+                on_partial=on_partial,
+            )
+        else:
+            transcriber = AliyunTranscriber(
+                endpoint=voice.resolved_endpoint(),
+                appkey=voice.appkey,
+                token_provider=self.adapter.token_provider,
+                on_final=on_final,
+                on_partial=on_partial,
+            )
         self._asr = transcriber
         try:
             await transcriber.start()
@@ -168,10 +204,39 @@ class XiaozhiConnection:
             await transcriber.stop()
             log.info("xiaozhi.asr.stopped", f"device={self.device_id}")
 
-    async def _on_final_transcript(self, text: str) -> None:
+    async def _on_partial_transcript(self, text: str, *, generation: int) -> None:
         text = text.strip()
-        if not text or self._closed or self._turn_task is not None:
+        if (
+            not text
+            or self._closed
+            or self._asr is None
+            or self._turn_task is not None
+            or generation != self._asr_generation
+            or text == self._last_partial_text
+        ):
             return
+        now = asyncio.get_running_loop().time()
+        if now - self._last_partial_sent_at < PARTIAL_STT_INTERVAL_SECONDS:
+            return
+        self._last_partial_text = text
+        self._last_partial_sent_at = now
+        await self.send_json(envelope(self.session_id, "stt", text=text))
+
+    async def _on_final_transcript(self, text: str, *, generation: int | None = None) -> None:
+        text = text.strip()
+        if (
+            not text
+            or self._closed
+            or self._turn_task is not None
+            or (generation is not None and generation != self._asr_generation)
+            or (generation is not None and generation == self._accepted_final_generation)
+        ):
+            return
+        if generation is not None:
+            # Server VAD may produce more than one completed event while a
+            # long utterance is being stopped. Exactly one final result from
+            # each ASR instance is allowed to start an agent turn.
+            self._accepted_final_generation = generation
         self._turn_task = asyncio.create_task(
             self._run_transcript(text), name=f"xiaozhi-turn:{self.device_id}"
         )
@@ -204,7 +269,13 @@ class XiaozhiConnection:
             self._current_turn_id = ""
             if self._turn_task is current:
                 self._turn_task = None
-            if self._want_listening and self._listening_mode in {"auto", "realtime"} and not self._closed:
+            # In auto mode the firmware returns to Listening after tts/stop
+            # and sends the next listen/start itself. Starting ASR here would
+            # race that message and create a redundant open/close/open cycle.
+            # Realtime mode keeps device voice processing active while TTS is
+            # playing, so it does not emit another listen/start and still
+            # needs the server-side restart.
+            if self._want_listening and self._listening_mode == "realtime" and not self._closed:
                 with suppress(Exception):
                     await self._start_asr()
 
@@ -214,17 +285,7 @@ class XiaozhiConnection:
         candidate = ""
         current_message = ""
         try:
-            turn_id = await backend.chat_send(
-                session_key=self.session_id,
-                text=text,
-                turn_source="xiaozhi",
-                response_style="voice",
-                voice_id=self.adapter.config.ttsVoice,
-                voice_output="aliyun",
-                channel_id="xiaozhi",
-                channel_account_id="default",
-                channel_sender_key=self.device_id,
-            )
+            turn_id = await self._send_agent_turn(text)
             self._current_turn_id = turn_id
             log.info("xiaozhi.agent.started", f"device={self.device_id} turn={turn_id}")
             async for event in events:
@@ -250,7 +311,64 @@ class XiaozhiConnection:
         finally:
             await events.aclose()
 
+    async def _send_agent_turn(self, text: str) -> str:
+        """Submit a device turn, tolerating a retiring turn from this session."""
+        backend = self.adapter.backend
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + BUSY_RETRY_TIMEOUT_SECONDS
+        reported_busy = False
+        while True:
+            try:
+                return await backend.chat_send(
+                    session_key=self.session_id,
+                    text=text,
+                    turn_source="xiaozhi",
+                    response_style="voice",
+                    voice_id=self.adapter.config.ttsVoice,
+                    voice_output=(
+                        "local"
+                        if self.adapter.runtime.config.voice.provider == "openai-compatible"
+                        else "aliyun"
+                    ),
+                    channel_id="xiaozhi",
+                    channel_account_id="default",
+                    channel_sender_key=self.device_id,
+                )
+            except BusyError as exc:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise
+                active_turn_id = str(exc.details.get("active_turn_id") or "")
+                if not reported_busy:
+                    log.info(
+                        "xiaozhi.turn.waiting",
+                        f"device={self.device_id} active_turn={active_turn_id or '(locked)'}",
+                    )
+                    reported_busy = True
+                if active_turn_id and await self._wait_for_turn_release(
+                    active_turn_id, timeout=remaining
+                ):
+                    continue
+                delay = max(0.1, min(1.0, exc.retry_after_ms / 1000))
+                await asyncio.sleep(min(delay, remaining))
+
+    async def _wait_for_turn_release(self, turn_id: str, *, timeout: float) -> bool:
+        """Wait until the backend no longer marks ``turn_id`` active."""
+        deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+        while True:
+            try:
+                details = await self.adapter.backend.sessions_get(self.session_id)
+            except Exception:  # noqa: BLE001 - polling is an optional optimization
+                return False
+            if details.active_turn_id != turn_id:
+                return True
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(TURN_RELEASE_POLL_SECONDS, remaining))
+
     async def _speak(self, text: str) -> None:
+        voice = self.adapter.runtime.config.voice
         sentences = split_sentences(text)
         if not sentences:
             return
@@ -263,34 +381,119 @@ class XiaozhiConnection:
         log.info("xiaozhi.tts.started", f"device={self.device_id} sentences={len(sentences)}")
         started = False
         try:
-            for sentence in sentences:
-                if not started:
-                    await self.send_json(envelope(self.session_id, "tts", state="start"))
-                    started = True
-                await self.send_json(envelope(
-                    self.session_id, "tts", state="sentence_start", text=sentence
-                ))
-                result = await self.adapter.backend.talk_speak(
-                    text=sentence,
-                    voice_id=self.adapter.config.ttsVoice,
-                    sample_rate=self.adapter.config.ttsSampleRate,
+            await self.send_json(envelope(self.session_id, "tts", state="start"))
+            started = True
+            if voice.provider == "openai-compatible":
+                # A short first request minimizes time-to-first-audio.  The
+                # remainder stays in one request so CosyVoice can use its
+                # native acoustic streaming instead of restarting per sentence.
+                local_segments = (
+                    [sentences[0], "".join(sentences[1:])]
+                    if len(sentences) > 1
+                    else sentences
                 )
-                pcm = base64.b64decode(result["audioBase64"])
-                for packet in self.codec.encode_stream(pcm):
-                    await self.send_bytes(packet)
-                    await asyncio.sleep(FRAME_DURATION_MS / 1000)
+                await self._speak_local_sentences(local_segments, voice)
+            else:
+                for sentence in sentences:
+                    await self.send_json(envelope(
+                        self.session_id, "tts", state="sentence_start", text=sentence
+                    ))
+                    result = await self.adapter.backend.talk_speak(
+                        text=sentence,
+                        voice_id=self.adapter.config.ttsVoice,
+                        sample_rate=self.adapter.config.ttsSampleRate,
+                    )
+                    pcm = base64.b64decode(result["audioBase64"])
+                    for packet in self.codec.encode_stream(pcm):
+                        await self.send_bytes(packet)
+                        await asyncio.sleep(FRAME_DURATION_MS / 1000)
         finally:
             if started and not self._closed:
                 with suppress(Exception):
                     await self.send_json(envelope(self.session_id, "tts", state="stop"))
             log.info("xiaozhi.tts.done", f"device={self.device_id} started={started}")
 
+    async def _speak_local_sentences(self, sentences: list[str], voice: Any) -> None:
+        """Generate upcoming sentences while the current PCM is playing.
+
+        CosyVoice3 emits fairly large acoustic chunks (about four seconds for
+        this model).  Reading and playing one HTTP response in the same loop
+        leaves the GPU idle during playback, then starts the next sentence too
+        late.  A bounded producer queue decouples those operations: HTTP keeps
+        draining and starts the next sentence while the device consumes Opus
+        frames at real-time speed.
+        """
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=16)
+
+        async def produce() -> None:
+            try:
+                for sentence in sentences:
+                    await queue.put(("sentence_start", sentence))
+                    async for chunk in stream_local_speech(
+                        base_url=voice.baseUrl,
+                        api_key=voice.apiKey,
+                        model=voice.ttsModel,
+                        voice=self.adapter.config.ttsVoice,
+                        text=sentence,
+                        sample_rate=self.adapter.config.ttsSampleRate,
+                    ):
+                        await queue.put(("audio", chunk))
+                    await queue.put(("sentence_end", None))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - forwarded to playback task
+                await queue.put(("error", exc))
+            else:
+                await queue.put(("done", None))
+
+        producer = asyncio.create_task(produce(), name=f"xiaozhi-tts-{self.device_id}")
+        pcm_buffer = bytearray()
+        frame_bytes = self.adapter.config.ttsSampleRate * FRAME_DURATION_MS // 1000 * 2
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "sentence_start":
+                    await self.send_json(envelope(
+                        self.session_id, "tts", state="sentence_start", text=str(payload)
+                    ))
+                elif kind == "audio":
+                    pcm_buffer.extend(payload)
+                    while len(pcm_buffer) >= frame_bytes:
+                        packet = self.codec.encode(bytes(pcm_buffer[:frame_bytes]))
+                        del pcm_buffer[:frame_bytes]
+                        await self.send_bytes(packet)
+                        await asyncio.sleep(FRAME_DURATION_MS / 1000)
+                elif kind == "sentence_end":
+                    if pcm_buffer:
+                        await self.send_bytes(self.codec.encode(bytes(pcm_buffer)))
+                        pcm_buffer.clear()
+                        await asyncio.sleep(FRAME_DURATION_MS / 1000)
+                elif kind == "error":
+                    raise payload
+                elif kind == "done":
+                    return
+        finally:
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+
     async def abort(self, *, send_tts_stop: bool) -> None:
         self._want_listening = False
+        # An explicit abort discards any final callback produced while the ASR
+        # socket is being stopped. ``listen/stop`` intentionally does not take
+        # this path because manual mode uses its final transcript.
+        self._accepted_final_generation = self._asr_generation
         await self._stop_asr()
         turn_id, self._current_turn_id = self._current_turn_id, ""
         if turn_id:
             await self.adapter.backend.chat_abort(turn_id=turn_id)
+            released = await self._wait_for_turn_release(
+                turn_id, timeout=ABORT_TURN_RELEASE_TIMEOUT_SECONDS
+            )
+            if not released:
+                log.warning(
+                    "xiaozhi.turn.release_timeout",
+                    f"device={self.device_id} turn={turn_id}",
+                )
         task, self._turn_task = self._turn_task, None
         if task is not None and task is not asyncio.current_task():
             task.cancel()

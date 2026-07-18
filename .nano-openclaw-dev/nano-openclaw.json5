@@ -121,7 +121,25 @@
     restart_strategy: "exec",  // exec（原地 re-exec）| exit（退出交给 systemd/docker 拉起）
   },
 
-  // xiaozhi-esp32 原生接入；需同时配置上方 imageModel 和阿里云 voice
+  // 语音 provider 二选一。默认 aliyun；本地 speech-gateway 使用下方注释配置。
+  voice: {
+    provider: "aliyun",  // "aliyun" | "openai-compatible"
+    appkey: "",
+    accessKeyId: "",
+    accessKeySecret: "",
+    region: "cn-shanghai",
+    // baseUrl: "http://127.0.0.1:5100/v1",
+    // realtimeUrl: "ws://127.0.0.1:5100/v1/realtime",
+    // apiKey: "${LOCAL_SPEECH_TOKEN}",
+    // asrModel: "paraformer-zh-streaming",
+    // finalAsrModel: "sensevoice-small",
+    // ttsModel: "fun-cosyvoice3-0.5b",
+    ttsEnabled: true,
+    ttsVoice: "xiaoxian", // 本地 CosyVoice 示例改成 "nano"
+    ttsSampleRate: 16000,  // 本地 CosyVoice 示例改成 24000
+  },
+
+  // xiaozhi-esp32 原生接入；需同时配置上方 imageModel 和可用 voice provider
   xiaozhi: {
     enabled: false,
     token: "",                    // 启用时建议改成 ${XIAOZHI_TOKEN}

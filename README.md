@@ -234,6 +234,30 @@ http://<运行 nano 的电脑局域网 IP>:5000/xiaozhi/ota/
 
 当前只支持 v1 的单声道/60 ms Opus：设备上行保持 16 kHz 供 ASR，TTS 下行默认使用 24 kHz/64 kbps Opus，避免立创 S3 播放前再做 16→24 kHz 重采样。`ttsVoice` 必须支持所选采样率；默认 `zhiqi` 支持 24 kHz。暂不支持 v2/v3、MQTT/UDP 或服务端 AEC。配置不完整只会把 `xiaozhi/default` 标为 `error`，不阻止 WebUI 启动。外网部署必须显式配置 `wss`、可信证书，并在反向代理限制 `/xiaozhi/ota/` 访问。完整字段见 [配置说明](docs/CONFIG_EXAMPLE.md#xiaozhi--xiaozhi-esp32-原生接入)。
 
+也可以将 ASR/TTS 完全切换到相邻目录的本地 `speech-gateway`（Paraformer Online + SenseVoiceSmall + CosyVoice3）：
+
+```json5
+voice: {
+  provider: "openai-compatible",
+  baseUrl: "http://127.0.0.1:5100/v1",
+  realtimeUrl: "ws://127.0.0.1:5100/v1/realtime",
+  apiKey: "${LOCAL_SPEECH_TOKEN}",
+  asrModel: "paraformer-zh-streaming",
+  finalAsrModel: "sensevoice-small",
+  ttsModel: "fun-cosyvoice3-0.5b",
+  ttsEnabled: true,
+  ttsVoice: "nano",
+  ttsSampleRate: 24000,
+},
+xiaozhi: {
+  // 其余字段不变
+  ttsVoice: "nano",
+  ttsSampleRate: 24000,
+},
+```
+
+本地 ASR 通过 `/v1/realtime` 接收 16 kHz PCM；本地 TTS 通过 HTTP chunked PCM 直接进入 24 kHz Opus 编码，不需要等待整段 Base64 音频。speech-gateway 不可用时小智 channel 会显示错误；切回 `provider: "aliyun"` 即恢复原有云端路径。
+
 ### web_chat（WebUI 聊天页）
 
 `gateway start` 后浏览器打开 `http://127.0.0.1:5000`（端口默认 5000，可在 [Gateway 配置](#gateway-配置) 改）。支持斜杠命令、thinking 开关、图片/文件附件、活动历史回放、亮/暗/跟随系统主题，移动端自适应。
@@ -331,13 +355,13 @@ gateway: {
 
 CLI 覆盖：`gateway start --host 0.0.0.0 --port 8080` 仅本次启动生效。`tls_cert` / `tls_key` 的用法（自签证书 + 带 TLS 启动）见 [接入方式](#接入方式) 章节的 web_voice 小节。
 
-### 语音（阿里云语音）配置
+### 语音（阿里云或本地 speech-gateway）配置
 
-语音浮层默认用浏览器原生引擎，**无需配置**。想用**阿里云实时语音识别 + 流式语音合成**（更准、中文音色更自然），在配置文件加 `voice` 块：
+语音浮层默认用浏览器原生引擎，**无需配置**。也可配置阿里云，或本地 `speech-gateway`；单聊与群聊页面会在“语音输入/语音输出”下拉中显示当前可用服务。
 
 ```json5
 voice: {
-  provider: "aliyun",                    // 目前仅支持阿里云
+  provider: "aliyun",
   appkey: "你的项目Appkey",               // 智能语音交互控制台创建的项目 Appkey
   accessKeyId: "${ALIYUN_AK_ID}",        // 支持 ${VAR} 取环境变量；AK/SK 绝不下发浏览器
   accessKeySecret: "${ALIYUN_AK_SECRET}",
@@ -350,9 +374,28 @@ voice: {
 }
 ```
 
-- **三要素**（`appkey` + `accessKeyId` + `accessKeySecret`）齐全才视为可用；任一缺失则前端整体回退浏览器原生引擎。
+本地 `speech-gateway` 使用与小智相同的 `openai-compatible` 配置：
+
+```json5
+voice: {
+  provider: "openai-compatible",
+  baseUrl: "http://127.0.0.1:5100/v1",
+  realtimeUrl: "ws://127.0.0.1:5100/v1/realtime",
+  apiKey: "${LOCAL_SPEECH_TOKEN}",
+  asrModel: "paraformer-zh-streaming",
+  ttsModel: "fun-cosyvoice3-0.5b",
+  ttsEnabled: true,
+  ttsVoice: "nano",
+  ttsSampleRate: 24000,
+}
+```
+
+Web 浏览器不会直连 `127.0.0.1:5100`：实时 ASR 经 nano 的 `/api/voice/realtime` WebSocket 双向代理，TTS 经 `/api/talk/speak` 代理，因此 speech-gateway 地址和 Bearer Token 都只保留在 nano 服务端。
+nano 会通过 speech-gateway 的 `GET /v1/audio/voices` 动态发现全部音色，并同步到单聊、群聊的音色下拉；发现失败时保留 `ttsVoice` 作为兜底，不影响 WebUI 启动。
+
+- **阿里云模式**下，三要素（`appkey` + `accessKeyId` + `accessKeySecret`）齐全才视为可用；任一缺失则前端整体回退浏览器原生引擎。
 - AK/SK 支持 `${VAR}` 语法，加载阶段从环境变量替换；**后端动态签发临时 Token（约 24h，自动缓存续期），浏览器只拿临时 Token、永不接触 AK/SK**。识别与合成复用同一套凭据 / 网关 / Token，仅请求 `namespace` 不同。
-- **实时语音识别**与**流式文本语音合成**是智能语音交互下两个独立计费产品，需分别开通；其中**流式语音合成仅商用版可用、不支持试用**。流式不可用/失败时自动回退**RESTful 代理语音合成**（标准「语音合成」产品，试用版亦可用），经后端 `/api/voice/tts` 代理（浏览器不接触 appkey/AK/SK），本会话内记住回退结果；RESTful 再失败（如试用到期 `FREE_TRIAL_EXPIRED`）才在界面显示真实原因并退浏览器本地音色。
+- **实时语音识别**与**流式文本语音合成**是阿里云智能语音交互下两个独立计费产品，需分别开通；其中**流式语音合成仅商用版可用、不支持试用**。流式不可用/失败时自动回退**RESTful 代理语音合成**，经后端 `/api/talk/speak` 代理；RESTful 再失败才在界面显示真实原因并退浏览器本地音色。
 - **唤醒词（可选）**：配置 `wakeWord` 后，免提进入「待唤醒」💤 待机——待机用**免费的浏览器本地识别**只做关键词匹配（阿里云不计费、听到的话不发给 agent），喊出唤醒词（或点屏手动唤醒）后「叮」一声切回所选引擎连续对话；聆听中静默 20 秒自动回落待机。支持"唤醒词+指令"一句话直达（如"小克今天天气"）。匹配**按拼音同音等价**（内置常用字读音表）——ASR 把"小克"写成"小课/小柯/小科"都照常命中，无须手工列举同音字；逗号变体留给不同读音的别名（如中英文双唤醒词）。
 - 浏览器侧硬依赖 `getUserMedia` + `AudioWorklet`（识别）/ `AudioContext`（合成），**Android Chrome** 体验最佳，且需 secure context（手机用 `/voice` 必须走 HTTPS，见 [接入方式](#接入方式) 章节的 web_voice 小节）。
 

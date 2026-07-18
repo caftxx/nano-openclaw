@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 
 FinalCallback = Callable[[str], Awaitable[None]]
+PartialCallback = Callable[[str], Awaitable[None]]
 
 
 def _id() -> str:
@@ -39,12 +40,14 @@ class AliyunTranscriber:
         appkey: str,
         token_provider: Any,
         on_final: FinalCallback,
+        on_partial: PartialCallback | None = None,
         connect_impl: Any | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.appkey = appkey
         self.token_provider = token_provider
         self.on_final = on_final
+        self.on_partial = on_partial
         self._connect_impl = connect_impl
         self._ws: Any = None
         self._reader: asyncio.Task[None] | None = None
@@ -131,6 +134,8 @@ class AliyunTranscriber:
                         self._started.set_result(None)
                 elif name == "TranscriptionResultChanged":
                     self.last_interim = str(payload.get("result") or "")
+                    if self.last_interim and self.on_partial is not None:
+                        await self.on_partial(self.last_interim)
                 elif name == "SentenceEnd":
                     text = str(payload.get("result") or "").strip()
                     self.last_interim = ""

@@ -199,6 +199,7 @@
 
     // ── 引擎/输出/音色下拉 ──────────────────────────────────────────────────
     // vs = { resolvedEngine, srSupported, aliyunUsable, aliyunTtsUsable,
+    //        openAIUsable, openAITtsUsable,
     //        selectedOut, effectiveOut, aliyunVoice, voiceURI, ttsVoices, systemVoices }
     function renderControls(vs) {
       if (els.engine) {
@@ -208,6 +209,9 @@
           if (o.value === "aliyun") {
             o.disabled = !vs.aliyunUsable;
             o.textContent = vs.aliyunUsable ? "🎤 阿里云" : "🎤 阿里云（未配置）";
+          } else if (o.value === "openai-compatible") {
+            o.disabled = !vs.openAIUsable;
+            o.textContent = vs.openAIUsable ? "🎤 speech-gateway" : "🎤 speech-gateway（未配置）";
           } else if (o.value === "webspeech") {
             o.disabled = !vs.srSupported;
             o.textContent = vs.srSupported ? "🎤 本地" : "🎤 本地（不支持）";
@@ -217,14 +221,19 @@
       if (els.outMode) {
         for (var j = 0; j < els.outMode.options.length; j++) {
           var m = els.outMode.options[j];
-          var isAliyun = m.value !== "local";
-          m.disabled = isAliyun && !vs.aliyunTtsUsable;
-          var label = m.value === "local" ? "本地" : (m.value === "aliyun-rest" ? "阿里云" : "阿里云流式");
-          m.textContent = "🔊 " + label + ((isAliyun && !vs.aliyunTtsUsable) ? "（未配置）" : "");
+          var isAliyun = m.value === "aliyun-rest" || m.value === "aliyun-flowing";
+          var usable = m.value === "local" || (isAliyun ? vs.aliyunTtsUsable : vs.openAITtsUsable);
+          m.disabled = !usable;
+          var label = m.value === "local" ? "本地"
+            : (m.value === "aliyun-rest" ? "阿里云"
+              : (m.value === "aliyun-flowing" ? "阿里云流式" : "speech-gateway"));
+          m.textContent = "🔊 " + label + (!usable ? "（未配置）" : "");
         }
         // 显示「当前生效引擎」【B8】：回退后下拉反映真实在用的通道，不改用户偏好
         var eff = vs.effectiveOut || vs.selectedOut || "local";
-        els.outMode.value = (eff !== "local" && !vs.aliyunTtsUsable) ? "local" : eff;
+        var effUsable = eff === "local"
+          || (eff === "openai-compatible" ? vs.openAITtsUsable : vs.aliyunTtsUsable);
+        els.outMode.value = effUsable ? eff : "local";
       }
       renderTimbres(vs);
     }
@@ -234,7 +243,8 @@
       if (!els.timbre) return;
       var eff = vs.effectiveOut || vs.selectedOut || "local";
       els.timbre.innerHTML = "";
-      if (eff !== "local" && vs.aliyunTtsUsable) {
+      var cloudUsable = eff === "openai-compatible" ? vs.openAITtsUsable : vs.aliyunTtsUsable;
+      if (eff !== "local" && cloudUsable) {
         var voices = vs.ttsVoices || [];
         for (var i = 0; i < voices.length; i++) {
           var o = doc.createElement("option");

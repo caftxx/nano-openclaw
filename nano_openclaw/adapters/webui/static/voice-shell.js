@@ -73,9 +73,25 @@
     return Boolean(aliyunEnvOk && voiceCfg && voiceCfg.available
       && voiceCfg.tts && voiceCfg.tts.enabled && voiceCfg.appkey && voiceCfg.endpoint);
   }
-  // 识别引擎选路：显式选本地恒为 webspeech；否则阿里云可用则阿里云。
+  function openAIUsable() {
+    return Boolean(aliyunEnvOk && voiceCfg && voiceCfg.available
+      && voiceCfg.provider === "openai-compatible"
+      && voiceCfg.talk && voiceCfg.talk.resolved
+      && voiceCfg.talk.resolved.config && voiceCfg.talk.resolved.config.realtime_url);
+  }
+  function openAITtsUsable() {
+    return Boolean(voiceCfg && voiceCfg.available && voiceCfg.provider === "openai-compatible"
+      && voiceCfg.tts && voiceCfg.tts.enabled);
+  }
+  function cloudTtsUsable(output) {
+    return output === "openai-compatible" ? openAITtsUsable() : aliyunTtsUsable();
+  }
+  // 识别引擎选路：尊重显式选择；未选择时跟随后端当前 provider。
   function resolvedEngine() {
     if (prefs.engine === "webspeech") return "webspeech";
+    if (prefs.engine === "openai-compatible") return openAIUsable() ? "openai-compatible" : "webspeech";
+    if (prefs.engine === "aliyun") return aliyunUsable() ? "aliyun" : "webspeech";
+    if (openAIUsable()) return "openai-compatible";
     return aliyunUsable() ? "aliyun" : "webspeech";
   }
   // 待唤醒模式【W1】：config 配了 wakeWord 且本机支持 Web Speech 才启用
@@ -99,6 +115,7 @@
   function selectedOut() {
     if (prefs.outMode) return prefs.outMode;
     if (!configLoaded) return "local";   // config 未到位前临时显示，不写回偏好【B7】
+    if (openAITtsUsable()) return "openai-compatible";
     return aliyunTtsUsable() ? "aliyun-flowing" : "local";
   }
   function currentAliyunVoice() {
@@ -114,15 +131,24 @@
   function fetchVoiceToken() {
     return api("/api/voice/token");
   }
+  function openAIRealtimeUrl() {
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = new URL("/api/voice/realtime", location.href);
+    url.protocol = scheme;
+    if (state.token) url.searchParams.set("token", state.token);
+    return url.toString();
+  }
 
   // ── 端口：识别 ───────────────────────────────────────────────────────────
   function ensureRecognizerProvider() {
     if (recognizerProvider) return recognizerProvider;
     recognizerProvider = window.createVoiceRecognizerProvider({
       createAliyunRecognizer: window.createAliyunRecognizer,
+      createOpenAIRecognizer: window.createOpenAIRecognizer,
       createWebspeechRecognizer: window.createWebspeechRecognizer,
       getAliyunConfig: () => ({ appkey: voiceCfg && voiceCfg.appkey, endpoint: voiceCfg && voiceCfg.endpoint }),
       getToken: fetchVoiceToken,
+      getOpenAIUrl: openAIRealtimeUrl,
       log: (k, m) => console.warn("[voice] recog", k, m),
     });
     return recognizerProvider;
@@ -206,7 +232,7 @@
             effectiveOut = levelName;
             // 降到本地才弹横幅（手机上看不到 console）【B6】；流式→RESTful 静默换轨
             fallbackNotice = levelName === "local"
-              ? `阿里云语音合成失败，已回退本地音色。原因：${reason}（换音色可重试）` : "";
+              ? `语音合成服务失败，已回退本地音色。原因：${reason}（换音色可重试）` : "";
             markControlsDirty();
             renderAll();
           },
@@ -411,6 +437,8 @@
       srSupported: Boolean(SR),
       aliyunUsable: aliyunUsable(),
       aliyunTtsUsable: aliyunTtsUsable(),
+      openAIUsable: openAIUsable(),
+      openAITtsUsable: openAITtsUsable(),
       selectedOut: selectedOut(),
       effectiveOut: effectiveOut || selectedOut(),
       aliyunVoice: currentAliyunVoice(),
@@ -437,7 +465,7 @@
   }
   function computeHardBlock() {
     if (!secureOk) return "https";
-    if (resolvedEngine() !== "aliyun" && !SR) return "no-sr";
+    if (resolvedEngine() === "webspeech" && !SR) return "no-sr";
     return null;
   }
   function setOverlayVisible(visible) {
@@ -561,18 +589,16 @@
   async function loadVoiceConfig() {
     if (voiceConfigPromise) return voiceConfigPromise;
     voiceConfigPromise = (async () => {
-      if (aliyunEnvOk) {
-        // api() 统一处理 401（弹 token 框）；断网/旧后端静默保持 null，阿里云视为不可用
-        try { voiceCfg = await api("/api/voice/config"); } catch (_) {}
-      }
+      // api() 统一处理 401；本地 TTS 配置即使浏览器不支持云 ASR 采集也需要加载。
+      try { voiceCfg = await api("/api/voice/config"); } catch (_) {}
       configLoaded = true;   // 成功/失败/断网都算确定【B7】
       // 存储的阿里云音色不在目录（未设/已下线）→ 此刻才允许降级到后端默认【B7】
       const voices = (voiceCfg && voiceCfg.tts && voiceCfg.tts.voices) || [];
       if (prefs.aliyunVoice && voices.length && !voices.some((v) => v.value === prefs.aliyunVoice)) {
         prefs.aliyunVoice = "";
       }
-      // 选了阿里云输出但确实不可用 → 落回本地（一旦 config 确定才动偏好）
-      if (prefs.outMode && prefs.outMode !== "local" && !aliyunTtsUsable()) {
+      // 选中的云输出确实不可用 → 落回本地（一旦 config 确定才动偏好）
+      if (prefs.outMode && prefs.outMode !== "local" && !cloudTtsUsable(prefs.outMode)) {
         prefs.outMode = "local";
         store(OUTMODE_KEY, "local");
       }
@@ -661,7 +687,7 @@
     // 音色切换：按当前生效引擎判定存阿里云音色还是系统声音【B8】
     if (els.timbre) els.timbre.onchange = () => {
       const eff = effectiveOut || selectedOut();
-      if (eff !== "local" && aliyunTtsUsable()) {
+      if (eff !== "local" && cloudTtsUsable(eff)) {
         prefs.aliyunVoice = els.timbre.value;
         store(ALIYUN_VOICE_KEY, prefs.aliyunVoice);
         buildSpeaker();              // 换音色重试所选引擎（复位回退记忆）

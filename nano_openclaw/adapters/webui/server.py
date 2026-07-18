@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
 from pathlib import Path
@@ -43,7 +44,7 @@ class ChatRequest(BaseModel):
     attachments: list[dict[str, Any]] = []
     response_style: str = ""   # "voice" → spoken-style system directive (web voice mode)
     voiceId: str = ""          # Web Voice selected Aliyun TTS voice for this turn
-    voiceOutput: str = ""      # local / aliyun-flowing / aliyun-rest
+    voiceOutput: str = ""      # local / aliyun-flowing / aliyun-rest / openai-compatible
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -134,6 +135,28 @@ class PodcastUpdateHostRequest(BaseModel):
     model_label: str = ""
 
 
+def _openai_voice_settings(backend: Any) -> dict[str, str] | None:
+    """Read server-only speech-gateway settings from the embedded runtime."""
+    runtime = getattr(backend, "runtime", None)
+    config = getattr(runtime, "config", None)
+    voice = getattr(config, "voice", None)
+    if (
+        voice is None
+        or getattr(voice, "provider", "") != "openai-compatible"
+        or not getattr(voice, "available", False)
+    ):
+        return None
+    url = str(getattr(voice, "realtimeUrl", "") or "").strip()
+    model = str(getattr(voice, "asrModel", "") or "").strip()
+    if not url or not model:
+        return None
+    return {
+        "url": url,
+        "model": model,
+        "api_key": str(getattr(voice, "apiKey", "") or ""),
+    }
+
+
 def create_app(
     *,
     backend: Any,
@@ -217,6 +240,72 @@ def create_app(
                     "fallbackEligible": exc.fallback_eligible,
                 },
             ) from exc
+
+    @app.websocket("/api/voice/realtime")
+    async def voice_realtime(websocket: WebSocket) -> None:
+        """Relay OpenAI Realtime ASR without exposing speech-gateway secrets."""
+        expected = app.state.token
+        supplied = websocket.query_params.get("token", "")
+        if expected and not secrets.compare_digest(supplied, expected):
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+
+        settings = _openai_voice_settings(app.state.backend)
+        if settings is None:
+            await websocket.send_json({
+                "type": "error",
+                "error": {"message": "speech-gateway realtime ASR is not configured"},
+            })
+            await websocket.close(code=1013)
+            return
+
+        from websockets.asyncio.client import connect
+
+        separator = "&" if "?" in settings["url"] else "?"
+        upstream_url = f'{settings["url"]}{separator}model={settings["model"]}'
+        headers = (
+            {"Authorization": f'Bearer {settings["api_key"]}'}
+            if settings["api_key"]
+            else None
+        )
+        try:
+            async with connect(
+                upstream_url,
+                additional_headers=headers,
+                open_timeout=10,
+            ) as upstream:
+                async def browser_to_upstream() -> None:
+                    while True:
+                        await upstream.send(await websocket.receive_text())
+
+                async def upstream_to_browser() -> None:
+                    async for message in upstream:
+                        if isinstance(message, str):
+                            await websocket.send_text(message)
+
+                tasks = {
+                    asyncio.create_task(browser_to_upstream(), name="webui.voice.asr.upload"),
+                    asyncio.create_task(upstream_to_browser(), name="webui.voice.asr.download"),
+                }
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in done:
+                    with contextlib.suppress(WebSocketDisconnect, asyncio.CancelledError):
+                        task.result()
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:  # noqa: BLE001 - upstream failures are client-visible
+            with contextlib.suppress(Exception):
+                await websocket.send_json({
+                    "type": "error",
+                    "error": {"message": f"speech-gateway connection failed: {exc}"},
+                })
+        finally:
+            with contextlib.suppress(Exception):
+                await websocket.close()
 
     @app.post("/api/voice/podcast/start", dependencies=[Depends(require_http_token)])
     async def podcast_start(req: PodcastStartRequest) -> dict[str, Any]:

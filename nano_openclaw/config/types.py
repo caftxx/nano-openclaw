@@ -693,7 +693,10 @@ class VoiceConfig(BaseModel):
     """
     model_config = ConfigDict(populate_by_name=True)
 
-    provider: Literal["aliyun"] = Field(default="aliyun", description="语音识别服务商，目前仅支持阿里云")
+    provider: Literal["aliyun", "openai-compatible"] = Field(
+        default="aliyun",
+        description="语音服务商：阿里云或 OpenAI-compatible 本地 speech gateway",
+    )
     appkey: str = Field(default="", description="阿里云智能语音交互项目 Appkey")
     accessKeyId: str = Field(default="", description="阿里云 AccessKeyId（支持 ${VAR} 语法）")
     accessKeySecret: str = Field(default="", description="阿里云 AccessKeySecret（支持 ${VAR} 语法）")
@@ -702,6 +705,12 @@ class VoiceConfig(BaseModel):
         default="",
         description="阿里云实时识别 WebSocket 端点；留空则按 region 推导 wss://nls-gateway-{region}.aliyuncs.com/ws/v1",
     )
+    baseUrl: str = Field(default="", description="OpenAI-compatible 语音服务的 /v1 HTTP 基址")
+    realtimeUrl: str = Field(default="", description="OpenAI-compatible 实时 ASR WebSocket 地址")
+    apiKey: str = Field(default="", description="OpenAI-compatible 语音服务 Bearer Token")
+    asrModel: str = Field(default="paraformer-zh-streaming", description="实时 ASR 模型名")
+    finalAsrModel: str = Field(default="sensevoice-small", description="离线复核 ASR 模型名")
+    ttsModel: str = Field(default="fun-cosyvoice3-0.5b", description="OpenAI-compatible TTS 模型名")
     ttsEnabled: bool = Field(
         default=True,
         description="是否启用阿里云流式语音合成 TTS（关闭则前端朗读回退浏览器 speechSynthesis）",
@@ -725,10 +734,14 @@ class VoiceConfig(BaseModel):
     @property
     def available(self) -> bool:
         """三要素（appkey/accessKeyId/accessKeySecret）齐全才视为可用。"""
+        if self.provider == "openai-compatible":
+            return bool(self.baseUrl and self.realtimeUrl)
         return bool(self.appkey and self.accessKeyId and self.accessKeySecret)
 
     def resolved_endpoint(self) -> str:
         """显式 endpoint 优先，否则按 region 推导默认网关地址。"""
+        if self.provider == "openai-compatible":
+            return self.realtimeUrl
         if self.endpoint:
             return self.endpoint
         return f"wss://nls-gateway-{self.region}.aliyuncs.com/ws/v1"

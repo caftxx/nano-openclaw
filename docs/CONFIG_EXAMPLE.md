@@ -184,6 +184,31 @@ xiaozhi: {
 
 gateway 需绑定设备可访问的地址，例如 `gateway.host: "0.0.0.0"`。在 xiaozhi-esp32 中运行 `idf.py menuconfig`，进入 `Xiaozhi Assistant → Default OTA URL`，填写 `http://<nano局域网IP>:5000/xiaozhi/ota/` 后重新刷机。首版仅支持 WebSocket v1（上行 16 kHz、下行默认 24 kHz、单声道、60 ms 裸 Opus），不支持 v2/v3、MQTT 或 UDP。上行固定为 16 kHz 供 ASR；下行独立合成和编码，立创 S3 推荐保持 `ttsSampleRate: 24000`，并搭配 `zhiqi`、`zhijia` 等支持 24 kHz 的音色。
 
+本地 `speech-gateway` 替代阿里云时，voice 配置改为：
+
+```json5
+voice: {
+  provider: "openai-compatible",
+  baseUrl: "http://127.0.0.1:5100/v1",
+  realtimeUrl: "ws://127.0.0.1:5100/v1/realtime",
+  apiKey: "${LOCAL_SPEECH_TOKEN}",
+  asrModel: "paraformer-zh-streaming",
+  finalAsrModel: "sensevoice-small",
+  ttsModel: "fun-cosyvoice3-0.5b",
+  ttsEnabled: true,
+  ttsVoice: "nano",
+  ttsSampleRate: 24000,
+},
+xiaozhi: {
+  // 其余鉴权、MCP 和照片字段保持不变
+  ttsVoice: "nano",
+  ttsSampleRate: 24000,
+  opusBitrate: 64000,
+},
+```
+
+`baseUrl` 必须包含 `/v1`；`realtimeUrl` 指向完整 WebSocket 路径。Bearer Token 支持 `${VAR}` 替换，不会写入日志。小智收到的 CosyVoice PCM chunk 会立即编码发送，abort 或断线会取消尚未完成的 HTTP 音频流。
+
 每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
 
 局域网接入点为 `/xiaozhi/ota/`、`/xiaozhi/v1/` 和 `/xiaozhi/vision/explain`。外网部署必须显式配置受信证书的 `wss` 地址，并在反向代理限制 OTA 接口访问；不要把 token 写进日志或提交到仓库。

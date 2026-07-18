@@ -1,16 +1,18 @@
 """Talk-mode TTS configuration and provider dispatch.
 
-This module is intentionally small: nano currently ships one cloud speech
-provider (Aliyun) plus browser-local fallback on the client. Keeping the
-provider boundary here prevents WebUI endpoints from owning speech synthesis
-details and gives gateway RPC clients the same ``talk.config`` / ``talk.speak``
-surface.
+This module is intentionally small: nano supports Aliyun plus an
+OpenAI-compatible local speech gateway, with browser-local fallback on the
+client. Keeping the provider boundary here prevents WebUI endpoints from
+owning speech synthesis details and gives gateway RPC clients the same
+``talk.config`` / ``talk.speak`` surface.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+
+import httpx
 
 from nano_openclaw.features.voice.aliyun_token import AliyunTokenProvider, TokenError
 from nano_openclaw.features.voice.aliyun_tts import TtsError, synthesize_tts
@@ -42,17 +44,30 @@ class TalkSpeakResult:
     file_extension: str = ".pcm"
 
 
-def build_talk_config(config: Any) -> dict[str, Any]:
+def build_talk_config(
+    config: Any,
+    *,
+    voice_catalog: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     """Return non-secret talk configuration for WebUI/RPC clients."""
 
     voice_cfg = config.voice
+    if voice_cfg.provider == "aliyun":
+        voices = ALIYUN_TTS_VOICES
+    else:
+        voices = voice_catalog or [{"value": voice_cfg.ttsVoice, "label": voice_cfg.ttsVoice}]
     provider_config: dict[str, Any] = {
         "voice": voice_cfg.ttsVoice,
         "sample_rate": voice_cfg.ttsSampleRate,
-        "voices": ALIYUN_TTS_VOICES,
+        "voices": voices,
         "streaming": True,
         "rest": True,
     }
+    if voice_cfg.provider == "openai-compatible":
+        provider_config["base_url"] = voice_cfg.baseUrl
+        provider_config["realtime_url"] = voice_cfg.realtimeUrl
+        provider_config["asr_model"] = voice_cfg.asrModel
+        provider_config["tts_model"] = voice_cfg.ttsModel
     return {
         "available": voice_cfg.available,
         "provider": voice_cfg.provider,
@@ -64,7 +79,7 @@ def build_talk_config(config: Any) -> dict[str, Any]:
             "provider": voice_cfg.provider,
             "voice": voice_cfg.ttsVoice,
             "sample_rate": voice_cfg.ttsSampleRate,
-            "voices": ALIYUN_TTS_VOICES,
+            "voices": voices,
         },
         "talk": {
             "provider": voice_cfg.provider if voice_cfg.available and voice_cfg.ttsEnabled else "",
@@ -77,6 +92,61 @@ def build_talk_config(config: Any) -> dict[str, Any]:
             } if voice_cfg.available else None,
         },
     }
+
+
+def discover_openai_compatible_voices(
+    *,
+    base_url: str,
+    api_key: str,
+    default_voice: str,
+    http_get: Callable[..., httpx.Response] | None = None,
+) -> list[dict[str, str]]:
+    """Discover an OpenAI-compatible TTS voice catalog without exposing its key."""
+    url = f"{base_url.rstrip('/')}/audio/voices"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        if http_get is None:
+            with httpx.Client(timeout=3) as client:
+                response = client.get(url, headers=headers)
+        else:
+            response = http_get(url, headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        raise TalkSpeakError(
+            f"local speech voice discovery failed: {exc}",
+            reason="voice_discovery_failed",
+            fallback_eligible=True,
+        ) from exc
+
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise TalkSpeakError(
+            "local speech voice discovery returned an invalid catalog",
+            reason="voice_discovery_failed",
+            fallback_eligible=True,
+        )
+    voices: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        voice_id = str(entry.get("id") or "").strip()
+        if not voice_id or voice_id in seen:
+            continue
+        seen.add(voice_id)
+        voices.append({
+            "value": voice_id,
+            "label": str(entry.get("name") or voice_id).strip() or voice_id,
+        })
+    if not voices:
+        raise TalkSpeakError(
+            "local speech voice discovery returned no voices",
+            reason="voice_discovery_failed",
+            fallback_eligible=True,
+        )
+    voices.sort(key=lambda item: item["value"] != default_voice)
+    return voices
 
 
 def synthesize_talk_speech(
@@ -109,9 +179,27 @@ def synthesize_talk_speech(
     voice_cfg = config.voice
     if not voice_cfg.available or not voice_cfg.ttsEnabled:
         raise TalkSpeakError(
-            "talk.speak unavailable: Aliyun voice is not configured",
+            "talk.speak unavailable: voice synthesis is not configured",
             reason="talk_unconfigured",
             fallback_eligible=True,
+        )
+    if voice_cfg.provider == "openai-compatible":
+        audio = synthesize_openai_compatible_speech(
+            base_url=voice_cfg.baseUrl,
+            api_key=voice_cfg.apiKey,
+            text=text,
+            model=voice_cfg.ttsModel,
+            voice=voice_id or voice_cfg.ttsVoice,
+            sample_rate=sample_rate or voice_cfg.ttsSampleRate,
+            speed=resolved_speed or 1.0,
+        )
+        return TalkSpeakResult(
+            audio=audio,
+            provider="openai-compatible",
+            output_format="pcm",
+            mime_type="application/octet-stream",
+            voice_compatible=True,
+            file_extension=".pcm",
         )
     if voice_cfg.provider != "aliyun":
         raise TalkSpeakError(
@@ -163,6 +251,54 @@ def synthesize_talk_speech(
         voice_compatible=True,
         file_extension=".pcm",
     )
+
+
+def synthesize_openai_compatible_speech(
+    *,
+    base_url: str,
+    api_key: str,
+    text: str,
+    model: str,
+    voice: str,
+    sample_rate: int,
+    speed: float = 1.0,
+    http_post: Callable[..., httpx.Response] | None = None,
+) -> bytes:
+    """Call an OpenAI-compatible local speech endpoint and return PCM16LE."""
+    url = f"{base_url.rstrip('/')}/audio/speech"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": "pcm",
+        "stream_format": "audio",
+        "speed": speed,
+    }
+    try:
+        if http_post is None:
+            with httpx.Client(timeout=60) as client:
+                response = client.post(url, headers=headers, json=payload)
+        else:
+            response = http_post(url, headers=headers, json=payload)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise TalkSpeakError(
+            f"local speech synthesis failed: {exc}", reason="synthesis_failed"
+        ) from exc
+    actual_rate = int(response.headers.get("x-audio-sample-rate") or sample_rate)
+    if actual_rate != sample_rate:
+        raise TalkSpeakError(
+            f"local speech sample rate mismatch: expected {sample_rate}, got {actual_rate}",
+            reason="invalid_audio_result",
+        )
+    if not response.content:
+        raise TalkSpeakError(
+            "local speech synthesis returned empty audio", reason="invalid_audio_result"
+        )
+    return response.content
 
 
 def _resolve_speed(*, speed: float | None, rate_wpm: int | None) -> float | None:

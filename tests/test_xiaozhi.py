@@ -16,6 +16,7 @@ from nano_openclaw.adapters.xiaozhi.channel import XiaozhiChannel
 from nano_openclaw.adapters.xiaozhi.aliyun_asr import AliyunTranscriber
 from nano_openclaw.adapters.xiaozhi.codec import OpusCodec
 from nano_openclaw.adapters.xiaozhi.connection import XiaozhiConnection
+from nano_openclaw.adapters.xiaozhi.local_speech import LocalSpeechTranscriber
 from nano_openclaw.adapters.xiaozhi.mcp import DeviceMcpPeer, XiaozhiHub
 from nano_openclaw.adapters.xiaozhi.protocol import (
     ProtocolError,
@@ -28,6 +29,7 @@ from nano_openclaw.adapters.xiaozhi.routes import _websocket_public_url, registe
 from nano_openclaw.adapters.xiaozhi.sessions import DeviceSessionStore
 from nano_openclaw.config.types import NanoOpenClawConfig, XiaozhiConfig
 from nano_openclaw.services.channels import ChannelManager
+from nano_openclaw.services.backend import BusyError
 
 
 def hello(**audio_overrides):
@@ -64,7 +66,7 @@ def test_channel_keeps_configuration_error_visible(tmp_path):
             state_dir=tmp_path,
             config=SimpleNamespace(
                 xiaozhi=SimpleNamespace(enabled=True, token=""),
-                voice=SimpleNamespace(available=False, ttsEnabled=False),
+                voice=SimpleNamespace(provider="aliyun", available=False, ttsEnabled=False),
             ),
             cfg=SimpleNamespace(image_model=None),
         )
@@ -77,6 +79,37 @@ def test_channel_keeps_configuration_error_visible(tmp_path):
         assert adapter.status().state == "error"
         assert "xiaozhi.token" in adapter.status().error
         assert registry.get_instance("xiaozhi", "default") is adapter
+
+    asyncio.run(run())
+
+
+def test_channel_accepts_local_speech_gateway_configuration(tmp_path):
+    async def run():
+        registry = ChannelManager()
+        registry.register(XiaozhiChannel)
+        backend = SimpleNamespace(manager=_FakeManager())
+        runtime = SimpleNamespace(
+            state_dir=tmp_path,
+            config=SimpleNamespace(
+                xiaozhi=XiaozhiConfig(enabled=True, token="device-secret"),
+                voice=SimpleNamespace(
+                    provider="openai-compatible",
+                    ttsEnabled=True,
+                    baseUrl="http://127.0.0.1:5100/v1",
+                    realtimeUrl="ws://127.0.0.1:5100/v1/realtime",
+                    apiKey="local-secret",
+                ),
+            ),
+            cfg=SimpleNamespace(image_model="vision-model"),
+        )
+        adapter = await registry.start(
+            "xiaozhi",
+            ChannelAccount(id="default"),
+            runtime,
+            SimpleNamespace(backend=backend),
+        )
+        assert adapter.status().state == "running"
+        assert adapter.token_provider is None
 
     asyncio.run(run())
 
@@ -212,7 +245,15 @@ def _route_fixture(tmp_path: Path):
                 ttsSampleRate=24000,
                 opusBitrate=64000,
             ),
-            voice=SimpleNamespace(ttsVoice="xiaoxian"),
+            voice=SimpleNamespace(
+                provider="aliyun",
+                ttsVoice="xiaoxian",
+                baseUrl="",
+                realtimeUrl="",
+                apiKey="",
+                asrModel="paraformer-zh-streaming",
+                ttsModel="fun-cosyvoice3-0.5b",
+            ),
         ),
         cfg=SimpleNamespace(image_model="vision-model", model_has_vision=False, api="openai"),
         model_id="chat-model",
@@ -384,6 +425,7 @@ def test_aliyun_transcriber_sentence_end_and_manual_stop():
     async def run():
         ws = _FakeAliyunWebSocket()
         final = AsyncMock()
+        partial = AsyncMock()
 
         async def connect(url):
             assert url.endswith("token=token-value")
@@ -394,6 +436,7 @@ def test_aliyun_transcriber_sentence_end_and_manual_stop():
             appkey="app-key",
             token_provider=SimpleNamespace(get_token=lambda: ("token-value", 0)),
             on_final=final,
+            on_partial=partial,
             connect_impl=connect,
         )
         await transcriber.start()
@@ -412,6 +455,7 @@ def test_aliyun_transcriber_sentence_end_and_manual_stop():
         names = [json.loads(item)["header"]["name"] for item in ws.sent if isinstance(item, str)]
         assert names == ["StartTranscription", "StopTranscription"]
         assert bytes(1920) in ws.sent
+        partial.assert_awaited_once_with("临时文本")
         final.assert_awaited_once_with("最终文本")
         assert ws.closed
 
@@ -471,6 +515,161 @@ def test_tts_sentence_order_and_opus_audio(tmp_path):
     asyncio.run(run())
 
 
+def test_local_tts_streams_pcm_directly_to_opus(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        adapter.runtime.config.voice.provider = "openai-compatible"
+        adapter.runtime.config.voice.baseUrl = "http://speech.local/v1"
+        adapter.runtime.config.voice.apiKey = "local-token"
+        adapter.runtime.config.voice.ttsModel = "fun-cosyvoice3-0.5b"
+        adapter.config.ttsVoice = "nano"
+
+        async def chunks(**kwargs):
+            assert kwargs["text"] == "本地语音。"
+            assert kwargs["sample_rate"] == 24000
+            yield bytes(1000)
+            yield bytes(1880)
+
+        with patch(
+            "nano_openclaw.adapters.xiaozhi.connection.stream_local_speech",
+            new=chunks,
+        ):
+            await connection._speak("本地语音。")
+        assert len(ws.binary) == 1
+        adapter.backend.talk_speak.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_local_tts_prefetches_sentence_streams(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        adapter.runtime.config.voice.provider = "openai-compatible"
+        adapter.runtime.config.voice.baseUrl = "http://speech.local/v1"
+        adapter.runtime.config.voice.apiKey = "local-token"
+        adapter.runtime.config.voice.ttsModel = "fun-cosyvoice3-0.5b"
+        adapter.config.ttsVoice = "nano"
+        full_answer = "第一句。第二句！第三句？"
+        requests = []
+
+        async def chunks(**kwargs):
+            requests.append(kwargs["text"])
+            yield bytes(2880)
+
+        with patch(
+            "nano_openclaw.adapters.xiaozhi.connection.stream_local_speech",
+            new=chunks,
+        ):
+            await connection._speak(full_answer)
+
+        assert requests == ["第一句。", "第二句！第三句？"]
+        sentence_starts = [
+            item for item in ws.json
+            if item.get("type") == "tts" and item.get("state") == "sentence_start"
+        ]
+        assert [item["text"] for item in sentence_starts] == requests
+        assert len(ws.binary) == 2
+        adapter.backend.talk_speak.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+class _FakeLocalSpeechWebSocket:
+    def __init__(self):
+        self.sent = []
+        self.events = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, payload):
+        self.sent.append(json.loads(payload))
+        kind = self.sent[-1]["type"]
+        if kind == "session.update":
+            await self.events.put(json.dumps({"type": "session.updated"}))
+        elif kind == "input_audio_buffer.commit":
+            await self.events.put(json.dumps({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "本地识别结果",
+            }))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = await self.events.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
+    async def close(self):
+        self.closed = True
+        await self.events.put(None)
+
+
+def test_local_speech_transcriber_realtime_protocol():
+    async def run():
+        ws = _FakeLocalSpeechWebSocket()
+        await ws.events.put(json.dumps({"type": "session.created"}))
+        final = AsyncMock()
+        partial = AsyncMock()
+
+        async def connect(url, **kwargs):
+            assert url == "ws://speech.local/v1/realtime?model=paraformer-zh-streaming"
+            assert kwargs["additional_headers"]["Authorization"] == "Bearer secret"
+            return ws
+
+        transcriber = LocalSpeechTranscriber(
+            url="ws://speech.local/v1/realtime",
+            api_key="secret",
+            model="paraformer-zh-streaming",
+            on_final=final,
+            on_partial=partial,
+            connect_impl=connect,
+        )
+        await transcriber.start()
+        await transcriber.send_audio(bytes(1920))
+        await ws.events.put(json.dumps({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "delta": "本地识别",
+        }))
+        await ws.events.put(json.dumps({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "delta": "结果",
+        }))
+        await asyncio.sleep(0)
+        await transcriber.stop()
+        assert [item["type"] for item in ws.sent] == [
+            "session.update",
+            "input_audio_buffer.append",
+            "input_audio_buffer.commit",
+        ]
+        assert [call.args[0] for call in partial.await_args_list] == [
+            "本地识别", "本地识别结果"
+        ]
+        final.assert_awaited_once_with("本地识别结果")
+        assert ws.closed
+
+    asyncio.run(run())
+
+
+def test_connection_forwards_throttled_partial_stt(tmp_path):
+    async def run():
+        connection, ws, _ = _connection_fixture(tmp_path)
+        connection._asr = object()
+        connection._asr_generation = 3
+
+        await connection._on_partial_transcript("正在", generation=3)
+        await connection._on_partial_transcript("正在", generation=3)
+        await connection._on_partial_transcript("正在识别", generation=2)
+        await connection._on_partial_transcript("正在识别", generation=3)
+        connection._last_partial_sent_at = 0.0
+        await connection._on_partial_transcript("正在识别", generation=3)
+
+        stt = [item for item in ws.json if item.get("type") == "stt"]
+        assert [item["text"] for item in stt] == ["正在", "正在识别"]
+
+    asyncio.run(run())
+
+
 def test_agent_reply_uses_only_last_completed_message(tmp_path):
     async def run():
         connection, _, adapter = _connection_fixture(tmp_path)
@@ -496,15 +695,113 @@ def test_agent_reply_uses_only_last_completed_message(tmp_path):
     asyncio.run(run())
 
 
+def test_one_asr_generation_starts_only_one_turn(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        connection._asr = object()
+        connection._asr_generation = 7
+        gate = asyncio.Event()
+
+        async def hold_turn(_text):
+            await gate.wait()
+
+        with patch.object(connection, "_run_transcript", side_effect=hold_turn) as run_turn:
+            await connection._on_final_transcript("第一段", generation=7)
+            await connection._on_final_transcript("第二段", generation=7)
+            await asyncio.sleep(0)
+            run_turn.assert_called_once_with("第一段")
+            gate.set()
+            await connection._turn_task
+
+    asyncio.run(run())
+
+
+def test_busy_turn_waits_for_release_and_retries(tmp_path):
+    async def run():
+        connection, _, adapter = _connection_fixture(tmp_path)
+        adapter.backend.chat_send = AsyncMock(side_effect=[
+            BusyError(
+                "session has an active turn",
+                retry_after_ms=500,
+                details={"active_turn_id": "old-turn"},
+            ),
+            "new-turn",
+        ])
+        adapter.backend.sessions_get = AsyncMock(return_value=SimpleNamespace(active_turn_id=None))
+
+        assert await connection._send_agent_turn("长语音") == "new-turn"
+        assert adapter.backend.chat_send.await_count == 2
+        adapter.backend.sessions_get.assert_awaited_once_with("session-1")
+
+    asyncio.run(run())
+
+
+def test_auto_mode_waits_for_device_to_restart_asr(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        connection._want_listening = True
+        connection._listening_mode = "auto"
+        connection.mcp.ready.set()
+        connection._stop_asr = AsyncMock()
+        connection._collect_agent_reply = AsyncMock(return_value="")
+        connection._start_asr = AsyncMock()
+
+        await connection._run_transcript("自动模式")
+
+        connection._start_asr.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_realtime_mode_restarts_asr_server_side(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        connection._want_listening = True
+        connection._listening_mode = "realtime"
+        connection.mcp.ready.set()
+        connection._stop_asr = AsyncMock()
+        connection._collect_agent_reply = AsyncMock(return_value="")
+        connection._start_asr = AsyncMock()
+
+        await connection._run_transcript("实时模式")
+
+        connection._start_asr.assert_awaited_once_with()
+
+    asyncio.run(run())
+
+
 def test_abort_cancels_turn_and_backend(tmp_path):
     async def run():
         connection, ws, adapter = _connection_fixture(tmp_path)
         connection._current_turn_id = "turn-1"
         connection._turn_task = asyncio.create_task(asyncio.Event().wait())
+        adapter.backend.sessions_get = AsyncMock(
+            return_value=SimpleNamespace(active_turn_id=None)
+        )
         await connection.abort(send_tts_stop=True)
         adapter.backend.chat_abort.assert_awaited_once_with(turn_id="turn-1")
+        adapter.backend.sessions_get.assert_awaited_once_with("session-1")
         assert connection._turn_task is None
         assert ws.json[-1]["type"] == "tts" and ws.json[-1]["state"] == "stop"
+
+    asyncio.run(run())
+
+
+def test_abort_discards_final_emitted_while_stopping_asr(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        connection._asr_generation = 4
+
+        class FinalOnStop:
+            async def stop(self):
+                await connection._on_final_transcript("不应提交", generation=4)
+
+        connection._asr = FinalOnStop()
+        with patch.object(connection, "_run_transcript") as run_turn:
+            await connection.abort(send_tts_stop=False)
+            await asyncio.sleep(0)
+            run_turn.assert_not_called()
+        assert connection._turn_task is None
 
     asyncio.run(run())
 

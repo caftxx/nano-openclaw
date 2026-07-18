@@ -1704,9 +1704,24 @@ class EmbeddedBackend(Backend):
         return state_payload(self.runtime)
 
     async def voice_config(self) -> dict[str, Any]:
-        from nano_openclaw.features.voice import build_talk_config
+        from nano_openclaw.features.voice import (
+            build_talk_config,
+            discover_openai_compatible_voices,
+        )
 
-        return build_talk_config(self.runtime.config)
+        voice = self.runtime.config.voice
+        catalog = None
+        if voice.provider == "openai-compatible" and voice.available:
+            try:
+                catalog = await asyncio.to_thread(
+                    discover_openai_compatible_voices,
+                    base_url=voice.baseUrl,
+                    api_key=voice.apiKey,
+                    default_voice=voice.ttsVoice,
+                )
+            except Exception:  # noqa: BLE001 - retain configured fallback voice
+                catalog = None
+        return build_talk_config(self.runtime.config, voice_catalog=catalog)
 
     def _ensure_voice_token_provider(self, cfg: Any) -> Any:
         from nano_openclaw.features.voice import AliyunTokenProvider
@@ -1729,7 +1744,7 @@ class EmbeddedBackend(Backend):
         from nano_openclaw.features.voice import TokenError
 
         cfg = self.runtime.config.voice
-        if not cfg.available:
+        if cfg.provider != "aliyun" or not cfg.available:
             raise VoiceError("阿里云语音识别未配置", status_code=503)
         provider = self._ensure_voice_token_provider(cfg)
         try:
@@ -1747,7 +1762,11 @@ class EmbeddedBackend(Backend):
         from nano_openclaw.features.voice import TalkSpeakError, synthesize_talk_speech
 
         cfg = self.runtime.config.voice
-        provider = self._ensure_voice_token_provider(cfg) if cfg.available else None
+        provider = (
+            self._ensure_voice_token_provider(cfg)
+            if cfg.provider == "aliyun" and cfg.available
+            else None
+        )
         try:
             result = await asyncio.to_thread(
                 synthesize_talk_speech,
