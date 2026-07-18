@@ -13,6 +13,7 @@ from nano_openclaw.api.methods.podcast import (
     podcast_update_agent,
     podcast_update_host,
 )
+from nano_openclaw.core.loop import TurnCancelled
 from nano_openclaw.features.voice.podcast import (
     AGENT_ROLES,
     HOST_VOICE_ID,
@@ -1777,3 +1778,103 @@ def test_podcast_speaker_generation_cancels_when_agent_removed():
             "generation": 0,
         }
     ]
+
+
+def test_podcast_speaker_generation_is_drained_when_parent_is_cancelled():
+    class Backend:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.child_task = None
+
+        async def _generate_podcast_utterance(self, **kwargs):
+            self.child_task = asyncio.current_task()
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                raise TurnCancelled() from exc
+
+    async def run_case():
+        backend = Backend()
+        agent = assign_agents([{"id": "agent-1", "role": "作家", "model_ref": "p/m"}], "话题")[0]
+        parent_task = asyncio.create_task(
+            EmbeddedBackend._run_podcast_speaker_turn(
+                backend,
+                run_id="run-1",
+                session=SimpleNamespace(session_id="session-1"),
+                topic="话题",
+                agent=agent,
+                round_index=1,
+                sequence=4,
+                context="",
+                research_cache={"agent-1:作家:p/m": "已有 research"},
+                token=SimpleNamespace(is_cancelled=False),
+                generation=0,
+                is_generation_current=lambda generation: True,
+                is_agent_active=lambda current: True,
+            )
+        )
+        await backend.started.wait()
+        parent_task.cancel()
+        parent_result = (await asyncio.gather(parent_task, return_exceptions=True))[0]
+        child_was_drained = backend.child_task.done()
+        if not child_was_drained:
+            backend.child_task.cancel()
+            await asyncio.gather(backend.child_task, return_exceptions=True)
+        return parent_result, child_was_drained, backend.child_task.exception()
+
+    parent_result, child_was_drained, child_error = asyncio.run(run_case())
+
+    assert isinstance(parent_result, asyncio.CancelledError)
+    assert child_was_drained is True
+    assert isinstance(child_error, TurnCancelled)
+
+
+def test_podcast_research_is_drained_when_parent_is_cancelled():
+    class Backend:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.child_task = None
+
+        async def _run_podcast_research_subagent(self, **kwargs):
+            self.child_task = asyncio.current_task()
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                raise TurnCancelled() from exc
+
+    async def run_case():
+        backend = Backend()
+        agent = assign_agents([{"id": "agent-1", "role": "作家", "model_ref": "p/m"}], "话题")[0]
+        parent_task = asyncio.create_task(
+            EmbeddedBackend._run_podcast_speaker_turn(
+                backend,
+                run_id="run-1",
+                session=SimpleNamespace(session_id="session-1"),
+                topic="话题",
+                agent=agent,
+                round_index=1,
+                sequence=4,
+                context="",
+                research_cache={},
+                token=SimpleNamespace(is_cancelled=False),
+                generation=0,
+                is_generation_current=lambda generation: True,
+                is_agent_active=lambda current: True,
+            )
+        )
+        await backend.started.wait()
+        parent_task.cancel()
+        parent_result = (await asyncio.gather(parent_task, return_exceptions=True))[0]
+        child_was_drained = backend.child_task.done()
+        if not child_was_drained:
+            backend.child_task.cancel()
+            await asyncio.gather(backend.child_task, return_exceptions=True)
+        return parent_result, child_was_drained, backend.child_task.exception()
+
+    parent_result, child_was_drained, child_error = asyncio.run(run_case())
+
+    assert isinstance(parent_result, asyncio.CancelledError)
+    assert child_was_drained is True
+    assert isinstance(child_error, TurnCancelled)

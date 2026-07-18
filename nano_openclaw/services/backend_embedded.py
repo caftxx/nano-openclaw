@@ -2745,27 +2745,26 @@ class EmbeddedBackend(Backend):
                 ),
                 name=f"backend.voice_podcast.research:{run_id}:{round_index}:{getattr(agent, 'id', '')}",
             )
-            while not research_task.done():
-                await asyncio.wait({research_task}, timeout=0.5)
-                if research_task.done():
-                    break
-                if token.is_cancelled:
+            try:
+                while not research_task.done():
+                    await asyncio.wait({research_task}, timeout=0.5)
+                    if research_task.done():
+                        break
+                    if token.is_cancelled:
+                        research_task.cancel()
+                        raise asyncio.CancelledError()
+                    if not is_generation_current(generation):
+                        research_task.cancel()
+                        return agent, ""
+                    if not is_agent_active(agent):
+                        research_task.cancel()
+                        emit_skipped()
+                        return agent, ""
+                research_text = await research_task
+            finally:
+                if not research_task.done():
                     research_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await research_task
-                    raise asyncio.CancelledError()
-                if not is_generation_current(generation):
-                    research_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await research_task
-                    return agent, ""
-                if not is_agent_active(agent):
-                    research_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await research_task
-                    emit_skipped()
-                    return agent, ""
-            research_text = await research_task
+                await asyncio.gather(research_task, return_exceptions=True)
             research_cache[cache_key] = research_text
         if not is_agent_active(agent):
             emit_skipped()
@@ -2801,27 +2800,26 @@ class EmbeddedBackend(Backend):
             ),
             name=f"backend.voice_podcast.utterance:{run_id}:{round_index}:{getattr(agent, 'id', '')}",
         )
-        while not speaker_task.done():
-            await asyncio.wait({speaker_task}, timeout=0.5)
-            if speaker_task.done():
-                break
-            if token.is_cancelled:
+        try:
+            while not speaker_task.done():
+                await asyncio.wait({speaker_task}, timeout=0.5)
+                if speaker_task.done():
+                    break
+                if token.is_cancelled:
+                    speaker_task.cancel()
+                    raise asyncio.CancelledError()
+                if not is_generation_current(generation):
+                    speaker_task.cancel()
+                    return agent, ""
+                if not is_agent_active(agent):
+                    speaker_task.cancel()
+                    emit_skipped()
+                    return agent, ""
+            speaker_text = await speaker_task
+        finally:
+            if not speaker_task.done():
                 speaker_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await speaker_task
-                raise asyncio.CancelledError()
-            if not is_generation_current(generation):
-                speaker_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await speaker_task
-                return agent, ""
-            if not is_agent_active(agent):
-                speaker_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await speaker_task
-                emit_skipped()
-                return agent, ""
-        speaker_text = await speaker_task
+            await asyncio.gather(speaker_task, return_exceptions=True)
         if paper_turn:
             speaker_text = normalize_paper_scope_claims(speaker_text)
             valid, reason = validate_paper_utterance(speaker_text, focused_reference)
