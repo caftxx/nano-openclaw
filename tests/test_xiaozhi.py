@@ -471,6 +471,7 @@ class _RecordingWebSocket:
         self.json = []
         self.binary = []
         self.close_calls = []
+        self.closed = asyncio.Event()
 
     async def send_json(self, payload):
         self.json.append(payload)
@@ -480,6 +481,7 @@ class _RecordingWebSocket:
 
     async def close(self, **kwargs):
         self.close_calls.append(kwargs)
+        self.closed.set()
 
 
 def _connection_fixture(tmp_path):
@@ -746,7 +748,7 @@ def test_no_voice_timeout_closes_device_websocket(tmp_path):
         connection._want_listening = True
 
         connection._arm_no_voice_timeout()
-        await asyncio.sleep(0.06)
+        await asyncio.wait_for(ws.closed.wait(), timeout=0.2)
 
         assert ws.close_calls == [{"code": 1000, "reason": "no voice timeout"}]
         assert connection._want_listening is False
