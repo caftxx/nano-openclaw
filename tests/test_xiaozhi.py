@@ -47,6 +47,7 @@ def test_xiaozhi_config_defaults_and_validation():
     cfg = NanoOpenClawConfig()
     assert cfg.xiaozhi == XiaozhiConfig()
     assert cfg.xiaozhi.enabled is False
+    assert cfg.xiaozhi.noVoiceTimeoutSeconds == 120
     assert cfg.xiaozhi.maxPhotoBytes == 5 * 1024 * 1024
     assert cfg.xiaozhi.ttsVoice == "zhiqi"
     assert cfg.xiaozhi.ttsSampleRate == 24000
@@ -55,6 +56,8 @@ def test_xiaozhi_config_defaults_and_validation():
         XiaozhiConfig(mcpTimeoutMs=99)
     with pytest.raises(ValueError):
         XiaozhiConfig(ttsSampleRate=48000)
+    with pytest.raises(ValueError):
+        XiaozhiConfig(noVoiceTimeoutSeconds=-1)
 
 
 def test_channel_keeps_configuration_error_visible(tmp_path):
@@ -240,6 +243,7 @@ def _route_fixture(tmp_path: Path):
                 token="secret",
                 websocketUrl="",
                 mcpTimeoutMs=1000,
+                noVoiceTimeoutSeconds=120,
                 maxPhotoBytes=1024 * 1024,
                 ttsVoice="zhiqi",
                 ttsSampleRate=24000,
@@ -466,6 +470,7 @@ class _RecordingWebSocket:
     def __init__(self):
         self.json = []
         self.binary = []
+        self.close_calls = []
 
     async def send_json(self, payload):
         self.json.append(payload)
@@ -473,8 +478,8 @@ class _RecordingWebSocket:
     async def send_bytes(self, payload):
         self.binary.append(payload)
 
-    async def close(self, **_kwargs):
-        return None
+    async def close(self, **kwargs):
+        self.close_calls.append(kwargs)
 
 
 def _connection_fixture(tmp_path):
@@ -666,6 +671,56 @@ def test_connection_forwards_throttled_partial_stt(tmp_path):
 
         stt = [item for item in ws.json if item.get("type") == "stt"]
         assert [item["text"] for item in stt] == ["正在", "正在识别"]
+
+    asyncio.run(run())
+
+
+def test_no_voice_timeout_closes_device_websocket(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        adapter.config.noVoiceTimeoutSeconds = 0.03
+        connection._want_listening = True
+
+        connection._arm_no_voice_timeout()
+        await asyncio.sleep(0.06)
+
+        assert ws.close_calls == [{"code": 1000, "reason": "no voice timeout"}]
+        assert connection._want_listening is False
+        assert connection._no_voice_task is None
+
+    asyncio.run(run())
+
+
+def test_recognized_voice_refreshes_no_voice_timeout(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        adapter.config.noVoiceTimeoutSeconds = 0.06
+        connection._want_listening = True
+
+        connection._arm_no_voice_timeout()
+        await asyncio.sleep(0.04)
+        connection._record_voice_activity()
+        await asyncio.sleep(0.04)
+        assert ws.close_calls == []
+
+        await asyncio.sleep(0.08)
+        assert ws.close_calls == [{"code": 1000, "reason": "no voice timeout"}]
+
+    asyncio.run(run())
+
+
+def test_stopping_asr_pauses_no_voice_timeout(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        adapter.config.noVoiceTimeoutSeconds = 0.03
+        connection._want_listening = True
+
+        connection._arm_no_voice_timeout()
+        await connection._stop_asr()
+        await asyncio.sleep(0.06)
+
+        assert ws.close_calls == []
+        assert connection._no_voice_task is None
 
     asyncio.run(run())
 

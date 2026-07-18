@@ -772,6 +772,12 @@ class XiaozhiConfig(BaseModel):
         description="Public ws(s):// URL for the device; empty derives it from the OTA request host",
     )
     mcpTimeoutMs: int = Field(default=10000, ge=1000, le=120000)
+    noVoiceTimeoutSeconds: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description="Close an actively-listening device connection after this many seconds without recognized speech; 0 disables the timeout",
+    )
     maxPhotoBytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
     ttsVoice: str = Field(
         default="zhiqi",

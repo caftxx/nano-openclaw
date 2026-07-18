@@ -145,6 +145,7 @@
     token: "",                    // 启用时建议改成 ${XIAOZHI_TOKEN}
     websocketUrl: "",       // 留空时根据 OTA 请求地址推导；公网部署请显式填写 wss://...
     mcpTimeoutMs: 10000,
+    noVoiceTimeoutSeconds: 120, // 持续无有效语音后关闭连接并回到待命；0 表示禁用
     maxPhotoBytes: 5242880,
     ttsVoice: "zhiqi",       // 小智专属音色；需支持下方采样率
     ttsSampleRate: 24000,    // 上行 ASR 仍为 16 kHz；下行 24 kHz 匹配立创 S3

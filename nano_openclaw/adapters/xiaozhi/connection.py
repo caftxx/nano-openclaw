@@ -68,6 +68,9 @@ class XiaozhiConnection:
         self._accepted_final_generation = -1
         self._last_partial_text = ""
         self._last_partial_sent_at = 0.0
+        self._last_voice_activity_at = 0.0
+        self._no_voice_activity = asyncio.Event()
+        self._no_voice_task: asyncio.Task[None] | None = None
         self.mcp = DeviceMcpPeer(
             session_id=session_id,
             send_json=self.send_json,
@@ -192,6 +195,7 @@ class XiaozhiConnection:
         self._asr = transcriber
         try:
             await transcriber.start()
+            self._arm_no_voice_timeout()
             log.info("xiaozhi.asr.started", f"device={self.device_id}")
         except Exception:
             self._asr = None
@@ -199,10 +203,65 @@ class XiaozhiConnection:
             raise
 
     async def _stop_asr(self) -> None:
+        await self._pause_no_voice_timeout()
         transcriber, self._asr = self._asr, None
         if transcriber is not None:
             await transcriber.stop()
             log.info("xiaozhi.asr.stopped", f"device={self.device_id}")
+
+    def _arm_no_voice_timeout(self) -> None:
+        timeout = self.adapter.config.noVoiceTimeoutSeconds
+        if timeout <= 0 or self._closed or not self._want_listening:
+            return
+        self._last_voice_activity_at = asyncio.get_running_loop().time()
+        self._no_voice_activity.set()
+        if self._no_voice_task is None or self._no_voice_task.done():
+            self._no_voice_task = asyncio.create_task(
+                self._watch_no_voice_timeout(),
+                name=f"xiaozhi-no-voice:{self.device_id}",
+            )
+
+    def _record_voice_activity(self) -> None:
+        if self._no_voice_task is None:
+            return
+        self._last_voice_activity_at = asyncio.get_running_loop().time()
+        self._no_voice_activity.set()
+
+    async def _pause_no_voice_timeout(self) -> None:
+        task, self._no_voice_task = self._no_voice_task, None
+        self._no_voice_activity.set()
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _watch_no_voice_timeout(self) -> None:
+        current = asyncio.current_task()
+        timeout = self.adapter.config.noVoiceTimeoutSeconds
+        try:
+            while self._want_listening and not self._closed:
+                remaining = self._last_voice_activity_at + timeout - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    self._want_listening = False
+                    log.info(
+                        "xiaozhi.no_voice_timeout",
+                        f"device={self.device_id} timeout_seconds={timeout}",
+                    )
+                    await self.websocket.close(code=1000, reason="no voice timeout")
+                    return
+                self._no_voice_activity.clear()
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._no_voice_activity.wait(), timeout=remaining)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - connection cleanup handles close failures
+            if not self._closed:
+                log.warning(
+                    "xiaozhi.no_voice_timeout.error",
+                    f"device={self.device_id}: {type(exc).__name__}: {exc}",
+                )
+        finally:
+            if self._no_voice_task is current:
+                self._no_voice_task = None
 
     async def _on_partial_transcript(self, text: str, *, generation: int) -> None:
         text = text.strip()
@@ -212,8 +271,10 @@ class XiaozhiConnection:
             or self._asr is None
             or self._turn_task is not None
             or generation != self._asr_generation
-            or text == self._last_partial_text
         ):
+            return
+        self._record_voice_activity()
+        if text == self._last_partial_text:
             return
         now = asyncio.get_running_loop().time()
         if now - self._last_partial_sent_at < PARTIAL_STT_INTERVAL_SECONDS:
@@ -232,6 +293,7 @@ class XiaozhiConnection:
             or (generation is not None and generation == self._accepted_final_generation)
         ):
             return
+        self._record_voice_activity()
         if generation is not None:
             # Server VAD may produce more than one completed event while a
             # long utterance is being stopped. Exactly one final result from
@@ -514,6 +576,7 @@ class XiaozhiConnection:
         if self._closed:
             return
         self._closed = True
+        await self._pause_no_voice_timeout()
         self.adapter.hub.remove(self.device_id, self)
         self.mcp.close()
         if self._mcp_init_task is not None:

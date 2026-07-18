@@ -217,6 +217,7 @@ xiaozhi: {
   token: "${XIAOZHI_TOKEN}",
   websocketUrl: "",       // 局域网直连可留空；公网/反代请填 wss://.../xiaozhi/v1/
   mcpTimeoutMs: 10000,
+  noVoiceTimeoutSeconds: 120, // 持续无有效语音后关闭连接并让设备回到待命；0 表示禁用
   maxPhotoBytes: 5242880,
   ttsVoice: "zhiqi",       // 需选择支持 24 kHz 的阿里云音色
   ttsSampleRate: 24000,    // 下行直出 24 kHz，匹配立创 S3 音频输出

@@ -175,6 +175,7 @@ xiaozhi: {
   token: "${XIAOZHI_TOKEN}",
   websocketUrl: "",
   mcpTimeoutMs: 10000,
+  noVoiceTimeoutSeconds: 120, // 持续无有效语音后关闭连接并让设备回到待命；0 表示禁用
   maxPhotoBytes: 5242880,
   ttsVoice: "zhiqi",       // 选择支持 ttsSampleRate 的阿里云音色
   ttsSampleRate: 24000,    // 16000 | 24000；立创 S3 推荐 24000
@@ -209,7 +210,7 @@ xiaozhi: {
 
 `baseUrl` 必须包含 `/v1`；`realtimeUrl` 指向完整 WebSocket 路径。Bearer Token 支持 `${VAR}` 替换，不会写入日志。小智收到的 CosyVoice PCM chunk 会立即编码发送，abort 或断线会取消尚未完成的 HTTP 音频流。
 
-每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
+每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
 
 局域网接入点为 `/xiaozhi/ota/`、`/xiaozhi/v1/` 和 `/xiaozhi/vision/explain`。外网部署必须显式配置受信证书的 `wss` 地址，并在反向代理限制 OTA 接口访问；不要把 token 写进日志或提交到仓库。
 
