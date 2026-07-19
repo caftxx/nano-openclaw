@@ -800,6 +800,18 @@ class XiaozhiConfig(BaseModel):
         le=128000,
         description="Xiaozhi downlink Opus bitrate in bits per second",
     )
+    ttsPrebufferMs: int = Field(
+        default=2400,
+        ge=0,
+        le=10000,
+        description="PCM to collect before local TTS playback; 0 disables prebuffering",
+    )
+    ttsPrebufferMaxWaitMs: int = Field(
+        default=1800,
+        ge=0,
+        le=10000,
+        description="Maximum added wait for local TTS prebuffering",
+    )
 
 
 # ============================================================================

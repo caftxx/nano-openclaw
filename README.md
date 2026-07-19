@@ -222,6 +222,8 @@ xiaozhi: {
   ttsVoice: "zhiqi",       // 需选择支持 24 kHz 的阿里云音色
   ttsSampleRate: 24000,    // 下行直出 24 kHz，匹配立创 S3 音频输出
   opusBitrate: 64000,
+  ttsPrebufferMs: 2400,    // 本地 TTS 最多预取 2.4 秒音频，降低播放断流
+  ttsPrebufferMaxWaitMs: 1800, // 首包后最多增加 1.8 秒等待；短回复完成后立即播放
 },
 ```
 
@@ -254,10 +256,12 @@ xiaozhi: {
   // 其余字段不变
   ttsVoice: "nano",
   ttsSampleRate: 24000,
+  ttsPrebufferMs: 2400,
+  ttsPrebufferMaxWaitMs: 1800,
 },
 ```
 
-本地 ASR/TTS 共用 `/v1/realtime`：ASR 上行 16 kHz PCM，TTS 在同一新协议中连续提交句子文本 delta，收到 24 kHz PCM audio delta 后立即进入 Opus 编码，不等待整段合成完成。speech-gateway 不可用时小智 channel 会显示错误；切回 `provider: "aliyun"` 即恢复原有云端路径。
+本地 ASR/TTS 共用 `/v1/realtime`：ASR 上行 16 kHz PCM，TTS 在同一新协议中连续提交句子文本 delta。长回复默认在首个 24 kHz PCM 包后做有上限的自适应预缓冲，再连续进入 Opus 编码；短回复若已合成完成则立即播放。speech-gateway 不可用时小智 channel 会显示错误；切回 `provider: "aliyun"` 即恢复原有云端路径。
 
 ### web_chat（WebUI 聊天页）
 

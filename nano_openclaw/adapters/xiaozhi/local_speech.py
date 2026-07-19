@@ -187,9 +187,14 @@ async def stream_local_speech(
     voice: str,
     text_chunks: AsyncIterable[str],
     sample_rate: int,
+    prebuffer_ms: int = 0,
+    prebuffer_max_wait_ms: int = 0,
     connect_impl: Any | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream text and PCM through speech-gateway's unified realtime API."""
+
+    if prebuffer_ms < 0 or prebuffer_max_wait_ms < 0:
+        raise ValueError("local TTS prebuffer values must not be negative")
 
     connect = connect_impl
     if connect is None:
@@ -295,16 +300,51 @@ async def stream_local_speech(
 
         sender = asyncio.create_task(send_text(), name="xiaozhi-local-tts-text")
         receiver = asyncio.create_task(receive_audio(), name="xiaozhi-local-tts-audio")
+        prebuffer_target = sample_rate * 2 * prebuffer_ms // 1000
+        prebuffer_deadline = 0.0
+        prebuffer = bytearray()
+        prebuffering = prebuffer_target > 0 and prebuffer_max_wait_ms > 0
         try:
             while True:
-                kind, payload = await output.get()
+                timeout = None
+                if prebuffering and prebuffer:
+                    timeout = prebuffer_deadline - asyncio.get_running_loop().time()
+                    if timeout <= 0:
+                        yield bytes(prebuffer)
+                        prebuffer.clear()
+                        prebuffering = False
+                        continue
+                try:
+                    if timeout is None:
+                        kind, payload = await output.get()
+                    else:
+                        kind, payload = await asyncio.wait_for(output.get(), timeout)
+                except asyncio.TimeoutError:
+                    yield bytes(prebuffer)
+                    prebuffer.clear()
+                    prebuffering = False
+                    continue
                 if kind == "audio":
-                    yield bytes(payload)
+                    if not prebuffering:
+                        yield bytes(payload)
+                        continue
+                    if not prebuffer:
+                        prebuffer_deadline = (
+                            asyncio.get_running_loop().time()
+                            + prebuffer_max_wait_ms / 1000
+                        )
+                    prebuffer.extend(bytes(payload))
+                    if len(prebuffer) >= prebuffer_target:
+                        yield bytes(prebuffer)
+                        prebuffer.clear()
+                        prebuffering = False
                 elif kind == "error":
                     if isinstance(payload, BaseException):
                         raise payload
                     raise RuntimeError(str(payload))
                 else:
+                    if prebuffer:
+                        yield bytes(prebuffer)
                     await sender
                     return
         finally:

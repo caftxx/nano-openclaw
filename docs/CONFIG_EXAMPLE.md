@@ -180,6 +180,8 @@ xiaozhi: {
   ttsVoice: "zhiqi",       // 选择支持 ttsSampleRate 的阿里云音色
   ttsSampleRate: 24000,    // 16000 | 24000；立创 S3 推荐 24000
   opusBitrate: 64000,      // 16000..128000 bit/s
+  ttsPrebufferMs: 2400,    // 本地 TTS 目标预缓冲时长；0 禁用
+  ttsPrebufferMaxWaitMs: 1800, // 首个 PCM 包后最多等待多久，短回复完成后不等待
 }
 ```
 
@@ -205,10 +207,12 @@ xiaozhi: {
   ttsVoice: "nano",
   ttsSampleRate: 24000,
   opusBitrate: 64000,
+  ttsPrebufferMs: 2400,
+  ttsPrebufferMaxWaitMs: 1800,
 },
 ```
 
-`baseUrl` 必须包含 `/v1`；`realtimeUrl` 指向统一的 `/v1/realtime` WebSocket 路径。Bearer Token 支持 `${VAR}` 替换，不会写入日志。小智在一个 realtime response 中连续提交句子文本 delta，收到 CosyVoice PCM audio delta 后立即编码发送；abort 或断线会取消尚未完成的 realtime 合成。
+`baseUrl` 必须包含 `/v1`；`realtimeUrl` 指向统一的 `/v1/realtime` WebSocket 路径。Bearer Token 支持 `${VAR}` 替换，不会写入日志。小智在一个 realtime response 中连续提交句子文本 delta；长回复在首包后最多等待 `ttsPrebufferMaxWaitMs` 来积累音频，短回复完成后直接播放。abort 或断线会取消尚未完成的 realtime 合成。
 
 每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
 

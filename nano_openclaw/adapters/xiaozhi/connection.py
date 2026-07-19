@@ -604,6 +604,10 @@ class XiaozhiConnection:
             voice=self.adapter.config.ttsVoice,
             text_chunks=text_chunks(),
             sample_rate=self.adapter.config.ttsSampleRate,
+            prebuffer_ms=getattr(self.adapter.config, "ttsPrebufferMs", 2400),
+            prebuffer_max_wait_ms=getattr(
+                self.adapter.config, "ttsPrebufferMaxWaitMs", 1800
+            ),
         ):
             if first_audio:
                 first_audio = False
@@ -739,6 +743,10 @@ class XiaozhiConnection:
             voice=self.adapter.config.ttsVoice,
             text_chunks=text_chunks(),
             sample_rate=self.adapter.config.ttsSampleRate,
+            prebuffer_ms=getattr(self.adapter.config, "ttsPrebufferMs", 2400),
+            prebuffer_max_wait_ms=getattr(
+                self.adapter.config, "ttsPrebufferMaxWaitMs", 1800
+            ),
         ):
             pcm_buffer.extend(chunk)
             while len(pcm_buffer) >= frame_bytes:

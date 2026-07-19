@@ -58,6 +58,8 @@ def test_xiaozhi_config_defaults_and_validation():
     assert cfg.xiaozhi.ttsVoice == "zhiqi"
     assert cfg.xiaozhi.ttsSampleRate == 24000
     assert cfg.xiaozhi.opusBitrate == 64000
+    assert cfg.xiaozhi.ttsPrebufferMs == 2400
+    assert cfg.xiaozhi.ttsPrebufferMaxWaitMs == 1800
     with pytest.raises(ValueError):
         XiaozhiConfig(mcpTimeoutMs=99)
     with pytest.raises(ValueError):
@@ -878,6 +880,189 @@ def test_local_speech_synthesizer_receives_audio_while_text_is_still_open():
             connect_impl=connect,
         )
         assert await asyncio.wait_for(anext(stream), timeout=0.1) == b"early-pcm"
+        release_text.set()
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+    asyncio.run(run())
+
+
+def test_local_speech_prebuffers_multiple_audio_chunks():
+    async def run():
+        class BufferedTtsWebSocket:
+            def __init__(self):
+                self.events = asyncio.Queue()
+
+            async def send(self, payload):
+                message = json.loads(payload)
+                if message["type"] == "session.update":
+                    await self.events.put(json.dumps({
+                        "type": "session.updated",
+                        "session": {"audio": {"output": {"format": {"rate": 1000}}}},
+                    }))
+                elif message["type"] == "response.create":
+                    await self.events.put(json.dumps({"type": "response.created"}))
+                elif message["type"] == "speech.input_text.done":
+                    for pcm in (b"a" * 1200, b"b" * 1200):
+                        await self.events.put(json.dumps({
+                            "type": "response.output_audio.delta",
+                            "delta": base64.b64encode(pcm).decode(),
+                        }))
+                    await self.events.put(json.dumps({
+                        "type": "response.done",
+                        "response": {"status": "completed"},
+                    }))
+
+            async def recv(self):
+                return await self.events.get()
+
+            async def close(self):
+                return None
+
+        ws = BufferedTtsWebSocket()
+        await ws.events.put(json.dumps({"type": "session.created"}))
+
+        async def connect(*_args, **_kwargs):
+            return ws
+
+        async def texts():
+            yield "需要连续播放的长文本。"
+
+        audio = [chunk async for chunk in stream_local_speech(
+            realtime_url="ws://speech.local/v1/realtime",
+            api_key="",
+            model="fun-cosyvoice3-0.5b",
+            voice="nano",
+            text_chunks=texts(),
+            sample_rate=1000,
+            prebuffer_ms=1200,
+            prebuffer_max_wait_ms=1000,
+            connect_impl=connect,
+        )]
+
+        assert audio == [b"a" * 1200 + b"b" * 1200]
+
+    asyncio.run(run())
+
+
+def test_local_speech_does_not_delay_completed_short_audio():
+    async def run():
+        class ShortTtsWebSocket:
+            def __init__(self):
+                self.events = asyncio.Queue()
+
+            async def send(self, payload):
+                message = json.loads(payload)
+                if message["type"] == "session.update":
+                    await self.events.put(json.dumps({
+                        "type": "session.updated",
+                        "session": {"audio": {"output": {"format": {"rate": 1000}}}},
+                    }))
+                elif message["type"] == "response.create":
+                    await self.events.put(json.dumps({"type": "response.created"}))
+                elif message["type"] == "speech.input_text.done":
+                    await self.events.put(json.dumps({
+                        "type": "response.output_audio.delta",
+                        "delta": base64.b64encode(b"short").decode(),
+                    }))
+                    await self.events.put(json.dumps({
+                        "type": "response.done",
+                        "response": {"status": "completed"},
+                    }))
+
+            async def recv(self):
+                return await self.events.get()
+
+            async def close(self):
+                return None
+
+        ws = ShortTtsWebSocket()
+        await ws.events.put(json.dumps({"type": "session.created"}))
+
+        async def connect(*_args, **_kwargs):
+            return ws
+
+        async def texts():
+            yield "短句。"
+
+        started = time.perf_counter()
+        audio = [chunk async for chunk in stream_local_speech(
+            realtime_url="ws://speech.local/v1/realtime",
+            api_key="",
+            model="fun-cosyvoice3-0.5b",
+            voice="nano",
+            text_chunks=texts(),
+            sample_rate=1000,
+            prebuffer_ms=2400,
+            prebuffer_max_wait_ms=1000,
+            connect_impl=connect,
+        )]
+
+        assert audio == [b"short"]
+        assert time.perf_counter() - started < 0.2
+
+    asyncio.run(run())
+
+
+def test_local_speech_prebuffer_wait_is_bounded():
+    async def run():
+        release_text = asyncio.Event()
+
+        class SlowTtsWebSocket:
+            def __init__(self):
+                self.events = asyncio.Queue()
+
+            async def send(self, payload):
+                message = json.loads(payload)
+                if message["type"] == "session.update":
+                    await self.events.put(json.dumps({
+                        "type": "session.updated",
+                        "session": {"audio": {"output": {"format": {"rate": 1000}}}},
+                    }))
+                elif message["type"] == "response.create":
+                    await self.events.put(json.dumps({"type": "response.created"}))
+                elif message["type"] == "speech.input_text.delta":
+                    await self.events.put(json.dumps({
+                        "type": "response.output_audio.delta",
+                        "delta": base64.b64encode(b"partial").decode(),
+                    }))
+                elif message["type"] == "speech.input_text.done":
+                    await self.events.put(json.dumps({
+                        "type": "response.done",
+                        "response": {"status": "completed"},
+                    }))
+
+            async def recv(self):
+                return await self.events.get()
+
+            async def close(self):
+                return None
+
+        ws = SlowTtsWebSocket()
+        await ws.events.put(json.dumps({"type": "session.created"}))
+
+        async def connect(*_args, **_kwargs):
+            return ws
+
+        async def texts():
+            yield "第一段。"
+            await release_text.wait()
+
+        stream = stream_local_speech(
+            realtime_url="ws://speech.local/v1/realtime",
+            api_key="",
+            model="fun-cosyvoice3-0.5b",
+            voice="nano",
+            text_chunks=texts(),
+            sample_rate=1000,
+            prebuffer_ms=2400,
+            prebuffer_max_wait_ms=20,
+            connect_impl=connect,
+        )
+        started = time.perf_counter()
+        assert await asyncio.wait_for(anext(stream), timeout=0.2) == b"partial"
+        elapsed = time.perf_counter() - started
+        assert 0.015 <= elapsed < 0.15
         release_text.set()
         with pytest.raises(StopAsyncIteration):
             await anext(stream)
