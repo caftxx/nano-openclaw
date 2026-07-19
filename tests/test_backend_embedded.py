@@ -12,6 +12,7 @@ import asyncio
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -259,6 +260,47 @@ def test_chat_abort_unknown_turn_is_noop(tmp_path):
         backend = EmbeddedBackend(_fake_runtime(tmp_path))
         await backend.chat_abort(turn_id="does-not-exist")
         await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_chat_abort_interrupts_task_and_releases_session(tmp_path):
+    async def run():
+        runtime = _fake_runtime(tmp_path)
+        backend = EmbeddedBackend(runtime)
+        session = backend.manager.create()
+        started = asyncio.Event()
+        events = backend.subscribe(session_key=session.session_id, events=["agent.event"])
+
+        async def blocked_turn(_self, _text, **_kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        try:
+            with patch(
+                "nano_openclaw.services.backend_embedded.AgentSession.run_turn",
+                new=blocked_turn,
+            ):
+                turn_id = await backend.chat_send(session_key=session.session_id, text="hi")
+                await asyncio.wait_for(started.wait(), timeout=0.2)
+                await asyncio.wait_for(backend.chat_abort(turn_id=turn_id), timeout=0.2)
+                await backend.await_turn(turn_id)
+
+            details = await backend.sessions_get(session.session_id)
+            assert details.active_turn_id is None
+            assert runtime.run_registry.get(turn_id) is None
+
+            async def cancelled_payload():
+                async for event in events:
+                    if event.payload.get("type") == "turn.cancelled":
+                        return event.payload
+                raise AssertionError("event stream closed before turn.cancelled")
+
+            payload = await asyncio.wait_for(cancelled_payload(), timeout=0.2)
+            assert payload["turn_id"] == turn_id
+        finally:
+            await events.aclose()
+            await backend.aclose()
 
     asyncio.run(run())
 

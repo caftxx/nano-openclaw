@@ -368,7 +368,22 @@ class EmbeddedBackend(Backend):
 
     async def chat_abort(self, *, turn_id: str) -> None:
         """Cancel any in-flight turn — chat- or cron-triggered — by id."""
-        self._run_registry.cancel(turn_id)
+        entry = self._run_registry.get(turn_id)
+        if entry is None or not self._run_registry.cancel(turn_id):
+            return
+
+        task = entry.task
+        if task is None or task is asyncio.current_task():
+            return
+
+        # CancellationToken is cooperative and cannot interrupt an in-flight
+        # model HTTP request. Give a newly created runner one loop turn to
+        # enter its cleanup guard, then cancel and await it so the session lock
+        # and active_turn_id are released before chat_abort returns.
+        await asyncio.sleep(0)
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def await_turn(self, turn_id: str) -> None:
         """EmbeddedBackend-only: block until a turn finishes (success / cancel / error).
@@ -595,7 +610,7 @@ class EmbeddedBackend(Backend):
                     seq=self._next_seq(),
                 )
             )
-        except TurnCancelled:
+        except (TurnCancelled, asyncio.CancelledError):
             self._emit(
                 PushEvent(
                     event="agent.event",
