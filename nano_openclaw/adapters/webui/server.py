@@ -243,7 +243,7 @@ def create_app(
 
     @app.websocket("/api/voice/realtime")
     async def voice_realtime(websocket: WebSocket) -> None:
-        """Relay OpenAI Realtime ASR without exposing speech-gateway secrets."""
+        """Relay unified realtime ASR/TTS without exposing gateway secrets."""
         expected = app.state.token
         supplied = websocket.query_params.get("token", "")
         if expected and not secrets.compare_digest(supplied, expected):
@@ -255,7 +255,7 @@ def create_app(
         if settings is None:
             await websocket.send_json({
                 "type": "error",
-                "error": {"message": "speech-gateway realtime ASR is not configured"},
+                "error": {"message": "speech-gateway realtime API is not configured"},
             })
             await websocket.close(code=1013)
             return

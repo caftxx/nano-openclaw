@@ -121,7 +121,7 @@
       await audioCtx.audioWorklet.addModule(workletUrl);
       sourceNode = audioCtx.createMediaStreamSource(micStream);
       workletNode = new AudioWorkletNode(audioCtx, "voice-pcm-downsampler", {
-        processorOptions: { targetRate: 16000, frameBytes: 3200 },
+        processorOptions: { targetRate: 16000, frameBytes: 1920 },
       });
       workletNode.port.onmessage = function (event) { sendAudio(event.data); };
       sourceNode.connect(workletNode);
@@ -164,7 +164,7 @@
             type: "session.update",
             session: { audio: { input: {
               format: { type: "audio/pcm", rate: 16000 },
-              turn_detection: { type: "server_vad", silence_duration_ms: 600, prefix_padding_ms: 300 },
+              turn_detection: { type: "server_vad", prefix_padding_ms: 300 },
             } } },
           });
         } else if (parsed.kind === "started") {

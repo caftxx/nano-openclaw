@@ -257,7 +257,7 @@ xiaozhi: {
 },
 ```
 
-本地 ASR 通过 `/v1/realtime` 接收 16 kHz PCM；本地 TTS 通过 HTTP chunked PCM 直接进入 24 kHz Opus 编码，不需要等待整段 Base64 音频。speech-gateway 不可用时小智 channel 会显示错误；切回 `provider: "aliyun"` 即恢复原有云端路径。
+本地 ASR/TTS 共用 `/v1/realtime`：ASR 上行 16 kHz PCM，TTS 在同一新协议中连续提交句子文本 delta，收到 24 kHz PCM audio delta 后立即进入 Opus 编码，不等待整段合成完成。speech-gateway 不可用时小智 channel 会显示错误；切回 `provider: "aliyun"` 即恢复原有云端路径。
 
 ### web_chat（WebUI 聊天页）
 
@@ -391,7 +391,7 @@ voice: {
 }
 ```
 
-Web 浏览器不会直连 `127.0.0.1:5100`：实时 ASR 经 nano 的 `/api/voice/realtime` WebSocket 双向代理，TTS 经 `/api/talk/speak` 代理，因此 speech-gateway 地址和 Bearer Token 都只保留在 nano 服务端。
+Web 浏览器不会直连 `127.0.0.1:5100`：实时 ASR 与流式 TTS 都经 nano 的 `/api/voice/realtime` WebSocket 双向代理，因此 speech-gateway 地址和 Bearer Token 都只保留在 nano 服务端。播客和 `talk.speak` 等完整文本调用仍使用 `/api/talk/speak` HTTP 代理。
 nano 会通过 speech-gateway 的 `GET /v1/audio/voices` 动态发现全部音色，并同步到单聊、群聊的音色下拉；发现失败时保留 `ttsVoice` 作为兜底，不影响 WebUI 启动。
 
 - **阿里云模式**下，三要素（`appkey` + `accessKeyId` + `accessKeySecret`）齐全才视为可用；任一缺失则前端整体回退浏览器原生引擎。

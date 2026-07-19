@@ -15,10 +15,13 @@
     var createLocalSpeaker = opts.createLocalSpeaker;
     var createFlowingSpeaker = opts.createFlowingSpeaker;
     var createRestSpeaker = opts.createRestSpeaker;
+    var createOpenAISpeaker = opts.createOpenAISpeaker;
     var createVoicePcmPlayer = opts.createVoicePcmPlayer;
     var ssml = opts.ssml || null;
     var getSelectedSystemVoice = opts.getSelectedSystemVoice || function () { return null; };
     var getAliyunConfig = opts.getAliyunConfig || function () { return {}; };
+    var getOpenAIConfig = opts.getOpenAIConfig || function () { return {}; };
+    var getOpenAIUrl = opts.getOpenAIUrl || function () { return ""; };
     var getToken = opts.getToken;
     var headers = opts.headers || function () { return {}; };
     var sampleRate = opts.sampleRate || function () { return 16000; };
@@ -77,9 +80,19 @@
     }
 
     function openAILevel() {
-      var level = restLevel();
-      level.name = "openai-compatible";
-      return level;
+      return {
+        name: "openai-compatible",
+        usesPlayer: true,
+        create: function (cb) {
+          return createOpenAISpeaker({
+            getUrl: getOpenAIUrl,
+            getConfig: getOpenAIConfig,
+            onAudio: cb.onAudio,
+            onCompleted: cb.onCompleted,
+            onError: cb.onError,
+          });
+        },
+      };
     }
 
     function levelsFor(output) {

@@ -85,7 +85,57 @@ def sanitize_tool_name(name: str) -> str:
 
 
 _SENTENCE_END = re.compile(r"(?<=[。！？!?；;\n])")
+_STRONG_SPEECH_END = frozenset("。！？!?；;\n")
+_SOFT_SPEECH_END = frozenset("，,、：:")
 
 
 def split_sentences(text: str) -> list[str]:
     return [part.strip() for part in _SENTENCE_END.split(text.strip()) if part.strip()]
+
+
+class SpeechTextChunker:
+    """Turn streaming model deltas into stable, TTS-friendly text chunks."""
+
+    def __init__(self, *, min_chars: int = 12, max_chars: int = 30) -> None:
+        if min_chars < 1 or max_chars < min_chars:
+            raise ValueError("speech chunk bounds must satisfy 1 <= min_chars <= max_chars")
+        self.min_chars = min_chars
+        self.max_chars = max_chars
+        self._buffer = ""
+
+    def feed(self, text: str) -> list[str]:
+        self._buffer += text
+        return self._drain(final=False)
+
+    def finish(self) -> list[str]:
+        chunks = self._drain(final=True)
+        self._buffer = ""
+        return chunks
+
+    def _drain(self, *, final: bool) -> list[str]:
+        chunks: list[str] = []
+        while self._buffer:
+            boundary = self._next_boundary(final=final)
+            if boundary is None:
+                break
+            chunk = self._buffer[:boundary].strip()
+            self._buffer = self._buffer[boundary:]
+            if chunk:
+                chunks.append(chunk)
+        return chunks
+
+    def _next_boundary(self, *, final: bool) -> int | None:
+        for index, char in enumerate(self._buffer):
+            if char in _STRONG_SPEECH_END:
+                return index + 1
+            if char in _SOFT_SPEECH_END and index + 1 >= self.min_chars:
+                return index + 1
+
+        if len(self._buffer) >= self.max_chars:
+            for index in range(self.max_chars - 1, self.min_chars - 2, -1):
+                if self._buffer[index] in _SOFT_SPEECH_END or self._buffer[index].isspace():
+                    return index + 1
+            return self.max_chars
+        if final:
+            return len(self._buffer)
+        return None

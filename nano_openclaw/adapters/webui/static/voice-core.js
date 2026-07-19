@@ -13,7 +13,7 @@
  *   capturing  正在聆听
  *   thinking   已发送 / turn 流式中、且当前无播报
  *   speaking   有声音在播（含云端合成排队播放、本地 synth、错误短播报）
- *   cooldown   定时等待后再开麦：读完后 500ms 防外放尾音回采【D3】；
+ *   cooldown   定时等待后再开麦：PCM 150ms / 系统 TTS 500ms 防尾音回采【D3】；
  *              回前台 1200ms 等浏览器麦克风/语音服务恢复【D1】
  *   error      不可恢复错误（HTTPS 硬阻断 / 前台拒麦 / 连接丢失）
  *
@@ -46,6 +46,9 @@
 
   var SENTENCE_END = /[。！？!?；;\n]/;
   var ACTIVE_STATES = { starting: 1, capturing: 1, thinking: 1, speaking: 1, cooldown: 1 };
+  var SPEECH_MIN_CHARS = 12;
+  var SPEECH_MAX_CHARS = 30;
+  var SPEECH_SOFT_END = /[，,、：:]/;
   var WAKE_IDLE_MS = 20000;   // 唤醒后连续对话窗口：聆听中静默 20s 回落待唤醒
   var WAKE_SEP = /[\s。，、！？!?.,;；:：'"""''()（）]/;   // 唤醒匹配忽略的分隔符（单字符判定，无 g 防 lastIndex 状态）
 
@@ -163,25 +166,45 @@
       cancelRequested: false,
       anyAudio: false,
       pushed: false,
+      segmentOpen: false,
+      messageEnded: false,
     };
   }
 
-  // 从 turn.text[sentUpTo..] 切出「到最后一个句末标点为止」的整句块；没有整句返回 null。
+  // 从流式文本切出一个稳定块。强句末立即提交；较长内容允许在逗号处提交，最长
+  // 30 字强制切分，避免模型首句很长时 TTS 一直等到句号才开始。
   function readyChunk(turn) {
     var rest = turn.text.slice(turn.sentUpTo);
     if (!rest) return null;
-    var lastEnd = -1;
-    for (var i = rest.length - 1; i >= 0; i--) {
-      if (SENTENCE_END.test(rest[i])) { lastEnd = i; break; }
+    for (var i = 0; i < rest.length; i++) {
+      if (SENTENCE_END.test(rest[i])) {
+        return { text: rest.slice(0, i + 1).trim(), advance: i + 1 };
+      }
+      if (i + 1 >= SPEECH_MIN_CHARS && SPEECH_SOFT_END.test(rest[i])) {
+        return { text: rest.slice(0, i + 1).trim(), advance: i + 1 };
+      }
     }
-    if (lastEnd < 0) return null;
-    return { text: rest.slice(0, lastEnd + 1).trim(), advance: lastEnd + 1 };
+    if (rest.length >= SPEECH_MAX_CHARS) {
+      var boundary = SPEECH_MAX_CHARS;
+      for (var j = SPEECH_MAX_CHARS - 1; j >= SPEECH_MIN_CHARS - 1; j--) {
+        if (SPEECH_SOFT_END.test(rest[j]) || /\s/.test(rest[j])) {
+          boundary = j + 1;
+          break;
+        }
+      }
+      return { text: rest.slice(0, boundary).trim(), advance: boundary };
+    }
+    return null;
   }
 
   // 给 turn 投一段合成文本：首段补 speakerBegin（懒开流——muted/paused 的 turn
   // 永远不该开 TTS 连接）。
   function speakCmds(turn, text, cmds) {
-    if (!turn.pushed) { cmds.push({ type: "speakerBegin" }); turn.pushed = true; }
+    if (!turn.segmentOpen) {
+      cmds.push({ type: "speakerBegin" });
+      turn.segmentOpen = true;
+    }
+    turn.pushed = true;
     cmds.push({ type: "speak", text: text });
   }
 
@@ -194,10 +217,12 @@
     return "starting";
   }
 
-  // turn 收尾后的去向：本轮出过声 → 冷却 500ms 防尾音回采【D3】；没出过声立即开麦。
-  function resumeAfterTurn(ctx, turn, cmds) {
+  // turn 收尾后的去向：本轮出过声 → 短暂冷却防尾音回采【D3】；没出过声立即开麦。
+  function resumeAfterTurn(ctx, turn, cmds, tailGuarded) {
     if (turn && turn.anyAudio) {
-      cmds.push({ type: "armTimer", tag: "cooldown", ms: 500 });
+      // 云 PCM 播放器已经按 outputLatency 做过物理尾音补偿，只需短保护窗；
+      // speechSynthesis 没有这层保证，继续保留原来的 500ms。
+      cmds.push({ type: "armTimer", tag: "cooldown", ms: tailGuarded ? 150 : 500 });
       return "cooldown";
     }
     return startListening(ctx, cmds);
@@ -497,6 +522,7 @@
       case "TEXT_DELTA": {
         if (!turn) return res(state, ctx, cmds);
         turn.text += event.text || "";
+        turn.messageEnded = false;
         if (turn.muted || !isActive(state)) return res(state, ctx, cmds);
         if (turn.ssml) {
           if (state === "thinking") ctx.statusOverride = "正在接收回复…";
@@ -507,14 +533,18 @@
           if (turn.text.trim()) ctx.resumeReplay = true;
           return res(state, ctx, cmds);
         }
-        chunk = readyChunk(turn);
-        if (chunk) {
+        if (state === "speaking" && !turn.segmentOpen) {
+          return res(state, ctx, cmds);
+        }
+        var spokeChunk = false;
+        while ((chunk = readyChunk(turn))) {
           turn.sentUpTo += chunk.advance;
           if (chunk.text) {
             speakCmds(turn, chunk.text, cmds);
-            return res("speaking", ctx, cmds);
+            spokeChunk = true;
           }
         }
+        if (spokeChunk) return res("speaking", ctx, cmds);
         if (state === "thinking") ctx.statusOverride = "正在接收回复…";
         return res(state, ctx, cmds);
       }
@@ -534,6 +564,11 @@
           if (turn.text.trim()) ctx.resumeReplay = true;
           return res(state, ctx, cmds);
         }
+        // 上一条 message 的 response 仍在排空；最后一条 message 已经缓冲在 turn.text。
+        // 等 SPEAK_DRAINED 后再开新 response，避免同一个 realtime speaker 并发 begin。
+        if (state === "speaking" && !turn.segmentOpen) {
+          return res(state, ctx, cmds);
+        }
         if (turn.ssml) {
           tail = turn.text.trim();
         } else {
@@ -541,11 +576,32 @@
           turn.sentUpTo = turn.text.length;
         }
         if (tail) speakCmds(turn, tail, cmds);
-        if (turn.pushed) {
+        if (turn.segmentOpen) {
           cmds.push({ type: "speakerEnd" });   // 文本流收尾：云端发 Stop / 本地标记排空即完【B4】
+          turn.segmentOpen = false;
           return res("speaking", ctx, cmds);
         }
+        if (state === "speaking") return res(state, ctx, cmds);
         return res(resumeAfterTurn(ctx, turn, cmds), ctx, cmds);   // 整轮无可读文本
+      }
+
+      case "MESSAGE_END": {
+        if (!turn || turn.muted || !isActive(state) || turn.ssml) {
+          return res(state, ctx, cmds);
+        }
+        turn.messageEnded = true;
+        if (state === "speaking" && !turn.segmentOpen) {
+          return res(state, ctx, cmds);
+        }
+        tail = turn.text.slice(turn.sentUpTo).trim();
+        turn.sentUpTo = turn.text.length;
+        if (tail) speakCmds(turn, tail, cmds);
+        if (turn.segmentOpen) {
+          cmds.push({ type: "speakerEnd" });
+          turn.segmentOpen = false;
+          return res("speaking", ctx, cmds);
+        }
+        return res(state, ctx, cmds);
       }
 
       case "TURN_ERROR": {
@@ -573,11 +629,38 @@
 
       case "SPEAK_DRAINED": {
         if (state !== "speaking") return res(state, ctx, cmds);
-        if (turn && turn.open) {
-          ctx.statusOverride = "正在接收回复…";
-          return res("thinking", ctx, cmds);   // 句间空隙：等更多 delta【E1】
+        if (turn) {
+          var resumedSpeech = false;
+          while ((chunk = readyChunk(turn))) {
+            turn.sentUpTo += chunk.advance;
+            if (chunk.text) {
+              speakCmds(turn, chunk.text, cmds);
+              resumedSpeech = true;
+            }
+          }
+          if (turn.messageEnded || !turn.open) {
+            tail = turn.text.slice(turn.sentUpTo).trim();
+            turn.sentUpTo = turn.text.length;
+            if (tail) {
+              speakCmds(turn, tail, cmds);
+              resumedSpeech = true;
+            }
+            if (turn.segmentOpen) {
+              cmds.push({ type: "speakerEnd" });
+              turn.segmentOpen = false;
+            }
+          }
+          if (resumedSpeech) return res("speaking", ctx, cmds);
+          if (turn.open) {
+            ctx.statusOverride = "正在接收回复…";
+            return res("thinking", ctx, cmds);   // 句间空隙：等更多 delta【E1】
+          }
         }
-        return res(resumeAfterTurn(ctx, turn || { anyAudio: true }, cmds), ctx, cmds);
+        return res(
+          resumeAfterTurn(ctx, turn || { anyAudio: true }, cmds, Boolean(event.tailGuarded)),
+          ctx,
+          cmds
+        );
       }
 
       case "SPEAKER_RESET": {
@@ -622,8 +705,12 @@
           cmds.push({ type: "stopSpeech" });
           turn.sentUpTo = turn.text.length;
           turn.pushed = false;
+          turn.segmentOpen = false;
           speakCmds(turn, turn.text.trim(), cmds);
-          if (!turn.open) cmds.push({ type: "speakerEnd" });
+          if (!turn.open) {
+            cmds.push({ type: "speakerEnd" });
+            turn.segmentOpen = false;
+          }
           return res("speaking", ctx, cmds);
         }
         if (state === "speaking") return res(state, ctx, cmds);   // 云端播报跨后台仍在放：别打断

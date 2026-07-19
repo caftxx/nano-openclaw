@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -17,6 +18,7 @@ from nano_openclaw.adapters.xiaozhi.mcp import DeviceMcpPeer
 from nano_openclaw.adapters.xiaozhi.protocol import (
     FRAME_DURATION_MS,
     ProtocolError,
+    SpeechTextChunker,
     envelope,
     parse_text_message,
     server_hello,
@@ -34,6 +36,7 @@ PARTIAL_STT_INTERVAL_SECONDS = 0.12
 ABORT_TURN_RELEASE_TIMEOUT_SECONDS = 3.0
 BUSY_RETRY_TIMEOUT_SECONDS = 5.0
 TURN_RELEASE_POLL_SECONDS = 0.05
+_TEXT_SEGMENT_END = object()
 
 
 class XiaozhiConnection:
@@ -132,11 +135,13 @@ class XiaozhiConnection:
                 await self.abort(send_tts_stop=True)
                 self._listening_mode = str(message.get("mode") or "manual")
                 self._want_listening = True
-                # Aliyun closes an ASR WebSocket after 10 seconds without
-                # audio.  Some devices enter listening standby well before
-                # their first packet, so defer the upstream connection until
-                # audio actually arrives.
                 self._arm_no_voice_timeout()
+                # speech-gateway accepts idle realtime sessions, so overlap
+                # its handshake with the device entering listening. Aliyun
+                # closes idle ASR sockets after about ten seconds and remains
+                # deferred until the first audio packet.
+                if self.adapter.runtime.config.voice.provider == "openai-compatible":
+                    await self._start_asr()
             elif state == "stop":
                 self._want_listening = False
                 await self._stop_asr()
@@ -379,9 +384,13 @@ class XiaozhiConnection:
             )
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self.mcp.ready.wait(), timeout=self.adapter.config.mcpTimeoutMs / 1000)
-            reply = await self._collect_agent_reply(text)
-            if reply:
-                await self._speak(reply)
+            voice = self.adapter.runtime.config.voice
+            if voice.provider == "openai-compatible":
+                reply = await self._stream_local_agent_reply(text, voice)
+            else:
+                reply = await self._collect_agent_reply(text)
+                if reply:
+                    await self._speak(reply)
             log.info("xiaozhi.turn.done", f"device={self.device_id} reply_chars={len(reply)}")
         except asyncio.CancelledError:
             raise
@@ -440,6 +449,182 @@ class XiaozhiConnection:
             return candidate
         finally:
             await events.aclose()
+
+    async def _stream_local_agent_reply(self, text: str, voice: Any) -> str:
+        """Overlap model text, realtime synthesis, and device playback."""
+        backend = self.adapter.backend
+        events = backend.subscribe(session_key=self.session_id, events=["agent.event"])
+        segments: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        started_at = time.perf_counter()
+
+        async def read_agent() -> None:
+            current_message = ""
+            candidate = ""
+            chunker = SpeechTextChunker()
+            current_segment: asyncio.Queue[object] | None = None
+            first_delta = True
+            first_chunk = True
+
+            async def emit_chunks(chunks: list[str]) -> None:
+                nonlocal current_segment, first_chunk
+                if not chunks:
+                    return
+                if current_segment is None:
+                    current_segment = asyncio.Queue(maxsize=32)
+                    await segments.put(("segment", current_segment))
+                for chunk in chunks:
+                    if first_chunk:
+                        first_chunk = False
+                        log.info(
+                            "xiaozhi.latency.first_tts_text",
+                            (
+                                f"device={self.device_id} "
+                                f"elapsed_ms={(time.perf_counter() - started_at) * 1000:.1f}"
+                            ),
+                        )
+                    await current_segment.put(chunk)
+
+            async def finish_message(*, flush: bool = True) -> None:
+                nonlocal chunker, current_segment
+                if flush:
+                    await emit_chunks(chunker.finish())
+                if current_segment is not None:
+                    await current_segment.put(_TEXT_SEGMENT_END)
+                    current_segment = None
+                chunker = SpeechTextChunker()
+
+            try:
+                turn_id = await self._send_agent_turn(text)
+                self._current_turn_id = turn_id
+                log.info("xiaozhi.agent.started", f"device={self.device_id} turn={turn_id}")
+                async for event in events:
+                    payload = event.payload
+                    if payload.get("turn_id") != turn_id:
+                        continue
+                    kind = payload.get("type")
+                    if kind == "text.delta":
+                        delta = str(payload.get("text") or "")
+                        if first_delta and delta:
+                            first_delta = False
+                            log.info(
+                                "xiaozhi.latency.first_agent_delta",
+                                (
+                                    f"device={self.device_id} "
+                                    f"elapsed_ms={(time.perf_counter() - started_at) * 1000:.1f}"
+                                ),
+                            )
+                        current_message += delta
+                        await emit_chunks(chunker.feed(delta))
+                    elif kind == "message.end":
+                        await finish_message()
+                        if current_message.strip():
+                            candidate = current_message.strip()
+                        current_message = ""
+                    elif kind == "turn.done":
+                        await finish_message()
+                        if current_message.strip():
+                            candidate = current_message.strip()
+                        await segments.put(("done", candidate))
+                        return
+                    elif kind == "turn.cancelled":
+                        await finish_message(flush=False)
+                        await segments.put(("done", ""))
+                        return
+                    elif kind == "turn.error":
+                        raise RuntimeError(str(payload.get("message") or "agent turn failed"))
+                await finish_message()
+                await segments.put(("done", candidate))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - forwarded to playback
+                # Do not turn a partial, unstable tail into audible speech after
+                # cancellation/error. Already queued stable chunks may drain.
+                await finish_message(flush=False)
+                await segments.put(("error", exc))
+            finally:
+                await events.aclose()
+
+        reader = asyncio.create_task(
+            read_agent(), name=f"xiaozhi-agent-stream:{self.device_id}"
+        )
+        started_speech = False
+        reply = ""
+        try:
+            while True:
+                kind, payload = await segments.get()
+                if kind == "segment":
+                    if not started_speech:
+                        self.codec = OpusCodec(
+                            encode_sample_rate=self.adapter.config.ttsSampleRate,
+                            encode_bitrate=self.adapter.config.opusBitrate,
+                        )
+                        await self.send_json(envelope(self.session_id, "tts", state="start"))
+                        started_speech = True
+                    await self._play_local_text_segment(payload, voice, started_at=started_at)
+                elif kind == "error":
+                    if isinstance(payload, BaseException):
+                        raise payload
+                    raise RuntimeError(str(payload))
+                else:
+                    reply = str(payload or "")
+                    return reply
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+            if started_speech and not self._closed:
+                with suppress(Exception):
+                    await self.send_json(envelope(self.session_id, "tts", state="stop"))
+
+    async def _play_local_text_segment(
+        self,
+        text_queue: asyncio.Queue[object],
+        voice: Any,
+        *,
+        started_at: float,
+    ) -> None:
+        async def text_chunks():
+            while True:
+                item = await text_queue.get()
+                if item is _TEXT_SEGMENT_END:
+                    return
+                text = str(item)
+                await self.send_json(envelope(
+                    self.session_id, "tts", state="sentence_start", text=text
+                ))
+                yield text
+
+        pcm_buffer = bytearray()
+        frame_bytes = self.adapter.config.ttsSampleRate * FRAME_DURATION_MS // 1000 * 2
+        next_send_at = asyncio.get_running_loop().time()
+        first_audio = True
+        async for chunk in stream_local_speech(
+            realtime_url=voice.realtimeUrl,
+            api_key=voice.apiKey,
+            model=voice.ttsModel,
+            voice=self.adapter.config.ttsVoice,
+            text_chunks=text_chunks(),
+            sample_rate=self.adapter.config.ttsSampleRate,
+        ):
+            if first_audio:
+                first_audio = False
+                log.info(
+                    "xiaozhi.latency.first_tts_audio",
+                    (
+                        f"device={self.device_id} "
+                        f"elapsed_ms={(time.perf_counter() - started_at) * 1000:.1f}"
+                    ),
+                )
+            pcm_buffer.extend(chunk)
+            while len(pcm_buffer) >= frame_bytes:
+                packet = self.codec.encode(bytes(pcm_buffer[:frame_bytes]))
+                del pcm_buffer[:frame_bytes]
+                await self.send_bytes(packet)
+                next_send_at += FRAME_DURATION_MS / 1000
+                await asyncio.sleep(max(0.0, next_send_at - asyncio.get_running_loop().time()))
+        if pcm_buffer:
+            await self.send_bytes(self.codec.encode(bytes(pcm_buffer)))
+            next_send_at += FRAME_DURATION_MS / 1000
+            await asyncio.sleep(max(0.0, next_send_at - asyncio.get_running_loop().time()))
 
     async def _send_agent_turn(self, text: str) -> str:
         """Submit a device turn, tolerating a retiring turn from this session."""
@@ -514,15 +699,7 @@ class XiaozhiConnection:
             await self.send_json(envelope(self.session_id, "tts", state="start"))
             started = True
             if voice.provider == "openai-compatible":
-                # A short first request minimizes time-to-first-audio.  The
-                # remainder stays in one request so CosyVoice can use its
-                # native acoustic streaming instead of restarting per sentence.
-                local_segments = (
-                    [sentences[0], "".join(sentences[1:])]
-                    if len(sentences) > 1
-                    else sentences
-                )
-                await self._speak_local_sentences(local_segments, voice)
+                await self._speak_local_sentences(sentences, voice)
             else:
                 for sentence in sentences:
                     await self.send_json(envelope(
@@ -544,67 +721,34 @@ class XiaozhiConnection:
             log.info("xiaozhi.tts.done", f"device={self.device_id} started={started}")
 
     async def _speak_local_sentences(self, sentences: list[str], voice: Any) -> None:
-        """Generate upcoming sentences while the current PCM is playing.
+        """Feed stable sentence deltas into one realtime TTS response."""
 
-        CosyVoice3 emits fairly large acoustic chunks (about four seconds for
-        this model).  Reading and playing one HTTP response in the same loop
-        leaves the GPU idle during playback, then starts the next sentence too
-        late.  A bounded producer queue decouples those operations: HTTP keeps
-        draining and starts the next sentence while the device consumes Opus
-        frames at real-time speed.
-        """
-        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=16)
+        async def text_chunks():
+            for sentence in sentences:
+                await self.send_json(envelope(
+                    self.session_id, "tts", state="sentence_start", text=sentence
+                ))
+                yield sentence
 
-        async def produce() -> None:
-            try:
-                for sentence in sentences:
-                    await queue.put(("sentence_start", sentence))
-                    async for chunk in stream_local_speech(
-                        base_url=voice.baseUrl,
-                        api_key=voice.apiKey,
-                        model=voice.ttsModel,
-                        voice=self.adapter.config.ttsVoice,
-                        text=sentence,
-                        sample_rate=self.adapter.config.ttsSampleRate,
-                    ):
-                        await queue.put(("audio", chunk))
-                    await queue.put(("sentence_end", None))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - forwarded to playback task
-                await queue.put(("error", exc))
-            else:
-                await queue.put(("done", None))
-
-        producer = asyncio.create_task(produce(), name=f"xiaozhi-tts-{self.device_id}")
         pcm_buffer = bytearray()
         frame_bytes = self.adapter.config.ttsSampleRate * FRAME_DURATION_MS // 1000 * 2
-        try:
-            while True:
-                kind, payload = await queue.get()
-                if kind == "sentence_start":
-                    await self.send_json(envelope(
-                        self.session_id, "tts", state="sentence_start", text=str(payload)
-                    ))
-                elif kind == "audio":
-                    pcm_buffer.extend(payload)
-                    while len(pcm_buffer) >= frame_bytes:
-                        packet = self.codec.encode(bytes(pcm_buffer[:frame_bytes]))
-                        del pcm_buffer[:frame_bytes]
-                        await self.send_bytes(packet)
-                        await asyncio.sleep(FRAME_DURATION_MS / 1000)
-                elif kind == "sentence_end":
-                    if pcm_buffer:
-                        await self.send_bytes(self.codec.encode(bytes(pcm_buffer)))
-                        pcm_buffer.clear()
-                        await asyncio.sleep(FRAME_DURATION_MS / 1000)
-                elif kind == "error":
-                    raise payload
-                elif kind == "done":
-                    return
-        finally:
-            producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
+        async for chunk in stream_local_speech(
+            realtime_url=voice.realtimeUrl,
+            api_key=voice.apiKey,
+            model=voice.ttsModel,
+            voice=self.adapter.config.ttsVoice,
+            text_chunks=text_chunks(),
+            sample_rate=self.adapter.config.ttsSampleRate,
+        ):
+            pcm_buffer.extend(chunk)
+            while len(pcm_buffer) >= frame_bytes:
+                packet = self.codec.encode(bytes(pcm_buffer[:frame_bytes]))
+                del pcm_buffer[:frame_bytes]
+                await self.send_bytes(packet)
+                await asyncio.sleep(FRAME_DURATION_MS / 1000)
+        if pcm_buffer:
+            await self.send_bytes(self.codec.encode(bytes(pcm_buffer)))
+            await asyncio.sleep(FRAME_DURATION_MS / 1000)
 
     async def abort(self, *, send_tts_stop: bool) -> None:
         self._want_listening = False

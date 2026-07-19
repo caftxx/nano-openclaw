@@ -113,6 +113,17 @@ def test_openai_compatible_talk_config_and_pcm_synthesis():
     ) == b"pcm"
 
 
+def test_openai_compatible_talk_config_defaults_to_gateway_24khz():
+    voice = VoiceConfig(
+        provider="openai-compatible",
+        baseUrl="http://speech.local/v1",
+        realtimeUrl="ws://speech.local/v1/realtime",
+    )
+    payload = build_talk_config(_Config(voice))
+    assert payload["tts"]["sample_rate"] == 24000
+    assert payload["talk"]["resolved"]["config"]["sample_rate"] == 24000
+
+
 def test_openai_compatible_voice_discovery_and_config_catalog():
     voice = VoiceConfig(
         provider="openai-compatible",

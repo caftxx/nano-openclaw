@@ -120,6 +120,82 @@ test("E1：句读完但 turn 未 done → SPEAK_DRAINED 回 thinking 等 delta�
   assert.ok(!has(r.cmds, "startMic"), "turn 未结束绝不开麦（防把后续 TTS 采进识别）");
 });
 
+test("云 PCM 已做动态尾音补偿时只保留 150ms 续听保护窗", () => {
+  const r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "你好" },
+    { type: "CHAT_ACCEPTED", turnId: "t1" },
+    { type: "TEXT_DELTA", text: "你好。" },
+    { type: "TURN_DONE" },
+    { type: "SPEAK_AUDIBLE" },
+    { type: "SPEAK_DRAINED", tailGuarded: true },
+  ]);
+  assert.strictEqual(r.model.state, "cooldown");
+  assert.strictEqual(get(r.cmds, "armTimer").ms, 150);
+});
+
+test("流式首句过长时按软标点或 30 字上限提前投 TTS", () => {
+  let r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "解释一下" },
+    { type: "CHAT_ACCEPTED", turnId: "t1" },
+    { type: "TEXT_DELTA", text: "这是一个已经足够稳定的开头部分，后面的内容还在生成" },
+  ]);
+  assert.strictEqual(r.model.state, "speaking");
+  assert.strictEqual(get(r.cmds, "speak").text, "这是一个已经足够稳定的开头部分，");
+
+  r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "继续" },
+    { type: "CHAT_ACCEPTED", turnId: "t2" },
+    { type: "TEXT_DELTA", text: "这是一段完全没有任何标点并且长度已经超过三十个字符所以必须提前开始合成" },
+  ]);
+  assert.strictEqual(get(r.cmds, "speak").text.length, 30);
+});
+
+test("message.end 关闭当前 TTS 段，工具结果使用新的 response", () => {
+  let r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "查天气" },
+    { type: "CHAT_ACCEPTED", turnId: "t1" },
+    { type: "TEXT_DELTA", text: "我先查询一下" },
+    { type: "MESSAGE_END" },
+  ]);
+  assert.strictEqual(r.model.state, "speaking");
+  assert.deepStrictEqual(types(r.cmds), ["speakerBegin", "speak", "speakerEnd"]);
+
+  r = replay([{ type: "SPEAK_AUDIBLE" }, { type: "SPEAK_DRAINED" }], r.model);
+  assert.strictEqual(r.model.state, "thinking");
+  r = replay([{ type: "TEXT_DELTA", text: "查询结果是晴天。" }], r.model);
+  assert.deepStrictEqual(types(r.cmds), ["speakerBegin", "speak"]);
+  r = replay([{ type: "MESSAGE_END" }, { type: "TURN_DONE" }], r.model);
+  assert.strictEqual(r.model.state, "speaking");
+  assert.ok(!has(r.cmds, "startMic"));
+});
+
+test("上一条 response 排空前到达的工具结果会缓冲，drain 后再开新 response", () => {
+  let r = replay([
+    ...BOOT,
+    { type: "MIC_FINAL", text: "查天气" },
+    { type: "CHAT_ACCEPTED", turnId: "t1" },
+    { type: "TEXT_DELTA", text: "我先查询一下。" },
+    { type: "MESSAGE_END" },
+  ]);
+  assert.strictEqual(r.model.state, "speaking");
+
+  r = replay([
+    { type: "TEXT_DELTA", text: "查询结果是晴天。" },
+    { type: "MESSAGE_END" },
+    { type: "TURN_DONE" },
+  ], r.model);
+  assert.deepStrictEqual(r.cmds, [], "前一 response 未 drain 时不得并发 begin");
+
+  r = replay([{ type: "SPEAK_AUDIBLE" }, { type: "SPEAK_DRAINED" }], r.model);
+  assert.deepStrictEqual(types(r.cmds), ["speakerBegin", "speak", "speakerEnd"]);
+  assert.strictEqual(get(r.cmds, "speak").text, "查询结果是晴天。");
+  assert.strictEqual(r.model.state, "speaking");
+});
+
 test("整轮无可读文本（空回复）：不冷却直接续听", () => {
   const r = replay([
     ...BOOT,

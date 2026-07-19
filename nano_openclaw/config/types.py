@@ -721,7 +721,7 @@ class VoiceConfig(BaseModel):
     )
     ttsSampleRate: int = Field(
         default=16000,
-        description="阿里云流式语音合成采样率（Hz），与前端 PCM 播放器一致",
+        description="阿里云流式语音合成采样率（Hz）；speech-gateway 固定使用 24000 Hz",
     )
     wakeWord: str = Field(
         default="",
@@ -758,6 +758,12 @@ class VoiceConfig(BaseModel):
         parts = urlsplit(self.resolved_endpoint())
         scheme = {"wss": "https", "ws": "http"}.get(parts.scheme, parts.scheme)
         return urlunsplit((scheme, parts.netloc, "/stream/v1/tts", "", ""))
+
+    def resolved_tts_sample_rate(self) -> int:
+        """Return the active provider's actual PCM output rate."""
+        if self.provider == "openai-compatible":
+            return 24000
+        return self.ttsSampleRate
 
 
 class XiaozhiConfig(BaseModel):

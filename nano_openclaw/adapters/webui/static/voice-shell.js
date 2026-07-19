@@ -213,6 +213,7 @@
         createLocalSpeaker: window.createLocalSpeaker,
         createFlowingSpeaker: window.createFlowingSpeaker,
         createRestSpeaker: window.createRestSpeaker,
+        createOpenAISpeaker: window.createOpenAISpeaker,
         createVoicePcmPlayer: window.createVoicePcmPlayer,
         ssml: window.VoiceSsml,
         getSelectedSystemVoice,
@@ -223,11 +224,21 @@
           sampleRate: ttsSampleRate(),
         }),
         getToken: fetchVoiceToken,
+        getOpenAIUrl: openAIRealtimeUrl,
+        getOpenAIConfig: () => ({
+          model: voiceCfg && voiceCfg.talk && voiceCfg.talk.resolved
+            && voiceCfg.talk.resolved.config && voiceCfg.talk.resolved.config.tts_model,
+          voice: currentAliyunVoice(),
+          sampleRate: ttsSampleRate(),
+        }),
         headers: authHeaders,
         sampleRate: ttsSampleRate,
         callbacks: {
           onAudible: () => dispatch({ type: "SPEAK_AUDIBLE" }),
-          onDrained: () => dispatch({ type: "SPEAK_DRAINED" }),
+          onDrained: () => dispatch({
+            type: "SPEAK_DRAINED",
+            tailGuarded: (effectiveOut || selectedOut()) !== "local",
+          }),
           onFallback: (levelName, reason) => {
             effectiveOut = levelName;
             // 降到本地才弹横幅（手机上看不到 console）【B6】；流式→RESTful 静默换轨
@@ -568,6 +579,9 @@
         break;
       case "text.delta":
         dispatch({ type: "TEXT_DELTA", text: event.text || "" });
+        break;
+      case "message.end":
+        dispatch({ type: "MESSAGE_END" });
         break;
       case "turn.done":
         dispatch({ type: "TURN_DONE", turnId: event.turn_id || "" });

@@ -61,17 +61,25 @@ test("speaker provider builds symmetric fallback levels and forwards player call
   assert.strictEqual(speaker.name, "fallback");
 });
 
-test("speaker provider exposes speech-gateway REST level with local fallback", () => {
+test("speaker provider exposes speech-gateway realtime level with local fallback", () => {
   let capturedLevels = null;
+  let capturedOptions = null;
   const provider = createVoiceSpeakerProvider({
     createFallbackSpeaker: (opts) => {
       capturedLevels = opts.levels.map((level) => level.name);
+      opts.levels[0].create({ onAudio() {}, onCompleted() {}, onError() {} });
       return { name: "fallback" };
     },
     createLocalSpeaker: () => ({ name: "local" }),
-    createRestSpeaker: () => ({ name: "rest" }),
+    createOpenAISpeaker: (opts) => { capturedOptions = opts; return { name: "realtime" }; },
     createVoicePcmPlayer: () => ({ name: "player" }),
+    getOpenAIUrl: () => "ws://nano/api/voice/realtime",
+    getOpenAIConfig: () => ({ model: "cosy", voice: "nano", sampleRate: 24000 }),
   });
   provider.build("openai-compatible");
   assert.deepStrictEqual(capturedLevels, ["openai-compatible", "local"]);
+  assert.strictEqual(capturedOptions.getUrl(), "ws://nano/api/voice/realtime");
+  assert.deepStrictEqual(capturedOptions.getConfig(), {
+    model: "cosy", voice: "nano", sampleRate: 24000,
+  });
 });

@@ -18,10 +18,14 @@ from nano_openclaw.adapters.xiaozhi.channel import XiaozhiChannel
 from nano_openclaw.adapters.xiaozhi.aliyun_asr import AliyunTranscriber
 from nano_openclaw.adapters.xiaozhi.codec import OpusCodec
 from nano_openclaw.adapters.xiaozhi.connection import XiaozhiConnection
-from nano_openclaw.adapters.xiaozhi.local_speech import LocalSpeechTranscriber
+from nano_openclaw.adapters.xiaozhi.local_speech import (
+    LocalSpeechTranscriber,
+    stream_local_speech,
+)
 from nano_openclaw.adapters.xiaozhi.mcp import DeviceMcpPeer, XiaozhiHub
 from nano_openclaw.adapters.xiaozhi.protocol import (
     ProtocolError,
+    SpeechTextChunker,
     sanitize_tool_name,
     server_hello,
     split_sentences,
@@ -125,6 +129,15 @@ def test_protocol_v1_hello_and_helpers():
     assert server_hello("s1")["audio_params"]["sample_rate"] == 24000
     assert sanitize_tool_name("self.camera.take-photo") == "xiaozhi__self_camera_take_photo"
     assert split_sentences("你好。世界！ last") == ["你好。", "世界！", "last"]
+
+
+def test_speech_text_chunker_uses_strong_soft_and_max_boundaries():
+    chunker = SpeechTextChunker(min_chars=12, max_chars=20)
+    assert chunker.feed("短句。后面还不够长") == ["短句。"]
+    assert chunker.feed("继续补到这里，") == ["后面还不够长继续补到这里，"]
+    remaining = "没有任何标点但是这一段已经明显超过最长限制"
+    assert chunker.feed(remaining) == [remaining[:20]]
+    assert "".join(chunker.finish()) == remaining[20:]
 
 
 @pytest.mark.parametrize(
@@ -540,6 +553,21 @@ def test_listen_start_defers_asr_until_first_audio_packet(tmp_path):
     asyncio.run(run())
 
 
+def test_local_listen_start_preconnects_realtime_asr(tmp_path):
+    async def run():
+        connection, _, adapter = _connection_fixture(tmp_path)
+        adapter.runtime.config.voice.provider = "openai-compatible"
+        connection._start_asr = AsyncMock()
+
+        await connection._handle_json({"type": "listen", "state": "start"})
+
+        connection._start_asr.assert_awaited_once_with()
+        connection._want_listening = False
+        await connection._pause_no_voice_timeout()
+
+    asyncio.run(run())
+
+
 def test_asr_send_failure_discards_dead_connection(tmp_path):
     async def run():
         connection, _, _ = _connection_fixture(tmp_path)
@@ -587,12 +615,14 @@ def test_local_tts_streams_pcm_directly_to_opus(tmp_path):
         connection, ws, adapter = _connection_fixture(tmp_path)
         adapter.runtime.config.voice.provider = "openai-compatible"
         adapter.runtime.config.voice.baseUrl = "http://speech.local/v1"
+        adapter.runtime.config.voice.realtimeUrl = "ws://speech.local/v1/realtime"
         adapter.runtime.config.voice.apiKey = "local-token"
         adapter.runtime.config.voice.ttsModel = "fun-cosyvoice3-0.5b"
         adapter.config.ttsVoice = "nano"
 
         async def chunks(**kwargs):
-            assert kwargs["text"] == "本地语音。"
+            assert kwargs["realtime_url"] == "ws://speech.local/v1/realtime"
+            assert [text async for text in kwargs["text_chunks"]] == ["本地语音。"]
             assert kwargs["sample_rate"] == 24000
             yield bytes(1000)
             yield bytes(1880)
@@ -608,11 +638,12 @@ def test_local_tts_streams_pcm_directly_to_opus(tmp_path):
     asyncio.run(run())
 
 
-def test_local_tts_prefetches_sentence_streams(tmp_path):
+def test_local_tts_streams_all_sentences_in_one_response(tmp_path):
     async def run():
         connection, ws, adapter = _connection_fixture(tmp_path)
         adapter.runtime.config.voice.provider = "openai-compatible"
         adapter.runtime.config.voice.baseUrl = "http://speech.local/v1"
+        adapter.runtime.config.voice.realtimeUrl = "ws://speech.local/v1/realtime"
         adapter.runtime.config.voice.apiKey = "local-token"
         adapter.runtime.config.voice.ttsModel = "fun-cosyvoice3-0.5b"
         adapter.config.ttsVoice = "nano"
@@ -620,7 +651,7 @@ def test_local_tts_prefetches_sentence_streams(tmp_path):
         requests = []
 
         async def chunks(**kwargs):
-            requests.append(kwargs["text"])
+            requests.extend([text async for text in kwargs["text_chunks"]])
             yield bytes(2880)
 
         with patch(
@@ -629,13 +660,13 @@ def test_local_tts_prefetches_sentence_streams(tmp_path):
         ):
             await connection._speak(full_answer)
 
-        assert requests == ["第一句。", "第二句！第三句？"]
+        assert requests == ["第一句。", "第二句！", "第三句？"]
         sentence_starts = [
             item for item in ws.json
             if item.get("type") == "tts" and item.get("state") == "sentence_start"
         ]
         assert [item["text"] for item in sentence_starts] == requests
-        assert len(ws.binary) == 2
+        assert len(ws.binary) == 1
         adapter.backend.talk_speak.assert_not_awaited()
 
     asyncio.run(run())
@@ -714,6 +745,142 @@ def test_local_speech_transcriber_realtime_protocol():
         ]
         final.assert_awaited_once_with("本地识别结果")
         assert ws.closed
+
+    asyncio.run(run())
+
+
+def test_local_speech_synthesizer_uses_unified_realtime_protocol():
+    async def run():
+        class FakeTtsWebSocket:
+            def __init__(self):
+                self.sent = []
+                self.events = asyncio.Queue()
+                self.closed = False
+
+            async def send(self, payload):
+                message = json.loads(payload)
+                self.sent.append(message)
+                if message["type"] == "session.update":
+                    await self.events.put(json.dumps({
+                        "type": "session.updated",
+                        "session": {
+                            "audio": {"output": {"format": {"rate": 24000}}},
+                        },
+                    }))
+                elif message["type"] == "response.create":
+                    await self.events.put(json.dumps({"type": "response.created"}))
+                elif message["type"] == "speech.input_text.done":
+                    await self.events.put(json.dumps({
+                        "type": "response.output_audio.delta",
+                        "delta": base64.b64encode(b"pcm-one").decode(),
+                    }))
+                    await self.events.put(json.dumps({"type": "response.output_audio.done"}))
+                    await self.events.put(json.dumps({
+                        "type": "response.done",
+                        "response": {"status": "completed"},
+                    }))
+
+            async def recv(self):
+                return await self.events.get()
+
+            async def close(self):
+                self.closed = True
+
+        ws = FakeTtsWebSocket()
+        await ws.events.put(json.dumps({"type": "session.created"}))
+
+        async def connect(url, **kwargs):
+            assert url == (
+                "ws://speech.local/v1/realtime?model=fun-cosyvoice3-0.5b&voice=nano"
+            )
+            assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
+            return ws
+
+        async def texts():
+            yield "你好，"
+            yield "世界。"
+
+        audio = [chunk async for chunk in stream_local_speech(
+            realtime_url="ws://speech.local/v1/realtime",
+            api_key="secret",
+            model="fun-cosyvoice3-0.5b",
+            voice="nano",
+            text_chunks=texts(),
+            sample_rate=24000,
+            connect_impl=connect,
+        )]
+
+        assert audio == [b"pcm-one"]
+        assert [message["type"] for message in ws.sent] == [
+            "session.update",
+            "response.create",
+            "speech.input_text.delta",
+            "speech.input_text.delta",
+            "speech.input_text.done",
+        ]
+        assert [message["delta"] for message in ws.sent[2:4]] == ["你好，", "世界。"]
+        assert ws.closed
+
+    asyncio.run(run())
+
+
+def test_local_speech_synthesizer_receives_audio_while_text_is_still_open():
+    async def run():
+        release_text = asyncio.Event()
+
+        class FullDuplexWebSocket:
+            def __init__(self):
+                self.events = asyncio.Queue()
+
+            async def send(self, payload):
+                message = json.loads(payload)
+                if message["type"] == "session.update":
+                    await self.events.put(json.dumps({
+                        "type": "session.updated",
+                        "session": {"audio": {"output": {"format": {"rate": 24000}}}},
+                    }))
+                elif message["type"] == "response.create":
+                    await self.events.put(json.dumps({"type": "response.created"}))
+                elif message["type"] == "speech.input_text.delta":
+                    await self.events.put(json.dumps({
+                        "type": "response.output_audio.delta",
+                        "delta": base64.b64encode(b"early-pcm").decode(),
+                    }))
+                elif message["type"] == "speech.input_text.done":
+                    await self.events.put(json.dumps({
+                        "type": "response.done",
+                        "response": {"status": "completed"},
+                    }))
+
+            async def recv(self):
+                return await self.events.get()
+
+            async def close(self):
+                return None
+
+        ws = FullDuplexWebSocket()
+        await ws.events.put(json.dumps({"type": "session.created"}))
+
+        async def connect(*_args, **_kwargs):
+            return ws
+
+        async def texts():
+            yield "第一段稳定文本，"
+            await release_text.wait()
+
+        stream = stream_local_speech(
+            realtime_url="ws://speech.local/v1/realtime",
+            api_key="",
+            model="fun-cosyvoice3-0.5b",
+            voice="nano",
+            text_chunks=texts(),
+            sample_rate=24000,
+            connect_impl=connect,
+        )
+        assert await asyncio.wait_for(anext(stream), timeout=0.1) == b"early-pcm"
+        release_text.set()
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
 
     asyncio.run(run())
 
@@ -908,6 +1075,72 @@ def test_agent_reply_uses_only_last_completed_message(tmp_path):
         assert adapter.backend.chat_send.await_args.kwargs["turn_source"] == "xiaozhi"
         assert adapter.backend.chat_send.await_args.kwargs["response_style"] == "voice"
         assert adapter.backend.chat_send.await_args.kwargs["channel_sender_key"] == "dev-1"
+
+    asyncio.run(run())
+
+
+def test_local_agent_reply_starts_audio_before_turn_done_and_segments_messages(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        voice = adapter.runtime.config.voice
+        voice.provider = "openai-compatible"
+        voice.realtimeUrl = "ws://speech.local/v1/realtime"
+        voice.ttsModel = "fun-cosyvoice3-0.5b"
+        voice.apiKey = ""
+        adapter.config.ttsVoice = "nano"
+        connection.mcp.ready.set()
+        connection._stop_asr = AsyncMock()
+        release_tool_result = asyncio.Event()
+        requests = []
+
+        async def event_stream():
+            yield SimpleNamespace(payload={
+                "turn_id": "turn-1",
+                "type": "text.delta",
+                "text": "我先帮你查询一下。",
+            })
+            yield SimpleNamespace(payload={"turn_id": "turn-1", "type": "message.end"})
+            await release_tool_result.wait()
+            yield SimpleNamespace(payload={
+                "turn_id": "turn-1",
+                "type": "text.delta",
+                "text": "查询完成，最终答案是晴天。",
+            })
+            yield SimpleNamespace(payload={"turn_id": "turn-1", "type": "message.end"})
+            yield SimpleNamespace(payload={"turn_id": "turn-1", "type": "turn.done"})
+
+        async def realtime_audio(**kwargs):
+            texts = []
+            async for item in kwargs["text_chunks"]:
+                texts.append(item)
+                yield bytes(2880)
+            requests.append(texts)
+
+        adapter.backend.subscribe = lambda **_kwargs: event_stream()
+        adapter.backend.chat_send = AsyncMock(return_value="turn-1")
+        with patch(
+            "nano_openclaw.adapters.xiaozhi.connection.stream_local_speech",
+            new=realtime_audio,
+        ):
+            task = asyncio.create_task(connection._run_transcript("天气怎么样"))
+            for _ in range(20):
+                if ws.binary:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert ws.binary, "工具结果返回前，第一条 assistant message 应已开始播放"
+            assert not task.done()
+            release_tool_result.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        assert requests == [["我先帮你查询一下。"], ["查询完成，最终答案是晴天。"]]
+        states = [item.get("state") for item in ws.json if item.get("type") == "tts"]
+        assert states == [
+            "start",
+            "sentence_start",
+            "sentence_start",
+            "stop",
+        ]
 
     asyncio.run(run())
 

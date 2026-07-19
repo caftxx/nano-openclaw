@@ -52,13 +52,14 @@ def build_talk_config(
     """Return non-secret talk configuration for WebUI/RPC clients."""
 
     voice_cfg = config.voice
+    resolved_sample_rate = voice_cfg.resolved_tts_sample_rate()
     if voice_cfg.provider == "aliyun":
         voices = ALIYUN_TTS_VOICES
     else:
         voices = voice_catalog or [{"value": voice_cfg.ttsVoice, "label": voice_cfg.ttsVoice}]
     provider_config: dict[str, Any] = {
         "voice": voice_cfg.ttsVoice,
-        "sample_rate": voice_cfg.ttsSampleRate,
+        "sample_rate": resolved_sample_rate,
         "voices": voices,
         "streaming": True,
         "rest": True,
@@ -78,7 +79,7 @@ def build_talk_config(
             "enabled": voice_cfg.available and voice_cfg.ttsEnabled,
             "provider": voice_cfg.provider,
             "voice": voice_cfg.ttsVoice,
-            "sample_rate": voice_cfg.ttsSampleRate,
+            "sample_rate": resolved_sample_rate,
             "voices": voices,
         },
         "talk": {
@@ -190,7 +191,7 @@ def synthesize_talk_speech(
             text=text,
             model=voice_cfg.ttsModel,
             voice=voice_id or voice_cfg.ttsVoice,
-            sample_rate=sample_rate or voice_cfg.ttsSampleRate,
+            sample_rate=sample_rate or voice_cfg.resolved_tts_sample_rate(),
             speed=resolved_speed or 1.0,
         )
         return TalkSpeakResult(

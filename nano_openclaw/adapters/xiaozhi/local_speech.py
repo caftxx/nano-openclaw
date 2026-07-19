@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any, AsyncIterator, Awaitable, Callable
-
-import httpx
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from nano_openclaw.logger import get_logger
 
@@ -74,7 +73,6 @@ class LocalSpeechTranscriber:
                     "format": {"type": "audio/pcm", "rate": 16000},
                     "turn_detection": {
                         "type": "server_vad",
-                        "silence_duration_ms": 600,
                         "prefix_padding_ms": 300,
                     },
                 }},
@@ -183,31 +181,138 @@ class LocalSpeechTranscriber:
 
 async def stream_local_speech(
     *,
-    base_url: str,
+    realtime_url: str,
     api_key: str,
     model: str,
     voice: str,
-    text: str,
+    text_chunks: AsyncIterable[str],
     sample_rate: int,
+    connect_impl: Any | None = None,
 ) -> AsyncIterator[bytes]:
-    url = f"{base_url.rstrip('/')}/audio/speech"
-    payload = {
-        "model": model,
-        "input": text,
-        "voice": voice,
-        "response_format": "pcm",
-        "stream_format": "audio",
-    }
-    async with httpx.AsyncClient(timeout=60) as client:
-        async with client.stream("POST", url, headers=_headers(api_key), json=payload) as response:
-            if response.status_code >= 400:
-                body = (await response.aread()).decode("utf-8", errors="replace")
-                raise RuntimeError(f"local TTS failed ({response.status_code}): {body[:300]}")
-            actual_rate = int(response.headers.get("x-audio-sample-rate") or sample_rate)
-            if actual_rate != sample_rate:
-                raise RuntimeError(
-                    f"local TTS sample rate mismatch: expected {sample_rate}, got {actual_rate}"
-                )
-            async for chunk in response.aiter_bytes():
-                if chunk:
-                    yield chunk
+    """Stream text and PCM through speech-gateway's unified realtime API."""
+
+    connect = connect_impl
+    if connect is None:
+        from websockets.asyncio.client import connect
+
+    parts = urlsplit(realtime_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update({"model": model, "voice": voice})
+    url = urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+    ws = await connect(url, additional_headers=_headers(api_key))
+
+    async def receive_event(*, timeout: float = 60) -> dict[str, Any]:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("local TTS realtime response timed out") from exc
+        if not isinstance(raw, str):
+            raise RuntimeError("local TTS returned an unexpected binary WebSocket frame")
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("local TTS returned invalid JSON") from exc
+        if event.get("type") == "error":
+            error = event.get("error") or {}
+            raise RuntimeError(str(error.get("message") or "local TTS failed"))
+        return event
+
+    async def wait_for(kind: str, *, timeout: float = 10) -> dict[str, Any]:
+        while True:
+            event = await receive_event(timeout=timeout)
+            if event.get("type") == kind:
+                return event
+
+    try:
+        await wait_for("session.created")
+        await ws.send(json.dumps({
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "audio": {"output": {"model": model, "voice": voice}},
+            },
+        }))
+        updated = await wait_for("session.updated")
+        output = ((updated.get("session") or {}).get("audio") or {}).get("output") or {}
+        actual_rate = int((output.get("format") or {}).get("rate") or sample_rate)
+        if actual_rate != sample_rate:
+            raise RuntimeError(
+                f"local TTS sample rate mismatch: expected {sample_rate}, got {actual_rate}"
+            )
+
+        await ws.send(json.dumps({
+            "type": "response.create",
+            "response": {"output_modalities": ["audio"], "input_text_stream": True},
+        }))
+        await wait_for("response.created")
+        output: asyncio.Queue[tuple[str, object]] = asyncio.Queue(maxsize=4)
+
+        async def send_text() -> None:
+            try:
+                async for text in text_chunks:
+                    if text:
+                        await ws.send(json.dumps({
+                            "type": "speech.input_text.delta",
+                            "delta": text,
+                        }))
+                await ws.send(json.dumps({"type": "speech.input_text.done"}))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - forwarded to the consumer
+                await output.put(("error", exc))
+
+        async def receive_audio() -> None:
+            try:
+                while True:
+                    event = await receive_event()
+                    kind = event.get("type")
+                    if kind == "response.output_audio.delta":
+                        try:
+                            pcm = base64.b64decode(
+                                str(event.get("delta") or ""), validate=True
+                            )
+                        except (ValueError, binascii.Error) as exc:
+                            raise RuntimeError(
+                                "local TTS returned invalid base64 audio"
+                            ) from exc
+                        if pcm:
+                            await output.put(("audio", pcm))
+                    elif kind == "response.done":
+                        response = event.get("response") or {}
+                        if response.get("status") != "completed":
+                            details = response.get("status_details") or {}
+                            raise RuntimeError(
+                                str(details.get("error") or "local TTS was cancelled")
+                            )
+                        await output.put(("done", None))
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - forwarded to the consumer
+                await output.put(("error", exc))
+
+        sender = asyncio.create_task(send_text(), name="xiaozhi-local-tts-text")
+        receiver = asyncio.create_task(receive_audio(), name="xiaozhi-local-tts-audio")
+        try:
+            while True:
+                kind, payload = await output.get()
+                if kind == "audio":
+                    yield bytes(payload)
+                elif kind == "error":
+                    if isinstance(payload, BaseException):
+                        raise payload
+                    raise RuntimeError(str(payload))
+                else:
+                    await sender
+                    return
+        finally:
+            sender.cancel()
+            receiver.cancel()
+            await asyncio.gather(sender, receiver, return_exceptions=True)
+    finally:
+        try:
+            await asyncio.wait_for(ws.close(), timeout=ASR_CLOSE_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - socket teardown must not mask synthesis result
+            pass
