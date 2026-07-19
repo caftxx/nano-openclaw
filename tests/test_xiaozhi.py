@@ -511,6 +511,57 @@ def _connection_fixture(tmp_path):
     return connection, ws, adapter
 
 
+def test_listen_start_defers_asr_until_first_audio_packet(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        transcriber = SimpleNamespace(send_audio=AsyncMock())
+
+        async def start_asr():
+            connection._asr = transcriber
+
+        connection._start_asr = AsyncMock(side_effect=start_asr)
+        connection.codec.decode = lambda packet: b"pcm"
+
+        await connection._handle_json({"type": "listen", "state": "start"})
+
+        connection._start_asr.assert_not_awaited()
+        assert connection._want_listening is True
+        assert connection._no_voice_task is not None
+
+        await connection._handle_audio(b"opus")
+
+        connection._start_asr.assert_awaited_once_with()
+        transcriber.send_audio.assert_awaited_once_with(b"pcm")
+
+        connection._want_listening = False
+        connection._asr = None
+        await connection._pause_no_voice_timeout()
+
+    asyncio.run(run())
+
+
+def test_asr_send_failure_discards_dead_connection(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        transcriber = SimpleNamespace(
+            send_audio=AsyncMock(side_effect=ConnectionError("ASR socket closed")),
+            close=AsyncMock(),
+        )
+        connection._want_listening = True
+        connection._asr = transcriber
+        connection.codec.decode = lambda packet: b"pcm"
+
+        with patch("nano_openclaw.adapters.xiaozhi.connection.log") as logger:
+            await connection._handle_audio(b"opus")
+
+        assert connection._asr is None
+        transcriber.close.assert_awaited_once_with()
+        logger.warning.assert_called_once()
+        assert logger.warning.call_args.args[0] == "xiaozhi.asr.send_error"
+
+    asyncio.run(run())
+
+
 def test_tts_sentence_order_and_opus_audio(tmp_path):
     async def run():
         connection, ws, adapter = _connection_fixture(tmp_path)

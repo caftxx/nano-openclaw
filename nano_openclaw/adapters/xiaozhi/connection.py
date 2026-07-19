@@ -132,7 +132,11 @@ class XiaozhiConnection:
                 await self.abort(send_tts_stop=True)
                 self._listening_mode = str(message.get("mode") or "manual")
                 self._want_listening = True
-                await self._start_asr()
+                # Aliyun closes an ASR WebSocket after 10 seconds without
+                # audio.  Some devices enter listening standby well before
+                # their first packet, so defer the upstream connection until
+                # audio actually arrives.
+                self._arm_no_voice_timeout()
             elif state == "stop":
                 self._want_listening = False
                 await self._stop_asr()
@@ -153,13 +157,32 @@ class XiaozhiConnection:
             raise ProtocolError(f"unsupported message type: {kind!r}")
 
     async def _handle_audio(self, packet: bytes) -> None:
-        if self._asr is None or self._turn_task is not None:
+        if not self._want_listening or self._turn_task is not None:
             return
         try:
             pcm = self.codec.decode(packet)
-            await self._asr.send_audio(pcm)
         except Exception as exc:  # noqa: BLE001
             log.warning("xiaozhi.audio.decode", f"device={self.device_id}: {type(exc).__name__}: {exc}")
+            return
+
+        if self._asr is None:
+            await self._start_asr()
+        transcriber = self._asr
+        if transcriber is None:
+            return
+        try:
+            await transcriber.send_audio(pcm)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "xiaozhi.asr.send_error",
+                f"device={self.device_id}: {type(exc).__name__}: {exc}",
+            )
+            # Do not send every subsequent 60 ms frame to a dead socket. The
+            # next frame may establish one fresh ASR connection.
+            if self._asr is transcriber:
+                self._asr = None
+            with suppress(Exception):
+                await transcriber.close()
 
     async def _start_asr(self) -> None:
         if self._closed or self._asr is not None or self._turn_task is not None:
@@ -195,7 +218,6 @@ class XiaozhiConnection:
         self._asr = transcriber
         try:
             await transcriber.start()
-            self._arm_no_voice_timeout()
             log.info("xiaozhi.asr.started", f"device={self.device_id}")
         except Exception:
             self._asr = None
