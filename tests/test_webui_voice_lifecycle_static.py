@@ -110,6 +110,20 @@ def test_group_chat_voice_action_is_integrated_into_the_composer():
     assert "grid-template-columns: 44px minmax(0, 1fr) 44px 44px;" in styles
 
 
+def test_group_chat_voice_selection_drops_stale_provider_voices():
+    source = PODCAST_JS.read_text(encoding="utf-8")
+    host_voice = _function_body(source, "function currentHostVoice()", "function updateHostPreview()")
+    editor = _function_body(source, "function fillAgentEditor()", "async function openSystemVoiceEditor()")
+    refresh = _function_body(source, "function refreshAgentSpeechVoice(", "function refreshSystemSpeechVoice(")
+
+    assert "storedVoiceIsActive" in host_voice
+    assert "configuredVoice" in host_voice
+    assert '|| "xiaoxian"' not in host_voice
+    assert 'draft.voiceId = "";' in editor
+    assert 'draft.voiceLabel = "";' in editor
+    assert '|| "xiaoxian"' not in refresh
+
+
 def test_group_chat_image_start_returns_before_visual_processing_finishes():
     source = PODCAST_JS.read_text(encoding="utf-8")
     start_body = _function_body(

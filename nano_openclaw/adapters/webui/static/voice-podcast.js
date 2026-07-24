@@ -446,7 +446,13 @@
     var value = select ? select.value : "";
     var label = optionLabel(select);
     if (out !== "local") {
-      value = value || localGet("nanoAliyunVoice") || (podcast.voiceCfg && podcast.voiceCfg.tts && podcast.voiceCfg.tts.voice) || "xiaoxian";
+      var configuredVoice = podcast.voiceCfg && podcast.voiceCfg.tts && podcast.voiceCfg.tts.voice || "";
+      var storedVoice = localGet("nanoAliyunVoice");
+      var activeVoices = voiceOptions();
+      var storedVoiceIsActive = activeVoices.some(function (voice) {
+        return String(voice && (voice.value || voice.id) || "") === storedVoice;
+      });
+      value = value || (storedVoiceIsActive ? storedVoice : "") || configuredVoice;
       label = label || voiceLabelFromConfig(value) || value;
     } else {
       value = value || localGet("nanoVoiceURI") || "";
@@ -904,7 +910,8 @@
     }
     if (systemMode && !voiceSelect.options.length) selectAppend(voiceSelect, "", "系统默认");
     if (!systemMode && draft.voiceId && !selectHasValue(voiceSelect, draft.voiceId)) {
-      selectAppend(voiceSelect, draft.voiceId, draft.voiceLabel || draft.voiceId);
+      draft.voiceId = "";
+      draft.voiceLabel = "";
     } else if (systemMode && draft.voiceId && !selectHasValue(voiceSelect, draft.voiceId)) {
       selectAppend(voiceSelect, draft.voiceId, draft.voiceLabel || draft.voiceId);
     }
@@ -2203,10 +2210,11 @@
   function refreshAgentSpeechVoice(agentId, voiceId, voiceLabel) {
     agentId = String(agentId || "");
     if (!agentId) return;
+    var configuredVoice = podcast.voiceCfg && podcast.voiceCfg.tts && podcast.voiceCfg.tts.voice || "";
     var refreshed = 0;
     podcast.utterances.forEach(function (entry) {
       if (!entry || entry.speakerKey !== agentId || !entry.seq || !entry.finalText) return;
-      entry.voiceId = voiceId || entry.voiceId || "xiaoxian";
+      entry.voiceId = voiceId || entry.voiceId || configuredVoice;
       entry.voiceLabel = voiceLabel || entry.voiceLabel || entry.voiceId;
       entry.speaker = entry.speaker ? entry.speaker.replace(/ · .*/, " · " + (entry.voiceLabel || entry.voiceId)) : "";
       updateBubbleSpeaker(entry, entry.speaker);

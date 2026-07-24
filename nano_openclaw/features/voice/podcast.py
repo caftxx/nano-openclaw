@@ -66,11 +66,42 @@ class PodcastAgent:
     model_label: str = ""
 
 
-def voice_label(voice_id: str) -> str:
-    for item in ALIYUN_TTS_VOICES:
-        if item.get("value") == voice_id:
-            return str(item.get("label") or voice_id)
+def voice_label(
+    voice_id: str,
+    voice_options: list[dict[str, Any]] | None = None,
+) -> str:
+    for item in _normalized_voice_options(voice_options):
+        if item["value"] == voice_id:
+            return item["label"]
     return voice_id
+
+
+def resolve_voice_choice(
+    voice_id: str,
+    voice_label_value: str = "",
+    *,
+    voice_options: list[dict[str, Any]] | None = None,
+    fallback_voice_id: str = HOST_VOICE_ID,
+) -> tuple[str, str]:
+    """Resolve a requested voice against the active TTS provider catalog."""
+
+    requested_id = str(voice_id or "").strip()
+    requested_label = str(voice_label_value or "").strip()
+    fallback_id = str(fallback_voice_id or "").strip()
+    if voice_options is None:
+        resolved_id = requested_id or fallback_id
+        return resolved_id, requested_label or voice_label(resolved_id)
+
+    options = _normalized_voice_options(voice_options)
+    labels = {item["value"]: item["label"] for item in options}
+    if requested_id in labels:
+        return requested_id, requested_label or labels[requested_id]
+    if fallback_id in labels:
+        return fallback_id, labels[fallback_id]
+    if options:
+        return options[0]["value"], options[0]["label"]
+    resolved_id = requested_id or fallback_id
+    return resolved_id, requested_label or resolved_id
 
 
 def normalize_rounds(value: Any) -> int:
@@ -129,13 +160,20 @@ def assign_agents(
     model_refs: list[str] | None = None,
     model_labels: dict[str, str] | None = None,
     existing_roles: list[str] | None = None,
+    voice_options: list[dict[str, Any]] | None = None,
     rng: random.Random | None = None,
 ) -> list[PodcastAgent]:
     raw_agent_list = list(raw_agents or [{"role": "自动"}, {"role": "自动"}])
     voice_ids = _balanced_speaker_voice_ids(
         len(raw_agent_list),
         excluded_voice_id=excluded_voice_id,
+        voice_options=voice_options,
         rng=rng,
+    )
+    valid_voice_ids = (
+        {item["value"] for item in _normalized_voice_options(voice_options)}
+        if voice_options is not None
+        else None
     )
     assigned_model_refs = _assigned_model_refs(len(raw_agent_list), model_refs or [], rng=rng)
     model_labels = model_labels or {}
@@ -160,7 +198,10 @@ def assign_agents(
             role = resolve_role(requested, topic, idx)
         used_roles.add(role)
         requested_voice_id = str(raw.get("voice_id") or raw.get("voiceId") or "").strip()
-        voice_id = requested_voice_id or voice_ids[idx % len(voice_ids)]
+        if valid_voice_ids is not None and requested_voice_id not in valid_voice_ids:
+            requested_voice_id = ""
+        automatic_voice_id = voice_ids[idx % len(voice_ids)] if voice_ids else ""
+        voice_id = requested_voice_id or automatic_voice_id
         requested_voice_label = str(raw.get("voice_label") or raw.get("voiceLabel") or "").strip()
         requested_model_ref = str(raw.get("model_ref") or raw.get("modelRef") or "").strip()
         model_ref = requested_model_ref or (assigned_model_refs[idx] if idx < len(assigned_model_refs) else "")
@@ -170,7 +211,11 @@ def assign_agents(
             role=role,
             requested_role=requested if requested in AGENT_ROLES else "自动",
             voice_id=voice_id,
-            voice_label=requested_voice_label or voice_label(voice_id),
+            voice_label=(
+                requested_voice_label
+                if requested_voice_id and requested_voice_label
+                else voice_label(voice_id, voice_options)
+            ),
             model_ref=model_ref,
             model_label=requested_model_label or model_labels.get(model_ref, model_ref),
         ))
@@ -235,13 +280,26 @@ def _balanced_speaker_voice_ids(
     count: int,
     *,
     excluded_voice_id: str | None = HOST_VOICE_ID,
+    voice_options: list[dict[str, Any]] | None = None,
     rng: random.Random | None = None,
 ) -> list[str]:
     local_rng = rng or random
-    pool = _speaker_voice_pool(excluded_voice_id=excluded_voice_id)
-    male = _ranked_voice_ids([voice_id for voice_id in pool if _voice_gender(voice_id) == "male"], rng=local_rng)
-    female = _ranked_voice_ids([voice_id for voice_id in pool if _voice_gender(voice_id) == "female"], rng=local_rng)
-    neutral = _ranked_voice_ids([voice_id for voice_id in pool if _voice_gender(voice_id) == "neutral"], rng=local_rng)
+    pool = _speaker_voice_pool(
+        excluded_voice_id=excluded_voice_id,
+        voice_options=voice_options,
+    )
+    male = _ranked_voice_ids(
+        [voice_id for voice_id in pool if _voice_gender(voice_id, voice_options) == "male"],
+        rng=local_rng,
+    )
+    female = _ranked_voice_ids(
+        [voice_id for voice_id in pool if _voice_gender(voice_id, voice_options) == "female"],
+        rng=local_rng,
+    )
+    neutral = _ranked_voice_ids(
+        [voice_id for voice_id in pool if _voice_gender(voice_id, voice_options) == "neutral"],
+        rng=local_rng,
+    )
 
     male_target = count // 2
     female_target = count // 2
@@ -265,8 +323,11 @@ def _balanced_speaker_voice_ids(
     return selected + tail
 
 
-def _voice_gender(voice_id: str) -> str:
-    label = voice_label(voice_id)
+def _voice_gender(
+    voice_id: str,
+    voice_options: list[dict[str, Any]] | None = None,
+) -> str:
+    label = voice_label(voice_id, voice_options)
     if "男" in label or "老铁" in label or "大虎" in label:
         return "male"
     if "女" in label or "姐姐" in label or "老妹" in label or "柜姐" in label or "萝莉" in label:
@@ -274,10 +335,37 @@ def _voice_gender(voice_id: str) -> str:
     return "neutral"
 
 
-def _speaker_voice_pool(*, excluded_voice_id: str | None = HOST_VOICE_ID) -> list[str]:
-    catalog_values = [str(item.get("value")) for item in ALIYUN_TTS_VOICES if item.get("value")]
+def _speaker_voice_pool(
+    *,
+    excluded_voice_id: str | None = HOST_VOICE_ID,
+    voice_options: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    catalog_values = [item["value"] for item in _normalized_voice_options(voice_options)]
     excluded = str(excluded_voice_id or "")
-    return [v for v in catalog_values if v != excluded]
+    available = [v for v in catalog_values if v != excluded]
+    # A provider may expose only one voice. Sharing the host voice is preferable
+    # to leaking an identifier from a different provider into the TTS request.
+    return available or catalog_values
+
+
+def _normalized_voice_options(
+    voice_options: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    source = ALIYUN_TTS_VOICES if voice_options is None else voice_options
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or item.get("id") or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        options.append({
+            "value": value,
+            "label": str(item.get("label") or item.get("name") or value).strip() or value,
+        })
+    return options
 
 
 def _ranked_voice_ids(voice_ids: list[str], *, rng: random.Random) -> list[str]:

@@ -225,6 +225,7 @@ class EmbeddedBackend(Backend):
         # change, effective from the next turn).
         self._pending_thinking_level: str | None = None
         self._voice_token_provider: Any | None = None
+        self._voice_catalog_cache: tuple[tuple[str, str, str], float, list[dict[str, str]]] | None = None
         self._podcast_runs: dict[str, dict[str, Any]] = {}
         # Wire LLM-facing runtime introspection tools (list_models /
         # switch_model / get_runtime / …). These need a live ``Backend``
@@ -1727,15 +1728,21 @@ class EmbeddedBackend(Backend):
         voice = self.runtime.config.voice
         catalog = None
         if voice.provider == "openai-compatible" and voice.available:
-            try:
-                catalog = await asyncio.to_thread(
-                    discover_openai_compatible_voices,
-                    base_url=voice.baseUrl,
-                    api_key=voice.apiKey,
-                    default_voice=voice.ttsVoice,
-                )
-            except Exception:  # noqa: BLE001 - retain configured fallback voice
-                catalog = None
+            cache_key = (voice.provider, voice.baseUrl, voice.ttsVoice)
+            cached = getattr(self, "_voice_catalog_cache", None)
+            if cached is not None and cached[0] == cache_key and time.monotonic() - cached[1] < 30:
+                catalog = cached[2]
+            else:
+                try:
+                    catalog = await asyncio.to_thread(
+                        discover_openai_compatible_voices,
+                        base_url=voice.baseUrl,
+                        api_key=voice.apiKey,
+                        default_voice=voice.ttsVoice,
+                    )
+                    self._voice_catalog_cache = (cache_key, time.monotonic(), catalog)
+                except Exception:  # noqa: BLE001 - retain configured fallback voice
+                    catalog = None
         return build_talk_config(self.runtime.config, voice_catalog=catalog)
 
     def _ensure_voice_token_provider(self, cfg: Any) -> Any:
@@ -1832,6 +1839,7 @@ class EmbeddedBackend(Backend):
             discussion_mode_for_attachments,
             normalize_rounds,
             podcast_model_options,
+            resolve_voice_choice,
             voice_label,
         )
 
@@ -1839,8 +1847,19 @@ class EmbeddedBackend(Backend):
         session = self._resolve_session(session_key)
         topic = topic.strip() or "自由讨论"
         rounds = normalize_rounds(rounds)
-        host_voice_id = host_voice_id.strip() or HOST_VOICE_ID
-        host_voice_label = host_voice_label.strip() or voice_label(host_voice_id) or HOST_VOICE_LABEL
+        talk_config = await self.voice_config()
+        tts_config = talk_config.get("tts") if isinstance(talk_config, dict) else {}
+        tts_config = tts_config if isinstance(tts_config, dict) else {}
+        voice_options = tts_config.get("voices")
+        voice_options = voice_options if isinstance(voice_options, list) else None
+        default_voice_id = str(tts_config.get("voice") or HOST_VOICE_ID).strip()
+        host_voice_id, host_voice_label = resolve_voice_choice(
+            host_voice_id,
+            host_voice_label,
+            voice_options=voice_options,
+            fallback_voice_id=default_voice_id,
+        )
+        host_voice_label = host_voice_label or voice_label(host_voice_id, voice_options) or HOST_VOICE_LABEL
         run_id = uuid.uuid4().hex
         import random
         model_refs, model_labels = podcast_model_options(self.runtime.config)
@@ -1858,6 +1877,7 @@ class EmbeddedBackend(Backend):
             excluded_voice_id=host_voice_id,
             model_refs=model_refs,
             model_labels=model_labels,
+            voice_options=voice_options,
             rng=random.Random(run_id),
         )
         token = CancellationToken()
@@ -1914,6 +1934,8 @@ class EmbeddedBackend(Backend):
             "host_voice_label": host_voice_label,
             "host_model_ref": host_model_ref,
             "host_model_label": host_model_label,
+            "voice_options": voice_options,
+            "default_voice_id": default_voice_id,
             "initial_context": initial_context,
             "discussion_mode": discussion_mode,
         }
@@ -2068,6 +2090,7 @@ class EmbeddedBackend(Backend):
             model_refs=model_refs,
             model_labels=model_labels,
             existing_roles=existing_roles,
+            voice_options=run.get("voice_options"),
         )[0]
         agents.append(assigned)
         run["agents"] = agents
@@ -2109,6 +2132,7 @@ class EmbeddedBackend(Backend):
             excluded_voice_id=str(run.get("host_voice_id") or ""),
             model_refs=model_refs,
             model_labels=model_labels,
+            voice_options=run.get("voice_options"),
         )[0]
         agents = run.get("agents") or []
         updated = False
@@ -2178,9 +2202,19 @@ class EmbeddedBackend(Backend):
         model_ref = str(model_ref or "").strip()
         model_label = str(model_label or "").strip()
         if host_voice_id:
+            from nano_openclaw.features.voice.podcast import resolve_voice_choice
+
+            host_voice_id, host_voice_label = resolve_voice_choice(
+                host_voice_id,
+                host_voice_label,
+                voice_options=run.get("voice_options"),
+                fallback_voice_id=str(run.get("default_voice_id") or run.get("host_voice_id") or ""),
+            )
             run["host_voice_id"] = host_voice_id
             run_state["host_voice_id"] = host_voice_id
-        if host_voice_label:
+            run["host_voice_label"] = host_voice_label
+            run_state["host_voice_label"] = host_voice_label
+        elif host_voice_label:
             run["host_voice_label"] = host_voice_label
             run_state["host_voice_label"] = host_voice_label
         if model_ref:

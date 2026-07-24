@@ -32,6 +32,7 @@ from nano_openclaw.features.voice.podcast import (
     normalize_utterance,
     normalize_rounds,
     podcast_model_options,
+    resolve_voice_choice,
     select_reference_context,
     validate_paper_utterance,
 )
@@ -214,6 +215,74 @@ def test_podcast_voice_assignment_is_randomized_at_binding_time():
     assert [agent.voice_id for agent in first] == [agent.voice_id for agent in second]
     assert [agent.voice_id for agent in first] != [agent.voice_id for agent in different]
     assert len({agent.voice_id for agent in first}) == len(raw_agents)
+
+
+def test_podcast_voice_assignment_uses_active_speech_gateway_catalog():
+    voices = [
+        {"value": "cherry", "label": "Cherry"},
+        {"value": "serena", "label": "Serena"},
+        {"value": "ethan", "label": "Ethan"},
+    ]
+
+    agents = assign_agents(
+        [
+            {"id": "a1", "role": "作家"},
+            {"id": "a2", "role": "云计算架构师"},
+            {"id": "a3", "role": "AI Agent研发工程师"},
+        ],
+        "AI 播客",
+        excluded_voice_id="cherry",
+        voice_options=voices,
+        rng=random.Random("speech-gateway"),
+    )
+
+    assert {agent.voice_id for agent in agents} <= {"serena", "ethan"}
+    assert {agent.voice_label for agent in agents} <= {"Serena", "Ethan"}
+    assert not ({agent.voice_id for agent in agents} & {"xiaoxian", "zhishuo", "xiaogang"})
+
+
+def test_podcast_stale_aliyun_voice_is_reassigned_for_speech_gateway():
+    voices = [
+        {"value": "cherry", "label": "Cherry"},
+        {"value": "serena", "label": "Serena"},
+    ]
+
+    agent = assign_agents(
+        [{
+            "id": "a1",
+            "role": "作家",
+            "voice_id": "zhishuo",
+            "voice_label": "知硕",
+        }],
+        "AI 播客",
+        excluded_voice_id="cherry",
+        voice_options=voices,
+        rng=random.Random("stale-provider-voice"),
+    )[0]
+
+    assert agent.voice_id == "serena"
+    assert agent.voice_label == "Serena"
+
+
+def test_podcast_single_provider_voice_can_be_shared_with_host():
+    voices = [{"value": "cherry", "label": "Cherry"}]
+
+    agent = assign_agents(
+        [{"id": "a1", "role": "作家"}],
+        "AI 播客",
+        excluded_voice_id="cherry",
+        voice_options=voices,
+    )[0]
+    host_voice = resolve_voice_choice(
+        "xiaoxian",
+        "小仙",
+        voice_options=voices,
+        fallback_voice_id="cherry",
+    )
+
+    assert agent.voice_id == "cherry"
+    assert agent.voice_label == "Cherry"
+    assert host_voice == ("cherry", "Cherry")
 
 
 def test_podcast_model_assignment_uses_configured_text_models():
@@ -1215,6 +1284,67 @@ def test_podcast_update_agent_voice_only_keeps_generation():
     assert backend._podcast_runs["run-1"]["run_state"]["generation"] == 3
     assert backend.events[-1]["content_changed"] is False
     assert backend.events[-1]["agent"]["voice_id"] == "xiaogang"
+
+
+def test_podcast_update_agent_rejects_voice_from_previous_provider():
+    class Backend:
+        def __init__(self):
+            self.runtime = SimpleNamespace(
+                config=SimpleNamespace(models=SimpleNamespace(providers={})),
+                model_ref="p/m",
+                model_id="m",
+            )
+            self.events = []
+            self._podcast_runs = {
+                "run-1": {
+                    "session_id": "session-1",
+                    "topic": "话题",
+                    "host_voice_id": "cherry",
+                    "voice_options": [
+                        {"value": "cherry", "label": "Cherry"},
+                        {"value": "serena", "label": "Serena"},
+                    ],
+                    "run_state": {"generation": 3},
+                    "agents": assign_agents(
+                        [{
+                            "id": "agent-1",
+                            "role": "作家",
+                            "voice_id": "serena",
+                            "model_ref": "p/m",
+                        }],
+                        "话题",
+                        excluded_voice_id="cherry",
+                        voice_options=[
+                            {"value": "cherry", "label": "Cherry"},
+                            {"value": "serena", "label": "Serena"},
+                        ],
+                        model_refs=["p/m"],
+                        model_labels={"p/m": "m"},
+                    ),
+                }
+            }
+
+        def _emit_podcast(self, payload):
+            self.events.append(payload)
+
+    backend = Backend()
+    result = asyncio.run(
+        EmbeddedBackend.podcast_update_agent(
+            backend,
+            run_id="run-1",
+            agent={
+                "id": "agent-1",
+                "role": "作家",
+                "voice_id": "xiaogang",
+                "voice_label": "小刚",
+                "model_ref": "p/m",
+            },
+        )
+    )
+
+    assert result["agent"]["voice_id"] == "serena"
+    assert result["agent"]["voice_label"] == "Serena"
+    assert backend._podcast_runs["run-1"]["agents"][0].voice_id == "serena"
 
 
 def test_podcast_update_host_model_keeps_generation():
