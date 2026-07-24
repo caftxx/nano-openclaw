@@ -216,6 +216,8 @@ xiaozhi: {
 
 每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
 
+所有外部 channel turn 都会注入内置终止工具 `exit`。模型判断用户明确表示离开、结束或稍后再聊时，会在同一响应中给出至多一句简短告别并调用该终止工具，不再发起下一轮模型请求。xiaozhi 在当前回复播放完成后复用无语音超时的关闭动作回到 Idle/待命；消息型 channel 则只结束当前 agent turn。
+
 局域网接入点为 `/xiaozhi/ota/`、`/xiaozhi/v1/` 和 `/xiaozhi/vision/explain`。外网部署必须显式配置受信证书的 `wss` 地址，并在反向代理限制 OTA 接口访问；不要把 token 写进日志或提交到仓库。
 
 ### wechat — 没有 wechat 配置块

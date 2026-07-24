@@ -1208,6 +1208,20 @@ async def _run_agent_session_turn(
         scratch_history.append(Message("user", tool_results))
         pending_transcript_ops.append(("message", scratch_history[-1]))
 
+        # Terminal tools deliberately end the turn after their result is
+        # recorded. Their description asks the model to put any brief
+        # user-facing acknowledgement in the same assistant message as the
+        # tool call, so another model round is neither needed nor desirable.
+        terminal_tool_called = any(
+            (tool := registry.get(block["name"])) is not None and tool.terminal
+            for block in tool_use_blocks
+        )
+        if terminal_tool_called and not has_denial:
+            session._commit_turn(scratch_history, pending_transcript_ops)
+            await fire_after_turn_hook("terminal_tool", i + 1)
+            await drain_loop_event_hooks()
+            return history
+
         # Force a final text-only conclusion when the tool budget is exhausted or a tool
         # was denied. Pass tools=[] so the model cannot make more tool calls.
         is_last_iteration = (i == cfg.max_iterations - 1)

@@ -73,6 +73,10 @@ from nano_openclaw.core.loop import (
 )
 from nano_openclaw.core.tools import ToolRegistry
 from nano_openclaw.features.voice.voice_catalog import is_emotion_voice
+from nano_openclaw.services.channels import (
+    ChannelExitRequest,
+    register_channel_exit_tool,
+)
 
 if TYPE_CHECKING:
     from nano_openclaw.core.runtime import AgentRuntime
@@ -439,6 +443,7 @@ class EmbeddedBackend(Backend):
         channel_id: str = "",
         channel_account_id: str = "",
         channel_sender_key: str = "",
+        exit_request: ChannelExitRequest | None = None,
     ) -> ToolRegistry:
         """Per-turn shallow clone with spawn context wired."""
         base = self.runtime.registry
@@ -446,7 +451,14 @@ class EmbeddedBackend(Backend):
             account_id = channel_account_id or "default"
             adapter = self.channel_manager.get_instance(channel_id, account_id)
             if adapter is not None:
-                return adapter.decorate_tools(base, channel_sender_key)
+                registry = adapter.decorate_tools(base, channel_sender_key)
+                # The default adapter implementation returns ``base`` unchanged.
+                # Never install a per-turn closure on that shared registry.
+                if registry is base:
+                    registry = base.clone()
+                if exit_request is not None:
+                    register_channel_exit_tool(registry, exit_request)
+                return registry
         return base.clone()
 
     def _wire_spawn_context(
@@ -488,12 +500,14 @@ class EmbeddedBackend(Backend):
         history_len_before = len(session.history)
         activity_started_at = time.time()
         activity_payloads: list[dict[str, Any]] = []
+        exit_request = ChannelExitRequest()
 
         turn_registry = self._build_turn_registry(
             session.session_id,
             channel_id=channel_id,
             channel_account_id=channel_account_id,
             channel_sender_key=channel_sender_key,
+            exit_request=exit_request,
         )
 
         async def _request_approval(request: Any, cancellation_token: Any | None = None) -> Any:
@@ -653,6 +667,22 @@ class EmbeddedBackend(Backend):
                     seq=self._next_seq(),
                 )
             )
+            # Transport teardown must happen only after the turn is removed
+            # from the run registry. Closing a persistent device connection
+            # sooner could feed back into chat_abort and cancel the tool that
+            # requested the exit.
+            if (
+                exit_request.requested
+                and self.channel_manager is not None
+                and channel_id
+                and channel_sender_key
+            ):
+                await self.channel_manager.dispatch_exit(
+                    channel_id=channel_id,
+                    account_id=channel_account_id or "default",
+                    sender_key=channel_sender_key,
+                    reason=exit_request.reason,
+                )
 
     # ─── Sessions ───
 

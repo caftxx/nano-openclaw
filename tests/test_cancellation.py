@@ -29,6 +29,9 @@ from nano_openclaw.session.transcript import TranscriptWriter
 from nano_openclaw.core.tools import Tool, ToolRegistry
 
 
+_ASYNC_TOOL_DISPATCH = ToolRegistry.dispatch
+
+
 def test_agent_session_cancellation_during_stream_discards_turn(monkeypatch):
     history = [Message("user", [{"type": "text", "text": "earlier"}])]
     registry = ToolRegistry()
@@ -151,6 +154,47 @@ def test_agent_session_success_does_not_duplicate_immediate_user_message(monkeyp
         assert [message.role for message in loaded] == ["user", "assistant"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_terminal_tool_ends_turn_without_second_model_round(monkeypatch):
+    monkeypatch.setattr(ToolRegistry, "dispatch", _ASYNC_TOOL_DISPATCH)
+    history: list[Message] = []
+    registry = ToolRegistry()
+    calls: list[dict] = []
+    registry.register(Tool(
+        name="exit",
+        description="end interaction",
+        input_schema={"type": "object", "properties": {}},
+        run=lambda args: calls.append(args) or "exit requested",
+        terminal=True,
+    ))
+    stream_calls = 0
+
+    async def fake_stream_response(**_kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield TextDelta(text="好的，再见。")
+        yield ToolUseStart(id="tool-exit", name="exit")
+        yield ToolUseEnd(id="tool-exit")
+        yield MessageEnd(stop_reason="tool_use", usage={})
+
+    monkeypatch.setattr("nano_openclaw.core.loop.stream_response", fake_stream_response)
+
+    session = AgentSession(
+        history=history,
+        registry=registry,
+        on_event=lambda _event: None,
+        client=object(),
+        cfg=LoopConfig(),
+    )
+    asyncio.run(session.run_turn("再见"))
+
+    assert stream_calls == 1
+    assert calls == [{}]
+    assert [message.role for message in history] == ["user", "assistant", "user"]
+    assert history[1].content[0] == {"type": "text", "text": "好的，再见。"}
+    assert history[1].content[1]["name"] == "exit"
+    assert history[2].content[0]["tool_use_id"] == "tool-exit"
 
 
 def test_agent_session_memory_flush_is_silent_and_dispatches_tools(monkeypatch):

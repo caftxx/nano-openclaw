@@ -32,6 +32,50 @@ ChannelState = Literal["stopped", "starting", "running", "error"]
 
 
 @dataclass
+class ChannelExitRequest:
+    """Mutable per-turn marker set by the terminal ``exit`` tool."""
+
+    requested: bool = False
+    reason: str = ""
+
+    def request(self, reason: str = "") -> str:
+        self.requested = True
+        self.reason = reason.strip()
+        return "Channel exit requested. End this turn now."
+
+
+def register_channel_exit_tool(
+    registry: "ToolRegistry",
+    request: ChannelExitRequest,
+) -> None:
+    """Register the universal channel exit tool on one per-turn registry."""
+    from nano_openclaw.core.tools import Tool
+
+    registry.register(Tool(
+        name="exit",
+        description=(
+            "End the current channel interaction when the user clearly intends to leave, "
+            "dismiss the assistant, or continue later (for example: goodbye, go away, "
+            "talk later; Chinese examples include “再见”, “退下”, and “等会儿聊”). "
+            "Do not use merely because such words are quoted or discussed. "
+            "Before calling this terminal tool, include at most one brief farewell in the "
+            "same response; do not call other tools."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for ending the interaction.",
+                },
+            },
+        },
+        run=lambda args: request.request(str(args.get("reason") or "")),
+        terminal=True,
+    ))
+
+
+@dataclass
 class ChannelAccount:
     """One configured account of a channel adapter."""
 
@@ -93,6 +137,15 @@ class ChannelAdapter(ABC):
     def decorate_tools(self, base: "ToolRegistry", sender_key: str) -> "ToolRegistry":
         """Return a registry suitable for one turn started by ``sender_key``."""
         return base
+
+    async def exit_interaction(self, *, sender_key: str, reason: str = "") -> None:
+        """Apply channel-specific teardown after an ``exit`` tool turn.
+
+        Message-oriented channels such as WeChat need no transport teardown:
+        the terminal tool ending the agent turn is sufficient. Persistent
+        device channels can override this to return hardware to an idle state.
+        """
+        return None
 
     async def notify_completion(
         self,
@@ -241,6 +294,36 @@ class ChannelManager:
 
     def list_status(self) -> list[ChannelStatus]:
         return [inst.status() for inst in self._instances.values()]
+
+    async def dispatch_exit(
+        self,
+        *,
+        channel_id: str,
+        account_id: str,
+        sender_key: str,
+        reason: str = "",
+    ) -> bool:
+        """Route a completed terminal-tool turn to its channel adapter."""
+        instance = self._instances.get((channel_id, account_id))
+        if instance is None:
+            log.debug(
+                "channel.exit.no_instance",
+                f"channel {channel_id}/{account_id} not running, dropping exit",
+            )
+            return False
+        try:
+            await instance.exit_interaction(sender_key=sender_key, reason=reason)
+            log.info(
+                "channel.exit",
+                f"channel={channel_id} account={account_id} sender={sender_key}",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "channel.exit.error",
+                f"{channel_id}/{account_id} exit_interaction: {type(exc).__name__}: {exc}",
+            )
+            return False
 
     # ─── Cron completion dispatch ───
 

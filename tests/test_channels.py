@@ -31,6 +31,7 @@ class _RecordingChannel(ChannelAdapter):
         self._state = "running"
         self._started_at = time.time()
         self.notifications: list[dict] = []
+        self.exits: list[dict] = []
 
     async def stop(self):
         self._state = "stopped"
@@ -43,6 +44,9 @@ class _RecordingChannel(ChannelAdapter):
             "summary": summary,
             "job_name": job.name,
         })
+
+    async def exit_interaction(self, *, sender_key, reason=""):
+        self.exits.append({"sender_key": sender_key, "reason": reason})
 
 
 def _fake_runtime() -> SimpleNamespace:
@@ -171,6 +175,35 @@ def test_registry_start_stop_lifecycle():
         assert inst.status().state == "stopped"
         # Stop again is a no-op
         await reg.stop("recording", "default")
+
+    asyncio.run(run())
+
+
+def test_registry_dispatches_channel_exit_to_sender():
+    reg = ChannelManager()
+    reg.register(_RecordingChannel)
+
+    async def run():
+        inst = await reg.start(
+            "recording",
+            ChannelAccount(id="work"),
+            _fake_runtime(),
+        )
+        assert await reg.dispatch_exit(
+            channel_id="recording",
+            account_id="work",
+            sender_key="user42",
+            reason="user said goodbye",
+        )
+        assert inst.exits == [{
+            "sender_key": "user42",
+            "reason": "user said goodbye",
+        }]
+        assert not await reg.dispatch_exit(
+            channel_id="recording",
+            account_id="missing",
+            sender_key="user42",
+        )
 
     asyncio.run(run())
 

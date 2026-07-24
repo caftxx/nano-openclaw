@@ -42,6 +42,7 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     run: ToolHandler
+    terminal: bool = False
 
 
 @dataclass(frozen=True)

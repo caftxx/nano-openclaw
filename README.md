@@ -235,6 +235,8 @@ http://<运行 nano 的电脑局域网 IP>:5000/xiaozhi/ota/
 
 保存、编译并刷机即可，不需要改固件协议源码或提交生成的 `sdkconfig`。每个 `Device-Id` 的 session 映射原子保存在 `state_dir/xiaozhi-sessions.json`，重连后继续原会话；照片不会作为附件或长期文件保存。WebUI 能查看同一 session 的文本历史，但不会获得该设备的硬件工具，避免跨入口误控。
 
+所有外部 channel turn 都会获得内置终止工具 `exit`。当模型判断用户明确表达“再见”“退下”“等会儿聊”等离开意图时，会用该工具结束本轮；xiaozhi 会在简短告别播放完成后关闭设备 WebSocket，与 `noVoiceTimeoutSeconds` 一样让固件回到 Idle/待命。微信等消息型 channel 不需要断开长连接，只终止当前 agent turn。
+
 当前只支持 v1 的单声道/60 ms Opus：设备上行保持 16 kHz 供 ASR，TTS 下行默认使用 24 kHz/64 kbps Opus，避免立创 S3 播放前再做 16→24 kHz 重采样。`ttsVoice` 必须支持所选采样率；默认 `zhiqi` 支持 24 kHz。暂不支持 v2/v3、MQTT/UDP 或服务端 AEC。配置不完整只会把 `xiaozhi/default` 标为 `error`，不阻止 WebUI 启动。外网部署必须显式配置 `wss`、可信证书，并在反向代理限制 `/xiaozhi/ota/` 访问。完整字段见 [配置说明](docs/CONFIG_EXAMPLE.md#xiaozhi--xiaozhi-esp32-原生接入)。
 
 也可以将 ASR/TTS 完全切换到相邻目录的本地 `speech-gateway`（Paraformer Online + SenseVoiceSmall + CosyVoice3）：

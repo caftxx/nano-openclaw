@@ -1169,6 +1169,36 @@ def test_no_voice_timeout_closes_device_websocket(tmp_path):
     asyncio.run(run())
 
 
+def test_exit_tool_waits_for_active_reply_then_reuses_idle_close(tmp_path):
+    async def run():
+        connection, ws, _ = _connection_fixture(tmp_path)
+        connection._want_listening = True
+        connection.mcp.ready.set()
+        connection._stop_asr = AsyncMock()
+        reply_done = asyncio.Event()
+
+        async def collect_reply(_text):
+            await reply_done.wait()
+            return ""
+
+        connection._collect_agent_reply = collect_reply
+        turn = asyncio.create_task(connection._run_transcript("等会儿聊"))
+        connection._turn_task = turn
+        await asyncio.sleep(0)
+
+        await connection.request_idle_after_turn(reason="user wants to leave")
+        assert ws.close_calls == []
+
+        reply_done.set()
+        await asyncio.wait_for(turn, timeout=0.2)
+
+        assert ws.close_calls == [{"code": 1000, "reason": "exit requested"}]
+        assert connection._want_listening is False
+        assert connection._turn_task is None
+
+    asyncio.run(run())
+
+
 def test_recognized_voice_refreshes_no_voice_timeout(tmp_path):
     async def run():
         connection, ws, adapter = _connection_fixture(tmp_path)

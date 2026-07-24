@@ -29,7 +29,7 @@ from nano_openclaw.services.backend_embedded import (
 from nano_openclaw.core.loop import LoopConfig
 from nano_openclaw.core.tools import Tool, ToolRegistry
 from nano_openclaw.adapters.channels.base import ChannelAdapter, ChannelAccount
-from nano_openclaw.services.channels import ChannelManager
+from nano_openclaw.services.channels import ChannelExitRequest, ChannelManager
 
 
 class _RecordingChannel(ChannelAdapter):
@@ -39,10 +39,14 @@ class _RecordingChannel(ChannelAdapter):
         self._state = "running"
         self._started_at = time.time()
         self.gateway = ctx.gateway
+        self.exits = []
 
     async def stop(self):
         self._state = "stopped"
         self._started_at = None
+
+    async def exit_interaction(self, *, sender_key, reason=""):
+        self.exits.append({"sender_key": sender_key, "reason": reason})
 
 
 class _DecoratingChannel(_RecordingChannel):
@@ -152,6 +156,81 @@ def test_turn_registry_applies_channel_tool_decoration(tmp_path):
             assert tool is not None
             assert tool.run({}) == "user-123"
             assert inst.status().state == "running"
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_channel_turn_registry_registers_terminal_exit_tool(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    channels = ChannelManager()
+    channels.register(_RecordingChannel)
+
+    async def run():
+        await channels.start("recording", ChannelAccount(id="work"), runtime)
+        backend = EmbeddedBackend(runtime, channel_manager=channels)
+        try:
+            request = ChannelExitRequest()
+            registry = backend._build_turn_registry(
+                "session-1",
+                channel_id="recording",
+                channel_account_id="work",
+                channel_sender_key="user-123",
+                exit_request=request,
+            )
+            tool = registry.get("exit")
+            assert tool is not None
+            assert tool.terminal is True
+            assert all(phrase in tool.description for phrase in ("再见", "退下", "等会儿聊"))
+            result = tool.run({"reason": "talk later"})
+            assert request.requested is True
+            assert request.reason == "talk later"
+            assert result == "Channel exit requested. End this turn now."
+            assert runtime.registry.get("exit") is None
+        finally:
+            await backend.aclose()
+
+    asyncio.run(run())
+
+
+def test_channel_exit_dispatch_runs_after_turn_is_released(tmp_path):
+    runtime = _fake_runtime(tmp_path)
+    channels = ChannelManager()
+    channels.register(_RecordingChannel)
+
+    async def fake_run_turn(agent_session, _text, **_kwargs):
+        tool = agent_session.registry.get("exit")
+        assert tool is not None
+        result = tool.run({"reason": "user said goodbye"})
+        assert "exit requested" in result.lower()
+
+    async def run():
+        instance = await channels.start(
+            "recording",
+            ChannelAccount(id="work"),
+            runtime,
+        )
+        backend = EmbeddedBackend(runtime, channel_manager=channels)
+        try:
+            with patch(
+                "nano_openclaw.services.backend_embedded.AgentSession.run_turn",
+                fake_run_turn,
+            ):
+                turn_id = await backend.chat_send(
+                    session_key="",
+                    text="再见",
+                    channel_id="recording",
+                    channel_account_id="work",
+                    channel_sender_key="user-123",
+                )
+                await backend.await_turn(turn_id)
+
+            assert instance.exits == [{
+                "sender_key": "user-123",
+                "reason": "user said goodbye",
+            }]
+            assert runtime.run_registry.get(turn_id) is None
         finally:
             await backend.aclose()
 

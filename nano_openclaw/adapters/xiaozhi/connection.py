@@ -74,6 +74,7 @@ class XiaozhiConnection:
         self._last_voice_activity_at = 0.0
         self._no_voice_activity = asyncio.Event()
         self._no_voice_task: asyncio.Task[None] | None = None
+        self._idle_after_turn_reason: str | None = None
         self.mcp = DeviceMcpPeer(
             session_id=session_id,
             send_json=self.send_json,
@@ -274,12 +275,11 @@ class XiaozhiConnection:
             ):
                 remaining = self._last_voice_activity_at + timeout - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    self._want_listening = False
                     log.info(
                         "xiaozhi.no_voice_timeout",
                         f"device={self.device_id} timeout_seconds={timeout}",
                     )
-                    await self.websocket.close(code=1000, reason="no voice timeout")
+                    await self._return_to_idle(reason="no voice timeout")
                     return
                 self._no_voice_activity.clear()
                 with suppress(asyncio.TimeoutError):
@@ -408,6 +408,20 @@ class XiaozhiConnection:
             self._current_turn_id = ""
             if self._turn_task is current:
                 self._turn_task = None
+            if self._idle_after_turn_reason is not None and not self._closed:
+                reason, self._idle_after_turn_reason = self._idle_after_turn_reason, None
+                try:
+                    await self._return_to_idle(reason="exit requested")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "xiaozhi.exit.error",
+                        f"device={self.device_id}: {type(exc).__name__}: {exc}",
+                    )
+                else:
+                    log.info(
+                        "xiaozhi.exit",
+                        f"device={self.device_id} reason_chars={len(reason)}",
+                    )
             # In auto mode the firmware returns to Listening after tts/stop
             # and sends the next listen/start itself. Starting ASR here would
             # race that message and create a redundant open/close/open cycle.
@@ -417,6 +431,25 @@ class XiaozhiConnection:
             if self._want_listening and self._listening_mode == "realtime" and not self._closed:
                 with suppress(Exception):
                     await self._start_asr()
+
+    async def request_idle_after_turn(self, *, reason: str = "") -> None:
+        """Return the device to idle now, or after its active reply finishes."""
+        if self._closed:
+            return
+        if self._turn_task is not None:
+            self._idle_after_turn_reason = reason
+            return
+        await self._return_to_idle(reason="exit requested")
+        log.info(
+            "xiaozhi.exit",
+            f"device={self.device_id} reason_chars={len(reason)}",
+        )
+
+    async def _return_to_idle(self, *, reason: str) -> None:
+        """Shared transport action for idle timeout and the channel exit tool."""
+        self._want_listening = False
+        await self._pause_no_voice_timeout()
+        await self.websocket.close(code=1000, reason=reason)
 
     async def _collect_agent_reply(self, text: str) -> str:
         backend = self.adapter.backend

@@ -99,5 +99,10 @@ class XiaozhiChannel(ChannelAdapter):
             registry.register(tool)
         return registry
 
+    async def exit_interaction(self, *, sender_key: str, reason: str = "") -> None:
+        connection = self.hub.get(sender_key)
+        if connection is not None:
+            await connection.request_idle_after_turn(reason=reason)
+
 
 get_channel_manager().register(XiaozhiChannel)
