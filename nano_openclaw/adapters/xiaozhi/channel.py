@@ -9,6 +9,7 @@ from nano_openclaw.adapters.channels.base import ChannelAdapter
 from nano_openclaw.adapters.xiaozhi.codec import OpusCodec
 from nano_openclaw.adapters.xiaozhi.mcp import XiaozhiHub
 from nano_openclaw.adapters.xiaozhi.sessions import DeviceSessionStore
+from nano_openclaw.adapters.xiaozhi.stream_player import materialize_stream_tools
 from nano_openclaw.config.env_substitution import contains_env_var_reference
 from nano_openclaw.features.voice import AliyunTokenProvider
 from nano_openclaw.services.channels import get_channel_manager
@@ -95,6 +96,8 @@ class XiaozhiChannel(ChannelAdapter):
         if connection is None:
             return base.clone()
         registry = base.clone()
+        for tool in materialize_stream_tools(connection):
+            registry.register(tool)
         for tool in connection.mcp.materialize_tools():
             registry.register(tool)
         return registry
