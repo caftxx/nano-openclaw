@@ -163,7 +163,9 @@ class XiaozhiConnection:
             raise ProtocolError(f"unsupported message type: {kind!r}")
 
     async def _handle_audio(self, packet: bytes) -> None:
-        if not self._want_listening or self._turn_task is not None:
+        if not self._want_listening or (
+            self._turn_task is not None and not self._barge_in_enabled()
+        ):
             return
         try:
             pcm = self.codec.decode(packet)
@@ -191,7 +193,11 @@ class XiaozhiConnection:
                 await transcriber.close()
 
     async def _start_asr(self) -> None:
-        if self._closed or self._asr is not None or self._turn_task is not None:
+        if (
+            self._closed
+            or self._asr is not None
+            or (self._turn_task is not None and not self._barge_in_enabled())
+        ):
             return
         self._asr_generation += 1
         generation = self._asr_generation
@@ -302,7 +308,7 @@ class XiaozhiConnection:
             not text
             or self._closed
             or self._asr is None
-            or self._turn_task is not None
+            or (self._turn_task is not None and not self._barge_in_enabled())
             or generation != self._asr_generation
         ):
             return
@@ -318,12 +324,14 @@ class XiaozhiConnection:
 
     async def _on_final_transcript(self, text: str, *, generation: int | None = None) -> None:
         text = text.strip()
+        interrupted_task = self._turn_task
+        is_barge_in = interrupted_task is not None and self._barge_in_enabled()
         drop_reason = ""
         if not text:
             drop_reason = "empty_text"
         elif self._closed:
             drop_reason = "connection_closed"
-        elif self._turn_task is not None:
+        elif interrupted_task is not None and not is_barge_in:
             drop_reason = "turn_active"
         elif generation is not None and generation != self._asr_generation:
             drop_reason = "stale_generation"
@@ -347,11 +355,78 @@ class XiaozhiConnection:
             self._accepted_final_generation = generation
         log.info(
             "xiaozhi.asr.final_accepted",
-            f"device={self.device_id} text_chars={len(text)} generation={generation}",
+            (
+                f"device={self.device_id} text_chars={len(text)} "
+                f"generation={generation} barge_in={is_barge_in}"
+            ),
         )
-        self._turn_task = asyncio.create_task(
-            self._run_transcript(text), name=f"xiaozhi-turn:{self.device_id}"
+        if is_barge_in:
+            interrupted_turn_id = self._current_turn_id
+            task = asyncio.create_task(
+                self._interrupt_and_run(
+                    text,
+                    interrupted_task=interrupted_task,
+                    interrupted_turn_id=interrupted_turn_id,
+                ),
+                name=f"xiaozhi-barge-in:{self.device_id}",
+            )
+        else:
+            task = asyncio.create_task(
+                self._run_transcript(text), name=f"xiaozhi-turn:{self.device_id}"
+            )
+        self._turn_task = task
+
+    def _barge_in_enabled(self) -> bool:
+        """Whether the device keeps sending AEC-processed audio during replies."""
+        return self._want_listening and self._listening_mode == "realtime"
+
+    async def _interrupt_and_run(
+        self,
+        text: str,
+        *,
+        interrupted_task: asyncio.Task[None],
+        interrupted_turn_id: str,
+    ) -> None:
+        """Stop the audible reply and replace it with the recognized interruption."""
+        log.info(
+            "xiaozhi.barge_in",
+            (
+                f"device={self.device_id} text_chars={len(text)} "
+                f"turn={interrupted_turn_id or '(starting)'}"
+            ),
         )
+
+        # Tell the device to clear queued playback before waiting for model/TTS
+        # cleanup. Keep the current ASR attached until the retiring task has
+        # run its finally block; that prevents the old task from opening a
+        # redundant ASR.
+        if not self._closed:
+            with suppress(Exception):
+                await self.send_json(envelope(self.session_id, "tts", state="stop"))
+        interrupted_task.cancel()
+        await asyncio.gather(interrupted_task, return_exceptions=True)
+        self._current_turn_id = ""
+
+        try:
+            await self._stop_asr()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "xiaozhi.barge_in.asr_cleanup_error",
+                f"device={self.device_id}: {type(exc).__name__}: {exc}",
+            )
+
+        if interrupted_turn_id:
+            await self.adapter.backend.chat_abort(turn_id=interrupted_turn_id)
+            released = await self._wait_for_turn_release(
+                interrupted_turn_id, timeout=ABORT_TURN_RELEASE_TIMEOUT_SECONDS
+            )
+            if not released:
+                log.warning(
+                    "xiaozhi.turn.release_timeout",
+                    f"device={self.device_id} turn={interrupted_turn_id}",
+                )
+
+        await self._run_transcript(text)
 
     async def _run_transcript(self, text: str) -> None:
         current = asyncio.current_task()
@@ -382,6 +457,16 @@ class XiaozhiConnection:
                 "xiaozhi.asr.final_cleanup_done",
                 f"device={self.device_id}",
             )
+            if self._barge_in_enabled():
+                try:
+                    await self._start_asr()
+                except Exception as exc:  # noqa: BLE001
+                    # Losing barge-in recognition must not discard the answer
+                    # that was already accepted for this turn.
+                    log.warning(
+                        "xiaozhi.barge_in.asr_start_error",
+                        f"device={self.device_id}: {type(exc).__name__}: {exc}",
+                    )
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self.mcp.ready.wait(), timeout=self.adapter.config.mcpTimeoutMs / 1000)
             voice = self.adapter.runtime.config.voice
@@ -428,7 +513,11 @@ class XiaozhiConnection:
             # Realtime mode keeps device voice processing active while TTS is
             # playing, so it does not emit another listen/start and still
             # needs the server-side restart.
-            if self._want_listening and self._listening_mode == "realtime" and not self._closed:
+            if (
+                self._barge_in_enabled()
+                and self._asr is None
+                and not self._closed
+            ):
                 with suppress(Exception):
                     await self._start_asr()
 

@@ -592,6 +592,44 @@ def test_asr_send_failure_discards_dead_connection(tmp_path):
     asyncio.run(run())
 
 
+def test_realtime_audio_continues_during_active_reply(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        transcriber = SimpleNamespace(send_audio=AsyncMock())
+        connection._want_listening = True
+        connection._listening_mode = "realtime"
+        connection._turn_task = asyncio.create_task(asyncio.Event().wait())
+        connection._asr = transcriber
+        connection.codec.decode = lambda packet: b"pcm"
+
+        await connection._handle_audio(b"opus")
+
+        transcriber.send_audio.assert_awaited_once_with(b"pcm")
+        connection._turn_task.cancel()
+        await asyncio.gather(connection._turn_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_auto_mode_still_discards_audio_during_active_reply(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        transcriber = SimpleNamespace(send_audio=AsyncMock())
+        connection._want_listening = True
+        connection._listening_mode = "auto"
+        connection._turn_task = asyncio.create_task(asyncio.Event().wait())
+        connection._asr = transcriber
+        connection.codec.decode = lambda packet: b"pcm"
+
+        await connection._handle_audio(b"opus")
+
+        transcriber.send_audio.assert_not_awaited()
+        connection._turn_task.cancel()
+        await asyncio.gather(connection._turn_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
 def test_tts_sentence_order_and_opus_audio(tmp_path):
     async def run():
         connection, ws, adapter = _connection_fixture(tmp_path)
@@ -1418,19 +1456,66 @@ def test_auto_mode_waits_for_device_to_restart_asr(tmp_path):
     asyncio.run(run())
 
 
-def test_realtime_mode_restarts_asr_server_side(tmp_path):
+def test_realtime_mode_starts_barge_in_asr_before_reply_finishes(tmp_path):
     async def run():
         connection, _, _ = _connection_fixture(tmp_path)
         connection._want_listening = True
         connection._listening_mode = "realtime"
         connection.mcp.ready.set()
         connection._stop_asr = AsyncMock()
-        connection._collect_agent_reply = AsyncMock(return_value="")
-        connection._start_asr = AsyncMock()
+        reply_started = asyncio.Event()
+        release_reply = asyncio.Event()
 
-        await connection._run_transcript("实时模式")
+        async def collect_reply(_text):
+            reply_started.set()
+            await release_reply.wait()
+            return ""
+
+        async def start_asr():
+            connection._asr = object()
+
+        connection._collect_agent_reply = collect_reply
+        connection._start_asr = AsyncMock(side_effect=start_asr)
+
+        task = asyncio.create_task(connection._run_transcript("实时模式"))
+        await asyncio.wait_for(reply_started.wait(), timeout=0.2)
 
         connection._start_asr.assert_awaited_once_with()
+        assert not task.done()
+
+        release_reply.set()
+        await task
+        connection._start_asr.assert_awaited_once_with()
+
+    asyncio.run(run())
+
+
+def test_realtime_final_interrupts_reply_and_starts_new_turn(tmp_path):
+    async def run():
+        connection, ws, adapter = _connection_fixture(tmp_path)
+        connection._want_listening = True
+        connection._listening_mode = "realtime"
+        connection._asr_generation = 4
+        connection._asr = SimpleNamespace(stop=AsyncMock())
+        connection._current_turn_id = "turn-1"
+        interrupted = asyncio.create_task(asyncio.Event().wait())
+        connection._turn_task = interrupted
+        adapter.backend.sessions_get = AsyncMock(
+            return_value=SimpleNamespace(active_turn_id=None)
+        )
+
+        with patch.object(connection, "_run_transcript", new=AsyncMock()) as run_turn:
+            await connection._on_final_transcript("换个话题", generation=4)
+            barge_in = connection._turn_task
+            assert barge_in is not interrupted
+            await asyncio.wait_for(barge_in, timeout=0.2)
+
+        assert interrupted.cancelled()
+        adapter.backend.chat_abort.assert_awaited_once_with(turn_id="turn-1")
+        run_turn.assert_awaited_once_with("换个话题")
+        assert connection._asr is None
+        assert ws.json[-1]["type"] == "tts"
+        assert ws.json[-1]["state"] == "stop"
 
     asyncio.run(run())
 

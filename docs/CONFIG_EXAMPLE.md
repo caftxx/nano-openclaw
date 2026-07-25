@@ -214,7 +214,7 @@ xiaozhi: {
 
 `baseUrl` 必须包含 `/v1`；`realtimeUrl` 指向统一的 `/v1/realtime` WebSocket 路径。Bearer Token 支持 `${VAR}` 替换，不会写入日志。小智在一个 realtime response 中连续提交句子文本 delta；长回复在首包后最多等待 `ttsPrebufferMaxWaitMs` 来积累音频，短回复完成后直接播放。abort 或断线会取消尚未完成的 realtime 合成。
 
-每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
+每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。设备端 AEC 开启时，xiaozhi-esp32 使用 `realtime` 模式并在播放期间持续上传消回声后的麦克风音频；此时直接说任意内容即可打断旧回答并发起新一轮。`auto` 模式不会在播放期间识别插话。相机 JPEG 只在请求期间以内存/临时文件处理，关闭上传后立即释放，不写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
 
 所有外部 channel turn 都会注入内置终止工具 `exit`。模型判断用户明确表示离开、结束或稍后再聊时，会在同一响应中给出至多一句简短告别并调用该终止工具，不再发起下一轮模型请求。xiaozhi 在当前回复播放完成后复用无语音超时的关闭动作回到 Idle/待命；消息型 channel 则只结束当前 agent turn。
 
