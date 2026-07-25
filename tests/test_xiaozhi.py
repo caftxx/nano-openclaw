@@ -712,6 +712,31 @@ def test_local_tts_streams_all_sentences_in_one_response(tmp_path):
     asyncio.run(run())
 
 
+def test_local_tts_pacing_starts_when_prebuffered_audio_arrives(tmp_path):
+    async def run():
+        connection, ws, _ = _connection_fixture(tmp_path)
+        frame_bytes = connection.adapter.config.ttsSampleRate * 60 // 1000 * 2
+        real_sleep = asyncio.sleep
+
+        async def delayed_pcm():
+            await real_sleep(0.08)
+            yield bytes(frame_bytes * 3)
+
+        connection.codec.encode = lambda _pcm: b"opus"
+        with patch(
+            "nano_openclaw.adapters.xiaozhi.connection.asyncio.sleep",
+            new=AsyncMock(),
+        ) as paced_sleep:
+            await connection._send_local_pcm(delayed_pcm())
+
+        assert ws.binary == [b"opus", b"opus", b"opus"]
+        delays = [call.args[0] for call in paced_sleep.await_args_list]
+        assert len(delays) == 3
+        assert min(delays) >= 0.04
+
+    asyncio.run(run())
+
+
 class _FakeLocalSpeechWebSocket:
     def __init__(self):
         self.sent = []

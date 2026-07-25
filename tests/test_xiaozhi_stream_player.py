@@ -131,7 +131,9 @@ def test_playback_controller_defers_until_turn_done_and_stops_in_background():
             assert not stream_started.is_set()
             turn_release.set()
             await connection._turn_task
-            await asyncio.wait_for(stream_started.wait(), timeout=0.2)
+            await asyncio.sleep(0.02)
+            assert not stream_started.is_set()
+            await asyncio.wait_for(stream_started.wait(), timeout=0.5)
             assert connection.playback.snapshot()["state"] == "playing"
 
             stopped = await connection.playback.stop(

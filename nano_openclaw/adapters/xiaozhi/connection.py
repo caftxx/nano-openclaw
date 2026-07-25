@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+from collections.abc import AsyncIterable
 from contextlib import suppress
 from typing import Any
 
@@ -25,7 +26,10 @@ from nano_openclaw.adapters.xiaozhi.protocol import (
     split_sentences,
     validate_hello,
 )
-from nano_openclaw.adapters.xiaozhi.stream_player import XiaozhiPlaybackController
+from nano_openclaw.adapters.xiaozhi.stream_player import (
+    XiaozhiPlaybackController,
+    _next_packet_deadline,
+)
 from nano_openclaw.logger import get_logger
 from nano_openclaw.services.backend import BusyError
 
@@ -717,42 +721,68 @@ class XiaozhiConnection:
                 ))
                 yield text
 
+        first_audio = True
+
+        async def observed_pcm() -> AsyncIterable[bytes]:
+            nonlocal first_audio
+            async for chunk in stream_local_speech(
+                realtime_url=voice.realtimeUrl,
+                api_key=voice.apiKey,
+                model=voice.ttsModel,
+                voice=self.adapter.config.ttsVoice,
+                text_chunks=text_chunks(),
+                sample_rate=self.adapter.config.ttsSampleRate,
+                prebuffer_ms=getattr(self.adapter.config, "ttsPrebufferMs", 2400),
+                prebuffer_max_wait_ms=getattr(
+                    self.adapter.config, "ttsPrebufferMaxWaitMs", 1800
+                ),
+            ):
+                if first_audio:
+                    first_audio = False
+                    log.info(
+                        "xiaozhi.latency.first_tts_audio",
+                        (
+                            f"device={self.device_id} "
+                            f"elapsed_ms={(time.perf_counter() - started_at) * 1000:.1f}"
+                        ),
+                    )
+                yield chunk
+
+        await self._send_local_pcm(observed_pcm())
+
+    async def _send_local_pcm(self, chunks: AsyncIterable[bytes]) -> None:
+        """Encode and pace local PCM without bursting after synthesis stalls."""
         pcm_buffer = bytearray()
         frame_bytes = self.adapter.config.ttsSampleRate * FRAME_DURATION_MS // 1000 * 2
-        next_send_at = asyncio.get_running_loop().time()
-        first_audio = True
-        async for chunk in stream_local_speech(
-            realtime_url=voice.realtimeUrl,
-            api_key=voice.apiKey,
-            model=voice.ttsModel,
-            voice=self.adapter.config.ttsVoice,
-            text_chunks=text_chunks(),
-            sample_rate=self.adapter.config.ttsSampleRate,
-            prebuffer_ms=getattr(self.adapter.config, "ttsPrebufferMs", 2400),
-            prebuffer_max_wait_ms=getattr(
-                self.adapter.config, "ttsPrebufferMaxWaitMs", 1800
-            ),
-        ):
-            if first_audio:
-                first_audio = False
-                log.info(
-                    "xiaozhi.latency.first_tts_audio",
-                    (
-                        f"device={self.device_id} "
-                        f"elapsed_ms={(time.perf_counter() - started_at) * 1000:.1f}"
-                    ),
+        next_send_at: float | None = None
+
+        async def send_frame(pcm: bytes) -> None:
+            nonlocal next_send_at
+            loop = asyncio.get_running_loop()
+            if next_send_at is not None:
+                next_send_at, _ = _next_packet_deadline(
+                    next_send_at,
+                    loop.time(),
                 )
+                await asyncio.sleep(max(0.0, next_send_at - loop.time()))
+            await self.send_bytes(self.codec.encode(pcm))
+            if next_send_at is None:
+                next_send_at = loop.time()
+
+        async for chunk in chunks:
             pcm_buffer.extend(chunk)
             while len(pcm_buffer) >= frame_bytes:
-                packet = self.codec.encode(bytes(pcm_buffer[:frame_bytes]))
+                await send_frame(bytes(pcm_buffer[:frame_bytes]))
                 del pcm_buffer[:frame_bytes]
-                await self.send_bytes(packet)
-                next_send_at += FRAME_DURATION_MS / 1000
-                await asyncio.sleep(max(0.0, next_send_at - asyncio.get_running_loop().time()))
         if pcm_buffer:
-            await self.send_bytes(self.codec.encode(bytes(pcm_buffer)))
-            next_send_at += FRAME_DURATION_MS / 1000
-            await asyncio.sleep(max(0.0, next_send_at - asyncio.get_running_loop().time()))
+            await send_frame(bytes(pcm_buffer))
+
+        # Keep the turn active for the final frame's playout duration. The
+        # music controller adds a small device-side handoff guard after this.
+        if next_send_at is not None:
+            loop = asyncio.get_running_loop()
+            final_deadline, _ = _next_packet_deadline(next_send_at, loop.time())
+            await asyncio.sleep(max(0.0, final_deadline - loop.time()))
 
     async def _send_agent_turn(self, text: str) -> str:
         """Submit a device turn, tolerating a retiring turn from this session."""
@@ -858,9 +888,7 @@ class XiaozhiConnection:
                 ))
                 yield sentence
 
-        pcm_buffer = bytearray()
-        frame_bytes = self.adapter.config.ttsSampleRate * FRAME_DURATION_MS // 1000 * 2
-        async for chunk in stream_local_speech(
+        chunks = stream_local_speech(
             realtime_url=voice.realtimeUrl,
             api_key=voice.apiKey,
             model=voice.ttsModel,
@@ -871,16 +899,8 @@ class XiaozhiConnection:
             prebuffer_max_wait_ms=getattr(
                 self.adapter.config, "ttsPrebufferMaxWaitMs", 1800
             ),
-        ):
-            pcm_buffer.extend(chunk)
-            while len(pcm_buffer) >= frame_bytes:
-                packet = self.codec.encode(bytes(pcm_buffer[:frame_bytes]))
-                del pcm_buffer[:frame_bytes]
-                await self.send_bytes(packet)
-                await asyncio.sleep(FRAME_DURATION_MS / 1000)
-        if pcm_buffer:
-            await self.send_bytes(self.codec.encode(bytes(pcm_buffer)))
-            await asyncio.sleep(FRAME_DURATION_MS / 1000)
+        )
+        await self._send_local_pcm(chunks)
 
     async def abort(self, *, send_tts_stop: bool) -> None:
         self._want_listening = False
