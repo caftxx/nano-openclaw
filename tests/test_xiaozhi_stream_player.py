@@ -14,6 +14,7 @@ from nano_openclaw.adapters.xiaozhi.channel import XiaozhiChannel
 from nano_openclaw.adapters.xiaozhi.mcp import XiaozhiHub
 from nano_openclaw.adapters.xiaozhi.stream_player import (
     XiaozhiPlaybackController,
+    _next_packet_deadline,
     _play_stream,
     _take_packet,
     _validate_stream_url,
@@ -214,8 +215,49 @@ def test_stream_player_strips_lengths_and_sends_paced_opus():
         assert result["ok"] is True
         assert result["packets"] == 2
         assert result["audio_bytes"] == 16
+        assert result["audio_duration_seconds"] == 0.12
+        assert result["first_packet_latency_seconds"] >= 0
+        assert result["pacing_resyncs"] == 0
 
     asyncio.run(run())
+
+
+def test_stream_player_times_out_when_audio_stalls():
+    async def run():
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "application/x-opus-packets"},
+                stream=_BlockingStream(),
+            )
+        )
+        connection = _connection()
+
+        with pytest.raises(RuntimeError, match="stream stalled for 0.01 seconds"):
+            await _play_stream(
+                connection,
+                stream_url="http://127.0.0.1:32123/streams/token",
+                label="stalled track",
+                transport=transport,
+                read_timeout_seconds=0.01,
+            )
+
+        assert [
+            call.args[0]["state"] for call in connection.send_json.await_args_list
+        ] == ["start", "sentence_start", "stop"]
+        assert connection.send_bytes.await_count == 1
+
+    asyncio.run(run())
+
+
+def test_packet_pacing_resyncs_instead_of_bursting_when_far_behind():
+    deadline, resynced = _next_packet_deadline(1.0, 1.02)
+    assert deadline == pytest.approx(1.06)
+    assert resynced is False
+
+    deadline, resynced = _next_packet_deadline(1.0, 1.20)
+    assert deadline == pytest.approx(1.20)
+    assert resynced is True
 
 
 @pytest.mark.skipif(

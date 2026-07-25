@@ -260,7 +260,7 @@ mcp: {
 },
 ```
 
-设备侧说“播放周杰伦的晴天”“从 30 秒开始播放晴天”即可触发 MCP 搜索、消歧和 `xiaozhi-v1` 音频流准备；`xiaozhi_start_playback` 会立即返回 `playback_id`，等本轮确认语音结束后在后台开始播放。Agent 还可调用 `xiaozhi_stop_playback` 和 `xiaozhi_playback_status`；任何新语音、唤醒、abort、重连或断开都会取消当前播放。nano-openclaw 不依赖 `easy-music` 的其他 CLI 参数，只消费 MCP 返回的流描述。
+设备侧说“播放周杰伦的晴天”“从 30 秒开始播放晴天”即可触发 MCP 搜索、消歧和 `xiaozhi-v1` 音频流准备；`xiaozhi_start_playback` 会立即返回 `playback_id`，等本轮确认语音结束后在后台开始播放。Agent 还可调用 `xiaozhi_stop_playback` 和 `xiaozhi_playback_status`；任何新语音、唤醒、abort、重连或断开都会取消当前播放。播放器会在音频流连续 20 秒无数据时结束等待，为上游 ffmpeg 的短暂断线重连留出恢复窗口；事件循环严重落后时会重置发送节奏，避免向设备突发发送积压的 Opus 包。播放状态统计包含首包延迟、音频时长和节奏重同步次数。nano-openclaw 不依赖 `easy-music` 的其他 CLI 参数，只消费 MCP 返回的流描述。
 
 也可以将 ASR/TTS 完全切换到相邻目录的本地 `speech-gateway`（Paraformer Online + SenseVoiceSmall + CosyVoice3）：
 

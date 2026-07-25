@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,6 +22,8 @@ log = get_logger(__name__)
 _CONTENT_TYPE = "application/x-opus-packets"
 _MAX_OPUS_PACKET_BYTES = 1024 * 1024
 _MAX_BUFFER_BYTES = 2 * _MAX_OPUS_PACKET_BYTES
+_STREAM_IDLE_TIMEOUT_SECONDS = 20.0
+_FRAME_SECONDS = FRAME_DURATION_MS / 1000
 
 
 class XiaozhiPlaybackController:
@@ -282,12 +284,17 @@ async def _play_stream(
     label: str,
     transport: httpx.AsyncBaseTransport | None = None,
     on_started: Callable[[], None] | None = None,
+    read_timeout_seconds: float = _STREAM_IDLE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     _validate_stream_url(stream_url)
+    if read_timeout_seconds <= 0:
+        raise ValueError("read_timeout_seconds must be positive")
     timeout = httpx.Timeout(connect=5, read=None, write=5, pool=5)
     started = False
     packets = 0
     audio_bytes = 0
+    pacing_resyncs = 0
+    first_packet_latency_seconds: float | None = None
     started_at = asyncio.get_running_loop().time()
     next_send_at = started_at
     buffer = bytearray()
@@ -307,7 +314,10 @@ async def _play_stream(
             if content_type.partition(";")[0].strip().lower() != _CONTENT_TYPE:
                 raise RuntimeError("music stream returned an unsupported content type")
 
-            async for chunk in response.aiter_bytes():
+            async for chunk in _iter_response_bytes(
+                response,
+                idle_timeout_seconds=read_timeout_seconds,
+            ):
                 buffer.extend(chunk)
                 if len(buffer) > _MAX_BUFFER_BYTES:
                     raise RuntimeError("music stream buffer exceeded its limit")
@@ -329,11 +339,18 @@ async def _play_stream(
                                 )
                             )
                         started = True
+                        first_packet_latency_seconds = (
+                            asyncio.get_running_loop().time() - started_at
+                        )
                         if on_started is not None:
                             on_started()
 
                     if packets:
-                        next_send_at += FRAME_DURATION_MS / 1000
+                        next_send_at, resynced = _next_packet_deadline(
+                            next_send_at,
+                            asyncio.get_running_loop().time(),
+                        )
+                        pacing_resyncs += int(resynced)
                         await asyncio.sleep(
                             max(
                                 0.0,
@@ -351,7 +368,8 @@ async def _play_stream(
         )
         raise
     except httpx.HTTPError as exc:
-        raise RuntimeError(f"music stream request failed: {exc}") from exc
+        detail = str(exc).strip() or type(exc).__name__
+        raise RuntimeError(f"music stream request failed: {detail}") from exc
     finally:
         if started and not getattr(connection, "_closed", False):
             with suppress(Exception):
@@ -370,14 +388,44 @@ async def _play_stream(
         device=connection.device_id,
         packets=packets,
         audio_bytes=audio_bytes,
+        pacing_resyncs=pacing_resyncs,
     )
     return {
         "ok": True,
         "title": label,
         "packets": packets,
         "audio_bytes": audio_bytes,
+        "audio_duration_seconds": round(packets * _FRAME_SECONDS, 3),
+        "first_packet_latency_seconds": round(first_packet_latency_seconds or 0.0, 3),
+        "pacing_resyncs": pacing_resyncs,
         "elapsed_seconds": round(elapsed, 3),
     }
+
+
+async def _iter_response_bytes(
+    response: httpx.Response,
+    *,
+    idle_timeout_seconds: float,
+) -> AsyncIterator[bytes]:
+    iterator = response.aiter_bytes().__aiter__()
+    while True:
+        try:
+            async with asyncio.timeout(idle_timeout_seconds):
+                chunk = await anext(iterator)
+        except StopAsyncIteration:
+            return
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"music stream stalled for {idle_timeout_seconds:g} seconds"
+            ) from exc
+        yield chunk
+
+
+def _next_packet_deadline(previous: float, now: float) -> tuple[float, bool]:
+    deadline = previous + _FRAME_SECONDS
+    if now - deadline >= _FRAME_SECONDS:
+        return now, True
+    return deadline, False
 
 
 def _take_packet(buffer: bytearray) -> bytes | None:
