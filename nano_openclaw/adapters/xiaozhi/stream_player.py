@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,8 +24,170 @@ _MAX_OPUS_PACKET_BYTES = 1024 * 1024
 _MAX_BUFFER_BYTES = 2 * _MAX_OPUS_PACKET_BYTES
 
 
+class XiaozhiPlaybackController:
+    """Own at most one background music stream for a device connection."""
+
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+        self._lock = asyncio.Lock()
+        self._task: asyncio.Task[None] | None = None
+        self._playback_id = ""
+        self._label = ""
+        self._state = "idle"
+        self._error = ""
+        self._result: dict[str, Any] | None = None
+        self._stop_reason = ""
+
+    async def start(self, *, stream_url: str, label: str) -> dict[str, Any]:
+        _validate_stream_url(stream_url)
+        async with self._lock:
+            replaced_playback_id = await self._cancel_locked(reason="replaced")
+            playback_id = uuid.uuid4().hex
+            active_turn = getattr(self.connection, "_turn_task", None)
+            if active_turn is not None and active_turn.done():
+                active_turn = None
+            self._playback_id = playback_id
+            self._label = label
+            self._state = "queued" if active_turn is not None else "starting"
+            self._error = ""
+            self._result = None
+            self._stop_reason = ""
+            self._task = asyncio.create_task(
+                self._run(
+                    playback_id,
+                    stream_url=stream_url,
+                    label=label,
+                    after_turn=active_turn,
+                ),
+                name=f"xiaozhi-playback:{self.connection.device_id}:{playback_id[:8]}",
+            )
+            result = self.snapshot()
+            if replaced_playback_id:
+                result["replaced_playback_id"] = replaced_playback_id
+            return result
+
+    async def stop(
+        self,
+        *,
+        playback_id: str = "",
+        reason: str = "requested",
+    ) -> dict[str, Any]:
+        async with self._lock:
+            if playback_id and playback_id != self._playback_id:
+                result = self.snapshot()
+                result.update(
+                    {
+                        "ok": False,
+                        "stopped": False,
+                        "reason": "playback_id_mismatch",
+                    }
+                )
+                return result
+            stopped_playback_id = await self._cancel_locked(reason=reason)
+            result = self.snapshot()
+            result["stopped"] = bool(stopped_playback_id)
+            return result
+
+    async def close(self) -> None:
+        await self.stop(reason="connection_closed")
+
+    def snapshot(self) -> dict[str, Any]:
+        active = self._task is not None and not self._task.done()
+        result: dict[str, Any] = {
+            "ok": True,
+            "active": active,
+            "state": self._state,
+            "playback_id": self._playback_id,
+            "title": self._label,
+        }
+        if self._stop_reason:
+            result["stop_reason"] = self._stop_reason
+        if self._error:
+            result["error"] = self._error
+        if self._result is not None:
+            result["stats"] = self._result
+        return result
+
+    async def _cancel_locked(self, *, reason: str) -> str:
+        task = self._task
+        if task is None or task.done():
+            return ""
+        playback_id = self._playback_id
+        self._state = "stopping"
+        self._stop_reason = reason
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if self._playback_id == playback_id:
+            self._task = None
+            self._state = "stopped"
+        return playback_id
+
+    async def _run(
+        self,
+        playback_id: str,
+        *,
+        stream_url: str,
+        label: str,
+        after_turn: asyncio.Task[Any] | None,
+    ) -> None:
+        try:
+            if after_turn is not None:
+                try:
+                    await asyncio.shield(after_turn)
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                    self._mark_stopped(playback_id, "turn_cancelled")
+                    return
+            if getattr(self.connection, "_closed", False):
+                self._mark_stopped(playback_id, "connection_closed")
+                return
+            if self._playback_id == playback_id:
+                self._state = "starting"
+
+            def mark_started() -> None:
+                if self._playback_id == playback_id:
+                    self._state = "playing"
+
+            result = await _play_stream(
+                self.connection,
+                stream_url=stream_url,
+                label=label,
+                on_started=mark_started,
+            )
+        except asyncio.CancelledError:
+            self._mark_stopped(playback_id, self._stop_reason or "cancelled")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self._playback_id == playback_id:
+                self._state = "failed"
+                self._error = f"{type(exc).__name__}: {exc}"[:300]
+                log.warning(  # noqa: PLE1205
+                    "xiaozhi.playback.failed",
+                    f"device={self.connection.device_id}: {self._error}",
+                )
+        else:
+            if self._playback_id == playback_id:
+                self._state = "completed"
+                self._result = result
+        finally:
+            if (
+                self._playback_id == playback_id
+                and self._task is asyncio.current_task()
+            ):
+                self._task = None
+
+    def _mark_stopped(self, playback_id: str, reason: str) -> None:
+        if self._playback_id == playback_id:
+            self._state = "stopped"
+            self._stop_reason = reason
+
+
 def materialize_stream_tools(connection: Any) -> list[Tool]:
-    async def play(args: dict[str, Any]) -> str:
+    controller: XiaozhiPlaybackController = connection.playback
+
+    async def start(args: dict[str, Any]) -> str:
         stream_url = str(args.get("stream_url") or "").strip()
         if not stream_url:
             raise ValueError("stream_url is required")
@@ -31,21 +195,30 @@ def materialize_stream_tools(connection: Any) -> list[Tool]:
             str(args.get("title") or ""),
             str(args.get("artist") or ""),
         )
-        result = await _play_stream(
-            connection,
+        result = await controller.start(
             stream_url=stream_url,
             label=label,
         )
         return json.dumps(result, ensure_ascii=False)
 
+    async def stop(args: dict[str, Any]) -> str:
+        result = await controller.stop(
+            playback_id=str(args.get("playback_id") or "").strip(),
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    async def status(_args: dict[str, Any]) -> str:
+        return json.dumps(controller.snapshot(), ensure_ascii=False)
+
     return [
         Tool(
-            name="xiaozhi_play_stream",
+            name="xiaozhi_start_playback",
             description=(
-                "Immediately play a one-time 24 kHz mono Opus stream returned "
-                "by easy-music prepare_stream on the currently connected "
-                "Xiaozhi device. The URL is short-lived and single-use; do not "
-                "retry or replay automatically after interruption."
+                "Queue a one-time xiaozhi-v1 profile stream (24 kHz mono, "
+                "60 ms Opus packets with len32be framing) for background "
+                "playback on the current Xiaozhi device. Playback starts "
+                "after the current spoken reply ends and returns a playback_id "
+                "immediately. Do not retry automatically."
             ),
             input_schema={
                 "type": "object",
@@ -53,8 +226,8 @@ def materialize_stream_tools(connection: Any) -> list[Tool]:
                     "stream_url": {
                         "type": "string",
                         "description": (
-                            "Short-lived, one-time loopback stream_url returned "
-                            "by easy-music prepare_stream; use it immediately."
+                            "Short-lived, one-time loopback URL from a trusted "
+                            "audio preparation tool using profile xiaozhi-v1."
                         ),
                     },
                     "title": {
@@ -69,8 +242,36 @@ def materialize_stream_tools(connection: Any) -> list[Tool]:
                 "required": ["stream_url"],
                 "additionalProperties": False,
             },
-            run=play,
-        )
+            run=start,
+        ),
+        Tool(
+            name="xiaozhi_stop_playback",
+            description=(
+                "Stop background music on the current Xiaozhi device. Omit "
+                "playback_id to stop whichever playback is active."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "playback_id": {
+                        "type": "string",
+                        "description": "Optional ID returned by xiaozhi_start_playback.",
+                    }
+                },
+                "additionalProperties": False,
+            },
+            run=stop,
+        ),
+        Tool(
+            name="xiaozhi_playback_status",
+            description="Return background music status for the current Xiaozhi device.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            run=status,
+        ),
     ]
 
 
@@ -80,6 +281,7 @@ async def _play_stream(
     stream_url: str,
     label: str,
     transport: httpx.AsyncBaseTransport | None = None,
+    on_started: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     _validate_stream_url(stream_url)
     timeout = httpx.Timeout(connect=5, read=None, write=5, pool=5)
@@ -127,6 +329,8 @@ async def _play_stream(
                                 )
                             )
                         started = True
+                        if on_started is not None:
+                            on_started()
 
                     if packets:
                         next_send_at += FRAME_DURATION_MS / 1000

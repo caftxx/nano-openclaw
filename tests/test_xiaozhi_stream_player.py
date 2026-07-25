@@ -13,6 +13,7 @@ from nano_openclaw.adapters.channels.base import ChannelAccount
 from nano_openclaw.adapters.xiaozhi.channel import XiaozhiChannel
 from nano_openclaw.adapters.xiaozhi.mcp import XiaozhiHub
 from nano_openclaw.adapters.xiaozhi.stream_player import (
+    XiaozhiPlaybackController,
     _play_stream,
     _take_packet,
     _validate_stream_url,
@@ -45,13 +46,16 @@ def _framed(*packets: bytes) -> bytes:
 
 
 def _connection(send_bytes=None):
-    return SimpleNamespace(
+    connection = SimpleNamespace(
         device_id="device-1",
         session_id="session-1",
         _closed=False,
+        _turn_task=None,
         send_json=AsyncMock(),
         send_bytes=AsyncMock(side_effect=send_bytes),
     )
+    connection.playback = XiaozhiPlaybackController(connection)
+    return connection
 
 
 def test_stream_tool_is_scoped_to_connected_xiaozhi_device():
@@ -70,15 +74,108 @@ def test_stream_tool_is_scoped_to_connected_xiaozhi_device():
 
     assert adapter.decorate_tools(base, "missing-device").names() == ["base_tool"]
 
-    connection = SimpleNamespace(
-        mcp=SimpleNamespace(materialize_tools=list),
-    )
+    connection = _connection()
+    connection.mcp = SimpleNamespace(materialize_tools=list)
     adapter.hub.add("device-1", connection)
     assert adapter.decorate_tools(base, "device-1").names() == [
         "base_tool",
-        "xiaozhi_play_stream",
+        "xiaozhi_start_playback",
+        "xiaozhi_stop_playback",
+        "xiaozhi_playback_status",
     ]
     assert base.names() == ["base_tool"]
+
+
+def test_playback_controller_defers_until_turn_done_and_stops_in_background():
+    async def run():
+        connection = _connection()
+        turn_release = asyncio.Event()
+        stream_started = asyncio.Event()
+        stream_release = asyncio.Event()
+
+        async def active_turn():
+            await turn_release.wait()
+
+        async def fake_stream(
+            _connection,
+            *,
+            stream_url,
+            label,
+            transport=None,
+            on_started=None,
+        ):
+            assert stream_url.endswith("/streams/token")
+            assert label == "周杰伦 - 晴天"
+            assert transport is None
+            if on_started is not None:
+                on_started()
+            stream_started.set()
+            await stream_release.wait()
+            return {"packets": 2, "audio_bytes": 16}
+
+        connection._turn_task = asyncio.create_task(active_turn())
+        with patch(
+            "nano_openclaw.adapters.xiaozhi.stream_player._play_stream",
+            new=fake_stream,
+        ):
+            started = await connection.playback.start(
+                stream_url="http://127.0.0.1:32123/streams/token",
+                label="周杰伦 - 晴天",
+            )
+            assert started["state"] == "queued"
+            assert started["active"] is True
+            assert len(started["playback_id"]) == 32
+
+            await asyncio.sleep(0)
+            assert not stream_started.is_set()
+            turn_release.set()
+            await connection._turn_task
+            await asyncio.wait_for(stream_started.wait(), timeout=0.2)
+            assert connection.playback.snapshot()["state"] == "playing"
+
+            stopped = await connection.playback.stop(
+                playback_id=started["playback_id"],
+            )
+            assert stopped["stopped"] is True
+            assert stopped["active"] is False
+            assert stopped["state"] == "stopped"
+
+    asyncio.run(run())
+
+
+def test_playback_controller_replaces_active_stream_and_rejects_stale_stop():
+    async def run():
+        connection = _connection()
+        release = asyncio.Event()
+
+        async def fake_stream(_connection, **_kwargs):
+            await release.wait()
+            return {"packets": 1}
+
+        with patch(
+            "nano_openclaw.adapters.xiaozhi.stream_player._play_stream",
+            new=fake_stream,
+        ):
+            first = await connection.playback.start(
+                stream_url="http://127.0.0.1:32123/streams/first",
+                label="first",
+            )
+            second = await connection.playback.start(
+                stream_url="http://127.0.0.1:32123/streams/second",
+                label="second",
+            )
+            assert second["replaced_playback_id"] == first["playback_id"]
+            assert second["playback_id"] != first["playback_id"]
+
+            stale = await connection.playback.stop(
+                playback_id=first["playback_id"],
+            )
+            assert stale["ok"] is False
+            assert stale["reason"] == "playback_id_mismatch"
+            assert stale["active"] is True
+            await connection.playback.stop()
+
+    asyncio.run(run())
 
 
 def test_stream_player_strips_lengths_and_sends_paced_opus():
@@ -161,22 +258,48 @@ def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
                     "prepare_stream",
                     {
                         "id": "MTEyNjE3ODA=",
+                        "profile": "xiaozhi-v1",
                         "duration_seconds": 0.3,
                     },
                 )
             )
             assert prepared["ok"] is True
+            assert prepared["profile"] == "xiaozhi-v1"
             assert prepared["content_type"] == "application/x-opus-packets"
             assert prepared["framing"] == "len32be"
 
             connection = _connection()
-            result = await _play_stream(
-                connection,
+            playback = await connection.playback.start(
                 stream_url=prepared["stream_url"],
                 label="integration track",
             )
-            assert result["packets"] > 0
-            assert connection.send_bytes.await_count == result["packets"]
+            assert playback["active"] is True
+            async with asyncio.timeout(3):
+                while connection.playback.snapshot()["active"]:
+                    await asyncio.sleep(0.02)
+            status = connection.playback.snapshot()
+            assert status["state"] == "completed"
+            assert status["stats"]["packets"] > 0
+            assert connection.send_bytes.await_count == status["stats"]["packets"]
+
+            web = json.loads(
+                await runtime.call_tool(
+                    "easy-music",
+                    "prepare_stream",
+                    {
+                        "id": selection["selected"]["id"],
+                        "profile": "web-opus",
+                        "duration_seconds": 0.3,
+                    },
+                )
+            )
+            assert web["profile"] == "web-opus"
+            assert web["content_type"] == "audio/ogg"
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.get(web["stream_url"])
+            response.raise_for_status()
+            assert response.headers["content-type"] == "audio/ogg"
+            assert response.content.startswith(b"OggS")
         finally:
             await runtime.close()
 

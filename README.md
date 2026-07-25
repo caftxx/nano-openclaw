@@ -239,7 +239,7 @@ http://<运行 nano 的电脑局域网 IP>:5000/xiaozhi/ota/
 
 当前只支持 v1 的单声道/60 ms Opus：设备上行保持 16 kHz 供 ASR，TTS 下行默认使用 24 kHz/64 kbps Opus，避免立创 S3 播放前再做 16→24 kHz 重采样。`ttsVoice` 必须支持所选采样率；默认 `zhiqi` 支持 24 kHz。启用设备端 AEC 后，固件会使用 `realtime` 聆听模式；回答播放期间可直接说任意内容，识别到非空语音后会立即停止旧回答，并把插话作为新一轮输入。未启用 AEC 的 `auto` 模式仍需等播放结束，避免扬声器回声误触发。暂不支持 v2/v3、MQTT/UDP 或服务端 AEC。配置不完整只会把 `xiaozhi/default` 标为 `error`，不阻止 WebUI 启动。外网部署必须显式配置 `wss`、可信证书，并在反向代理限制 `/xiaozhi/ota/` 访问。完整字段见 [配置说明](docs/CONFIG_EXAMPLE.md#xiaozhi--xiaozhi-esp32-原生接入)。
 
-在线音乐由 `easy-music` MCP 工具与当前设备的 `xiaozhi_play_stream` 工具协作完成，不依赖额外 skill。先在运行 gateway 的主机安装 [easy-music](https://github.com/caftxx/easy-music) 和 `ffmpeg`：
+在线音乐由 `easy-music` MCP 工具与当前设备的后台播放工具协作完成，不依赖额外 skill。先在运行 gateway 的主机安装 [easy-music](https://github.com/caftxx/easy-music) 和 `ffmpeg`：
 
 ```bash
 cargo install --git https://github.com/caftxx/easy-music.git
@@ -260,7 +260,7 @@ mcp: {
 },
 ```
 
-设备侧说“播放周杰伦的晴天”“从 30 秒开始播放晴天”即可触发 MCP 搜索、消歧、生成一次性本地音频流并播放；唤醒或插话会关闭音频流。nano-openclaw 不依赖 `easy-music` 的其他 CLI 参数，只消费 MCP 返回的流描述。
+设备侧说“播放周杰伦的晴天”“从 30 秒开始播放晴天”即可触发 MCP 搜索、消歧和 `xiaozhi-v1` 音频流准备；`xiaozhi_start_playback` 会立即返回 `playback_id`，等本轮确认语音结束后在后台开始播放。Agent 还可调用 `xiaozhi_stop_playback` 和 `xiaozhi_playback_status`；任何新语音、唤醒、abort、重连或断开都会取消当前播放。nano-openclaw 不依赖 `easy-music` 的其他 CLI 参数，只消费 MCP 返回的流描述。
 
 也可以将 ASR/TTS 完全切换到相邻目录的本地 `speech-gateway`（Paraformer Online + SenseVoiceSmall + CosyVoice3）：
 

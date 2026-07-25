@@ -25,9 +25,9 @@ from nano_openclaw.adapters.xiaozhi.protocol import (
     split_sentences,
     validate_hello,
 )
+from nano_openclaw.adapters.xiaozhi.stream_player import XiaozhiPlaybackController
 from nano_openclaw.logger import get_logger
 from nano_openclaw.services.backend import BusyError
-
 
 log = get_logger(__name__)
 
@@ -83,6 +83,7 @@ class XiaozhiConnection:
             timeout_ms=adapter.config.mcpTimeoutMs,
         )
         self._mcp_init_task: asyncio.Task[None] | None = None
+        self.playback = XiaozhiPlaybackController(self)
 
     async def serve(self) -> None:
         previous = self.adapter.hub.add(self.device_id, self)
@@ -348,6 +349,7 @@ class XiaozhiConnection:
             )
             return
         self._record_voice_activity()
+        await self.playback.stop(reason="voice_input")
         if generation is not None:
             # Server VAD may produce more than one completed event while a
             # long utterance is being stopped. Exactly one final result from
@@ -882,6 +884,7 @@ class XiaozhiConnection:
 
     async def abort(self, *, send_tts_stop: bool) -> None:
         self._want_listening = False
+        await self.playback.stop(reason="device_abort")
         # An explicit abort discards any final callback produced while the ASR
         # socket is being stopped. ``listen/stop`` intentionally does not take
         # this path because manual mode uses its final transcript.
@@ -920,6 +923,7 @@ class XiaozhiConnection:
         self._closed = True
         await self._pause_no_voice_timeout()
         self.adapter.hub.remove(self.device_id, self)
+        await self.playback.close()
         self.mcp.close()
         if self._mcp_init_task is not None:
             self._mcp_init_task.cancel()
