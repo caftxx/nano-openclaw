@@ -267,6 +267,9 @@ def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
             assert prepared["profile"] == "xiaozhi-v1"
             assert prepared["content_type"] == "application/x-opus-packets"
             assert prepared["framing"] == "len32be"
+            assert prepared["ready"] is True
+            assert prepared["prebuffered_bytes"] > 0
+            assert prepared["prepare_latency_ms"] >= 0
 
             connection = _connection()
             playback = await connection.playback.start(
@@ -295,6 +298,8 @@ def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
             )
             assert web["profile"] == "web-opus"
             assert web["content_type"] == "audio/ogg"
+            assert web["ready"] is True
+            assert web["prebuffered_bytes"] > 0
             async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.get(web["stream_url"])
             response.raise_for_status()
