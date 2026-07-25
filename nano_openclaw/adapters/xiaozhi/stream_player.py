@@ -110,6 +110,14 @@ class XiaozhiPlaybackController:
             result["stats"] = self._result
         return result
 
+    def owns_device_audio(self) -> bool:
+        """Whether a stale auto-listen transition must yield to music output."""
+        return (
+            self._task is not None
+            and not self._task.done()
+            and self._state in {"queued", "starting", "playing"}
+        )
+
     async def _cancel_locked(self, *, reason: str) -> str:
         task = self._task
         if task is None or task.done():
@@ -152,11 +160,19 @@ class XiaozhiPlaybackController:
                 if self._playback_id == playback_id:
                     self._state = "playing"
 
+            def mark_releasing() -> None:
+                if (
+                    self._playback_id == playback_id
+                    and self._state != "stopping"
+                ):
+                    self._state = "releasing"
+
             result = await _play_stream(
                 self.connection,
                 stream_url=stream_url,
                 label=label,
                 on_started=mark_started,
+                on_releasing=mark_releasing,
             )
         except asyncio.CancelledError:
             self._mark_stopped(playback_id, self._stop_reason or "cancelled")
@@ -284,12 +300,14 @@ async def _play_stream(
     label: str,
     transport: httpx.AsyncBaseTransport | None = None,
     on_started: Callable[[], None] | None = None,
+    on_releasing: Callable[[], None] | None = None,
     read_timeout_seconds: float = _STREAM_IDLE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     _validate_stream_url(stream_url)
     if read_timeout_seconds <= 0:
         raise ValueError("read_timeout_seconds must be positive")
     timeout = httpx.Timeout(connect=5, read=None, write=5, pool=5)
+    claimed = False
     started = False
     packets = 0
     audio_bytes = 0
@@ -300,12 +318,24 @@ async def _play_stream(
     buffer = bytearray()
 
     try:
+        # Claim the firmware's audio state before any synchronous client setup
+        # or loopback I/O. Otherwise the auto listen/start emitted for the
+        # preceding spoken reply can cancel this stream before its first packet.
+        await connection.send_json(
+            envelope(connection.session_id, "tts", state="start")
+        )
+        claimed = True
+        log.info(
+            "xiaozhi.stream.claimed",
+            device=connection.device_id,
+        )
         async with (
             httpx.AsyncClient(
                 follow_redirects=False,
                 timeout=timeout,
                 transport=transport,
                 trust_env=False,
+                verify=False,
             ) as client,
             client.stream("GET", stream_url) as response,
         ):
@@ -326,9 +356,6 @@ async def _play_stream(
                     if packet is None:
                         break
                     if not started:
-                        await connection.send_json(
-                            envelope(connection.session_id, "tts", state="start")
-                        )
                         if label:
                             await connection.send_json(
                                 envelope(
@@ -371,11 +398,14 @@ async def _play_stream(
         detail = str(exc).strip() or type(exc).__name__
         raise RuntimeError(f"music stream request failed: {detail}") from exc
     finally:
-        if started and not getattr(connection, "_closed", False):
-            with suppress(Exception):
-                await connection.send_json(
-                    envelope(connection.session_id, "tts", state="stop")
-                )
+        if claimed:
+            if on_releasing is not None:
+                on_releasing()
+            if not getattr(connection, "_closed", False):
+                with suppress(Exception):
+                    await connection.send_json(
+                        envelope(connection.session_id, "tts", state="stop")
+                    )
 
     if buffer:
         raise RuntimeError("music stream ended inside an Opus packet")

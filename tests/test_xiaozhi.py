@@ -570,6 +570,136 @@ def test_local_listen_start_preconnects_realtime_asr(tmp_path):
     asyncio.run(run())
 
 
+def test_playback_audio_ownership_matches_protocol_phase(tmp_path):
+    async def run():
+        connection, _, _ = _connection_fixture(tmp_path)
+        release = asyncio.Event()
+        playback_task = asyncio.create_task(release.wait())
+        try:
+            connection.playback._task = playback_task
+            for state in ("queued", "starting", "playing"):
+                connection.playback._state = state
+                assert connection.playback.owns_device_audio() is True
+
+            connection.playback._state = "releasing"
+            assert connection.playback.owns_device_audio() is False
+
+            connection.playback._state = "idle"
+            connection.playback._task = None
+            assert connection.playback.owns_device_audio() is False
+        finally:
+            playback_task.cancel()
+            await asyncio.gather(playback_task, return_exceptions=True)
+            connection.playback._task = None
+
+    asyncio.run(run())
+
+
+def test_auto_listen_start_is_suppressed_while_playback_owns_device_audio(tmp_path):
+    async def run():
+        connection, _, adapter = _connection_fixture(tmp_path)
+        adapter.runtime.config.voice.provider = "openai-compatible"
+        release = asyncio.Event()
+        playback_task = asyncio.create_task(release.wait())
+        connection.playback._task = playback_task
+        connection.playback._state = "starting"
+        connection.playback._playback_id = "playback-1"
+        connection.abort = AsyncMock()
+        connection._start_asr = AsyncMock()
+
+        try:
+            with patch.object(connection, "_arm_no_voice_timeout") as arm_timeout:
+                await connection._handle_json(
+                    {
+                        "type": "listen",
+                        "state": "start",
+                        "mode": "auto",
+                    }
+                )
+
+            connection.abort.assert_not_awaited()
+            connection._start_asr.assert_not_awaited()
+            arm_timeout.assert_not_called()
+            assert connection._want_listening is False
+            assert connection._no_voice_task is None
+            assert playback_task.done() is False
+            assert connection.playback.owns_device_audio() is True
+        finally:
+            playback_task.cancel()
+            await asyncio.gather(playback_task, return_exceptions=True)
+            connection.playback._task = None
+
+    asyncio.run(run())
+
+
+def test_explicit_abort_still_cancels_playback_that_owns_device_audio(tmp_path):
+    async def run():
+        connection, ws, _ = _connection_fixture(tmp_path)
+        release = asyncio.Event()
+        playback_task = asyncio.create_task(release.wait())
+        connection.playback._task = playback_task
+        connection.playback._state = "playing"
+        connection.playback._playback_id = "playback-1"
+
+        await connection._handle_json({"type": "abort"})
+
+        assert playback_task.cancelled()
+        assert connection.playback.snapshot()["state"] == "stopped"
+        assert connection.playback.snapshot()["stop_reason"] == "device_abort"
+        assert ws.json[-1]["type"] == "tts"
+        assert ws.json[-1]["state"] == "stop"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("playback_phase", ["releasing", "inactive"])
+def test_auto_listen_start_is_accepted_after_playback_releases_device_audio(
+    tmp_path,
+    playback_phase,
+):
+    async def run():
+        connection, _, adapter = _connection_fixture(tmp_path)
+        adapter.runtime.config.voice.provider = "openai-compatible"
+        playback_task = None
+        if playback_phase == "releasing":
+            release = asyncio.Event()
+            playback_task = asyncio.create_task(release.wait())
+            connection.playback._task = playback_task
+            connection.playback._state = "releasing"
+            connection.playback._playback_id = "playback-1"
+        else:
+            connection.playback._task = None
+            connection.playback._state = "idle"
+
+        connection.abort = AsyncMock()
+        connection._start_asr = AsyncMock()
+        try:
+            assert connection.playback.owns_device_audio() is False
+            with patch.object(connection, "_arm_no_voice_timeout") as arm_timeout:
+                await connection._handle_json(
+                    {
+                        "type": "listen",
+                        "state": "start",
+                        "mode": "auto",
+                    }
+                )
+
+            connection.abort.assert_not_awaited()
+            connection._start_asr.assert_awaited_once_with()
+            arm_timeout.assert_called_once_with()
+            assert connection._listening_mode == "auto"
+            assert connection._want_listening is True
+            if playback_task is not None:
+                assert playback_task.done() is False
+        finally:
+            if playback_task is not None:
+                playback_task.cancel()
+                await asyncio.gather(playback_task, return_exceptions=True)
+                connection.playback._task = None
+
+    asyncio.run(run())
+
+
 def test_asr_send_failure_discards_dead_connection(tmp_path):
     async def run():
         connection, _, _ = _connection_fixture(tmp_path)

@@ -104,10 +104,12 @@ def test_playback_controller_starts_immediately_after_turn_handoff():
             label,
             transport=None,
             on_started=None,
+            on_releasing=None,
         ):
             assert stream_url.endswith("/streams/token")
             assert label == "周杰伦 - 晴天"
             assert transport is None
+            assert on_releasing is not None
             if on_started is not None:
                 on_started()
             stream_started.set()
@@ -181,6 +183,57 @@ def test_playback_controller_replaces_active_stream_and_rejects_stale_stop():
             assert stale["reason"] == "playback_id_mismatch"
             assert stale["active"] is True
             await connection.playback.stop()
+
+    asyncio.run(run())
+
+
+def test_stream_player_claims_device_before_opening_loopback_stream():
+    async def run():
+        events = []
+        request_started = asyncio.Event()
+        release_request = asyncio.Event()
+
+        class GatedTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, _request):
+                events.append("http:get")
+                request_started.set()
+                await release_request.wait()
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/x-opus-packets"},
+                    stream=_ChunkStream([_framed(b"opus")]),
+                )
+
+        async def send_json(payload):
+            events.append(f"tts:{payload['state']}")
+
+        async def send_bytes(_payload):
+            events.append("audio")
+
+        connection = _connection(send_bytes)
+        connection.send_json = AsyncMock(side_effect=send_json)
+        task = asyncio.create_task(
+            _play_stream(
+                connection,
+                stream_url="http://127.0.0.1:32123/streams/token",
+                label="周杰伦 - 晴天",
+                transport=GatedTransport(),
+            )
+        )
+        try:
+            await asyncio.wait_for(request_started.wait(), timeout=0.2)
+            assert events == ["tts:start", "http:get"]
+        finally:
+            release_request.set()
+        await task
+
+        assert events == [
+            "tts:start",
+            "http:get",
+            "tts:sentence_start",
+            "audio",
+            "tts:stop",
+        ]
 
     asyncio.run(run())
 
@@ -411,13 +464,17 @@ def test_stream_player_rejects_invalid_source_and_content_type():
                 content=b"not opus",
             )
         )
+        connection = _connection()
         with pytest.raises(RuntimeError, match="unsupported content type"):
             await _play_stream(
-                _connection(),
+                connection,
                 stream_url="http://127.0.0.1:32123/streams/token",
                 label="",
                 transport=transport,
             )
+        assert [
+            call.args[0]["state"] for call in connection.send_json.await_args_list
+        ] == ["start", "stop"]
 
     asyncio.run(run())
 

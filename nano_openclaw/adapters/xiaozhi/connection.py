@@ -138,8 +138,28 @@ class XiaozhiConnection:
         if kind == "listen":
             state = str(message.get("state") or "")
             if state == "start":
-                await self.abort(send_tts_stop=True)
-                self._listening_mode = str(message.get("mode") or "manual")
+                mode = str(message.get("mode") or "manual")
+                if mode == "auto" and self.playback.owns_device_audio():
+                    # The firmware emits auto listen/start after every
+                    # tts/stop. A queued music stream owns the next output
+                    # phase, so this is a stale transition rather than a user
+                    # interruption. Explicit user interruption arrives as a
+                    # separate abort message and still stops playback.
+                    self._want_listening = False
+                    await self._pause_no_voice_timeout()
+                    playback = self.playback.snapshot()
+                    log.info(
+                        "xiaozhi.listen.auto_suppressed",
+                        (
+                            f"device={self.device_id} "
+                            f"playback={playback['playback_id']} "
+                            f"state={playback['state']}"
+                        ),
+                    )
+                    return
+                if mode != "auto":
+                    await self.abort(send_tts_stop=True)
+                self._listening_mode = mode
                 self._want_listening = True
                 self._arm_no_voice_timeout()
                 # speech-gateway accepts idle realtime sessions, so overlap
