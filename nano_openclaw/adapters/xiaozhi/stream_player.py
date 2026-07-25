@@ -24,7 +24,6 @@ _MAX_OPUS_PACKET_BYTES = 1024 * 1024
 _MAX_BUFFER_BYTES = 2 * _MAX_OPUS_PACKET_BYTES
 _STREAM_IDLE_TIMEOUT_SECONDS = 20.0
 _FRAME_SECONDS = FRAME_DURATION_MS / 1000
-_PLAYBACK_HANDOFF_GUARD_SECONDS = 2 * _FRAME_SECONDS
 
 
 class XiaozhiPlaybackController:
@@ -143,7 +142,6 @@ class XiaozhiPlaybackController:
                         raise
                     self._mark_stopped(playback_id, "turn_cancelled")
                     return
-                await asyncio.sleep(_PLAYBACK_HANDOFF_GUARD_SECONDS)
             if getattr(self.connection, "_closed", False):
                 self._mark_stopped(playback_id, "connection_closed")
                 return

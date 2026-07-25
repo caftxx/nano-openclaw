@@ -87,7 +87,7 @@ def test_stream_tool_is_scoped_to_connected_xiaozhi_device():
     assert base.names() == ["base_tool"]
 
 
-def test_playback_controller_defers_until_turn_done_and_stops_in_background():
+def test_playback_controller_starts_immediately_after_turn_handoff():
     async def run():
         connection = _connection()
         turn_release = asyncio.Event()
@@ -131,17 +131,21 @@ def test_playback_controller_defers_until_turn_done_and_stops_in_background():
             assert not stream_started.is_set()
             turn_release.set()
             await connection._turn_task
-            await asyncio.sleep(0.02)
-            assert not stream_started.is_set()
-            await asyncio.wait_for(stream_started.wait(), timeout=0.5)
+            # Auto-mode firmware may send listen/start shortly after tts/stop.
+            # The queued stream must claim the device on the next event-loop
+            # turn instead of waiting in a cancellable handoff window.
+            await asyncio.sleep(0)
+            assert stream_started.is_set()
             assert connection.playback.snapshot()["state"] == "playing"
 
             stopped = await connection.playback.stop(
                 playback_id=started["playback_id"],
+                reason="device_abort",
             )
             assert stopped["stopped"] is True
             assert stopped["active"] is False
             assert stopped["state"] == "stopped"
+            assert stopped["stop_reason"] == "device_abort"
 
     asyncio.run(run())
 
