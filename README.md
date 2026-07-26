@@ -237,7 +237,7 @@ http://<运行 nano 的电脑局域网 IP>:5000/xiaozhi/ota/
 
 所有外部 channel turn 都会获得内置终止工具 `exit`。当模型判断用户明确表达“再见”“退下”“等会儿聊”等离开意图时，会用该工具结束本轮；xiaozhi 会在简短告别播放完成后关闭设备 WebSocket，与 `noVoiceTimeoutSeconds` 一样让固件回到 Idle/待命。微信等消息型 channel 不需要断开长连接，只终止当前 agent turn。
 
-当前只支持 v1 的单声道/60 ms Opus：设备上行保持 16 kHz 供 ASR，TTS 下行默认使用 24 kHz/64 kbps Opus，避免立创 S3 播放前再做 16→24 kHz 重采样。`ttsVoice` 必须支持所选采样率；默认 `zhiqi` 支持 24 kHz。启用设备端 AEC 后，固件会使用 `realtime` 聆听模式；回答播放期间可直接说任意内容，识别到非空语音后会立即停止旧回答，并把插话作为新一轮输入。未启用 AEC 的 `auto` 模式仍需等播放结束，避免扬声器回声误触发。暂不支持 v2/v3、MQTT/UDP 或服务端 AEC。配置不完整只会把 `xiaozhi/default` 标为 `error`，不阻止 WebUI 启动。外网部署必须显式配置 `wss`、可信证书，并在反向代理限制 `/xiaozhi/ota/` 访问。完整字段见 [配置说明](docs/CONFIG_EXAMPLE.md#xiaozhi--xiaozhi-esp32-原生接入)。
+当前只支持 v1 的单声道/60 ms Opus：设备上行保持 16 kHz 供 ASR，TTS 下行默认使用 24 kHz/64 kbps Opus，避免立创 S3 播放前再做 16→24 kHz 重采样。流式 STT 消息使用 `is_final: false` 标记中间结果，最终识别结果使用 `is_final: true`，供设备准确切换“聆听中/思考中”状态。`ttsVoice` 必须支持所选采样率；默认 `zhiqi` 支持 24 kHz。启用设备端 AEC 后，固件会使用 `realtime` 聆听模式；回答播放期间可直接说任意内容，识别到非空语音后会立即停止旧回答，并把插话作为新一轮输入。未启用 AEC 的 `auto` 模式仍需等播放结束，避免扬声器回声误触发。暂不支持 v2/v3、MQTT/UDP 或服务端 AEC。配置不完整只会把 `xiaozhi/default` 标为 `error`，不阻止 WebUI 启动。外网部署必须显式配置 `wss`、可信证书，并在反向代理限制 `/xiaozhi/ota/` 访问。完整字段见 [配置说明](docs/CONFIG_EXAMPLE.md#xiaozhi--xiaozhi-esp32-原生接入)。
 
 在线音乐由 `easy-music` MCP 工具与当前设备的后台播放工具协作完成，不依赖额外 skill。先在运行 gateway 的主机安装 [easy-music](https://github.com/caftxx/easy-music) 和 `ffmpeg`：
 

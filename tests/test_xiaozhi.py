@@ -1314,7 +1314,10 @@ def test_connection_forwards_throttled_partial_stt(tmp_path):
         await connection._on_partial_transcript("正在识别", generation=3)
 
         stt = [item for item in ws.json if item.get("type") == "stt"]
-        assert [item["text"] for item in stt] == ["正在", "正在识别"]
+        assert [(item["text"], item["is_final"]) for item in stt] == [
+            ("正在", False),
+            ("正在识别", False),
+        ]
 
     asyncio.run(run())
 
@@ -1338,6 +1341,7 @@ def test_final_stt_is_sent_before_asr_cleanup_finishes(tmp_path):
 
         stt = [item for item in ws.json if item.get("type") == "stt"]
         assert stt[-1]["text"] == "今晚还下雨吗？"
+        assert stt[-1]["is_final"] is True
         assert not turn.done()
 
         allow_cleanup.set()

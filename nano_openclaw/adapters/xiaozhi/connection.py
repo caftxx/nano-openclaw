@@ -345,7 +345,9 @@ class XiaozhiConnection:
             return
         self._last_partial_text = text
         self._last_partial_sent_at = now
-        await self.send_json(envelope(self.session_id, "stt", text=text))
+        await self.send_json(
+            envelope(self.session_id, "stt", text=text, is_final=False)
+        )
 
     async def _on_final_transcript(self, text: str, *, generation: int | None = None) -> None:
         text = text.strip()
@@ -461,7 +463,9 @@ class XiaozhiConnection:
             # The final transcript is authoritative and must reach the device
             # before transport cleanup. A slow WebSocket close must not leave
             # the firmware displaying the last partial transcript forever.
-            await self.send_json(envelope(self.session_id, "stt", text=text))
+            await self.send_json(
+                envelope(self.session_id, "stt", text=text, is_final=True)
+            )
             log.info(
                 "xiaozhi.asr.final_stt_sent",
                 f"device={self.device_id} text_chars={len(text)}",
