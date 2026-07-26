@@ -1228,7 +1228,7 @@ wheels = [
 
 [[package]]
 name = "nano-openclaw"
-version = "0.0.51"
+version = "0.0.52"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
