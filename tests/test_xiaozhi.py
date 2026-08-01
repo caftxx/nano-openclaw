@@ -386,10 +386,11 @@ def test_websocket_unknown_message_closes_with_protocol_error(tmp_path):
         assert closed["code"] == 1003
 
 
-def test_photo_endpoint_uses_question_without_retaining_file(tmp_path):
+def test_photo_endpoint_uses_question_and_saves_jpeg_by_device(tmp_path):
     app, _ = _route_fixture(tmp_path)
     client = TestClient(app)
     headers = {"authorization": "Bearer secret", "device-id": "AA:BB"}
+    jpeg = b"\xff\xd8photo-data\xff\xd9"
     with patch(
         "nano_openclaw.adapters.xiaozhi.routes.describe_image",
         new=AsyncMock(return_value="桌上有一个杯子"),
@@ -398,12 +399,34 @@ def test_photo_endpoint_uses_question_without_retaining_file(tmp_path):
             "/xiaozhi/vision/explain",
             headers=headers,
             data={"question": "这是什么？"},
-            files={"file": ("camera.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")},
+            files={"file": ("camera.jpg", jpeg, "image/jpeg")},
         )
     assert response.status_code == 200
     assert response.json() == {"success": True, "result": "桌上有一个杯子"}
     assert describe.await_args.kwargs["prompt"] == "这是什么？"
-    assert not list(tmp_path.glob("*.jpg"))
+    saved = list((tmp_path / "xiaozhi-photos" / "aa_bb").glob("*.jpg"))
+    assert len(saved) == 1
+    assert saved[0].read_bytes() == jpeg
+
+
+def test_photo_endpoint_keeps_saved_jpeg_when_image_description_fails(tmp_path):
+    app, _ = _route_fixture(tmp_path)
+    client = TestClient(app)
+    jpeg = b"\xff\xd8photo-data\xff\xd9"
+    with patch(
+        "nano_openclaw.adapters.xiaozhi.routes.describe_image",
+        new=AsyncMock(side_effect=RuntimeError("vision unavailable")),
+    ):
+        response = client.post(
+            "/xiaozhi/vision/explain",
+            headers={"authorization": "Bearer secret", "device-id": "../camera/device"},
+            files={"file": ("camera.jpg", jpeg, "image/jpeg")},
+        )
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    saved = list((tmp_path / "xiaozhi-photos" / "camera_device").glob("*.jpg"))
+    assert len(saved) == 1
+    assert saved[0].read_bytes() == jpeg
 
 
 def test_photo_endpoint_rejects_auth_and_mime(tmp_path):

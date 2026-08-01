@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from fastapi import HTTPException, Request, WebSocket
 
 from nano_openclaw.adapters.xiaozhi.channel import XiaozhiChannel
 from nano_openclaw.adapters.xiaozhi.connection import XiaozhiConnection
+from nano_openclaw.core.attachments import safe_path_part
 from nano_openclaw.core.images import describe_image, load_image_bytes
 from nano_openclaw.logger import get_logger
-
 
 log = get_logger(__name__)
 
@@ -57,6 +60,16 @@ def _server_time() -> dict[str, int]:
         "timestamp": int(now.timestamp() * 1000),
         "timezone_offset": int(utc_offset.total_seconds() // 60) if utc_offset else 0,
     }
+
+
+def _save_photo(state_dir: Path, device_id: str, photo: bytes) -> Path:
+    """Persist one uploaded camera JPEG under the gateway state directory."""
+    device_dir = state_dir / "xiaozhi-photos" / safe_path_part(device_id)
+    device_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+    path = device_dir / f"{timestamp}-{uuid4().hex[:8]}.jpg"
+    path.write_bytes(photo)
+    return path
 
 
 def _websocket_public_url(websocket: WebSocket, configured: str) -> str:
@@ -166,6 +179,12 @@ def register_xiaozhi_routes(app: Any, ctx: Any) -> None:
                 raise HTTPException(status_code=415, detail="file is not a JPEG image")
 
             runtime = adapter.runtime
+            photo_path = await asyncio.to_thread(
+                _save_photo,
+                Path(runtime.state_dir),
+                device_id,
+                photo,
+            )
             model = str(runtime.cfg.image_model or runtime.model_id)
             b64, mime = load_image_bytes(photo, "image/jpeg")
             result = await describe_image(
@@ -176,12 +195,23 @@ def register_xiaozhi_routes(app: Any, ctx: Any) -> None:
                 api=runtime.cfg.api,
                 prompt=question,
             )
-            log.info("xiaozhi.vision.done", f"device={device_id} bytes={len(photo)}")
+            saved_path = photo_path.relative_to(Path(runtime.state_dir)).as_posix()
+            log.info(
+                "xiaozhi.vision.done",
+                device=device_id,
+                bytes=len(photo),
+                saved=saved_path,
+            )
             return {"success": True, "result": result.strip()}
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.warning("xiaozhi.vision.error", f"device={device_id}: {type(exc).__name__}: {exc}")
+            log.warning(
+                "xiaozhi.vision.error",
+                device=device_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             return {"success": False, "message": f"{type(exc).__name__}: {exc}"}
         finally:
             if upload is not None and hasattr(upload, "close"):
