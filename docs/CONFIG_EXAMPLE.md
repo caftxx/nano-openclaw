@@ -919,9 +919,9 @@ Dream Diary 写入：`workspace/DREAMS.md`
   },
   mcp: {
     servers: {
-      // easy-music：MCP 控制面 + 一次性 loopback 音频流
-      "easy-music": {
-        command: "easy-music",
+      // easymusic：MCP 控制面 + 一次性 loopback 音频流
+      "easymusic": {
+        command: "easymusic",
         transport: "stdio",
         args: ["mcp"],
       },

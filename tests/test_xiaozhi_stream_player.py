@@ -320,17 +320,17 @@ def test_packet_pacing_resyncs_instead_of_bursting_when_far_behind():
 
 
 @pytest.mark.skipif(
-    os.getenv("EASY_MUSIC_INTEGRATION") != "1",
-    reason="set EASY_MUSIC_INTEGRATION=1 to exercise the live MCP music source",
+    os.getenv("EASYMUSIC_INTEGRATION") != "1",
+    reason="set EASYMUSIC_INTEGRATION=1 to exercise the live MCP music source",
 )
-def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
+def test_real_easymusic_mcp_streams_to_fake_xiaozhi():
     async def run():
-        binary = os.environ["EASY_MUSIC_BIN"]
+        binary = os.environ["EASYMUSIC_BIN"]
         runtime = McpRuntime()
         try:
             await runtime.initialize(
                 {
-                    "easy-music": McpServerConfig(
+                    "easymusic": McpServerConfig(
                         command=binary,
                         transport="stdio",
                         args=["mcp", "--stream-ttl-seconds=10"],
@@ -345,7 +345,7 @@ def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
 
             selection = json.loads(
                 await runtime.call_tool(
-                    "easy-music",
+                    "easymusic",
                     "search_music",
                     {"title": "晴天", "artist": "周杰伦"},
                 )
@@ -355,7 +355,7 @@ def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
 
             prepared = json.loads(
                 await runtime.call_tool(
-                    "easy-music",
+                    "easymusic",
                     "prepare_stream",
                     {
                         "id": "MTEyNjE3ODA=",
@@ -388,7 +388,7 @@ def test_real_easy_music_mcp_streams_to_fake_xiaozhi():
 
             web = json.loads(
                 await runtime.call_tool(
-                    "easy-music",
+                    "easymusic",
                     "prepare_stream",
                     {
                         "id": selection["selected"]["id"],
