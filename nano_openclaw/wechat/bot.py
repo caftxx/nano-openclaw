@@ -12,6 +12,7 @@ the creator when completed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from dataclasses import dataclass, field
@@ -131,6 +132,10 @@ class WechatBot:
     # forget which uid maps to which session and the next message creates a
     # fresh empty session.
     uid_map_path: Path | None = None
+    # Latest iLink context_token for each uid.  Scheduled/proactive delivery
+    # happens outside an inbound turn, so it cannot rely on a stack-local token.
+    # Persisting the map also keeps delivery working across gateway restarts.
+    context_token_path: Path | None = None
     # typing_ticket cache TTL — iLink tickets are stable for some minutes; we
     # default to 30 min to avoid a getconfig RTT on every reply while still
     # rotating well before any plausible server-side expiry.
@@ -138,6 +143,8 @@ class WechatBot:
     # uid -> session_id (loaded from uid_map_path on first use)
     _uid_to_session_id: dict[str, str] = field(default_factory=dict)
     _uid_map_loaded: bool = False
+    _context_tokens: dict[str, str] = field(default_factory=dict)
+    _context_tokens_loaded: bool = False
     # uid -> (ticket, expires_at_monotonic). Populated by _keep_typing on miss
     # and invalidated on send_typing failure.
     _typing_ticket_cache: dict[str, tuple[str, float]] = field(default_factory=dict)
@@ -178,6 +185,70 @@ class WechatBot:
                 f"failed to save {self.uid_map_path}: {exc}",
             )
 
+    def _ensure_context_tokens_loaded(self) -> None:
+        """Load the per-user iLink context-token cache once."""
+        if self._context_tokens_loaded:
+            return
+        self._context_tokens_loaded = True
+        if self.context_token_path is None:
+            return
+        try:
+            if self.context_token_path.exists():
+                import json
+                raw = json.loads(self.context_token_path.read_text(encoding="utf-8")) or {}
+                if isinstance(raw, dict):
+                    self._context_tokens = {
+                        str(uid): token
+                        for uid, token in raw.items()
+                        if isinstance(token, str) and token
+                    }
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "wechat.context_tokens.load.error",
+                f"failed to load {self.context_token_path}: {type(exc).__name__}: {exc}",
+            )
+            self._context_tokens = {}
+
+    def _save_context_tokens(self) -> None:
+        if self.context_token_path is None:
+            return
+        try:
+            import json
+            self.context_token_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.context_token_path.with_suffix(self.context_token_path.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps(self._context_tokens, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(tmp, self.context_token_path)
+            os.chmod(self.context_token_path, 0o600)
+        except OSError as exc:
+            log.warning(
+                "wechat.context_tokens.save.error",
+                f"failed to save {self.context_token_path}: {exc}",
+            )
+
+    def _remember_context_token(self, uid: str, ctx: str) -> None:
+        """Remember the freshest inbound context token and wake queued sends."""
+        if not uid or not ctx:
+            return
+        self._ensure_context_tokens_loaded()
+        changed = self._context_tokens.get(uid) != ctx
+        self._context_tokens[uid] = ctx
+        if changed:
+            self._save_context_tokens()
+        if self.notify_queue is not None:
+            woken = self.notify_queue.retry_now_for_target(uid)
+            if woken:
+                log.info(
+                    "wechat.notify.retry.woken",
+                    f"account={self.account_id} target={uid:.16} pending={woken}",
+                )
+
+    def _get_context_token(self, uid: str) -> str:
+        self._ensure_context_tokens_loaded()
+        return self._context_tokens.get(uid, "")
+
     def _resolve_session(self, uid: str):
         """Return an ``AgentBackendSession`` for a wechat uid (daemon mode).
 
@@ -215,7 +286,14 @@ class WechatBot:
         while True:
             await asyncio.sleep(self.notify_poll_interval)
 
-            pending = self.notify_queue.get_pending(limit=10)
+            try:
+                pending = self.notify_queue.get_pending(limit=10)
+            except Exception as exc:  # keep the background worker supervised
+                log.error(
+                    "wechat.notify.queue.read.failed",
+                    f"account={self.account_id}: {type(exc).__name__}: {exc}",
+                )
+                continue
             if not pending:
                 continue
 
@@ -223,20 +301,59 @@ class WechatBot:
                 for item in pending:
                     target_uid = item.target_uid
                     if not target_uid:
+                        self.notify_queue.mark_failed(
+                            item.job_id,
+                            item.created_at,
+                            "notification has no target uid",
+                            retry_delay=300.0,
+                        )
+                        continue
+                    ctx = self._get_context_token(target_uid)
+                    if not ctx:
+                        self.notify_queue.mark_failed(
+                            item.job_id,
+                            item.created_at,
+                            "missing iLink context_token; waiting for the user to message the bot",
+                            retry_delay=300.0,
+                        )
+                        log.warning(
+                            "wechat.notify.deferred.no_context",
+                            f"account={self.account_id} target={target_uid:.16} job={item.job_name}",
+                        )
                         continue
                     try:
-                        await _send_chunked_text(
-                            client,
-                            self.base_url,
-                            self.token,
-                            target_uid,
-                            item.result_summary,
-                        )
+                        chunks = chunk_text(item.result_summary)
+                        start_index = min(item.next_chunk_index, len(chunks))
+                        for index in range(start_index, len(chunks)):
+                            stable_key = (
+                                f"{self.account_id}\0{item.job_id}\0{item.created_at}\0{index}"
+                            ).encode("utf-8")
+                            client_id = "nano-notify-" + hashlib.sha256(stable_key).hexdigest()[:24]
+                            await send_text(
+                                client,
+                                self.base_url,
+                                self.token,
+                                target_uid,
+                                chunks[index],
+                                ctx,
+                                client_id=client_id,
+                            )
+                            self.notify_queue.mark_chunk_sent(
+                                item.job_id,
+                                item.created_at,
+                                index + 1,
+                            )
+                        self.notify_queue.mark_sent(item.job_id, item.created_at)
                         log.info("wechat.notify.sent", f"notification sent to {target_uid:.16} for job {item.job_name}")
                     except Exception as exc:
                         log.warning("wechat.notify.failed", f"send notification to {target_uid:.16} failed: {exc}")
-
-                    self.notify_queue.mark_sent(item.job_id, item.created_at)
+                        retry_delay = min(900.0, 30.0 * (2 ** min(item.attempts, 5)))
+                        self.notify_queue.mark_failed(
+                            item.job_id,
+                            item.created_at,
+                            f"{type(exc).__name__}: {exc}",
+                            retry_delay=retry_delay,
+                        )
 
     async def _handle_slash_command(self, uid: str, cmd: str) -> str | None:
         """Defer to the shared ``services/slash.py`` dispatcher via a
@@ -433,6 +550,7 @@ class WechatBot:
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         uid = msg.get("from_user_id", "")
         ctx = msg.get("context_token", "")
+        self._remember_context_token(uid, ctx)
         items = msg.get("item_list", [])
         text = extract_text(items)
 

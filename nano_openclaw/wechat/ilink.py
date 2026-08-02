@@ -38,10 +38,15 @@ MAX_FILE_BYTES = 20 * 1024 * 1024  # 文件上限更大
 
 
 def _headers(token: str, body: bytes) -> dict[str, str]:
+    # Tencent's reference client sends a fresh pseudo-UIN on every business
+    # request.  It is not an account identifier: the wire format is a random
+    # uint32 rendered as decimal ASCII and then base64 encoded.
+    random_uin = base64.b64encode(str(secrets.randbits(32)).encode("ascii")).decode("ascii")
     h = {
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "Content-Length": str(len(body)),
+        "X-WECHAT-UIN": random_uin,
         "iLink-App-Id": "",
         "iLink-App-ClientVersion": ILINK_CV,
     }
@@ -131,25 +136,35 @@ async def send_text(
     to_user: str,
     text: str,
     ctx: str | None = None,
+    client_id: str | None = None,
 ) -> None:
     """Send a text reply to a WeChat user via iLink."""
     msg: dict[str, Any] = {
         "from_user_id": "",
         "to_user_id": to_user,
-        "client_id": "nano-" + secrets.token_hex(8),
+        "client_id": client_id or "nano-" + secrets.token_hex(8),
         "message_type": 2,
         "message_state": 2,
         "item_list": [{"type": T, "text_item": {"text": text}}],
     }
     if ctx:
         msg["context_token"] = ctx
-    await _post(
+    resp = await _post(
         client,
         base_url,
         "ilink/bot/sendmessage",
         {"msg": msg, "base_info": {"channel_version": ILINK_VER}},
         token,
     )
+    # iLink reports business failures in a JSON body while still returning
+    # HTTP 200.  Treating transport success as delivery success silently drops
+    # notifications (notably when context_token is absent or stale).
+    ret = resp.get("ret")
+    errcode = resp.get("errcode")
+    if ret not in (None, 0) or errcode not in (None, 0):
+        code = errcode if errcode not in (None, 0) else ret
+        errmsg = resp.get("errmsg") or "unknown iLink error"
+        raise RuntimeError(f"iLink sendmessage failed: code={code}, errmsg={errmsg}")
 
 
 async def get_typing_ticket(

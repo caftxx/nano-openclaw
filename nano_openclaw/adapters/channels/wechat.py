@@ -98,9 +98,10 @@ class WechatChannel(ChannelAdapter):
         # available; ``None`` falls back to the bot's legacy in-memory dict.
         session_manager = None
         uid_map_path = None
+        suffix = "" if self.account.id == "default" else f".{self.account.id}"
+        context_token_path = runtime.state_dir / f"wechat-context-tokens{suffix}.json"
         if ctx.backend is not None:
             session_manager = ctx.backend.manager
-            suffix = "" if self.account.id == "default" else f".{self.account.id}"
             uid_map_path = runtime.state_dir / f"wechat-sessions{suffix}.json"
 
         # Polling / typing / notify intervals use ``WechatBot``'s built-in
@@ -115,6 +116,7 @@ class WechatChannel(ChannelAdapter):
             session_manager=session_manager,
             backend=backend,
             uid_map_path=uid_map_path,
+            context_token_path=context_token_path,
         )
         self._task = asyncio.create_task(
             self._bot.run(),
