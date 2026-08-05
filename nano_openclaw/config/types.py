@@ -193,15 +193,34 @@ class SessionReset(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     
     mode: Literal["daily", "idle"] = Field(default="idle", description="Reset mode")
-    idleMinutes: int = Field(default=120, alias="idleMinutes", description="Idle minutes before reset")
+    idleMinutes: int = Field(
+        default=360,
+        ge=0,
+        alias="idleMinutes",
+        description="Idle minutes before reset; 0 disables idle rollover",
+    )
 
 
 class SessionConfig(BaseModel):
     """Session configuration (mirrors openclaw SessionConfig)."""
     model_config = ConfigDict(populate_by_name=True)
     
-    idleMinutes: int = Field(default=60, alias="idleMinutes", description="Idle timeout in minutes")
+    idleMinutes: int = Field(
+        default=360,
+        ge=0,
+        alias="idleMinutes",
+        description="Legacy idle timeout in minutes; prefer reset.idleMinutes",
+    )
     reset: SessionReset = Field(default_factory=SessionReset)
+
+    @property
+    def effective_idle_minutes(self) -> int:
+        """Resolve the preferred reset timeout while honoring legacy configs."""
+        if "idleMinutes" in self.reset.model_fields_set:
+            return self.reset.idleMinutes
+        if "idleMinutes" in self.model_fields_set:
+            return self.idleMinutes
+        return self.reset.idleMinutes
 
 
 # ============================================================================

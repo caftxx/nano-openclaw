@@ -62,8 +62,14 @@ class XiaozhiChannel(ChannelAdapter):
                     "xiaozhi photo upload requires: pip install 'nano-openclaw[xiaozhi]'"
                 ) from exc
 
+            session_config = getattr(ctx.runtime.config, "session", None)
+            session_idle_minutes = int(
+                getattr(session_config, "effective_idle_minutes", 360)
+            )
             self.sessions = DeviceSessionStore(
-                ctx.runtime.state_dir / "xiaozhi-sessions.json", ctx.backend
+                ctx.runtime.state_dir / "xiaozhi-sessions.json",
+                ctx.backend,
+                idle_minutes=session_idle_minutes,
             )
             self.token_provider = None
             if voice.provider == "aliyun":

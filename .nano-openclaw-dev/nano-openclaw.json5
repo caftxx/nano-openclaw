@@ -63,6 +63,15 @@
   noTools: false,
   maxIterations: 512,
 
+  // Auto-bound WeChat/Xiaozhi sessions start fresh on the next request after
+  // six hours without a real user interaction. Set idleMinutes to 0 to disable.
+  session: {
+    reset: {
+      mode: "idle",
+      idleMinutes: 360,
+    },
+  },
+
   // Active Memory：每次对话前自动召回相关记忆
   activeMemory: {
     enabled: false,

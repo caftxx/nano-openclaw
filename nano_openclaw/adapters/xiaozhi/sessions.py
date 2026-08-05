@@ -8,11 +8,17 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from nano_openclaw.logger import get_logger
+
+
+log = get_logger(__name__)
+
 
 class DeviceSessionStore:
-    def __init__(self, path: Path, backend: Any) -> None:
+    def __init__(self, path: Path, backend: Any, *, idle_minutes: int = 360) -> None:
         self.path = path
         self.backend = backend
+        self.idle_minutes = idle_minutes
         self._lock = threading.RLock()
 
     def resolve(self, device_id: str) -> str:
@@ -24,10 +30,19 @@ class DeviceSessionStore:
             session_id = str(mapping.get(key) or "")
             if session_id:
                 try:
-                    return self.backend.manager.get_or_load(session_id).session_id
+                    session = self.backend.manager.get_or_load(session_id)
+                    if not self.backend.manager.is_idle(session, self.idle_minutes):
+                        self.backend.manager.mark_interaction(session)
+                        return session.session_id
+                    log.info(
+                        "xiaozhi.session.idle_rollover",
+                        f"device={key} old_session={session.session_id} idle_minutes={self.idle_minutes}",
+                    )
                 except KeyError:
                     pass
-            session_id = self.backend.manager.create().session_id
+            session = self.backend.manager.create()
+            self.backend.manager.mark_interaction(session)
+            session_id = session.session_id
             mapping[key] = session_id
             self._save(mapping)
             return session_id

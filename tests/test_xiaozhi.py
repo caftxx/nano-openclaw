@@ -177,6 +177,8 @@ class _FakeManager:
     def __init__(self):
         self.items = {}
         self.created = 0
+        self.idle = set()
+        self.touched = []
 
     def create(self):
         self.created += 1
@@ -188,6 +190,12 @@ class _FakeManager:
         if session_id not in self.items:
             raise KeyError(session_id)
         return self.items[session_id]
+
+    def is_idle(self, session, idle_minutes):
+        return idle_minutes > 0 and session.session_id in self.idle
+
+    def mark_interaction(self, session):
+        self.touched.append(session.session_id)
 
 
 def test_device_session_store_persists_and_recovers(tmp_path):
@@ -201,6 +209,21 @@ def test_device_session_store_persists_and_recovers(tmp_path):
 
     manager.items.clear()
     assert store.resolve("aa:bb") == "session-2"
+
+
+def test_device_session_store_rolls_over_idle_mapping(tmp_path):
+    manager = _FakeManager()
+    backend = SimpleNamespace(manager=manager)
+    path = tmp_path / "xiaozhi-sessions.json"
+    store = DeviceSessionStore(path, backend, idle_minutes=360)
+
+    first = store.resolve("AA:BB")
+    manager.idle.add(first)
+    second = store.resolve("aa:bb")
+
+    assert second != first
+    assert json.loads(path.read_text()) == {"aa:bb": second}
+    assert manager.touched[-1] == second
 
 
 def test_device_mcp_initialize_materialize_and_call():

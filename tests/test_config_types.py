@@ -210,9 +210,10 @@ class TestNanoOpenClawConfig:
     def test_session_config(self):
         cfg = NanoOpenClawConfig()
         assert isinstance(cfg.session, SessionConfig)
-        assert cfg.session.idleMinutes == 60
+        assert cfg.session.idleMinutes == 360
         assert cfg.session.reset.mode == "idle"
-        assert cfg.session.reset.idleMinutes == 120
+        assert cfg.session.reset.idleMinutes == 360
+        assert cfg.session.effective_idle_minutes == 360
     
     def test_resolve_primary_model_default_agent(self):
         cfg = NanoOpenClawConfig(
@@ -413,9 +414,10 @@ class TestAgentConfig:
 class TestSessionConfig:
     def test_default_values(self):
         sc = SessionConfig()
-        assert sc.idleMinutes == 60
+        assert sc.idleMinutes == 360
         assert sc.reset.mode == "idle"
-        assert sc.reset.idleMinutes == 120
+        assert sc.reset.idleMinutes == 360
+        assert sc.effective_idle_minutes == 360
     
     def test_custom_values(self):
         sc = SessionConfig(
@@ -425,6 +427,15 @@ class TestSessionConfig:
         assert sc.idleMinutes == 120
         assert sc.reset.mode == "daily"
         assert sc.reset.idleMinutes == 180
+        assert sc.effective_idle_minutes == 180
+
+    def test_legacy_idle_minutes_is_still_honored(self):
+        sc = SessionConfig(idleMinutes=45)
+        assert sc.effective_idle_minutes == 45
+
+    def test_zero_disables_idle_rollover(self):
+        sc = SessionConfig(reset=SessionReset(idleMinutes=0))
+        assert sc.effective_idle_minutes == 0
     
     def test_reset_mode_validation(self):
         """Reset mode must be either 'daily' or 'idle'."""

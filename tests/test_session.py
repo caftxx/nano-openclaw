@@ -74,6 +74,29 @@ def test_save_and_load_store():
         assert "abc123" in loaded["sessions"]
 
 
+def test_save_session_store_retries_transient_permission_error(tmp_path, monkeypatch):
+    import os
+
+    from nano_openclaw.session import store as store_module
+
+    store_path = tmp_path / "sessions.json"
+    real_replace = os.replace
+    calls = 0
+
+    def flaky_replace(src, dst):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("temporarily locked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(store_module.os, "replace", flaky_replace)
+    save_session_store(store_path, {"lastSessionId": None, "sessions": {}})
+
+    assert calls == 2
+    assert load_session_store(store_path) == {"lastSessionId": None, "sessions": {}}
+
+
 def test_update_session_creates_new():
     store = {"lastSessionId": None, "sessions": {}}
     update_session(store, "session-1", model="test-model", message_count=5)

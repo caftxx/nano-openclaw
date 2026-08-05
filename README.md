@@ -183,7 +183,7 @@ uv run nano-openclaw gateway status         # channels: 应列出所有登录的
 
 会话过期（iLink `errcode=-14`）时 daemon 不会疯狂重试，而是 long-poll 退避 5 分钟并在日志里高优先级提示重新运行 `wechat login`。再登录后 daemon 会自动捡起新 token，不需要重启。
 
-WeChat 作为 daemon 内的外部 ChannelAdapter 运行；每个 uid 自动绑定一个真实的持久化 session（与 tui / web_chat 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。WebUI/TUI 不属于 channel，所以只打开浏览器页面时 `/channels` 仍会显示 `(no channels running)`。
+WeChat 作为 daemon 内的外部 ChannelAdapter 运行；每个 uid 自动绑定一个真实的持久化 session（与 tui / web_chat 共用 `/sessions` 列表）。uid → session_id 映射持久化在 `state_dir/wechat-sessions.{account}.json`。默认连续 6 小时没有真实请求后，下一条消息会自动绑定新 session（可用 `session.reset.idleMinutes` 配置，`0` 禁用）；旧会话仍保留在列表中。WebUI/TUI 不属于 channel，所以只打开浏览器页面时 `/channels` 仍会显示 `(no channels running)`。
 
 ### xiaozhi（ESP32 语音与拍照）
 
@@ -233,7 +233,7 @@ xiaozhi: {
 http://<运行 nano 的电脑局域网 IP>:5000/xiaozhi/ota/
 ```
 
-保存、编译并刷机即可，不需要改固件协议源码或提交生成的 `sdkconfig`。每个 `Device-Id` 的 session 映射原子保存在 `state_dir/xiaozhi-sessions.json`，重连后继续原会话；设备上传的照片按设备保存在 `state_dir/xiaozhi-photos/<device-id>/`，识图失败时原图也会保留，但不会写入 session 附件。WebUI 能查看同一 session 的文本历史，但不会获得该设备的硬件工具，避免跨入口误控。
+保存、编译并刷机即可，不需要改固件协议源码或提交生成的 `sdkconfig`。每个 `Device-Id` 的 session 映射原子保存在 `state_dir/xiaozhi-sessions.json`，重连后继续原会话；默认连续 6 小时没有真实请求后，下次连接会绑定新 session。设备上传的照片按设备保存在 `state_dir/xiaozhi-photos/<device-id>/`，识图失败时原图也会保留，但不会写入 session 附件。WebUI 能查看同一 session 的文本历史，但不会获得该设备的硬件工具，避免跨入口误控。
 
 所有外部 channel turn 都会获得内置终止工具 `exit`。当模型判断用户明确表达“再见”“退下”“等会儿聊”等离开意图时，会用该工具结束本轮；xiaozhi 会在简短告别播放完成后关闭设备 WebSocket，与 `noVoiceTimeoutSeconds` 一样让固件回到 Idle/待命。微信等消息型 channel 不需要断开长连接，只终止当前 agent turn。
 

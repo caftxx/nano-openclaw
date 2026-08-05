@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -386,6 +387,36 @@ def test_slash_without_backend_is_rejected_without_mutating_session(tmp_path):
 
         assert "daemon backend" in (reply or "")
         assert len(sess.history) == 1
+    finally:
+        asyncio.run(backend.aclose())
+
+
+def test_idle_mapping_rolls_over_on_next_request(tmp_path):
+    map_path = tmp_path / "wechat-sessions.json"
+    bot, backend = _bot_with_manager(tmp_path, uid_map_path=map_path)
+    bot.session_idle_minutes = 1
+    try:
+        first = bot._resolve_session("idle-user")
+        assert first is not None
+        first.last_interaction_at = time.time() - 61
+
+        replacement = bot._resolve_session("idle-user")
+
+        assert replacement is not None
+        assert replacement.session_id != first.session_id
+        assert json.loads(map_path.read_text())["idle-user"] == replacement.session_id
+    finally:
+        asyncio.run(backend.aclose())
+
+
+def test_idle_rollover_disabled_with_zero(tmp_path):
+    bot, backend = _bot_with_manager(tmp_path)
+    bot.session_idle_minutes = 0
+    try:
+        first = bot._resolve_session("persistent-user")
+        assert first is not None
+        first.last_interaction_at = 1.0
+        assert bot._resolve_session("persistent-user").session_id == first.session_id
     finally:
         asyncio.run(backend.aclose())
 

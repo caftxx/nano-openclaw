@@ -293,6 +293,44 @@ def test_web_session_manager_keeps_multiple_pending_sessions_independent():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_session_manager_tracks_real_interaction_for_idle_rollover():
+    tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
+    try:
+        session_dir = tmp_dir / "sessions"
+        store_path = session_dir / "sessions.json"
+        manager = BackendSessionManager(
+            session_dir=session_dir,
+            store_path=store_path,
+            model="model",
+        )
+        session = manager.create()
+        manager.mark_interaction(session, at=100.0)
+        session.history.append(_message("user", "hello"))
+        session.writer.append_message(session.history[0])
+
+        assert load_session_store(store_path)["sessions"][session.session_id][
+            "last_interaction_at"
+        ] == 100.0
+        assert manager.is_idle(session, 360, now=100.0 + 360 * 60 - 1) is False
+        assert manager.is_idle(session, 360, now=100.0 + 360 * 60) is True
+        assert manager.is_idle(session, 0, now=10**9) is False
+
+        # A later metadata-only write must not make an idle session fresh.
+        manager.save_metadata(session)
+        assert load_session_store(store_path)["sessions"][session.session_id][
+            "last_interaction_at"
+        ] == 100.0
+
+        reloaded = BackendSessionManager(
+            session_dir=session_dir,
+            store_path=store_path,
+            model="model",
+        ).get_or_load(session.session_id)
+        assert reloaded.last_interaction_at == 100.0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_webui_push_adapter_maps_backend_turn_started_to_chat_accepted():
     tmp_dir = Path("tests") / f".tmp-webui-{uuid.uuid4().hex}"
     try:

@@ -340,6 +340,8 @@ class EmbeddedBackend(Backend):
                 details={"session_id": session.session_id, "active_turn_id": session.active_turn_id},
             )
 
+        self.manager.mark_interaction(session)
+
         turn_id = uuid.uuid4().hex
         token = cancellation_token or CancellationToken()
         session.active_turn_id = turn_id

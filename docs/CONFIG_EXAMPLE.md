@@ -114,9 +114,11 @@ Workspace 是 agent 操作文件的工作根目录，解析优先级（与 OpenC
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `idleMinutes` | number | `60` | 空闲超时分钟数 |
+| `idleMinutes` | number | `360` | 兼容旧配置的空闲超时分钟数；优先使用 `reset.idleMinutes` |
 | `reset.mode` | string | `"idle"` | 重置模式：`daily` \| `idle` |
-| `reset.idleMinutes` | number | `120` | 空闲多少分钟后重置 |
+| `reset.idleMinutes` | number | `360` | 无新请求交互多少分钟后换新 session；`0` 表示禁用 |
+
+微信 uid 与小智 `Device-Id` 这类自动绑定的 session 会在收到下一次请求时检查空闲时间；超过阈值就创建新的 session 并更新映射。旧 transcript 仍保留在 session 列表中。空闲判断使用最后一次真实请求时间，cron、compact、主动通知等后台写入不会续期。
 
 ### gateway — Gateway daemon 配置
 
@@ -214,7 +216,7 @@ xiaozhi: {
 
 `baseUrl` 必须包含 `/v1`；`realtimeUrl` 指向统一的 `/v1/realtime` WebSocket 路径。Bearer Token 支持 `${VAR}` 替换，不会写入日志。小智在一个 realtime response 中连续提交句子文本 delta；长回复在首包后最多等待 `ttsPrebufferMaxWaitMs` 来积累音频，短回复完成后直接播放。abort 或断线会取消尚未完成的 realtime 合成。
 
-每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。设备端 AEC 开启时，xiaozhi-esp32 使用 `realtime` 模式并在播放期间持续上传消回声后的麦克风音频；此时直接说任意内容即可打断旧回答并发起新一轮。`auto` 模式不会在播放期间识别插话。相机 JPEG 按设备保存在 `{stateDir}/xiaozhi-photos/<device-id>/`，文件名包含本地拍照时间与随机后缀；即使识图失败，已上传的原图仍会保留，但不会写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
+每个 `Device-Id` 独立绑定 session，映射保存在 `{stateDir}/xiaozhi-sessions.json`；超过 `session.reset.idleMinutes` 没有真实请求后，设备下次连接会自动绑定新 session。设备处于 Listening 时，`noVoiceTimeoutSeconds` 从开始监听或最近一次有效 ASR 文本起计时，超时后 nano 主动关闭 WebSocket，固件随即回到 Idle/待命。设备端 AEC 开启时，xiaozhi-esp32 使用 `realtime` 模式并在播放期间持续上传消回声后的麦克风音频；此时直接说任意内容即可打断旧回答并发起新一轮。`auto` 模式不会在播放期间识别插话。相机 JPEG 按设备保存在 `{stateDir}/xiaozhi-photos/<device-id>/`，文件名包含本地拍照时间与随机后缀；即使识图失败，已上传的原图仍会保留，但不会写入 session 附件。设备 MCP 工具只注入该设备发起的 turn，从 WebUI 打开同一 session 不会自动获得硬件控制权。配置不完整时 channel 显示为 `error`，gateway/WebUI 仍会正常启动。
 
 所有外部 channel turn 都会注入内置终止工具 `exit`。模型判断用户明确表示离开、结束或稍后再聊时，会在同一响应中给出至多一句简短告别并调用该终止工具，不再发起下一轮模型请求。xiaozhi 在当前回复播放完成后复用无语音超时的关闭动作回到 Idle/待命；消息型 channel 则只结束当前 agent turn。
 
@@ -233,7 +235,7 @@ uv run nano-openclaw wechat login --account=work   # 多账号:换标签即可
 
 daemon 启动时扫描 `state_dir/wechat-tokens*.json` 自动注册账号,每个文件一个 WeChat `ChannelAdapter`。运行时调优参数(long-poll 超时、typing 续命间隔等)使用代码内默认值,与 openilink-sdk-python 对齐,不再可配置。
 
-**uid → session 映射**:每个 wechat uid 第一次发消息时通过 `BackendSessionManager.create()` 拿到真实 session,映射持久化到 `state_dir/wechat-sessions.{account}.json`。
+**uid → session 映射**:每个 wechat uid 第一次发消息时通过 `BackendSessionManager.create()` 拿到真实 session,映射持久化到 `state_dir/wechat-sessions.{account}.json`。超过 `session.reset.idleMinutes` 没有真实请求后，下一条消息会自动创建并绑定新 session。
 
 **cron 通知路由**:cron 任务的 `created_by` 三段格式 `wechat:{account}:{uid}`,完成后通过 `ChannelManager` 路由到对应账号的通知队列,由 WechatBot 读取并推送给原 uid。cron 本身不是 channel；它是 scheduler feature，可选择 channel 作为投递目标。
 

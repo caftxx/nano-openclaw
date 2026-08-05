@@ -108,6 +108,10 @@ class WechatChannel(ChannelAdapter):
         # defaults — they're not exposed via config any more (no real-world
         # demand to override and the values mirror openilink-sdk-python).
         backend = ctx.backend
+        session_config = getattr(runtime.config, "session", None)
+        session_idle_minutes = int(
+            getattr(session_config, "effective_idle_minutes", 360)
+        )
         self._bot = WechatBot(
             base_url=base_url,
             token=token,
@@ -117,6 +121,7 @@ class WechatChannel(ChannelAdapter):
             backend=backend,
             uid_map_path=uid_map_path,
             context_token_path=context_token_path,
+            session_idle_minutes=session_idle_minutes,
         )
         self._task = asyncio.create_task(
             self._bot.run(),

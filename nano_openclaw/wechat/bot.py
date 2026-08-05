@@ -140,6 +140,9 @@ class WechatBot:
     # default to 30 min to avoid a getconfig RTT on every reply while still
     # rotating well before any plausible server-side expiry.
     typing_ticket_ttl: float = 1800.0
+    # Auto-bound uid sessions roll over lazily when a new request arrives
+    # after this much inactivity. 0 disables rollover.
+    session_idle_minutes: int = 360
     # uid -> session_id (loaded from uid_map_path on first use)
     _uid_to_session_id: dict[str, str] = field(default_factory=dict)
     _uid_map_loaded: bool = False
@@ -265,12 +268,21 @@ class WechatBot:
         existing_id = self._uid_to_session_id.get(uid)
         if existing_id:
             try:
-                return self.session_manager.get_or_load(existing_id)
+                session = self.session_manager.get_or_load(existing_id)
+                if not self.session_manager.is_idle(session, self.session_idle_minutes):
+                    self.session_manager.mark_interaction(session)
+                    return session
+                log.info(
+                    "wechat.session.idle_rollover",
+                    f"uid={uid:.16} old_session={session.session_id} idle_minutes={self.session_idle_minutes}",
+                )
             except KeyError:
                 # mapping points at a deleted session — fall through to create
-                self._uid_to_session_id.pop(uid, None)
+                pass
+            self._uid_to_session_id.pop(uid, None)
 
         new_session = self.session_manager.create()
+        self.session_manager.mark_interaction(new_session)
         self._uid_to_session_id[uid] = new_session.session_id
         self._save_uid_map()
         return new_session

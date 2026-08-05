@@ -9,6 +9,8 @@ Mirrors OpenClaw's `src/config/sessions/store.ts`:
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,16 @@ def save_session_store(store_path: Path, store: dict[str, Any]) -> None:
     store_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = store_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(store_path)
+    # Windows virus scanners and indexers may briefly hold the destination
+    # after a read. Keep atomic replacement, but tolerate that narrow race.
+    for attempt in range(5):
+        try:
+            os.replace(tmp, store_path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01 * (2**attempt))
 
 
 def get_last_session(store: dict[str, Any]) -> SessionInfo | None:
@@ -60,6 +71,7 @@ def update_session(
     message_count: int = 0,
     compaction_count: int = 0,
     update_time: bool = True,
+    last_interaction_at: float | None = None,
 ) -> None:
     """Add or update a session entry in the store."""
     import time
@@ -74,6 +86,8 @@ def update_session(
             entry["model"] = model
         entry["message_count"] = message_count
         entry["compaction_count"] = compaction_count
+        if last_interaction_at is not None:
+            entry["last_interaction_at"] = last_interaction_at
     else:
         sessions[session_id] = {
             "created_at": now,
@@ -82,6 +96,8 @@ def update_session(
             "message_count": message_count,
             "compaction_count": compaction_count,
         }
+        if last_interaction_at is not None:
+            sessions[session_id]["last_interaction_at"] = last_interaction_at
 
     store["lastSessionId"] = session_id
 

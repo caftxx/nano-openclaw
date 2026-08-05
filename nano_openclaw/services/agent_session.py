@@ -111,6 +111,9 @@ class AgentBackendSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn_id: str | None = None
     created_at: float = field(default_factory=time.time)
+    # Timestamp of the latest real inbound request. Background bookkeeping,
+    # compaction, cron, and proactive messages must not refresh idle expiry.
+    last_interaction_at: float = 0.0
     # Per-conversation runtime state shared by reference into the per-turn
     # AgentSession. Survives across turns so /usage shows cumulative totals
     # and Stage 3 iterative summary updates actually fire.
@@ -213,6 +216,10 @@ class BackendSessionManager:
         if session_id in self._loaded:
             return self._loaded[session_id]
 
+        store = load_session_store(self.store_path)
+        metadata = store.get("sessions", {}).get(session_id, {})
+        if not isinstance(metadata, dict):
+            metadata = {}
         loaded = self._load_existing(session_id)
         if loaded is None:
             raise KeyError(f"session not found or transcript is invalid: {session_id}")
@@ -225,6 +232,16 @@ class BackendSessionManager:
             writer=writer,
             activities=activities,
             todo_store=self._load_todo_store(canonical_id),
+            created_at=float(metadata.get("created_at") or time.time()),
+            # Legacy rows predate last_interaction_at. updated_at is the best
+            # available approximation and avoids expiring every old mapping
+            # immediately on the first upgrade.
+            last_interaction_at=float(
+                metadata.get("last_interaction_at")
+                or metadata.get("updated_at")
+                or metadata.get("created_at")
+                or 0.0
+            ),
         )
         self._loaded[canonical_id] = session
         self.save_metadata(session, update_time=False)
@@ -268,6 +285,7 @@ class BackendSessionManager:
                 message_count=session.writer.message_count,
                 compaction_count=session.writer.compaction_count,
                 update_time=update_time,
+                last_interaction_at=session.last_interaction_at or None,
             )
             if not existed:
                 store["sessions"][session.session_id]["created_at"] = session.created_at
@@ -278,6 +296,48 @@ class BackendSessionManager:
             store["sessions"][session.session_id]["todo_list"] = session.todo_store.to_json()
             save_session_store(self.store_path, store)
         self._summary_cache.pop(session.session_id, None)
+
+    def is_idle(
+        self,
+        session: AgentBackendSession,
+        idle_minutes: int,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Return whether a mapped session should roll over on the next request."""
+        if idle_minutes <= 0 or session.active_turn_id or session.lock.locked():
+            return False
+        freshness = session.last_interaction_at or session.created_at
+        current = time.time() if now is None else now
+        return current >= freshness and current - freshness >= idle_minutes * 60
+
+    def mark_interaction(
+        self,
+        session: AgentBackendSession,
+        *,
+        at: float | None = None,
+    ) -> None:
+        """Record a real inbound request without touching conversation content."""
+        interaction_at = time.time() if at is None else at
+        session.last_interaction_at = interaction_at
+        if not self._is_persisted(session):
+            return
+        self._unmark_pending(session.session_id)
+        session.writer._on_first_write = None
+        with self._store_lock:
+            store = load_session_store(self.store_path)
+            existed = session.session_id in store.get("sessions", {})
+            update_session(
+                store,
+                session.session_id,
+                model=self.model,
+                message_count=session.writer.message_count,
+                compaction_count=session.writer.compaction_count,
+                last_interaction_at=interaction_at,
+            )
+            if not existed:
+                store["sessions"][session.session_id]["created_at"] = session.created_at
+            save_session_store(self.store_path, store)
 
     def _mark_pending(self, session_id: str) -> None:
         self._pending_session_ids.add(session_id)
